@@ -91,6 +91,13 @@ function LoginPage() {
           </div>
 
           <div className="mt-10 lg:mt-0">
+            <img
+              src="/icons/ctell-192.png"
+              alt="CTELL"
+              width={64}
+              height={64}
+              className="mb-5 hidden size-16 rounded-2xl object-cover shadow-card lg:block"
+            />
             <h2 className="font-display text-2xl font-bold text-foreground sm:text-3xl">
               Iniciar sesión
             </h2>
