@@ -1,24 +1,167 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useState } from "react";
+import { Eye, EyeOff, Loader2, Lock, User } from "lucide-react";
 
-// No head() here: the home route inherits title/description/og/twitter from
-// __root.tsx, and ships no og:image so serve-time hosting can inject the
-// project's social preview (explicit og:image or latest screenshot).
+import loginBg from "@/assets/login-bg.jpg";
+import { Logo } from "@/components/ctell/Logo";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+
 export const Route = createFileRoute("/")({
-  component: Index,
+  head: () => ({
+    meta: [
+      { title: "CTELL | Acceso al sistema administrativo" },
+      {
+        name: "description",
+        content:
+          "Ingresá a CTELL para gestionar compras, ventas, stock, tesorería y recursos humanos desde un solo panel.",
+      },
+      { property: "og:title", content: "CTELL | Acceso al sistema administrativo" },
+      {
+        property: "og:description",
+        content: "Panel único para compras, ventas, stock, tesorería y recursos humanos.",
+      },
+    ],
+  }),
+  component: LoginPage,
 });
 
-// IMPORTANT: Replace this placeholder. See ./README.md for routing conventions.
-function Index() {
+function LoginPage() {
+  const navigate = useNavigate();
+  const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setLoading(true);
+    // Frontend only: la validación contra la base de datos se conecta más adelante.
+    setTimeout(() => navigate({ to: "/home" }), 700);
+  }
+
   return (
-    <div
-      className="flex min-h-screen items-center justify-center"
-      style={{ backgroundColor: "#fcfbf8" }}
-    >
-      <img
-        data-lovable-blank-page-placeholder="REMOVE_THIS"
-        src="https://cdn.gpteng.co/blank-app-v1.svg"
-        alt="Your app will live here!"
-      />
-    </div>
+    <main className="flex min-h-screen bg-background">
+      <section className="relative hidden w-[52%] overflow-hidden lg:block">
+        <img
+          src={loginBg}
+          alt=""
+          width={1280}
+          height={1600}
+          className="absolute inset-0 size-full object-cover"
+        />
+        <div className="gradient-navy absolute inset-0 opacity-80" />
+        <div className="relative flex h-full flex-col justify-between p-12">
+          <Logo tone="dark" />
+          <div className="max-w-md">
+            <h1 className="font-display text-4xl font-bold leading-tight text-navy-foreground">
+              Toda la operación de tu empresa en un solo lugar.
+            </h1>
+            <p className="mt-4 text-sm leading-relaxed text-navy-foreground/70">
+              Compras, ventas, stock, tesorería y recursos humanos integrados, con información en
+              tiempo real para decidir mejor.
+            </p>
+            <dl className="mt-10 grid grid-cols-2 gap-4">
+              {[
+                ["Compras y Ventas", "Circuito comercial completo"],
+                ["Stock", "Control por depósito"],
+                ["Tesorería", "Caja, bancos y cheques"],
+                ["RRHH", "Legajos y liquidaciones"],
+              ].map(([title, detail]) => (
+                <div
+                  key={title}
+                  className="rounded-xl border border-navy-foreground/15 bg-navy-foreground/5 p-4 backdrop-blur-sm"
+                >
+                  <dt className="text-sm font-semibold text-navy-foreground">{title}</dt>
+                  <dd className="mt-1 text-xs text-navy-foreground/60">{detail}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+          <p className="text-xs text-navy-foreground/50">
+            © {new Date().getFullYear()} CTELL S.A. Todos los derechos reservados.
+          </p>
+        </div>
+      </section>
+
+      <section className="flex flex-1 flex-col justify-center px-6 py-10 sm:px-12 lg:px-16">
+        <div className="mx-auto w-full max-w-sm">
+          <div className="lg:hidden">
+            <Logo />
+          </div>
+
+          <div className="mt-10 lg:mt-0">
+            <h2 className="font-display text-2xl font-bold text-foreground sm:text-3xl">
+              Iniciar sesión
+            </h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Ingresá con tu usuario corporativo para acceder al panel.
+            </p>
+          </div>
+
+          <form onSubmit={handleSubmit} className="mt-8 space-y-5">
+            <div className="space-y-2">
+              <Label htmlFor="usuario">Usuario</Label>
+              <div className="relative">
+                <User className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  id="usuario"
+                  name="usuario"
+                  autoComplete="username"
+                  required
+                  placeholder="nombre.apellido"
+                  className="h-12 pl-9"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="password">Contraseña</Label>
+              <div className="relative">
+                <Lock className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  id="password"
+                  name="password"
+                  type={showPassword ? "text" : "password"}
+                  autoComplete="current-password"
+                  required
+                  placeholder="••••••••"
+                  className="h-12 pl-9 pr-11"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((value) => !value)}
+                  aria-label={showPassword ? "Ocultar contraseña" : "Mostrar contraseña"}
+                  className="absolute right-2 top-1/2 flex size-8 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                >
+                  {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <Label htmlFor="recordar" className="gap-2 text-sm font-normal text-muted-foreground">
+                <Checkbox id="recordar" /> Recordarme
+              </Label>
+              <button
+                type="button"
+                className="text-sm font-medium text-primary transition-opacity hover:opacity-80"
+              >
+                ¿Olvidaste tu clave?
+              </button>
+            </div>
+
+            <Button type="submit" disabled={loading} className="h-12 w-full text-base">
+              {loading ? <Loader2 className="size-4 animate-spin" /> : null}
+              {loading ? "Verificando…" : "Ingresar"}
+            </Button>
+          </form>
+
+          <p className="mt-8 text-center text-xs text-muted-foreground">
+            Acceso restringido a personal autorizado de CTELL.
+          </p>
+        </div>
+      </section>
+    </main>
   );
 }
