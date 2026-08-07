@@ -24,10 +24,10 @@ jobs:
 
     steps:
       - name: Clonar repositorio
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configurar Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -41,16 +41,23 @@ jobs:
       - name: Build de producción
         run: npm run build
 
-      # El build genera .output/server/wrangler.json con la config del worker,
-      # por eso wrangler se ejecuta desde ese directorio.
+      # Se invoca wrangler directamente (y no cloudflare/wrangler-action) porque
+      # la acción corre `npx --no-install` dentro de workingDirectory: como
+      # .output/server no tiene node_modules, resolvía una wrangler v3 del cache
+      # del runner, incompatible con el wrangler.json que genera nitro 3.
+      # Acá usamos la v4 fijada en package.json y le pasamos la config con -c.
       - name: Desplegar a Cloudflare
         id: deploy
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: .output/server
-          command: deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -o pipefail
+          npx wrangler deploy -c .output/server/wrangler.json | tee deploy.log
+          # La URL del worker se extrae de la salida para publicarla como
+          # output del step (el `environment.url` del job la consume).
+          url=$(grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' deploy.log | head -1)
+          echo "deployment-url=${url}" >> "$GITHUB_OUTPUT"
 
       - name: Resumen del despliegue
         run: |
@@ -58,4 +65,5 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Worker:** ctell-admin-hub" >> $GITHUB_STEP_SUMMARY
           echo "- **Commit:** \`${GITHUB_SHA::7}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Wrangler:** \`$(npx wrangler --version)\`" >> $GITHUB_STEP_SUMMARY
           echo "- **URL:** ${{ steps.deploy.outputs.deployment-url }}" >> $GITHUB_STEP_SUMMARY

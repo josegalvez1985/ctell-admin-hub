@@ -396,8 +396,8 @@ no Node: `pg` y `mysql2` **no funcionan**. Opciones válidas:
 **2. Guardá las credenciales como secrets de Cloudflare**, nunca en el repo:
 
 ```sh
-cd .output/server
-npx wrangler secret put DATABASE_URL
+npm run build
+npx wrangler secret put DATABASE_URL -c .output/server/wrangler.json
 ```
 
 **3. Creá el cliente en un módulo de servidor:**

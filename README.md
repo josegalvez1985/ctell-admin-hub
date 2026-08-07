@@ -112,9 +112,11 @@ _Run workflow_.
 
 ```sh
 npm run build
-cd .output/server
-npx wrangler deploy
+npx wrangler deploy -c .output/server/wrangler.json
 ```
+
+> Requiere **wrangler 4** (fijado en `devDependencies`). La v3 no entiende el
+> formato de configuración que genera nitro 3 y falla con exit code 1.
 
 ## Convenciones
 
