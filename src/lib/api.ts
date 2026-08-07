@@ -114,12 +114,14 @@ export const api = {
   me: () => request<Usuario>("/auth/me"),
 
   usuarios: {
-    listar: (params: {
-      busqueda?: string;
-      activo?: number;
-      pagina?: number;
-      tamanio?: number;
-    } = {}) => {
+    listar: (
+      params: {
+        busqueda?: string;
+        activo?: number;
+        pagina?: number;
+        tamanio?: number;
+      } = {},
+    ) => {
       const qs = new URLSearchParams();
       if (params.busqueda) qs.set("busqueda", params.busqueda);
       if (params.activo !== undefined) qs.set("activo", String(params.activo));

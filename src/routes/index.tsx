@@ -48,9 +48,7 @@ function LoginPage() {
       await api.login(usuario, password);
       navigate({ to: "/home" });
     } catch (err) {
-      setError(
-        err instanceof ApiError ? err.message : "No se pudo conectar con el servidor",
-      );
+      setError(err instanceof ApiError ? err.message : "No se pudo conectar con el servidor");
       setLoading(false);
     }
   }
