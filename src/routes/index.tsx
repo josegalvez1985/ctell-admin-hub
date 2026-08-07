@@ -4,6 +4,7 @@ import { Eye, EyeOff, Loader2, Lock, User } from "lucide-react";
 
 import loginBg from "@/assets/login-bg.jpg";
 import { Logo } from "@/components/ctell/Logo";
+import { api, ApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -32,12 +33,26 @@ function LoginPage() {
   const navigate = useNavigate();
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setError(null);
     setLoading(true);
-    // Frontend only: la validación contra la base de datos se conecta más adelante.
-    setTimeout(() => navigate({ to: "/home" }), 700);
+
+    const form = new FormData(event.currentTarget);
+    const usuario = String(form.get("usuario") ?? "");
+    const password = String(form.get("password") ?? "");
+
+    try {
+      await api.login(usuario, password);
+      navigate({ to: "/home" });
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? err.message : "No se pudo conectar con el servidor",
+      );
+      setLoading(false);
+    }
   }
 
   return (
@@ -157,6 +172,15 @@ function LoginPage() {
                 ¿Olvidaste tu clave?
               </button>
             </div>
+
+            {error && (
+              <p
+                role="alert"
+                className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+              >
+                {error}
+              </p>
+            )}
 
             <Button type="submit" disabled={loading} className="h-12 w-full text-base">
               {loading ? <Loader2 className="size-4 animate-spin" /> : null}

@@ -14,6 +14,12 @@ y recursos humanos, con login de usuarios.
 | Formularios | react-hook-form + zod               |
 | Build       | Vite 8 + nitro                      |
 | Hosting     | Cloudflare Workers                  |
+| **Backend** | **Oracle APEX + ORDS (PL/SQL)**     |
+
+El backend es independiente del frontend: son paquetes PL/SQL publicados como
+REST por ORDS, en `https://oracleapex.com/ords/ctell/`. El frontend sólo los
+consume por HTTP — no hay server functions ni acceso directo a la base desde el
+Worker.
 
 ## Desarrollo
 
@@ -43,6 +49,9 @@ Vite imprime la URL local al arrancar (normalmente `http://localhost:5173`).
 ## Estructura
 
 ```
+db/                      Backend: un archivo SQL por tabla
+└── usuarios.sql         PKG_USUARIOS + PKG_TOKENS + /auth/ + /usuarios/
+
 src/
 ├── routes/              Rutas (el archivo define la URL)
 │   ├── __root.tsx       Layout raíz: <html>, providers, meta global
@@ -52,9 +61,55 @@ src/
 ├── components/
 │   ├── ctell/           Componentes propios del proyecto
 │   └── ui/              shadcn/ui (no editar a mano)
-├── lib/                 Utilidades
+├── lib/
+│   └── api.ts           Cliente HTTP contra ORDS
 └── styles.css           Design system (variables de color en oklch)
 ```
+
+## Backend
+
+> **Regla: cada tabla tiene su propio archivo en `db/`, nombrado como la tabla,
+> con todo su CRUD adentro.**
+
+```
+db/
+├── usuarios.sql     ya existe
+├── empresas.sql     PKG_EMPRESAS + módulo ORDS /empresas/
+├── clientes.sql     PKG_CLIENTES + módulo ORDS /clientes/
+└── articulos.sql    PKG_ARTICULOS + módulo ORDS /articulos/
+```
+
+Cada archivo se ejecuta **de una sola vez y por separado** en la hoja de trabajo
+SQL de APEX, y contiene el paquete PL/SQL, el módulo ORDS con sus endpoints y
+las consultas de verificación. Tocar empresas no obliga a reejecutar usuarios.
+
+Los archivos son **idempotentes** (se pueden reejecutar) y **no crean ni alteran
+tablas**: el DDL se administra aparte.
+
+### Endpoints publicados
+
+| Método   | Ruta                          | Auth  |
+| -------- | ----------------------------- | ----- |
+| `POST`   | `/auth/login`                 | —     |
+| `POST`   | `/auth/logout`                | token |
+| `GET`    | `/auth/me`                    | token |
+| `GET`    | `/usuarios/`                  | token |
+| `POST`   | `/usuarios/`                  | token |
+| `GET`    | `/usuarios/:id`               | token |
+| `PUT`    | `/usuarios/:id`               | token |
+| `DELETE` | `/usuarios/:id`               | token |
+| `POST`   | `/usuarios/:id/inactivar`     | token |
+| `POST`   | `/usuarios/:id/activar`       | token |
+| `POST`   | `/usuarios/:id/password`      | token |
+
+El token se envía como `Authorization: Bearer <token>` y vence a las 8 horas.
+
+> **Hash de contraseñas:** hoy usa `STANDARD_HASH` SHA-256 con salt, porque
+> `DBMS_CRYPTO` no está concedido en el workspace. SHA-256 no tiene factor de
+> trabajo y es débil frente a fuerza bruta. Si conseguís
+> `GRANT EXECUTE ON SYS.DBMS_CRYPTO`, migrá a PBKDF2 — la versión está lista en
+> un comentario dentro de `HASH_PASSWORD`. Migrar invalida los hashes
+> existentes: hay que resetear las contraseñas.
 
 ## Temas y colores
 
@@ -121,5 +176,6 @@ npx wrangler deploy -c .output/server/wrangler.json
 ## Convenciones
 
 Antes de escribir código nuevo, leé la
-[Guía de implementación](docs/GUIA-IMPLEMENTACION.md): explica cómo agregar
-formularios, endpoints y páginas siguiendo los patrones del proyecto.
+[Guía de implementación](docs/GUIA-IMPLEMENTACION.md): explica cómo agregar una
+tabla nueva de punta a punta — paquete PL/SQL, endpoints ORDS, cliente HTTP,
+página y formulario — siguiendo los patrones del proyecto.

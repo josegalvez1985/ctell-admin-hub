@@ -1,492 +1,498 @@
 # Guía de implementación
 
-Cómo agregar páginas, formularios y endpoints siguiendo los patrones de este
-proyecto. Está escrita sobre el código que ya existe: los ejemplos usan las
-mismas librerías y convenciones que vas a encontrar en `src/`.
+Cómo agregar tablas, endpoints, páginas y formularios siguiendo los patrones de
+este proyecto. Está escrita sobre el código que ya existe: los ejemplos salen de
+`db/usuarios.sql` y `src/`, que sirven de plantilla para todo lo demás.
 
 ## Índice
 
-1. [Conceptos base](#1-conceptos-base)
-2. [Agregar una página](#2-agregar-una-página)
-3. [Crear un endpoint (server function)](#3-crear-un-endpoint-server-function)
-4. [API REST tradicional](#4-api-rest-tradicional)
-5. [Formularios](#5-formularios)
-6. [Leer y mutar datos](#6-leer-y-mutar-datos)
-7. [Conectar la base de datos](#7-conectar-la-base-de-datos)
-8. [Autenticación](#8-autenticación)
+1. [Arquitectura](#1-arquitectura)
+2. [Regla: un archivo SQL por tabla](#2-regla-un-archivo-sql-por-tabla)
+3. [Crear el backend de una tabla](#3-crear-el-backend-de-una-tabla)
+4. [Consumir la API desde el frontend](#4-consumir-la-api-desde-el-frontend)
+5. [Agregar una página](#5-agregar-una-página)
+6. [Formularios](#6-formularios)
+7. [Leer y mutar datos](#7-leer-y-mutar-datos)
+8. [Seguridad](#8-seguridad)
 9. [Checklist](#9-checklist)
 
 ---
 
-## 1. Conceptos base
+## 1. Arquitectura
 
-El proyecto usa **TanStack Start**: un framework full-stack sobre React donde el
-mismo repositorio contiene frontend y backend.
+El proyecto son **dos piezas separadas** que se hablan por HTTP:
 
-Tres cosas que conviene entender antes de escribir código:
+| Capa     | Dónde vive                | Qué hace                             |
+| -------- | ------------------------- | ------------------------------------ |
+| Backend  | Oracle APEX + ORDS        | Paquetes PL/SQL expuestos como REST  |
+| Frontend | React + TanStack Start    | Consume la API, corre en Cloudflare  |
 
-**El ruteo es por archivo.** Un archivo en `src/routes/` define una URL. No hay
-un archivo central de rutas que editar — `src/routeTree.gen.ts` se genera solo
-y **nunca se edita a mano**.
+Base de la API: `https://oracleapex.com/ords/ctell/`
 
-**Las server functions corren solo en el servidor.** Se declaran con
-`createServerFn`, se importan como una función normal en el cliente, y Start se
-encarga de la llamada HTTP. El código dentro nunca llega al bundle del
-navegador, así que ahí van las credenciales y las consultas a la base.
+Esto importa: **no se usan server functions de TanStack** (`createServerFn`) ni
+se conecta a la base desde el Worker. Toda la lógica de datos vive en paquetes
+PL/SQL, y el frontend sólo hace `fetch` contra ORDS.
 
-**Hay SSR.** El primer render ocurre en el servidor. Por eso todo acceso a
-`window`, `document` o `localStorage` va dentro de `useEffect` o detrás de
+Tres cosas más a tener presentes:
+
+**El ruteo del frontend es por archivo.** Un archivo en `src/routes/` define una
+URL. `src/routeTree.gen.ts` se genera solo y **nunca se edita a mano**.
+
+**Hay SSR.** El primer render ocurre en el servidor, así que todo acceso a
+`window`, `document` o `sessionStorage` va dentro de `useEffect` o detrás de
 `typeof window === "undefined"`.
+
+**El token de sesión vive en `sessionStorage`.** Lo maneja
+[src/lib/api.ts](../src/lib/api.ts); no lo leas por tu cuenta.
 
 ---
 
-## 2. Agregar una página
+## 2. Regla: un archivo SQL por tabla
+
+> **Cada tabla tiene su propio archivo en `db/`, con todo su CRUD adentro.**
+
+```
+db/
+├── usuarios.sql     PKG_USUARIOS + PKG_TOKENS + /auth/ + /usuarios/
+├── empresas.sql     PKG_EMPRESAS + /empresas/
+├── clientes.sql     PKG_CLIENTES + /clientes/
+└── articulos.sql    PKG_ARTICULOS + /articulos/
+```
+
+El archivo lleva **el nombre de la tabla en minúscula**, sin prefijos numéricos,
+y contiene todo lo que esa tabla necesita:
+
+- El `PACKAGE` y el `PACKAGE BODY` con el ABM completo
+- El módulo ORDS con sus endpoints
+- Datos iniciales, si hacen falta
+- Las consultas de verificación al final
+
+Por qué así: cada archivo se ejecuta **de una sola vez y por separado**. Tocar
+empresas no obliga a reejecutar usuarios, y el diff de un cambio queda acotado a
+la tabla afectada.
+
+### Reglas del archivo
+
+**Idempotente.** Se tiene que poder reejecutar sin romper nada:
+`CREATE OR REPLACE` en los paquetes, `ORDS.DELETE_MODULE` antes de
+`ORDS.DEFINE_MODULE`, y los datos iniciales sólo si la tabla está vacía.
+
+**No crea ni altera tablas.** El DDL lo administrás vos aparte. El archivo
+asume que la tabla ya existe.
+
+**No llama a `ORDS.ENABLE_SCHEMA`.** En APEX el esquema del workspace ya está
+habilitado y esa llamada falla con `ORA-01031`.
+
+**Sin `DBMS_CRYPTO`.** No está concedido en este workspace. Para valores
+aleatorios usá `SYS_GUID()`, y para hashes `STANDARD_HASH`.
+
+**Las funciones SQL puras se llaman desde `SELECT … FROM DUAL`.**
+`STANDARD_HASH` es SQL, no PL/SQL: usarla como expresión directa en el cuerpo
+del paquete falla con `PLS-00201`, que parece falta de grants pero no lo es.
+
+```sql
+-- Mal: PLS-00201
+RETURN STANDARD_HASH(p_salt || p_password, 'SHA256');
+
+-- Bien
+SELECT STANDARD_HASH(p_salt || p_password, 'SHA256') INTO l_hash FROM DUAL;
+RETURN l_hash;
+```
+
+---
+
+## 3. Crear el backend de una tabla
+
+Tomá [db/usuarios.sql](../db/usuarios.sql) como plantilla. La estructura es
+siempre la misma; abajo va condensada con `EMPRESAS` de ejemplo.
+
+### Esqueleto
+
+```sql
+--------------------------------------------------------------------------------
+-- CTELL · EMPRESAS
+-- Script único: paquete PL/SQL + endpoints ORDS.
+-- Base: https://oracleapex.com/ords/ctell/empresas/
+--------------------------------------------------------------------------------
+
+SET DEFINE OFF
+SET SERVEROUTPUT ON
+
+CREATE OR REPLACE PACKAGE PKG_EMPRESAS AS
+
+  C_ERR_DUPLICADO   CONSTANT PLS_INTEGER := -20001;
+  C_ERR_NO_EXISTE   CONSTANT PLS_INTEGER := -20002;
+  C_ERR_DATOS       CONSTANT PLS_INTEGER := -20004;
+
+  PROCEDURE CREAR (
+    p_razon_social IN  VARCHAR2,
+    p_ruc          IN  VARCHAR2,
+    p_id_empresa   OUT NUMBER
+  );
+
+  PROCEDURE ACTUALIZAR (
+    p_id_empresa   IN NUMBER,
+    p_razon_social IN VARCHAR2 DEFAULT NULL,
+    p_ruc          IN VARCHAR2 DEFAULT NULL,
+    p_activo       IN NUMBER   DEFAULT NULL
+  );
+
+  PROCEDURE INACTIVAR (p_id_empresa IN NUMBER);
+  PROCEDURE ACTIVAR   (p_id_empresa IN NUMBER);
+  PROCEDURE ELIMINAR  (p_id_empresa IN NUMBER);
+
+  FUNCTION CONTAR (
+    p_busqueda IN VARCHAR2 DEFAULT NULL,
+    p_activo   IN NUMBER   DEFAULT NULL
+  ) RETURN NUMBER;
+
+END PKG_EMPRESAS;
+/
+
+CREATE OR REPLACE PACKAGE BODY PKG_EMPRESAS AS
+  -- … implementación …
+END PKG_EMPRESAS;
+/
+```
+
+### Convenciones del paquete
+
+**Los `UPDATE` respetan los NULL.** Un parámetro sin valor no debe pisar la
+columna:
+
+```sql
+UPDATE EMPRESAS
+   SET RAZON_SOCIAL        = NVL(TRIM(p_razon_social), RAZON_SOCIAL),
+       ACTIVO              = NVL(p_activo, ACTIVO),
+       FECHA_ACTUALIZACION = SYSTIMESTAMP
+ WHERE ID_EMPRESA = p_id_empresa;
+
+IF SQL%ROWCOUNT = 0 THEN
+  RAISE_APPLICATION_ERROR(C_ERR_NO_EXISTE, 'La empresa no existe');
+END IF;
+```
+
+**Siempre verificá `SQL%ROWCOUNT`.** Sin eso, actualizar un ID inexistente
+devuelve 200 y el usuario cree que guardó.
+
+**Preferí la baja lógica.** `ELIMINAR` sólo si de verdad hay que borrar el
+rastro; si hay tablas hijas, limpialas primero o la FK aborta el `DELETE`.
+
+**Códigos de error de negocio en `-20001..-20004`.** Los handlers los traducen
+a HTTP 400/404; cualquier otro código se oculta como 500.
+
+### Endpoints ORDS
+
+Un módulo por tabla, con este patrón de rutas:
+
+| Método   | Ruta                    | Qué hace           |
+| -------- | ----------------------- | ------------------ |
+| `GET`    | `/empresas/`            | listado paginado   |
+| `POST`   | `/empresas/`            | alta               |
+| `GET`    | `/empresas/:id`         | detalle            |
+| `PUT`    | `/empresas/:id`         | modificación       |
+| `DELETE` | `/empresas/:id`         | baja física        |
+| `POST`   | `/empresas/:id/inactivar` | baja lógica      |
+| `POST`   | `/empresas/:id/activar` | alta lógica        |
+
+El template para el listado y el alta es `'.'`; para el resto, `':id'` o
+`':id/accion'`.
+
+**Todo handler valida el token primero.** Sin esto el ABM queda abierto a
+internet:
+
+```sql
+DECLARE
+  l_sesion NUMBER;
+BEGIN
+  l_sesion := PKG_TOKENS.VALIDAR_TOKEN(REPLACE(:authorization, 'Bearer ', ''));
+  IF l_sesion IS NULL THEN
+    :status_code := 401;
+    :resultado := '{"error":"Sesion invalida o vencida"}';
+    RETURN;
+  END IF;
+
+  -- … la operación …
+
+  COMMIT;
+  :status_code := 200;
+  :resultado := '{"ok":true}';
+EXCEPTION
+  WHEN OTHERS THEN
+    ROLLBACK;
+    IF SQLCODE = -20002 THEN
+      :status_code := 404;
+      :resultado := '{"error":"No existe"}';
+    ELSIF SQLCODE BETWEEN -20004 AND -20001 THEN
+      :status_code := 400;
+      :resultado := JSON_OBJECT('error' VALUE SUBSTR(SQLERRM, 12));
+    ELSE
+      :status_code := 500;
+      :resultado := '{"error":"Error interno"}';
+    END IF;
+END;
+```
+
+Cada handler necesita sus tres parámetros declarados con
+`ORDS.DEFINE_PARAMETER`: `authorization` (HEADER/IN), `resultado`
+(RESPONSE/OUT) y `X-APEX-STATUS-CODE` (HEADER/OUT, bind `status_code`).
+
+**Los parámetros de query llegan como texto**: convertí con `TO_NUMBER(:activo)`,
+nunca los uses directo en comparaciones numéricas.
+
+**El JSON se arma con `JSON_OBJECT` / `JSON_ARRAYAGG`** y `RETURNING CLOB` en
+los listados, que pueden superar los 4000 bytes de un `VARCHAR2`.
+
+### Verificación al final del archivo
+
+```sql
+SELECT OBJECT_NAME, OBJECT_TYPE, STATUS
+  FROM USER_OBJECTS
+ WHERE OBJECT_TYPE IN ('PACKAGE', 'PACKAGE BODY')
+   AND OBJECT_NAME = 'PKG_EMPRESAS';
+
+SELECT NAME, LINE, POSITION, TEXT
+  FROM USER_ERRORS
+ WHERE NAME = 'PKG_EMPRESAS'
+ ORDER BY SEQUENCE;
+```
+
+> La columna de `USER_OBJECTS` es `OBJECT_NAME`, **no** `NAME`: usar `NAME` da
+> `ORA-00904`.
+
+---
+
+## 4. Consumir la API desde el frontend
+
+Agregá el bloque de la tabla nueva en [src/lib/api.ts](../src/lib/api.ts),
+junto a `usuarios`:
+
+```ts
+export type Empresa = {
+  id: number;
+  razonSocial: string;
+  ruc: string;
+  activo: number;
+};
+
+export const api = {
+  // … login, logout, me, usuarios …
+
+  empresas: {
+    listar: (params: { busqueda?: string; pagina?: number } = {}) => {
+      const qs = new URLSearchParams();
+      if (params.busqueda) qs.set("busqueda", params.busqueda);
+      if (params.pagina) qs.set("pagina", String(params.pagina));
+      const q = qs.toString();
+      return request<{ items: Empresa[]; total: number }>(
+        `/empresas/${q ? `?${q}` : ""}`,
+      );
+    },
+
+    obtener: (id: number) => request<Empresa>(`/empresas/${id}`),
+
+    crear: (datos: { razonSocial: string; ruc: string }) =>
+      request<{ id: number }>("/empresas/", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    actualizar: (id: number, datos: Partial<Empresa>) =>
+      request<{ ok: string }>(`/empresas/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    inactivar: (id: number) =>
+      request<{ ok: string }>(`/empresas/${id}/inactivar`, { method: "POST" }),
+  },
+};
+```
+
+`request()` ya adjunta el `Authorization`, parsea el JSON y lanza `ApiError` con
+el status. Un 401 limpia el token automáticamente.
+
+---
+
+## 5. Agregar una página
 
 Creá el archivo en `src/routes/`. El nombre define la URL:
 
 | Archivo              | URL               |
 | -------------------- | ----------------- |
-| `clientes.tsx`       | `/clientes`       |
-| `clientes.index.tsx` | `/clientes`       |
-| `clientes.$id.tsx`   | `/clientes/:id`   |
-| `clientes.nuevo.tsx` | `/clientes/nuevo` |
-
-### Plantilla
+| `empresas.tsx`       | `/empresas`       |
+| `empresas.$id.tsx`   | `/empresas/:id`   |
+| `empresas.nuevo.tsx` | `/empresas/nuevo` |
 
 ```tsx
-// src/routes/clientes.tsx
 import { createFileRoute } from "@tanstack/react-router";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
 
-export const Route = createFileRoute("/clientes")({
+export const Route = createFileRoute("/empresas")({
   head: () => ({
-    meta: [
-      { title: "Clientes | CTELL" },
-      { name: "description", content: "Gestión de clientes de CTELL." },
-    ],
+    meta: [{ title: "Empresas | CTELL" }],
   }),
-  component: ClientesPage,
+  component: EmpresasPage,
 });
 
-function ClientesPage() {
+function EmpresasPage() {
   return (
-    <AppLayout active="Clientes" title="Clientes">
+    <AppLayout active="Empresas" title="Empresas">
       <main className="space-y-6 px-4 pb-28 pt-6 sm:px-6 lg:pb-10">
-        <h1 className="text-2xl font-bold text-foreground sm:text-3xl">Clientes</h1>
+        <h1 className="text-2xl font-bold text-foreground sm:text-3xl">Empresas</h1>
       </main>
     </AppLayout>
   );
 }
 ```
 
-Puntos a respetar:
+- **Envolvé siempre en `<AppLayout>`** — da el menú, el header y la barra móvil.
+- **`active`** debe coincidir con el `label` del item del menú.
+- **`pb-28`** evita que la barra inferior de móvil tape el contenido.
 
-- **Envolvé siempre en `<AppLayout>`** — da el menú lateral, el header y la
-  barra móvil. Sin él la página queda huérfana, sin navegación.
-- **`active`** debe coincidir con el `label` del item del menú para que se
-  marque como activo.
-- **`pb-28`** en el `<main>` evita que la barra inferior de móvil tape el
-  contenido.
+Registrá la entrada en `navModules` de
+[AppLayout.tsx](../src/components/ctell/AppLayout.tsx).
 
-### Registrar en el menú
+---
 
-Agregá la entrada en `navModules` de
-[src/components/ctell/AppLayout.tsx](../src/components/ctell/AppLayout.tsx):
+## 6. Formularios
+
+**react-hook-form + zod**, con los componentes de `@/components/ui/form`.
 
 ```tsx
-export const navModules = [
-  { name: "Compras", icon: ShoppingCart, to: "/compras" },
-  { name: "Clientes", icon: Users, to: "/clientes" }, // nuevo
-];
-```
-
----
-
-## 3. Crear un endpoint (server function)
-
-Es la forma preferida en este proyecto: type-safe de punta a punta, sin escribir
-rutas HTTP ni parsear JSON a mano.
-
-Poné las funciones de cada dominio en `src/server/<dominio>.ts`.
-
-```ts
-// src/server/clientes.ts
-import { createServerFn } from "@tanstack/react-start";
-import { z } from "zod";
-
-// El schema valida la entrada Y genera el tipo. No declares el tipo aparte.
-const listarInput = z.object({
-  busqueda: z.string().trim().max(100).optional(),
-  pagina: z.number().int().min(1).default(1),
-});
-
-export const listarClientes = createServerFn({ method: "GET" })
-  .validator(listarInput)
-  .handler(async ({ data }) => {
-    // Este código corre SOLO en el servidor.
-    const { busqueda, pagina } = data;
-
-    // TODO: reemplazar por la consulta real
-    return {
-      items: [] as Array<{ id: string; razonSocial: string; ruc: string }>,
-      total: 0,
-      pagina,
-      busqueda,
-    };
-  });
-
-const crearInput = z.object({
-  razonSocial: z.string().trim().min(3, "Mínimo 3 caracteres"),
-  ruc: z.string().regex(/^\d{6,8}-\d$/, "Formato de RUC inválido"),
-  email: z.string().email("Email inválido").optional().or(z.literal("")),
-});
-
-export const crearCliente = createServerFn({ method: "POST" })
-  .validator(crearInput)
-  .handler(async ({ data }) => {
-    // La validación ya corrió: `data` está tipado y limpio.
-    return { id: crypto.randomUUID(), ...data };
-  });
-```
-
-### Reglas
-
-**Usá `method: "GET"` solo para lecturas.** Las mutaciones van con `"POST"`, y
-el middleware CSRF configurado en
-[src/start.ts](../src/start.ts) las protege automáticamente.
-
-**Validá siempre con `.validator()`.** La entrada de un cliente HTTP no es
-confiable, aunque tu formulario ya valide: cualquiera puede llamar al endpoint
-directamente.
-
-**Nunca importes una server function dentro de otro módulo del cliente** salvo
-para llamarla. Si necesitás compartir lógica, ponela en un archivo aparte que
-sólo importe el servidor.
-
-### Errores
-
-Para errores esperados (validación de negocio, permisos), lanzá un objeto con
-`statusCode` — el middleware de [src/start.ts](../src/start.ts) lo respeta y no
-lo convierte en un 500 genérico:
-
-```ts
-if (yaExiste) {
-  throw { statusCode: 409, message: "Ya existe un cliente con ese RUC" };
-}
-```
-
----
-
-## 4. API REST tradicional
-
-Sólo si necesitás exponer un endpoint a un consumidor externo (una app móvil,
-un webhook, otro sistema). Para el frontend propio usá server functions.
-
-```ts
-// src/routes/api.clientes.ts  →  /api/clientes
-import { createFileRoute } from "@tanstack/react-router";
-
-export const Route = createFileRoute("/api/clientes")({
-  server: {
-    handlers: {
-      GET: async () => Response.json({ items: [] }),
-      POST: async ({ request }) => {
-        const body = await request.json();
-        return Response.json({ ok: true, body }, { status: 201 });
-      },
-    },
-  },
-});
-```
-
-> El middleware CSRF filtra por `handlerType === "serverFn"`, así que **no**
-> cubre estas rutas. Si exponés un endpoint público que muta datos, agregá
-> autenticación por token vos mismo.
-
----
-
-## 5. Formularios
-
-El stack es **react-hook-form + zod**, con los componentes de `@/components/ui/form`.
-
-```tsx
-// src/routes/clientes.nuevo.tsx
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { useMutation } from "@tanstack/react-query";
-import { useForm } from "react-hook-form";
-import { toast } from "sonner";
-import { z } from "zod";
-
-import { AppLayout } from "@/components/ctell/AppLayout";
-import { Button } from "@/components/ui/button";
-import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
-import { crearCliente } from "@/server/clientes";
-
-// Mismo schema que el servidor: reusalo si podés importarlo.
 const schema = z.object({
   razonSocial: z.string().trim().min(3, "Mínimo 3 caracteres"),
   ruc: z.string().regex(/^\d{6,8}-\d$/, "Formato: 1234567-8"),
-  email: z.string().email("Email inválido").optional().or(z.literal("")),
 });
 
 type FormValues = z.infer<typeof schema>;
 
-export const Route = createFileRoute("/clientes/nuevo")({
-  component: NuevoClientePage,
-});
-
-function NuevoClientePage() {
+function NuevaEmpresaPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
-    // Siempre definí defaults: sin esto React avisa por inputs no controlados.
-    defaultValues: { razonSocial: "", ruc: "", email: "" },
+    // Sin defaults React avisa por inputs no controlados.
+    defaultValues: { razonSocial: "", ruc: "" },
   });
 
   const mutation = useMutation({
-    mutationFn: (values: FormValues) => crearCliente({ data: values }),
+    mutationFn: (values: FormValues) => api.empresas.crear(values),
     onSuccess: () => {
-      toast.success("Cliente creado");
-      navigate({ to: "/clientes" });
+      queryClient.invalidateQueries({ queryKey: ["empresas"] });
+      toast.success("Empresa creada");
+      navigate({ to: "/empresas" });
     },
     onError: (error) => {
-      toast.error(error instanceof Error ? error.message : "No se pudo guardar");
+      // El backend manda el motivo real en los 400.
+      toast.error(error instanceof ApiError ? error.message : "No se pudo guardar");
     },
   });
 
   return (
-    <AppLayout active="Clientes" title="Nuevo cliente">
-      <main className="mx-auto max-w-2xl space-y-6 px-4 pb-28 pt-6 sm:px-6 lg:pb-10">
-        <h1 className="text-2xl font-bold text-foreground sm:text-3xl">Nuevo cliente</h1>
-
-        <Form {...form}>
-          <form
-            onSubmit={form.handleSubmit((values) => mutation.mutate(values))}
-            className="surface-card space-y-5 p-5"
-          >
-            <FormField
-              control={form.control}
-              name="razonSocial"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Razón social</FormLabel>
-                  <FormControl>
-                    <Input placeholder="Distribuidora Aurora S.A." {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name="ruc"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>RUC</FormLabel>
-                  <FormControl>
-                    <Input placeholder="1234567-8" {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <div className="flex justify-end gap-2">
-              <Button type="button" variant="ghost" onClick={() => navigate({ to: "/clientes" })}>
-                Cancelar
-              </Button>
-              <Button type="submit" disabled={mutation.isPending}>
-                {mutation.isPending ? "Guardando…" : "Guardar"}
-              </Button>
-            </div>
-          </form>
-        </Form>
-      </main>
-    </AppLayout>
+    <Form {...form}>
+      <form onSubmit={form.handleSubmit((v) => mutation.mutate(v))} className="space-y-5">
+        <FormField
+          control={form.control}
+          name="razonSocial"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Razón social</FormLabel>
+              <FormControl>
+                <Input {...field} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <Button type="submit" disabled={mutation.isPending}>
+          {mutation.isPending ? "Guardando…" : "Guardar"}
+        </Button>
+      </form>
+    </Form>
   );
 }
 ```
 
-### Reglas
-
-- **`defaultValues` siempre**, con string vacío para los opcionales.
-- **`FormMessage`** muestra el error de zod automáticamente: no armes el mensaje
-  a mano.
-- **Deshabilitá el submit** mientras `isPending` para evitar el doble envío.
-- **El mismo schema en cliente y servidor.** Si el schema vive en un archivo
-  compartido (`src/lib/schemas/`), importalo en los dos lados y no lo dupliques.
+**Validá en los dos lados.** El zod del formulario mejora la experiencia, pero
+la validación que cuenta es la del paquete PL/SQL: cualquiera puede llamar al
+endpoint sin pasar por tu formulario.
 
 ---
 
-## 6. Leer y mutar datos
-
-### Lectura con el loader de la ruta
-
-Es lo mejor para el contenido principal: los datos vienen ya resueltos en el
-HTML del servidor, sin spinner inicial.
-
-```tsx
-export const Route = createFileRoute("/clientes")({
-  loader: () => listarClientes({ data: { pagina: 1 } }),
-  component: ClientesPage,
-});
-
-function ClientesPage() {
-  const { items } = Route.useLoaderData(); // tipado, sin estado de carga
-  // …
-}
-```
-
-### Lectura con TanStack Query
-
-Para datos que se refrescan, dependen de interacción o se comparten entre
-componentes:
+## 7. Leer y mutar datos
 
 ```tsx
 const { data, isLoading } = useQuery({
-  queryKey: ["clientes", { busqueda }],
-  queryFn: () => listarClientes({ data: { busqueda, pagina: 1 } }),
+  queryKey: ["empresas", { busqueda }],
+  queryFn: () => api.empresas.listar({ busqueda }),
 });
 ```
 
-### Invalidar después de mutar
-
-Sin esto la lista queda desactualizada tras crear o editar:
+Después de mutar, invalidá o la lista queda desactualizada:
 
 ```tsx
-const queryClient = useQueryClient();
-
-const mutation = useMutation({
-  mutationFn: (v: FormValues) => crearCliente({ data: v }),
-  onSuccess: () => {
-    queryClient.invalidateQueries({ queryKey: ["clientes"] });
-  },
-});
+queryClient.invalidateQueries({ queryKey: ["empresas"] });
 ```
+
+> El `loader` de la ruta también sirve, pero necesita el token — que en SSR no
+> existe todavía. Para datos detrás de sesión usá `useQuery`.
 
 ---
 
-## 7. Conectar la base de datos
+## 8. Seguridad
 
-Hoy el login es sólo frontend ([src/routes/index.tsx](../src/routes/index.tsx)
-navega con un `setTimeout`). Para conectar la base:
+**Nunca devuelvas `CONTRASENA_HASH` ni `SALT`.** Ningún `SELECT` de un handler
+debe incluirlos.
 
-**1. Elegí un driver compatible con Workers.** El runtime es Cloudflare Workers,
-no Node: `pg` y `mysql2` **no funcionan**. Opciones válidas:
-
-| Base        | Driver                                    |
-| ----------- | ----------------------------------------- |
-| PostgreSQL  | `@neondatabase/serverless`, `postgres.js` |
-| MySQL       | `@planetscale/database`                   |
-| SQLite (CF) | D1 (`env.DB`, nativo)                     |
-| Cualquiera  | Drizzle ORM sobre los anteriores          |
-
-**2. Guardá las credenciales como secrets de Cloudflare**, nunca en el repo:
-
-```sh
-npm run build
-npx wrangler secret put DATABASE_URL -c .output/server/wrangler.json
-```
-
-**3. Creá el cliente en un módulo de servidor:**
-
-```ts
-// src/server/db.ts
-import { neon } from "@neondatabase/serverless";
-
-export function getDb() {
-  const url = process.env.DATABASE_URL;
-  if (!url) throw new Error("Falta DATABASE_URL");
-  return neon(url);
-}
-```
-
-**4. Usalo dentro del handler**, nunca en el nivel superior del módulo — en
-Workers no hay conexiones persistentes entre requests.
-
-> Para desarrollo local poné las variables en `.dev.vars`, que ya está listado
-> en `.gitignore` y no se sube al repositorio.
-
----
-
-## 8. Autenticación
-
-Cuando reemplaces el login simulado:
-
-**Hasheá las contraseñas** con bcrypt o argon2 — nunca en texto plano ni con
-SHA sin salt.
-
-**Usá cookies `httpOnly`** para la sesión, no `localStorage`: JavaScript no debe
-poder leer el token.
-
-```ts
-export const login = createServerFn({ method: "POST" })
-  .validator(z.object({ usuario: z.string(), password: z.string() }))
-  .handler(async ({ data }) => {
-    const user = await verificarCredenciales(data);
-    if (!user) throw { statusCode: 401, message: "Usuario o contraseña incorrectos" };
-
-    const token = await crearSesion(user.id);
-    return new Response(null, {
-      status: 200,
-      headers: {
-        "Set-Cookie": `sesion=${token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=86400`,
-      },
-    });
-  });
-```
-
-**Protegé las rutas privadas** con `beforeLoad`:
-
-```tsx
-export const Route = createFileRoute("/home")({
-  beforeLoad: async () => {
-    const sesion = await obtenerSesion();
-    if (!sesion) throw redirect({ to: "/" });
-  },
-  component: HomePage,
-});
-```
-
-**Mensajes de error genéricos en el login.** Decir "el usuario no existe"
+**Mensajes genéricos en el login.** Distinguir "no existe" de "clave incorrecta"
 permite enumerar cuentas válidas.
+
+**Todo handler que no sea login valida el token.**
+
+**Inactivar un usuario revoca sus tokens.** Si no, sigue navegando con la sesión
+abierta.
+
+**Nada de credenciales en el repo.** Para el frontend, sólo variables `VITE_*`
+que sean públicas por definición.
 
 ---
 
 ## 9. Checklist
 
-Antes de abrir un PR:
+Backend (`db/<tabla>.sql`):
 
-- [ ] `npx tsc --noEmit` sin errores
-- [ ] `npm run lint` sin errores
-- [ ] `npm run build` pasa
-- [ ] La página está envuelta en `<AppLayout>` y el item del menú se marca activo
-- [ ] Los formularios validan con zod **en cliente y servidor**
-- [ ] Las mutaciones invalidan las queries afectadas
-- [ ] Probado en modo claro y oscuro
-- [ ] Probado en ancho de móvil (la barra inferior no tapa contenido)
-- [ ] Sin credenciales ni claves en el código
-- [ ] Los colores usan variables del design system, no hex sueltos
+- [ ] Un archivo por tabla, nombrado como la tabla
+- [ ] Reejecutable: `CREATE OR REPLACE` + `ORDS.DELETE_MODULE`
+- [ ] No crea ni altera tablas
+- [ ] Sin `ORDS.ENABLE_SCHEMA` ni `DBMS_CRYPTO`
+- [ ] Todos los handlers validan el token
+- [ ] Los `UPDATE` verifican `SQL%ROWCOUNT`
+- [ ] Errores de negocio en `-20001..-20004`, traducidos a 400/404
+- [ ] Consultas de verificación al final (con `OBJECT_NAME`)
+
+Frontend:
+
+- [ ] `npx tsc --noEmit` y `npm run lint` sin errores
+- [ ] Bloque agregado en `src/lib/api.ts`
+- [ ] Página envuelta en `<AppLayout>` y registrada en `navModules`
+- [ ] Formularios con `defaultValues` y validación zod
+- [ ] Mutaciones invalidan sus queries
+- [ ] Probado en claro/oscuro y en ancho de móvil
 
 ### Errores frecuentes
 
-| Síntoma                               | Causa                                        |
-| ------------------------------------- | -------------------------------------------- |
-| `window is not defined`               | Acceso al DOM fuera de `useEffect` (hay SSR) |
-| El menú desaparece en una página      | Falta envolver en `<AppLayout>`              |
-| La lista no se actualiza tras guardar | Falta `invalidateQueries`                    |
-| Warning de input no controlado        | Falta `defaultValues` en `useForm`           |
-| El color no cambia con el tema        | Hex hardcodeado en vez de variable CSS       |
-| `pg`/`mysql2` no funcionan            | Workers no es Node: usá un driver serverless |
+| Síntoma                                | Causa                                          |
+| -------------------------------------- | ---------------------------------------------- |
+| `PLS-00201: DBMS_CRYPTO`               | No hay grant; usá `SYS_GUID`/`STANDARD_HASH`   |
+| `PLS-00201: STANDARD_HASH`             | Es función SQL: envolvela en `SELECT … FROM DUAL` |
+| `ORA-01031` en `ENABLE_SCHEMA`         | En APEX ya está habilitado: quitá la llamada    |
+| `ORA-00904: "NAME"`                    | En `USER_OBJECTS` la columna es `OBJECT_NAME`  |
+| `ORA-06550` al compilar el handler     | Comillas del `q'~ … ~'` sin cerrar             |
+| El endpoint devuelve 404               | Falta `DEFINE_TEMPLATE` para ese patrón        |
+| Devuelve 200 pero no guardó            | Falta chequear `SQL%ROWCOUNT`                  |
+| 401 en todo                            | El token venció (8 h) o falta el header        |
+| `window is not defined`                | Acceso al DOM fuera de `useEffect` (hay SSR)   |
+| La lista no se actualiza tras guardar  | Falta `invalidateQueries`                      |

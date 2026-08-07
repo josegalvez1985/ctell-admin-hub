@@ -28,8 +28,15 @@ jobs:
           node-version: 22
           cache: npm
 
+      # `npm ci` exige que el lockfile coincida exactamente con el árbol que
+      # npm resuelve en ESTA plataforma. El lockfile se genera en Windows, donde
+      # npm omite los binarios linux de sharp (dependencia de miniflare/wrangler)
+      # y con ellos sus dependencias transitivas, así que en el runner Linux
+      # falta lru-cache@11 y `npm ci` aborta.
+      # `npm install --no-save` instala el árbol correcto para Linux respetando
+      # las versiones del lockfile, sin reescribirlo.
       - name: Instalar dependencias
-        run: npm ci
+        run: npm install --no-save --no-audit --no-fund
 
       - name: Verificar tipos
         run: npx tsc --noEmit

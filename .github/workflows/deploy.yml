@@ -32,8 +32,11 @@ jobs:
           node-version: 22
           cache: npm
 
+      # Ver la nota en ci.yml: `npm ci` falla porque el lockfile se genera en
+      # Windows y no incluye las dependencias transitivas de los binarios linux
+      # de sharp (vía miniflare/wrangler).
       - name: Instalar dependencias
-        run: npm ci
+        run: npm install --no-save --no-audit --no-fund
 
       - name: Verificar tipos
         run: npx tsc --noEmit
