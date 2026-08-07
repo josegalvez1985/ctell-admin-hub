@@ -1,0 +1,16 @@
+# Normaliza los finales de línea a LF en el repositorio.
+#
+# Sin esto, Git en Windows hace checkout con CRLF y Prettier (vía eslint)
+# reporta un error por cada línea, rompiendo el CI en el runner Linux.
+* text=auto eol=lf
+
+# Binarios: nunca tocar.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.pdf binary
