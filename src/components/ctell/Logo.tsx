@@ -13,7 +13,7 @@ export function Logo({
   return (
     <div className={cn("flex items-center gap-2.5", className)}>
       <img
-        src="/icons/ctell-192.png"
+        src={`${import.meta.env.BASE_URL}icons/ctell-192.png`}
         alt="CTELL"
         width={36}
         height={36}

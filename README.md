@@ -12,8 +12,8 @@ y recursos humanos, con login de usuarios.
 | Datos       | TanStack Query                      |
 | Estilos     | Tailwind CSS v4 + shadcn/ui         |
 | Formularios | react-hook-form + zod               |
-| Build       | Vite 8 + nitro                      |
-| Hosting     | Cloudflare Workers                  |
+| Build       | Vite 8 (SPA estática)               |
+| Hosting     | GitHub Pages                        |
 | **Backend** | **Oracle APEX + ORDS (PL/SQL)**     |
 
 El backend es independiente del frontend: son paquetes PL/SQL publicados como
@@ -32,19 +32,16 @@ npm run dev
 
 Vite imprime la URL local al arrancar (normalmente `http://localhost:5173`).
 
-> `npm run preview` no funciona en este proyecto: busca `dist/server/` pero el
-> build genera `.output/` vía nitro. Para probar el build de producción usá
-> `npx wrangler dev` dentro de `.output/server`.
-
 ### Comandos
 
-| Comando            | Qué hace                          |
-| ------------------ | --------------------------------- |
-| `npm run dev`      | Servidor de desarrollo con HMR    |
-| `npm run build`    | Build de producción en `.output/` |
-| `npm run lint`     | ESLint + Prettier                 |
-| `npm run format`   | Aplica formato a todo el proyecto |
-| `npx tsc --noEmit` | Verificación de tipos             |
+| Comando            | Qué hace                             |
+| ------------------ | ------------------------------------ |
+| `npm run dev`      | Servidor de desarrollo con HMR       |
+| `npm run build`    | Build de producción en `dist/client/` |
+| `npm run preview`  | Sirve el build ya generado           |
+| `npm run lint`     | ESLint + Prettier                    |
+| `npm run format`   | Aplica formato a todo el proyecto    |
+| `npx tsc --noEmit` | Verificación de tipos                |
 
 ## Estructura
 
@@ -132,46 +129,56 @@ render mediante un script inline en `<head>`, para evitar el parpadeo.
 
 ## Despliegue
 
-Automático a Cloudflare Workers en cada push a `main`.
+Automático a **GitHub Pages** en cada push a `main`:
+<https://josegalvez1985.github.io/ctell-admin-hub/>
 
 ### Configuración inicial (una sola vez)
 
-1. **Crear el API token en Cloudflare**
-   [Dashboard](https://dash.cloudflare.com/profile/api-tokens) → _Create Token_ →
-   plantilla **Edit Cloudflare Workers**.
+Repo → _Settings_ → _Pages_ → en **Source** elegí **GitHub Actions**.
 
-2. **Copiar el Account ID**
-   Está en la barra lateral de Workers & Pages, o en la URL del dashboard.
+No hacen falta secrets ni tokens: el workflow publica con el `GITHUB_TOKEN` que
+Actions provee solo.
 
-3. **Cargar los secrets en GitHub**
-   Repo → _Settings_ → _Secrets and variables_ → _Actions_ → _New repository secret_:
+### Cómo funciona
 
-   | Secret                  | Valor                    |
-   | ----------------------- | ------------------------ |
-   | `CLOUDFLARE_API_TOKEN`  | El token del paso 1      |
-   | `CLOUDFLARE_ACCOUNT_ID` | El Account ID del paso 2 |
+Pages sirve **archivos estáticos**: no puede ejecutar un servidor. Por eso el
+build es una SPA y no usa SSR.
 
-Con eso, el próximo push a `main` despliega solo.
+- `spa: { enabled: true }` en [vite.config.ts](vite.config.ts) genera
+  `dist/client/_shell.html` en vez de un servidor nitro.
+- El workflow copia ese shell a `index.html` y a **`404.html`**. Ese 404 es lo
+  que hace funcionar el ruteo: Pages lo devuelve ante cualquier URL que no sea
+  un archivo, y el router del cliente resuelve la ruta.
+- `.nojekyll` evita que Pages ignore los archivos que empiezan con `_`.
+
+El sitio vive en `/ctell-admin-hub/`, no en la raíz del dominio, así que:
+
+- `base` de Vite se activa con `GITHUB_PAGES=true` (en local queda `/`).
+- El router recibe `basepath` en [src/router.tsx](src/router.tsx) — sin eso,
+  `base` sólo arregla los assets y las rutas darían 404.
+- Los assets de `public/` no pasan por el bundler: sus rutas llevan
+  `import.meta.env.BASE_URL` a mano.
+
+> Perder el SSR no cuesta nada acá: el backend es ORDS y los datos van detrás
+> de un token que en el servidor no existe, así que el SSR sólo aportaba el
+> primer render.
 
 ### Workflows
 
-| Archivo                                    | Cuándo corre           | Qué hace                    |
-| ------------------------------------------ | ---------------------- | --------------------------- |
-| [ci.yml](.github/workflows/ci.yml)         | push y PR a `main`     | typecheck + lint + build    |
-| [deploy.yml](.github/workflows/deploy.yml) | push a `main` o manual | build + deploy a Cloudflare |
+| Archivo                                                | Cuándo corre           | Qué hace                 |
+| ------------------------------------------------------ | ---------------------- | ------------------------ |
+| [ci.yml](.github/workflows/ci.yml)                     | push y PR a `main`     | typecheck + lint + build |
+| [deploy-pages.yml](.github/workflows/deploy-pages.yml) | push a `main` o manual | build SPA + publica      |
 
-También podés desplegar a mano desde la pestaña **Actions** → _Deploy_ →
-_Run workflow_.
+También podés desplegar a mano desde la pestaña **Actions** →
+_Deploy to GitHub Pages_ → _Run workflow_.
 
-### Desplegar desde tu máquina
+### Probar el build de Pages en local
 
 ```sh
-npm run build
-npx wrangler deploy -c .output/server/wrangler.json
+GITHUB_PAGES=true npm run build
+npx serve dist/client
 ```
-
-> Requiere **wrangler 4** (fijado en `devDependencies`). La v3 no entiende el
-> formato de configuración que genera nitro 3 y falla con exit code 1.
 
 ## Convenciones
 

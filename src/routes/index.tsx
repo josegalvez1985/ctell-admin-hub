@@ -105,7 +105,7 @@ function LoginPage() {
 
           <div className="mt-10 lg:mt-0">
             <img
-              src="/icons/ctell-192.png"
+              src={`${import.meta.env.BASE_URL}icons/ctell-192.png`}
               alt="CTELL"
               width={64}
               height={64}

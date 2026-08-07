@@ -107,9 +107,16 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
         rel: "stylesheet",
         href: "https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&family=Manrope:wght@400;500;600;700&display=swap",
       },
-      { rel: "manifest", href: "/manifest.webmanifest" },
-      { rel: "icon", type: "image/png", href: "/favicon.png" },
-      { rel: "apple-touch-icon", sizes: "180x180", href: "/icons/apple-touch-icon.png" },
+      // Los assets de public/ no pasan por el bundler, así que su ruta no se
+      // reescribe sola: hay que anteponer BASE_URL a mano o en GitHub Pages
+      // apuntarían a la raíz del dominio en vez de a /ctell-admin-hub/.
+      { rel: "manifest", href: `${import.meta.env.BASE_URL}manifest.webmanifest` },
+      { rel: "icon", type: "image/png", href: `${import.meta.env.BASE_URL}favicon.png` },
+      {
+        rel: "apple-touch-icon",
+        sizes: "180x180",
+        href: `${import.meta.env.BASE_URL}icons/apple-touch-icon.png`,
+      },
     ],
   }),
 

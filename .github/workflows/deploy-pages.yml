@@ -1,0 +1,74 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  # No cancelar un deploy en curso: cancelarlo a mitad puede dejar el entorno
+  # github-pages colgado y encolar los siguientes indefinidamente. Se encola.
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build SPA
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Clonar repositorio
+        uses: actions/checkout@v5
+
+      - name: Configurar Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      # Ver la nota en ci.yml: `npm ci` falla porque el lockfile se genera en
+      # Windows y no trae las dependencias transitivas de los binarios linux.
+      - name: Instalar dependencias
+        run: npm install --no-save --no-audit --no-fund
+
+      - name: Build (SPA estático)
+        run: npm run build
+        env:
+          # Activa el base path /ctell-admin-hub/ en vite.config.ts.
+          GITHUB_PAGES: "true"
+
+      # Pages sirve index.html en la raíz y 404.html ante cualquier ruta que no
+      # exista como archivo. Ambos apuntan al mismo shell: así /home y
+      # /configuracion cargan la app y el router del cliente resuelve la ruta,
+      # en vez de devolver el 404 de GitHub.
+      # .nojekyll evita que Pages ignore los archivos que empiezan con "_".
+      # Con `nitro: false` la salida estática queda en dist/client (nitro es el
+      # que la movería a .output/public).
+      - name: Preparar salida para Pages
+        run: |
+          cp dist/client/_shell.html dist/client/index.html
+          cp dist/client/_shell.html dist/client/404.html
+          touch dist/client/.nojekyll
+
+      - name: Subir artefacto
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/client
+
+  deploy:
+    name: Publicar
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Desplegar a GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
