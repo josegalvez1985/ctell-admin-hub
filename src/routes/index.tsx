@@ -1,10 +1,10 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Eye, EyeOff, Loader2, Lock, User } from "lucide-react";
 
 import loginBg from "@/assets/login-bg.jpg";
 import { Logo } from "@/components/ctell/Logo";
-import { api, ApiError } from "@/lib/api";
+import { api, ApiError, getCredencialesRecordadas, setCredencialesRecordadas } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -34,20 +34,44 @@ function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [usuario, setUsuario] = useState("");
+  const [password, setPassword] = useState("");
+  const [recordar, setRecordar] = useState(false);
+  const passwordRef = useRef<HTMLInputElement>(null);
+
+  // localStorage no existe en el servidor: leerlo durante el render rompe la
+  // hidratación. Por eso la precarga ocurre después de montar.
+  useEffect(() => {
+    const recordado = getCredencialesRecordadas();
+    if (!recordado) return;
+
+    setUsuario(recordado.usuario);
+    setPassword(recordado.password);
+    setRecordar(true);
+
+    // Si por algún motivo quedó guardado el usuario sin la clave, el foco va
+    // donde todavía falta escribir.
+    if (!recordado.password) passwordRef.current?.focus();
+  }, []);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
     setLoading(true);
 
-    const form = new FormData(event.currentTarget);
-    const usuario = String(form.get("usuario") ?? "");
-    const password = String(form.get("password") ?? "");
-
     try {
       await api.login(usuario, password);
+      // Se guarda recién con el login exitoso: recordar credenciales que no
+      // sirven solo serviría para volver a fallar igual.
+      setCredencialesRecordadas(recordar ? { usuario, password } : null);
       navigate({ to: "/home" });
     } catch (err) {
+      // Si las credenciales guardadas dejaron de servir (cambio de clave,
+      // cuenta inactivada), se descartan: precargarlas de nuevo repetiría el
+      // error en cada intento.
+      if (err instanceof ApiError && err.status === 401) {
+        setCredencialesRecordadas(null);
+      }
       setError(err instanceof ApiError ? err.message : "No se pudo conectar con el servidor");
       setLoading(false);
     }
@@ -129,7 +153,9 @@ function LoginPage() {
                   name="usuario"
                   autoComplete="username"
                   required
-                  placeholder="nombre.apellido"
+                  value={usuario}
+                  onChange={(e) => setUsuario(e.target.value)}
+                  placeholder="usuario"
                   className="h-12 pl-9"
                 />
               </div>
@@ -140,11 +166,14 @@ function LoginPage() {
               <div className="relative">
                 <Lock className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
+                  ref={passwordRef}
                   id="password"
                   name="password"
                   type={showPassword ? "text" : "password"}
                   autoComplete="current-password"
                   required
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
                   className="h-12 pl-9 pr-11"
                 />
@@ -160,8 +189,24 @@ function LoginPage() {
             </div>
 
             <div className="flex items-center justify-between">
-              <Label htmlFor="recordar" className="gap-2 text-sm font-normal text-muted-foreground">
-                <Checkbox id="recordar" /> Recordarme
+              <Label
+                htmlFor="recordar"
+                title="Deja tu usuario y contraseña cargados en este dispositivo la próxima vez."
+                className="gap-2 text-sm font-normal text-muted-foreground"
+              >
+                <Checkbox
+                  id="recordar"
+                  checked={recordar}
+                  onCheckedChange={(valor) => {
+                    const activo = valor === true;
+                    setRecordar(activo);
+                    // Destildar borra lo guardado en el acto. Esperar al
+                    // próximo login exitoso dejaría la contraseña en disco
+                    // justo cuando el usuario pidió lo contrario.
+                    if (!activo) setCredencialesRecordadas(null);
+                  }}
+                />{" "}
+                Recordarme
               </Label>
               <button
                 type="button"

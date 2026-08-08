@@ -1,9 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Check, Monitor, Moon, Sun } from "lucide-react";
+import { Check, Monitor, Moon, Sun, Users } from "lucide-react";
+import { useState } from "react";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
 import { COLOR_THEMES } from "@/components/ctell/color-themes";
 import { useTheme, type Theme } from "@/components/ctell/theme-provider";
+import { UsuariosDialog } from "@/components/ctell/UsuariosDialog";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 export const Route = createFileRoute("/configuracion")({
@@ -37,6 +40,7 @@ const themeOptions: { value: Theme; label: string; description: string; icon: ty
 
 function ConfiguracionPage() {
   const { theme, setTheme, colorTheme, setColorTheme } = useTheme();
+  const [usuariosAbierto, setUsuariosAbierto] = useState(false);
 
   return (
     <AppLayout active="Configuración" title="Configuración" showSearch={false}>
@@ -47,6 +51,34 @@ function ConfiguracionPage() {
             Preferencias de tu cuenta y del sistema.
           </p>
         </div>
+
+        <Card className="surface-card">
+          <CardHeader>
+            <CardTitle>Administración</CardTitle>
+            <CardDescription>Gestión de las cuentas que acceden al sistema.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <button
+              onClick={() => setUsuariosAbierto(true)}
+              className="flex w-full items-center gap-4 rounded-xl border border-border p-4 text-left transition-colors hover:border-primary/40 hover:bg-accent/30"
+            >
+              <span className="gradient-primary flex size-10 shrink-0 items-center justify-center rounded-xl text-primary-foreground">
+                <Users className="size-5" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-semibold text-foreground">Usuarios</span>
+                <span className="mt-0.5 block text-xs text-muted-foreground">
+                  Crear, editar, cambiar contraseñas y dar de baja cuentas.
+                </span>
+              </span>
+              <Button asChild variant="outline" size="sm" className="pointer-events-none shrink-0">
+                <span>Abrir</span>
+              </Button>
+            </button>
+          </CardContent>
+        </Card>
+
+        <UsuariosDialog open={usuariosAbierto} onOpenChange={setUsuariosAbierto} />
 
         <Card className="surface-card">
           <CardHeader>

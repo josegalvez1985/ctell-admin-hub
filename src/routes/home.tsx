@@ -12,20 +12,22 @@ import {
 } from "lucide-react";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
+import { primerNombre, useUsuarioActual } from "@/hooks/use-usuario-actual";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { Skeleton } from "@/components/ui/skeleton";
 
 export const Route = createFileRoute("/home")({
   head: () => ({
     meta: [
-      { title: "Panel general | CTELL" },
+      { title: "Dashboard | CTELL" },
       {
         name: "description",
         content:
-          "Panel general de CTELL: indicadores de compras, ventas, stock, tesorería y recursos humanos en tiempo real.",
+          "Dashboard de CTELL: indicadores de compras, ventas, stock, tesorería y recursos humanos en tiempo real.",
       },
-      { property: "og:title", content: "Panel general | CTELL" },
+      { property: "og:title", content: "Dashboard | CTELL" },
       {
         property: "og:description",
         content: "Indicadores de compras, ventas, stock, tesorería y RRHH en un solo panel.",
@@ -97,12 +99,26 @@ const stockCritico = [
 ];
 
 function HomePage() {
+  const { data: usuario } = useUsuarioActual();
+  const nombre = primerNombre(usuario?.nombreApellido);
+  // Con los datos que dejó el login no hay espera; el skeleton solo aparece si
+  // la sesión se restauró sin ellos (por ejemplo, tras recargar con F5).
+  const esperandoNombre = !usuario;
+
   return (
-    <AppLayout active="Panel general">
+    <AppLayout active="Dashboard">
       <main className="space-y-6 px-4 pb-28 pt-6 sm:px-6 lg:pb-10">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-bold text-foreground sm:text-3xl">Buen día, Lucía</h1>
+            {esperandoNombre ? (
+              // Placeholder del alto del h1: sin esto el saludo aparece de
+              // golpe y empuja el resto del panel hacia abajo.
+              <Skeleton className="h-8 w-56 sm:h-9" />
+            ) : (
+              <h1 className="text-2xl font-bold text-foreground sm:text-3xl">
+                {nombre ? `Buen día, ${nombre}` : "Buen día"}
+              </h1>
+            )}
             <p className="mt-1 text-sm text-muted-foreground">
               Resumen operativo de CTELL · Agosto 2026
             </p>

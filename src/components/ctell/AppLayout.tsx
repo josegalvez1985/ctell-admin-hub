@@ -1,4 +1,5 @@
-import { Link } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
+import { Link, useNavigate } from "@tanstack/react-router";
 import {
   Bell,
   Boxes,
@@ -18,9 +19,11 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import { Logo } from "@/components/ctell/Logo";
 import { ThemeToggle } from "@/components/ctell/ThemeToggle";
+import { iniciales, useUsuarioActual } from "@/hooks/use-usuario-actual";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const COLLAPSE_KEY = "ctell-sidebar-collapsed";
@@ -60,7 +63,11 @@ export function AppLayout({
   title?: string;
   showSearch?: boolean;
 }) {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { data: usuario } = useUsuarioActual();
   const [collapsed, setCollapsed] = useState(false);
+  const [saliendo, setSaliendo] = useState(false);
 
   // La preferencia se lee tras montar para no romper la hidratación SSR.
   useEffect(() => {
@@ -73,6 +80,25 @@ export function AppLayout({
       localStorage.setItem(COLLAPSE_KEY, next ? "1" : "0");
       return next;
     });
+  }
+
+  // Navegar a "/" sin llamar a logout dejaba el token vigente en el servidor y
+  // en sessionStorage: volver atrás reabría la sesión.
+  async function handleLogout() {
+    if (saliendo) return; // Evita revocar dos veces con doble clic.
+    setSaliendo(true);
+
+    try {
+      // api.logout() borra el token local aunque el servidor falle, así que un
+      // error acá no impide cerrar sesión: se sigue de largo. Sin el try, una
+      // caída de red dejaría al usuario encerrado en la app.
+      await api.logout();
+    } finally {
+      // La caché guarda datos del usuario que se va; sin limpiarla, quien
+      // entre después los ve por un instante antes del refetch.
+      queryClient.clear();
+      navigate({ to: "/" });
+    }
   }
 
   return (
@@ -92,9 +118,9 @@ export function AppLayout({
         <nav className="mt-8 flex-1 space-y-1">
           <SideItem
             icon={Home}
-            label="Panel general"
+            label="Dashboard"
             to="/home"
-            active={active === "Panel general"}
+            active={active === "Dashboard"}
             collapsed={collapsed}
           />
           {navModules.map((module) => (
@@ -117,7 +143,13 @@ export function AppLayout({
             active={active === "Configuración"}
             collapsed={collapsed}
           />
-          <SideItem icon={LogOut} label="Salir" to="/" collapsed={collapsed} />
+          <SideItem
+            icon={LogOut}
+            label={saliendo ? "Saliendo…" : "Salir"}
+            onClick={handleLogout}
+            disabled={saliendo}
+            collapsed={collapsed}
+          />
           <button
             onClick={toggleCollapsed}
             aria-label={collapsed ? "Expandir menú" : "Colapsar menú"}
@@ -171,9 +203,9 @@ export function AppLayout({
               <span className="absolute right-2 top-2 size-2 rounded-full bg-primary" />
             </Button>
             <ThemeToggle className="relative" />
-            <Avatar className="size-9">
+            <Avatar className="size-9" title={usuario?.nombreApellido}>
               <AvatarFallback className="bg-accent text-sm font-semibold text-accent-foreground">
-                LM
+                {iniciales(usuario?.nombreApellido)}
               </AvatarFallback>
             </Avatar>
           </div>
@@ -204,33 +236,56 @@ export function AppLayout({
   );
 }
 
+/** Item del menú lateral: enlaza con `to`, o ejecuta una acción con `onClick`. */
 function SideItem({
   icon: Icon,
   label,
   active,
   to,
+  onClick,
+  disabled,
   collapsed,
 }: {
   icon: typeof Home;
   label: string;
   active?: boolean;
-  to: string;
+  to?: string;
+  onClick?: () => void;
+  disabled?: boolean;
   collapsed?: boolean;
 }) {
-  return (
-    <Link
-      to={to}
-      title={collapsed ? label : undefined}
-      className={cn(
-        "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
-        collapsed && "justify-center px-0",
-        active
-          ? "bg-sidebar-primary text-sidebar-primary-foreground"
-          : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-      )}
-    >
+  const clases = cn(
+    "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+    collapsed && "justify-center px-0",
+    active
+      ? "bg-sidebar-primary text-sidebar-primary-foreground"
+      : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+  );
+
+  const contenido = (
+    <>
       <Icon className="size-4 shrink-0" />
       {!collapsed && label}
+    </>
+  );
+
+  // Cerrar sesión no es una navegación: tiene que revocar el token primero.
+  if (onClick) {
+    return (
+      <button
+        onClick={onClick}
+        disabled={disabled}
+        title={collapsed ? label : undefined}
+        className={cn(clases, disabled && "pointer-events-none opacity-60")}
+      >
+        {contenido}
+      </button>
+    );
+  }
+
+  return (
+    <Link to={to!} title={collapsed ? label : undefined} className={clases}>
+      {contenido}
     </Link>
   );
 }

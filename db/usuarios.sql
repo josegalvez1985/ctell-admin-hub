@@ -28,6 +28,14 @@
 -- conviene migrar HASH_PASSWORD a PBKDF2 (ver nota al pie del paquete).
 --
 -- No se modifica ninguna tabla: se usan USUARIOS y TOKENS tal como están.
+--
+-- ESTADO DE LOS USUARIOS
+-- USUARIOS.ACTIVO es VARCHAR2(1) y guarda un código: 'A' activo, 'I' inactivo.
+-- TOKENS.ACTIVO, en cambio, es NUMBER(1,0) con 1/0. Las dos columnas se llaman
+-- igual y NO son del mismo tipo: compararlas de la misma forma rompe el login
+-- con ORA-01722. La API expone el estado como activo: 1/0 (así lo tipa
+-- src/lib/api.ts); la traducción vive en PKG_USUARIOS.ESTADO_A_NUMERO y
+-- NUMERO_A_ESTADO, y ningún handler compara 'A'/'I' a mano.
 --------------------------------------------------------------------------------
 
 SET DEFINE OFF
@@ -44,6 +52,22 @@ CREATE OR REPLACE PACKAGE PKG_USUARIOS AS
   C_ERR_USUARIO_NO_EXISTE CONSTANT PLS_INTEGER := -20002;
   C_ERR_PASSWORD_DEBIL    CONSTANT PLS_INTEGER := -20003;
   C_ERR_DATOS_INVALIDOS   CONSTANT PLS_INTEGER := -20004;
+
+  -- USUARIOS.ACTIVO es VARCHAR2(1) y guarda un CODIGO DE ESTADO, no un
+  -- booleano: 'A' = activo, 'I' = inactivo. La API, en cambio, expone
+  -- activo: 1/0 (asi lo tipa src/lib/api.ts). La traduccion entre ambos
+  -- mundos vive solo aca dentro; ningun handler compara 'A'/'I' a mano.
+  --
+  -- Ojo: TOKENS.ACTIVO SI es NUMBER(1,0) con 1/0. Las dos columnas se
+  -- llaman igual y son de tipos distintos.
+  C_ESTADO_ACTIVO   CONSTANT VARCHAR2(1) := 'A';
+  C_ESTADO_INACTIVO CONSTANT VARCHAR2(1) := 'I';
+
+  -- 'A' -> 1, 'I' -> 0. Para exponer el estado en el JSON de los endpoints.
+  FUNCTION ESTADO_A_NUMERO (p_estado IN VARCHAR2) RETURN NUMBER;
+
+  -- 1 -> 'A', 0 -> 'I'. Para traducir lo que llega desde la API.
+  FUNCTION NUMERO_A_ESTADO (p_activo IN NUMBER) RETURN VARCHAR2;
 
   FUNCTION GENERAR_SALT RETURN VARCHAR2;
 
@@ -73,7 +97,7 @@ CREATE OR REPLACE PACKAGE PKG_USUARIOS AS
     p_password   IN VARCHAR2
   );
 
-  -- Baja lógica: ACTIVO = 0 y se revocan los tokens vigentes.
+  -- Baja lógica: ACTIVO = 'I' y se revocan los tokens vigentes.
   PROCEDURE INACTIVAR_USUARIO (p_id_usuario IN NUMBER);
 
   PROCEDURE ACTIVAR_USUARIO (p_id_usuario IN NUMBER);
@@ -139,6 +163,23 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
   --------------------------------------------------------------------------
   -- Públicos
   --------------------------------------------------------------------------
+
+  FUNCTION ESTADO_A_NUMERO (p_estado IN VARCHAR2) RETURN NUMBER IS
+  BEGIN
+    -- Solo 'A' cuenta como activo. Cualquier otra cosa (incluido NULL o un
+    -- resto de datos viejos) se informa como inactivo: ante la duda, el
+    -- estado mas restrictivo.
+    RETURN CASE WHEN UPPER(TRIM(p_estado)) = C_ESTADO_ACTIVO THEN 1 ELSE 0 END;
+  END ESTADO_A_NUMERO;
+
+  FUNCTION NUMERO_A_ESTADO (p_activo IN NUMBER) RETURN VARCHAR2 IS
+  BEGIN
+    IF p_activo IS NULL THEN
+      RETURN NULL;  -- NULL = "no cambiar", lo aprovecha ACTUALIZAR_USUARIO.
+    END IF;
+
+    RETURN CASE WHEN p_activo = 1 THEN C_ESTADO_ACTIVO ELSE C_ESTADO_INACTIVO END;
+  END NUMERO_A_ESTADO;
 
   FUNCTION GENERAR_SALT RETURN VARCHAR2 IS
   BEGIN
@@ -213,7 +254,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
       ACTIVO, FECHA_CREACION, FECHA_ACTUALIZACION
     ) VALUES (
       l_usuario, TRIM(p_nombre_apellido), LOWER(TRIM(p_correo)), l_hash, l_salt,
-      1, SYSTIMESTAMP, SYSTIMESTAMP
+      C_ESTADO_ACTIVO, SYSTIMESTAMP, SYSTIMESTAMP
     )
     RETURNING ID_USUARIO INTO p_id_usuario;
 
@@ -238,7 +279,10 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
     UPDATE USUARIOS
        SET NOMBRE_APELLIDO     = NVL(TRIM(p_nombre_apellido), NOMBRE_APELLIDO),
            CORREO              = NVL(LOWER(TRIM(p_correo)), CORREO),
-           ACTIVO              = NVL(p_activo, ACTIVO),
+           -- p_activo llega como 1/0 desde la API y se traduce a 'A'/'I'.
+           -- NUMERO_A_ESTADO devuelve NULL si p_activo es NULL, con lo que
+           -- el NVL conserva el estado actual: un parametro ausente no pisa.
+           ACTIVO              = NVL(NUMERO_A_ESTADO(p_activo), ACTIVO),
            FECHA_ACTUALIZACION = SYSTIMESTAMP
      WHERE ID_USUARIO = p_id_usuario;
 
@@ -289,7 +333,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
   PROCEDURE INACTIVAR_USUARIO (p_id_usuario IN NUMBER) IS
   BEGIN
     UPDATE USUARIOS
-       SET ACTIVO              = 0,
+       SET ACTIVO              = C_ESTADO_INACTIVO,
            FECHA_ACTUALIZACION = SYSTIMESTAMP
      WHERE ID_USUARIO = p_id_usuario;
 
@@ -307,7 +351,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
   PROCEDURE ACTIVAR_USUARIO (p_id_usuario IN NUMBER) IS
   BEGIN
     UPDATE USUARIOS
-       SET ACTIVO              = 1,
+       SET ACTIVO              = C_ESTADO_ACTIVO,
            FECHA_ACTUALIZACION = SYSTIMESTAMP
      WHERE ID_USUARIO = p_id_usuario;
 
@@ -342,7 +386,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
             OR LOWER(USUARIO) LIKE l_busca
             OR LOWER(NOMBRE_APELLIDO) LIKE l_busca
             OR LOWER(CORREO) LIKE l_busca)
-       AND (p_activo IS NULL OR ACTIVO = p_activo);
+       -- p_activo llega como 1/0 y se traduce a 'A'/'I' para comparar.
+       AND (p_activo IS NULL OR UPPER(TRIM(ACTIVO)) = NUMERO_A_ESTADO(p_activo));
 
     RETURN l_total;
   END CONTAR_USUARIOS;
@@ -355,11 +400,15 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
     l_hash_guard VARCHAR2(256);
     l_salt       VARCHAR2(32);
   BEGIN
+    -- ACTIVO guarda 'A'/'I', no 1/0. Con `ACTIVO = 1` Oracle intentaba
+    -- convertir la columna a numero y moria con ORA-01722 en cada login.
+    -- Ese error subia hasta el WHEN OTHERS del handler y se veia como un 500
+    -- "Error al iniciar sesion", sin pista de que era un problema de tipos.
     SELECT ID_USUARIO, CONTRASENA_HASH, SALT
       INTO l_id, l_hash_guard, l_salt
       FROM USUARIOS
      WHERE USUARIO = LOWER(TRIM(p_usuario))
-       AND ACTIVO = 1;
+       AND UPPER(TRIM(ACTIVO)) = C_ESTADO_ACTIVO;
 
     IF COMPARAR_SEGURO(HASH_PASSWORD(p_password, l_salt), l_hash_guard) THEN
       RETURN l_id;
@@ -414,11 +463,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_TOKENS AS
     p_token            OUT VARCHAR2,
     p_fecha_expiracion OUT TIMESTAMP
   ) IS
-    l_activo NUMBER;
+    -- VARCHAR2 y no NUMBER: USUARIOS.ACTIVO guarda el codigo 'A'/'I'.
+    -- Leerlo en una variable numerica provoca ORA-01722.
+    l_activo VARCHAR2(1);
   BEGIN
     -- No se emiten sesiones para cuentas inactivas o inexistentes.
     BEGIN
-      SELECT ACTIVO INTO l_activo
+      SELECT UPPER(TRIM(ACTIVO)) INTO l_activo
         FROM USUARIOS
        WHERE ID_USUARIO = p_id_usuario;
     EXCEPTION
@@ -427,7 +478,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_TOKENS AS
           'El usuario no existe');
     END;
 
-    IF l_activo != 1 THEN
+    IF l_activo IS NULL OR l_activo != PKG_USUARIOS.C_ESTADO_ACTIVO THEN
       RAISE_APPLICATION_ERROR(PKG_USUARIOS.C_ERR_USUARIO_NO_EXISTE,
         'El usuario esta inactivo');
     END IF;
@@ -453,13 +504,16 @@ CREATE OR REPLACE PACKAGE BODY PKG_TOKENS AS
 
     -- Se verifica también que el usuario siga activo: inactivarlo debe cortar
     -- el acceso aunque el token todavía no haya vencido.
+    -- Ojo con los tipos: TOKENS.ACTIVO es NUMBER(1,0) (1/0) y USUARIOS.ACTIVO
+    -- es VARCHAR2(1) con el codigo 'A'/'I'. Se comparan distinto a proposito;
+    -- unificarlos a numero rompe el login con ORA-01722.
     SELECT t.ID_USUARIO
       INTO l_id_usuario
       FROM TOKENS t
       JOIN USUARIOS u ON u.ID_USUARIO = t.ID_USUARIO
      WHERE t.TOKEN = p_token
        AND t.ACTIVO = 1
-       AND u.ACTIVO = 1
+       AND UPPER(TRIM(u.ACTIVO)) = PKG_USUARIOS.C_ESTADO_ACTIVO
        AND t.FECHA_EXPIRACION > SYSTIMESTAMP;
 
     RETURN l_id_usuario;
@@ -583,11 +637,22 @@ EXCEPTION
   WHEN OTHERS THEN
     ROLLBACK;
     :status_code := 500;
+    -- El detalle del error va al log del servidor, no a la respuesta: al
+    -- cliente se le sigue dando un mensaje generico. Sin esta linea un
+    -- ORA-01722 por tipos se veia como "Error al iniciar sesion" y no habia
+    -- forma de saber que habia fallado realmente.
+    APEX_DEBUG.ERROR('auth/login: ' || SQLERRM || ' | ' ||
+                     DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
     :resultado := '{"error":"Error al iniciar sesion"}';
 END;
 ~'
   );
 
+  -- :usuario y :password NO se declaran con DEFINE_PARAMETER. En un handler
+  -- plsql/block ORDS toma el JSON del body y lo vincula solo a los binds del
+  -- mismo nombre. No hay un p_source_type para el cuerpo: los validos son
+  -- HEADER, RESPONSE, URI y QUERY, y pasar 'BODY' aborta el script entero con
+  -- ORA-02290 (REST_PARAMS_SOURCE_TYPE_CK), dejando el modulo sin crear.
   ORDS.DEFINE_PARAMETER(
     p_module_name => 'auth', p_pattern => 'login', p_method => 'POST',
     p_name => 'resultado', p_bind_variable_name => 'resultado',
@@ -768,20 +833,32 @@ BEGIN
              'usuario'        VALUE USUARIO,
              'nombreApellido' VALUE NOMBRE_APELLIDO,
              'correo'         VALUE CORREO,
-             'activo'         VALUE ACTIVO,
+             -- La tabla guarda 'A'/'I' pero el frontend tipa activo como
+             -- number: se traduce a 1/0 para no romper el contrato del JSON.
+             --
+             -- El CASE va inline y no PKG_USUARIOS.ESTADO_A_NUMERO(): esto es
+             -- contexto SQL, y llamar ahi a una funcion de paquete PL/SQL
+             -- hacia fallar el handler entero con un 500.
+             'activo'         VALUE CASE WHEN UPPER(TRIM(ACTIVO)) = 'A' THEN 1 ELSE 0 END,
              'fechaCreacion'  VALUE TO_CHAR(FECHA_CREACION, 'YYYY-MM-DD"T"HH24:MI:SS')
              RETURNING CLOB
            ) RETURNING CLOB
          )
     INTO l_items
     FROM (
-      SELECT ID_USUARIO, USUARIO, NOMBRE_APELLIDO, CORREO, ACTIVO, FECHA_CREACION
+      SELECT ID_USUARIO, USUARIO, NOMBRE_APELLIDO, CORREO,
+             ACTIVO, FECHA_CREACION
         FROM USUARIOS
        WHERE (:busqueda IS NULL
               OR LOWER(USUARIO) LIKE l_busca
               OR LOWER(NOMBRE_APELLIDO) LIKE l_busca
               OR LOWER(CORREO) LIKE l_busca)
-         AND (:activo IS NULL OR ACTIVO = TO_NUMBER(:activo))
+         -- El query param llega como 1/0 y se traduce al codigo 'A'/'I'.
+         -- CASE inline por lo mismo que arriba: en SQL no se puede invocar
+         -- una funcion de PKG_USUARIOS.
+         AND (:activo IS NULL
+              OR UPPER(TRIM(ACTIVO)) =
+                 CASE WHEN TO_NUMBER(:activo) = 1 THEN 'A' ELSE 'I' END)
        ORDER BY NOMBRE_APELLIDO
       OFFSET (l_pagina - 1) * l_tamanio ROWS FETCH NEXT l_tamanio ROWS ONLY
     );
@@ -908,7 +985,9 @@ BEGIN
            'usuario'            VALUE USUARIO,
            'nombreApellido'     VALUE NOMBRE_APELLIDO,
            'correo'             VALUE CORREO,
-           'activo'             VALUE ACTIVO,
+           -- 'A'/'I' -> 1/0: el frontend tipa `activo` como number. CASE
+           -- inline: en SQL no se invoca una funcion de PKG_USUARIOS.
+           'activo'             VALUE CASE WHEN UPPER(TRIM(ACTIVO)) = 'A' THEN 1 ELSE 0 END,
            'fechaCreacion'      VALUE TO_CHAR(FECHA_CREACION, 'YYYY-MM-DD"T"HH24:MI:SS'),
            'fechaActualizacion' VALUE TO_CHAR(FECHA_ACTUALIZACION, 'YYYY-MM-DD"T"HH24:MI:SS')
            RETURNING CLOB
@@ -1248,6 +1327,59 @@ END;
 /
 
 --------------------------------------------------------------------------------
+-- 4b. NORMALIZACIÓN DE USUARIOS.ACTIVO
+--
+-- USUARIOS.ACTIVO es VARCHAR2(1) y guarda un CÓDIGO DE ESTADO: 'A' activo,
+-- 'I' inactivo. Pero el DDL de la tabla declara `DEFAULT 1`, un número: toda
+-- fila insertada sin especificar la columna quedó con el texto '1', que no es
+-- un estado válido. Esas cuentas no pueden loguearse, porque el WHERE busca
+-- 'A' y encuentra '1'.
+--
+-- Este bloque las lleva a 'A'/'I'. Es idempotente: al reejecutarlo no toca
+-- nada si ya está todo normalizado.
+--
+-- Criterio: '1', 'S', 'Y' y NULL se consideran activos; '0', 'N' e 'I',
+-- inactivos. Ante cualquier otro valor se elige 'I', el estado más
+-- restrictivo — es preferible dejar afuera a alguien que debía entrar, y
+-- corregirlo a mano, que habilitar una cuenta que debía estar cerrada.
+--------------------------------------------------------------------------------
+
+DECLARE
+  l_raros NUMBER;
+BEGIN
+  SELECT COUNT(*) INTO l_raros
+    FROM USUARIOS
+   WHERE ACTIVO IS NULL
+      OR UPPER(TRIM(ACTIVO)) NOT IN ('A', 'I');
+
+  IF l_raros > 0 THEN
+    -- Antes de tocar nada, queda registro de lo que había.
+    DBMS_OUTPUT.PUT_LINE('Valores no validos en USUARIOS.ACTIVO: ' || l_raros);
+
+    UPDATE USUARIOS
+       SET ACTIVO = CASE
+                      WHEN ACTIVO IS NULL                            THEN 'A'
+                      WHEN UPPER(TRIM(ACTIVO)) IN ('1', 'S', 'Y')    THEN 'A'
+                      ELSE 'I'
+                    END
+     WHERE ACTIVO IS NULL
+        OR UPPER(TRIM(ACTIVO)) NOT IN ('A', 'I');
+
+    COMMIT;
+    DBMS_OUTPUT.PUT_LINE('Normalizadas ' || l_raros || ' filas a ''A''/''I''.');
+  ELSE
+    DBMS_OUTPUT.PUT_LINE('USUARIOS.ACTIVO ya usa ''A''/''I'': nada que normalizar.');
+  END IF;
+END;
+/
+
+-- Estado de la columna después de normalizar. Solo deberían verse A e I.
+SELECT ACTIVO, COUNT(*) AS CANTIDAD
+  FROM USUARIOS
+ GROUP BY ACTIVO
+ ORDER BY ACTIVO;
+
+--------------------------------------------------------------------------------
 -- 5. USUARIO ADMINISTRADOR INICIAL
 --
 -- Sólo se crea si la tabla está vacía, así el script se puede reejecutar.
@@ -1315,3 +1447,119 @@ SELECT m.NAME AS modulo, m.URI_PREFIX, t.URI_TEMPLATE, h.METHOD
   JOIN USER_ORDS_HANDLERS  h ON h.TEMPLATE_ID = t.ID
  WHERE m.NAME IN ('auth', 'usuarios')
  ORDER BY m.NAME, t.URI_TEMPLATE, h.METHOD;
+
+--------------------------------------------------------------------------------
+-- 7. PRUEBA DEL CIRCUITO DE LOGIN
+--
+-- Ejercita lo mismo que hace POST /auth/login, pero desde PL/SQL. Si esto
+-- imprime OK, el problema (si queda alguno) está en ORDS o en el cliente, no
+-- en los paquetes: eso separa las dos mitades del sistema y evita seguir
+-- adivinando contra un 500 genérico.
+--
+-- No deja rastro: el token de prueba se revoca y se borra al final.
+--------------------------------------------------------------------------------
+
+DECLARE
+  l_id      NUMBER;
+  l_token   VARCHAR2(64);
+  l_expira  TIMESTAMP;
+  l_valida  NUMBER;
+  l_estado  VARCHAR2(1);
+  l_usuario VARCHAR2(50) := 'admin';
+  l_pass    VARCHAR2(128) := 'Ctell2026!';
+BEGIN
+  DBMS_OUTPUT.PUT_LINE('--- Prueba de login para "' || l_usuario || '" ---');
+
+  -- 0. Traduccion de estado: si esto falla, todo lo demas falla en cascada.
+  IF PKG_USUARIOS.ESTADO_A_NUMERO('A') = 1
+     AND PKG_USUARIOS.ESTADO_A_NUMERO('I') = 0
+     AND PKG_USUARIOS.NUMERO_A_ESTADO(1) = 'A'
+     AND PKG_USUARIOS.NUMERO_A_ESTADO(0) = 'I' THEN
+    DBMS_OUTPUT.PUT_LINE('OK 0/4: la traduccion A/I <-> 1/0 funciona.');
+  ELSE
+    DBMS_OUTPUT.PUT_LINE('FALLA: la traduccion de estado no es correcta.');
+    RETURN;
+  END IF;
+
+  -- Estado real del usuario de prueba, para que el diagnostico sea concreto.
+  BEGIN
+    SELECT UPPER(TRIM(ACTIVO)) INTO l_estado
+      FROM USUARIOS WHERE USUARIO = l_usuario;
+    DBMS_OUTPUT.PUT_LINE('   ACTIVO en la tabla = ''' || l_estado || '''');
+  EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+      DBMS_OUTPUT.PUT_LINE('FALLA: no existe el usuario "' || l_usuario || '".');
+      RETURN;
+  END;
+
+  -- 1. Credenciales
+  l_id := PKG_USUARIOS.VERIFICAR_CREDENCIALES(l_usuario, l_pass);
+
+  IF l_id IS NULL THEN
+    DBMS_OUTPUT.PUT_LINE('FALLA: VERIFICAR_CREDENCIALES devolvio NULL.');
+    IF l_estado != 'A' THEN
+      DBMS_OUTPUT.PUT_LINE('  Causa: el usuario esta en estado ''' || l_estado ||
+                           ''', no ''A''.');
+    ELSE
+      DBMS_OUTPUT.PUT_LINE('  El usuario esta activo, asi que la contrasena');
+      DBMS_OUTPUT.PUT_LINE('  no coincide con la esperada.');
+    END IF;
+    RETURN;
+  END IF;
+
+  DBMS_OUTPUT.PUT_LINE('OK 1/4: credenciales validas, ID_USUARIO = ' || l_id);
+
+  -- 2. Emisión del token
+  PKG_TOKENS.CREAR_TOKEN(
+    p_id_usuario       => l_id,
+    p_token            => l_token,
+    p_fecha_expiracion => l_expira
+  );
+
+  DBMS_OUTPUT.PUT_LINE('OK 2/4: token emitido (largo ' || LENGTH(l_token) ||
+                       '), vence ' || TO_CHAR(l_expira, 'YYYY-MM-DD HH24:MI:SS'));
+
+  -- 3. Validación del token recién emitido
+  l_valida := PKG_TOKENS.VALIDAR_TOKEN(l_token);
+
+  IF l_valida = l_id THEN
+    DBMS_OUTPUT.PUT_LINE('OK 3/4: el token valida y devuelve el mismo usuario.');
+  ELSE
+    DBMS_OUTPUT.PUT_LINE('FALLA: VALIDAR_TOKEN devolvio ' || NVL(TO_CHAR(l_valida), 'NULL'));
+    RETURN;
+  END IF;
+
+  -- 4. El JOIN de VALIDAR_TOKEN mezcla los dos tipos de ACTIVO: se comprueba
+  --    que el token deje de valer al inactivar al usuario, y no antes.
+  UPDATE USUARIOS SET ACTIVO = 'I' WHERE ID_USUARIO = l_id;
+
+  IF PKG_TOKENS.VALIDAR_TOKEN(l_token) IS NULL THEN
+    DBMS_OUTPUT.PUT_LINE('OK 4/4: inactivar al usuario invalida su token.');
+    DBMS_OUTPUT.PUT_LINE('>>> El backend funciona de punta a punta. <<<');
+  ELSE
+    DBMS_OUTPUT.PUT_LINE('FALLA: el token sigue valido con el usuario en ''I''.');
+  END IF;
+
+  -- Se restaura el estado original: la prueba no debe dejar al admin afuera.
+  UPDATE USUARIOS SET ACTIVO = l_estado WHERE ID_USUARIO = l_id;
+
+  -- Limpieza: la prueba no debe dejar sesiones abiertas.
+  DELETE FROM TOKENS WHERE TOKEN = l_token;
+  COMMIT;
+
+EXCEPTION
+  WHEN OTHERS THEN
+    -- El paso 4 inactiva al usuario temporalmente. Si algo falla despues de
+    -- eso, el ROLLBACK lo deja como estaba: nunca se pierde el acceso.
+    ROLLBACK;
+    DBMS_OUTPUT.PUT_LINE('EXCEPCION: ' || SQLERRM);
+    DBMS_OUTPUT.PUT_LINE(DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
+    DBMS_OUTPUT.PUT_LINE('(Se revirtieron los cambios de la prueba.)');
+END;
+/
+
+-- Red de seguridad: si la prueba quedo a medias, esto devuelve al admin a 'A'.
+-- Es un no-op cuando la prueba termino bien.
+UPDATE USUARIOS SET ACTIVO = 'A'
+ WHERE USUARIO = 'admin' AND UPPER(TRIM(ACTIVO)) != 'A';
+COMMIT;
