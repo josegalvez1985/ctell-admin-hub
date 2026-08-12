@@ -89,6 +89,13 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
           "CTELL: sistema administrativo para compras, ventas, stock, tesorería y recursos humanos.",
       },
       { name: "theme-color", content: "#1362c0" },
+      // El estándar actual. Es lo que hace que la PWA instalada abra sin la
+      // barra del navegador.
+      { name: "mobile-web-app-capable", content: "yes" },
+      // La variante de Apple queda por compatibilidad: Chrome la marca como
+      // obsoleta, pero Safari en iOS todavía la necesita para el modo
+      // standalone. Sacarla haría que en iPhone la app instalada abriera
+      // dentro del navegador.
       { name: "apple-mobile-web-app-capable", content: "yes" },
       { name: "apple-mobile-web-app-title", content: "CTELL" },
       { name: "apple-mobile-web-app-status-bar-style", content: "black-translucent" },
