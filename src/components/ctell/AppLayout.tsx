@@ -6,6 +6,7 @@ import {
   Home,
   LayoutGrid,
   LogOut,
+  Menu,
   PanelLeftClose,
   PanelLeftOpen,
   Search,
@@ -14,6 +15,7 @@ import {
   Tags,
   Users,
   Wallet,
+  X,
 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
@@ -23,7 +25,7 @@ import { iniciales, useUsuarioActual } from "@/hooks/use-usuario-actual";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { api } from "@/lib/api";
+import { api, getUsuarioSesion } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const COLLAPSE_KEY = "ctell-sidebar-collapsed";
@@ -37,12 +39,16 @@ export const navModules = [
   { name: "Reportes", icon: LayoutGrid, to: "/home" },
 ];
 
-const bottomNav = [
+const mobileMenuItems = [
   { label: "Inicio", icon: Home, to: "/home" },
+  { label: "Compras", icon: ShoppingCart, to: "/home" },
   { label: "Ventas", icon: Tags, to: "/home" },
   { label: "Stock", icon: Boxes, to: "/home" },
-  { label: "Caja", icon: Wallet, to: "/home" },
+  { label: "Tesorería", icon: Wallet, to: "/home" },
   { label: "RRHH", icon: Users, to: "/home" },
+  { label: "Reportes", icon: LayoutGrid, to: "/home" },
+  { label: "Configuración", icon: Settings, to: "/configuracion" },
+  { label: "Salir", icon: LogOut, to: undefined, action: "logout" },
 ];
 
 /**
@@ -65,9 +71,12 @@ export function AppLayout({
 }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { data: usuario } = useUsuarioActual();
+  const { data: usuarioRefresh } = useUsuarioActual();
+  const usuarioSesion = getUsuarioSesion();
+  const usuario = usuarioRefresh || usuarioSesion;
   const [collapsed, setCollapsed] = useState(false);
   const [saliendo, setSaliendo] = useState(false);
+  const [menuAbierto, setMenuAbierto] = useState(false);
 
   // La preferencia se lee tras montar para no romper la hidratación SSR.
   useEffect(() => {
@@ -182,17 +191,28 @@ export function AppLayout({
                 {title}
               </span>
             )}
-            {showSearch ? (
-              <div className="relative ml-auto hidden max-w-sm flex-1 lg:block">
-                <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  placeholder="Buscar documentos, clientes, artículos…"
-                  className="h-10 pl-9"
-                />
+            {showSearch && (
+              <div className="relative ml-auto hidden max-w-sm flex-1 lg:flex lg:items-center lg:gap-4">
+                <div className="relative flex-1">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    placeholder="Buscar documentos, clientes, artículos…"
+                    className="h-10 pl-9"
+                  />
+                </div>
+                {usuario?.nombreApellido && (
+                  <div className="flex items-center gap-3 border-l border-border pl-4">
+                    <div className="text-right">
+                      <p className="text-sm font-semibold text-foreground">{usuario.nombreApellido}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {usuario.esAdmin === "S" ? "Administrador" : "Usuario"}
+                      </p>
+                    </div>
+                  </div>
+                )}
               </div>
-            ) : (
-              <span className="ml-auto hidden lg:block" />
             )}
+            {!showSearch && <span className="ml-auto hidden lg:block" />}
             <Button
               variant="ghost"
               size="icon"
@@ -202,7 +222,28 @@ export function AppLayout({
               <Bell className="size-5" />
               <span className="absolute right-2 top-2 size-2 rounded-full bg-primary" />
             </Button>
+            <Link to="/home" className="lg:hidden">
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="Ir a inicio"
+                title="Ir a inicio"
+              >
+                <Home className="size-5" />
+              </Button>
+            </Link>
             <ThemeToggle className="relative" />
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={handleLogout}
+              disabled={saliendo}
+              aria-label="Salir"
+              title="Salir de la sesión"
+              className="text-destructive hover:text-destructive hover:bg-destructive/10 disabled:opacity-60"
+            >
+              <LogOut className="size-5" />
+            </Button>
             <Avatar className="size-9" title={usuario?.nombreApellido}>
               <AvatarFallback className="bg-accent text-sm font-semibold text-accent-foreground">
                 {iniciales(usuario?.nombreApellido)}
@@ -214,24 +255,101 @@ export function AppLayout({
         {children}
       </div>
 
-      <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-card/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-md lg:hidden">
-        <ul className="grid grid-cols-5">
-          {bottomNav.map((item) => (
-            <li key={item.label}>
-              <Link
-                to={item.to}
-                className={cn(
-                  "flex w-full flex-col items-center gap-1 py-2.5 text-[11px] font-medium transition-colors",
-                  active === item.label ? "text-primary" : "text-muted-foreground",
-                )}
+      <Button
+        variant="ghost"
+        size="icon"
+        onClick={() => setMenuAbierto(!menuAbierto)}
+        className="fixed bottom-6 right-6 z-30 size-14 rounded-full bg-primary text-primary-foreground shadow-lg hover:bg-primary/90 lg:hidden"
+        aria-label="Abrir menú"
+      >
+        {menuAbierto ? <X className="size-6" /> : <Menu className="size-6" />}
+      </Button>
+
+      {menuAbierto && (
+        <>
+          <div
+            className="fixed inset-0 z-20 bg-black/40 backdrop-blur-sm transition-opacity lg:hidden"
+            onClick={() => setMenuAbierto(false)}
+          />
+          <div className="fixed inset-x-0 bottom-0 z-30 max-h-[85vh] overflow-y-auto rounded-t-3xl border-t border-border bg-card shadow-2xl lg:hidden">
+            <div className="sticky top-0 flex items-center justify-between border-b border-border bg-card px-6 py-4">
+              <h2 className="text-xl font-bold text-foreground">Menú</h2>
+              <button
+                onClick={() => setMenuAbierto(false)}
+                className="text-muted-foreground transition-colors hover:text-foreground"
+                aria-label="Cerrar menú"
               >
-                <item.icon className="size-5" />
-                {item.label}
-              </Link>
-            </li>
-          ))}
-        </ul>
-      </nav>
+                <X className="size-5" />
+              </button>
+            </div>
+
+            <nav className="p-4 space-y-2">
+              {mobileMenuItems.map((item) => {
+                const handleClick = () => {
+                  if (item.action === "logout") {
+                    handleLogout();
+                  } else {
+                    setMenuAbierto(false);
+                  }
+                };
+
+                const isActive = active === item.label;
+                const Icon = item.icon;
+
+                if (item.action === "logout") {
+                  return (
+                    <button
+                      key={item.label}
+                      onClick={handleClick}
+                      disabled={saliendo}
+                      className={cn(
+                        "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all",
+                        "text-destructive hover:bg-destructive/10 disabled:opacity-60 disabled:pointer-events-none",
+                      )}
+                    >
+                      <Icon className="size-5 shrink-0" />
+                      <span>{saliendo ? "Saliendo…" : item.label}</span>
+                    </button>
+                  );
+                }
+
+                return (
+                  <Link
+                    key={item.label}
+                    to={item.to!}
+                    onClick={() => setMenuAbierto(false)}
+                    className={cn(
+                      "flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all",
+                      isActive
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                    )}
+                  >
+                    <Icon className="size-5 shrink-0" />
+                    <span>{item.label}</span>
+                  </Link>
+                );
+              })}
+            </nav>
+
+            <div className="border-t border-border p-4">
+              <div className="flex items-center gap-3 px-2">
+                <Avatar className="size-10">
+                  <AvatarFallback className="bg-accent text-sm font-semibold text-accent-foreground">
+                    {iniciales(usuario?.nombreApellido)}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-foreground truncate">{usuario?.nombreApellido}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {usuario?.esAdmin === "S" ? "Administrador" : "Usuario"}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

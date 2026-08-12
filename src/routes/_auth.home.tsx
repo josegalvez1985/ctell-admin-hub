@@ -18,7 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 
-export const Route = createFileRoute("/home")({
+export const Route = createFileRoute("/_auth/home")({
   head: () => ({
     meta: [
       { title: "Dashboard | CTELL" },

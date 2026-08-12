@@ -1,43 +1,43 @@
 --------------------------------------------------------------------------------
 -- CTELL · USUARIOS
 --
--- Script único: paquetes PL/SQL + endpoints ORDS. Se ejecuta de una sola vez
--- en la hoja de trabajo SQL de APEX, conectado con el esquema del workspace.
+-- Script único: paquete PL/SQL + endpoints ORDS. Se ejecuta de una sola vez en
+-- la hoja de trabajo SQL de APEX, conectado con el esquema del workspace.
 --
--- Contenido:
---   1. PKG_USUARIOS    — ABM de usuarios, hash y verificación de credenciales
---   2. PKG_TOKENS      — sesiones: emisión, validación y revocación
---   3. ORDS /auth/     — login, logout, sesión actual  (públicos)
---   4. ORDS /usuarios/ — ABM  (requieren token)
---   5. Usuario administrador inicial
---   6. Verificación
+-- Alcance: ABM de usuarios. La autenticación (login, logout, sesión actual)
+-- vive en db/auth.sql y NO se repite acá.
 --
--- Base de los endpoints: https://oracleapex.com/ords/ctell/
+--   GET    /usuarios/              listado paginado, con búsqueda y filtro
+--   POST   /usuarios/              alta
+--   GET    /usuarios/:id           detalle
+--   PUT    /usuarios/:id           modificación
+--   DELETE /usuarios/:id           baja física
+--   POST   /usuarios/:id/inactivar baja lógica  (ACTIVO = 'I')
+--   POST   /usuarios/:id/activar   alta lógica  (ACTIVO = 'A')
+--   POST   /usuarios/:id/password  cambio de contraseña
 --
--- Hash: STANDARD_HASH SHA-256 sobre (SALT || password), con salt aleatorio de
--- 32 hex por usuario derivado de SYS_GUID(). Se usa STANDARD_HASH y no
--- DBMS_CRYPTO.PBKDF2 porque DBMS_CRYPTO no está concedido en este workspace.
+-- Base de los endpoints: https://oracleapex.com/ords/ctell/usuarios/
 --
--- STANDARD_HASH es una función SQL, no PL/SQL: se invoca desde un
--- SELECT ... FROM DUAL dentro de HASH_PASSWORD. Llamarla como expresión PL/SQL
--- directa falla con PLS-00201, que parece un problema de grants pero no lo es.
+-- REQUIERE db/auth.sql EJECUTADO ANTES. Este paquete depende de PKG_AUTH para
+-- dos cosas y no las reimplementa:
+--   · HASH_PASSWORD / GENERAR_SALT  — si el alta calculara el hash distinto
+--     del login, el usuario se crearía sin poder entrar nunca.
+--   · VALIDAR_TOKEN / REVOCAR_TOKENS_USUARIO — la sesión es de auth.
 --
--- Limitación conocida: SHA-256 es de una sola pasada, sin factor de trabajo.
--- Si más adelante conseguís el grant
---     GRANT EXECUTE ON SYS.DBMS_CRYPTO TO WKSP_CTELL;
--- conviene migrar HASH_PASSWORD a PBKDF2 (ver nota al pie del paquete).
+-- Tabla (no la crea ni la altera; el DDL se administra aparte):
+--   USUARIOS  ID_USUARIO, USUARIO, NOMBRE_APELLIDO, CORREO, CONTRASENA_HASH,
+--             SALT, ACTIVO, FECHA_CREACION, FECHA_ACTUALIZACION, ES_ADMIN
 --
--- No se modifica ninguna tabla: se usan USUARIOS y TOKENS tal como están.
+-- ESTADO: ACTIVO es VARCHAR2(1) con 'A' (activo) / 'I' (inactivo). Ese mismo
+-- código viaja en el JSON y lo consume el frontend (tipo `Estado` en
+-- src/lib/api.ts). No se traduce a 1/0 en ningún punto: la traducción no
+-- aportaba nada y cada conversión era una oportunidad de ORA-01722.
 --
--- ESTADO DE LOS USUARIOS
--- USUARIOS.ACTIVO es VARCHAR2(1) y guarda un código: 'A' activo, 'I' inactivo.
--- Ese mismo código viaja en el JSON y lo consume el frontend (tipo `Estado` en
--- src/lib/api.ts). No hay traducción a 1/0 en ningún punto: la había, y cada
--- conversión de ida y vuelta era una oportunidad de ORA-01722 — un TO_NUMBER
--- sobre una columna de texto tiraba abajo el listado entero.
+-- ES_ADMIN es VARCHAR2(1) con 'S'/'N', y sigue el mismo criterio: viaja como
+-- está, sin convertirse a booleano.
 --
--- TOKENS.ACTIVO sí es NUMBER(1,0) con 1/0. Se llama igual pero NO es del mismo
--- tipo: es interna del manejo de sesiones y no se expone en ninguna API.
+-- NUNCA SE DEVUELVEN CONTRASENA_HASH NI SALT. Ningún SELECT de este archivo
+-- los incluye en una respuesta.
 --------------------------------------------------------------------------------
 
 SET DEFINE OFF
@@ -49,44 +49,46 @@ SET SERVEROUTPUT ON
 
 CREATE OR REPLACE PACKAGE PKG_USUARIOS AS
 
-  -- Códigos de error de negocio (rango reservado por Oracle para el usuario).
-  C_ERR_USUARIO_DUPLICADO CONSTANT PLS_INTEGER := -20001;
-  C_ERR_USUARIO_NO_EXISTE CONSTANT PLS_INTEGER := -20002;
-  C_ERR_PASSWORD_DEBIL    CONSTANT PLS_INTEGER := -20003;
-  C_ERR_DATOS_INVALIDOS   CONSTANT PLS_INTEGER := -20004;
+  -- Códigos de error de negocio, en el rango que Oracle reserva al usuario.
+  -- Los handlers los traducen a 400/404/409; cualquier otro código se oculta
+  -- como 500 para no filtrar detalles internos.
+  C_ERR_DUPLICADO       CONSTANT PLS_INTEGER := -20001;
+  C_ERR_NO_EXISTE       CONSTANT PLS_INTEGER := -20002;
+  C_ERR_PASSWORD_DEBIL  CONSTANT PLS_INTEGER := -20003;
+  C_ERR_DATOS_INVALIDOS CONSTANT PLS_INTEGER := -20004;
 
-  -- USUARIOS.ACTIVO es VARCHAR2(1) y guarda un CODIGO DE ESTADO, no un
-  -- booleano: 'A' = activo, 'I' = inactivo. Ese mismo codigo viaja en el JSON
-  -- y lo consume el frontend (tipo `Estado` en src/lib/api.ts): no se traduce
-  -- a 1/0 en ningun punto.
-  --
-  -- Ojo: TOKENS.ACTIVO SI es NUMBER(1,0) con 1/0. Las dos columnas se
-  -- llaman igual y son de tipos distintos.
+  -- Mismos códigos que PKG_AUTH: se repiten como constantes propias para no
+  -- obligar a leer el otro paquete cada vez, pero los valores son los mismos.
   C_ESTADO_ACTIVO   CONSTANT VARCHAR2(1) := 'A';
   C_ESTADO_INACTIVO CONSTANT VARCHAR2(1) := 'I';
 
-  FUNCTION GENERAR_SALT RETURN VARCHAR2;
+  C_ADMIN_SI CONSTANT VARCHAR2(1) := 'S';
+  C_ADMIN_NO CONSTANT VARCHAR2(1) := 'N';
 
-  FUNCTION HASH_PASSWORD (
-    p_password IN VARCHAR2,
-    p_salt     IN VARCHAR2
-  ) RETURN VARCHAR2;
+  -- Tope del listado. Sin esto, un ?tamanio=999999 obliga a la base a armar un
+  -- CLOB enorme y el request muere por timeout.
+  C_TAMANIO_MAXIMO CONSTANT PLS_INTEGER := 200;
+  C_TAMANIO_DEFECTO CONSTANT PLS_INTEGER := 25;
 
-  PROCEDURE CREAR_USUARIO (
+  PROCEDURE CREAR (
     p_usuario         IN  VARCHAR2,
     p_nombre_apellido IN  VARCHAR2,
     p_correo          IN  VARCHAR2 DEFAULT NULL,
     p_password        IN  VARCHAR2,
+    p_es_admin        IN  VARCHAR2 DEFAULT 'N',
     p_id_usuario      OUT NUMBER
   );
 
-  -- Los parámetros NULL no se modifican. Para la clave usar CAMBIAR_PASSWORD.
-  -- p_activo es el código de la columna: 'A' o 'I'. NULL = no cambiar.
-  PROCEDURE ACTUALIZAR_USUARIO (
+  -- Un parámetro NULL significa "no cambiar", no "borrar".
+  -- p_activo y p_es_admin son códigos: 'A'/'I' y 'S'/'N'. Un valor inválido se
+  -- ignora (conserva el actual) en vez de escribir basura en la columna.
+  -- La contraseña NO se toca acá: para eso está CAMBIAR_PASSWORD.
+  PROCEDURE ACTUALIZAR (
     p_id_usuario      IN NUMBER,
     p_nombre_apellido IN VARCHAR2 DEFAULT NULL,
     p_correo          IN VARCHAR2 DEFAULT NULL,
-    p_activo          IN VARCHAR2 DEFAULT NULL
+    p_activo          IN VARCHAR2 DEFAULT NULL,
+    p_es_admin        IN VARCHAR2 DEFAULT NULL
   );
 
   PROCEDURE CAMBIAR_PASSWORD (
@@ -94,57 +96,36 @@ CREATE OR REPLACE PACKAGE PKG_USUARIOS AS
     p_password   IN VARCHAR2
   );
 
-  -- Baja lógica: ACTIVO = 'I' y se revocan los tokens vigentes.
-  PROCEDURE INACTIVAR_USUARIO (p_id_usuario IN NUMBER);
+  -- Baja lógica: ACTIVO = 'I' y se revocan las sesiones abiertas.
+  PROCEDURE INACTIVAR (p_id_usuario IN NUMBER);
 
-  PROCEDURE ACTIVAR_USUARIO (p_id_usuario IN NUMBER);
+  PROCEDURE ACTIVAR (p_id_usuario IN NUMBER);
 
-  -- Baja física. Preferí INACTIVAR_USUARIO salvo que quieras borrar el rastro.
-  PROCEDURE ELIMINAR_USUARIO (p_id_usuario IN NUMBER);
+  -- Baja física. Preferí INACTIVAR salvo que haya que borrar el rastro.
+  PROCEDURE ELIMINAR (p_id_usuario IN NUMBER);
 
-  -- p_activo es el código de la columna: 'A' o 'I'. NULL = sin filtro.
-  FUNCTION CONTAR_USUARIOS (
+  -- p_activo: 'A' o 'I'. NULL o un código inválido = sin filtro.
+  FUNCTION CONTAR (
     p_busqueda IN VARCHAR2 DEFAULT NULL,
     p_activo   IN VARCHAR2 DEFAULT NULL
   ) RETURN NUMBER;
 
-  -- Devuelve el ID si las credenciales son correctas, NULL si no.
-  -- No distingue "no existe" de "clave incorrecta": informarlo permitiría
-  -- enumerar cuentas válidas.
-  FUNCTION VERIFICAR_CREDENCIALES (
-    p_usuario  IN VARCHAR2,
-    p_password IN VARCHAR2
-  ) RETURN NUMBER;
+  -- Normaliza el filtro de estado: devuelve 'A', 'I' o NULL (sin filtro).
+  -- Es pública porque los handlers la necesitan ANTES de llamar a CONTAR: una
+  -- función del paquete no se puede invocar desde una sentencia SQL, así que
+  -- el valor se resuelve en PL/SQL y se pasa como variable.
+  FUNCTION NORMALIZAR_ESTADO (p_valor IN VARCHAR2) RETURN VARCHAR2;
 
 END PKG_USUARIOS;
 /
 
 CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
 
-  --------------------------------------------------------------------------
+  ------------------------------------------------------------------------------
   -- Privados
-  --------------------------------------------------------------------------
+  ------------------------------------------------------------------------------
 
-  -- Compara en tiempo constante: cortar en la primera diferencia filtra
-  -- información por temporización.
-  FUNCTION COMPARAR_SEGURO (p_a IN VARCHAR2, p_b IN VARCHAR2) RETURN BOOLEAN IS
-    l_dif PLS_INTEGER := 0;
-  BEGIN
-    IF p_a IS NULL OR p_b IS NULL THEN
-      RETURN FALSE;
-    END IF;
-
-    IF LENGTH(p_a) != LENGTH(p_b) THEN
-      RETURN FALSE;
-    END IF;
-
-    FOR i IN 1 .. LENGTH(p_a) LOOP
-      l_dif := l_dif + ABS(ASCII(SUBSTR(p_a, i, 1)) - ASCII(SUBSTR(p_b, i, 1)));
-    END LOOP;
-
-    RETURN l_dif = 0;
-  END COMPARAR_SEGURO;
-
+  -- Reglas de la contraseña, en un solo lugar: las usan el alta y el cambio.
   PROCEDURE VALIDAR_PASSWORD (p_password IN VARCHAR2) IS
   BEGIN
     IF p_password IS NULL OR LENGTH(p_password) < 8 THEN
@@ -152,62 +133,90 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
         'La contrasena debe tener al menos 8 caracteres');
     END IF;
 
+    -- El tope no es capricho: el hash se calcula sobre (SALT || password) y
+    -- conviene acotar lo que entra. 128 es holgado para cualquier uso real.
     IF LENGTH(p_password) > 128 THEN
       RAISE_APPLICATION_ERROR(C_ERR_PASSWORD_DEBIL,
         'La contrasena no puede superar los 128 caracteres');
     END IF;
   END VALIDAR_PASSWORD;
 
-  --------------------------------------------------------------------------
-  -- Públicos
-  --------------------------------------------------------------------------
-
-  FUNCTION GENERAR_SALT RETURN VARCHAR2 IS
+  PROCEDURE VALIDAR_CORREO (p_correo IN VARCHAR2) IS
   BEGIN
-    -- SYS_GUID() da 16 bytes -> 32 hex, el largo exacto de la columna SALT.
-    RETURN RAWTOHEX(SYS_GUID());
-  END GENERAR_SALT;
-
-  FUNCTION HASH_PASSWORD (
-    p_password IN VARCHAR2,
-    p_salt     IN VARCHAR2
-  ) RETURN VARCHAR2 IS
-    l_hash VARCHAR2(256);
-  BEGIN
-    IF p_password IS NULL OR p_salt IS NULL THEN
-      RAISE_APPLICATION_ERROR(C_ERR_DATOS_INVALIDOS,
-        'Password y salt son obligatorios');
+    -- CORREO es la única columna opcional de la tabla: NULL es válido.
+    IF p_correo IS NULL THEN
+      RETURN;
     END IF;
 
-    -- El salt va adelante para que dos usuarios con la misma clave produzcan
-    -- hashes distintos. Salida: 64 hex, dentro de los 256 de la columna.
-    --
-    -- STANDARD_HASH es una funcion SQL, no PL/SQL: invocarla como expresion
-    -- directa da PLS-00201 ("el identificador se debe declarar"). Por eso va
-    -- dentro de un SELECT ... FROM DUAL. No es un problema de privilegios.
-    --
-    -- Con el grant de DBMS_CRYPTO, reemplazar el SELECT por:
-    --   RETURN RAWTOHEX(DBMS_CRYPTO.PBKDF2(
-    --     UTL_I18N.STRING_TO_RAW(p_password,'AL32UTF8'),
-    --     HEXTORAW(p_salt), 100000, DBMS_CRYPTO.HMAC_SH512, 64));
-    SELECT STANDARD_HASH(p_salt || p_password, 'SHA256')
-      INTO l_hash
-      FROM DUAL;
+    IF NOT REGEXP_LIKE(TRIM(p_correo),
+         '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$') THEN
+      RAISE_APPLICATION_ERROR(C_ERR_DATOS_INVALIDOS, 'El correo no es valido');
+    END IF;
 
-    RETURN l_hash;
-  END HASH_PASSWORD;
+    IF LENGTH(TRIM(p_correo)) > 100 THEN
+      RAISE_APPLICATION_ERROR(C_ERR_DATOS_INVALIDOS,
+        'El correo no puede superar los 100 caracteres');
+    END IF;
+  END VALIDAR_CORREO;
 
-  PROCEDURE CREAR_USUARIO (
+  -- Devuelve 'S'/'N', o NULL si el valor no es ninguno de los dos.
+  FUNCTION NORMALIZAR_ADMIN (p_valor IN VARCHAR2) RETURN VARCHAR2 IS
+  BEGIN
+    RETURN CASE UPPER(TRIM(p_valor))
+             WHEN 'S' THEN C_ADMIN_SI
+             WHEN 'N' THEN C_ADMIN_NO
+             ELSE NULL
+           END;
+  END NORMALIZAR_ADMIN;
+
+  -- Lanza C_ERR_NO_EXISTE si el ID no está en la tabla. Se usa antes de las
+  -- operaciones que necesitan distinguir "no existe" de "no hizo falta cambiar
+  -- nada", donde SQL%ROWCOUNT = 0 sería ambiguo.
+  PROCEDURE EXIGIR_QUE_EXISTA (p_id_usuario IN NUMBER) IS
+    l_existe PLS_INTEGER;
+  BEGIN
+    SELECT COUNT(*)
+      INTO l_existe
+      FROM USUARIOS
+     WHERE ID_USUARIO = p_id_usuario;
+
+    IF l_existe = 0 THEN
+      RAISE_APPLICATION_ERROR(C_ERR_NO_EXISTE, 'El usuario no existe');
+    END IF;
+  END EXIGIR_QUE_EXISTA;
+
+  ------------------------------------------------------------------------------
+  -- Públicos
+  ------------------------------------------------------------------------------
+
+  FUNCTION NORMALIZAR_ESTADO (p_valor IN VARCHAR2) RETURN VARCHAR2 IS
+  BEGIN
+    -- Un código que no sea 'A' ni 'I' devuelve NULL: en un filtro eso es "sin
+    -- filtro" y en un UPDATE es "no cambiar". Las dos lecturas son las
+    -- deseables ante un valor que no entendemos.
+    RETURN CASE UPPER(TRIM(p_valor))
+             WHEN C_ESTADO_ACTIVO   THEN C_ESTADO_ACTIVO
+             WHEN C_ESTADO_INACTIVO THEN C_ESTADO_INACTIVO
+             ELSE NULL
+           END;
+  END NORMALIZAR_ESTADO;
+
+  PROCEDURE CREAR (
     p_usuario         IN  VARCHAR2,
     p_nombre_apellido IN  VARCHAR2,
     p_correo          IN  VARCHAR2 DEFAULT NULL,
     p_password        IN  VARCHAR2,
+    p_es_admin        IN  VARCHAR2 DEFAULT 'N',
     p_id_usuario      OUT NUMBER
   ) IS
-    l_salt    VARCHAR2(32);
-    l_hash    VARCHAR2(256);
-    l_usuario VARCHAR2(50);
+    l_usuario   VARCHAR2(50);
+    l_salt      VARCHAR2(32);
+    l_hash      VARCHAR2(256);
+    l_es_admin  VARCHAR2(1);
   BEGIN
+    -- El nombre de usuario se guarda SIEMPRE en minúscula. El login busca con
+    -- LOWER(), así que un usuario guardado con mayúsculas no podría entrar
+    -- nunca — y el 401 resultante es indistinguible de una clave mal puesta.
     l_usuario := LOWER(TRIM(p_usuario));
 
     IF l_usuario IS NULL OR LENGTH(l_usuario) < 3 THEN
@@ -215,76 +224,115 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
         'El usuario debe tener al menos 3 caracteres');
     END IF;
 
+    IF LENGTH(l_usuario) > 50 THEN
+      RAISE_APPLICATION_ERROR(C_ERR_DATOS_INVALIDOS,
+        'El usuario no puede superar los 50 caracteres');
+    END IF;
+
+    -- Sin espacios ni símbolos: el usuario viaja en la URL y en el JSON del
+    -- login, y permitir cualquier cosa complica más de lo que habilita.
+    IF NOT REGEXP_LIKE(l_usuario, '^[a-z0-9._-]+$') THEN
+      RAISE_APPLICATION_ERROR(C_ERR_DATOS_INVALIDOS,
+        'El usuario solo admite letras, numeros, punto, guion y guion bajo');
+    END IF;
+
     IF TRIM(p_nombre_apellido) IS NULL THEN
       RAISE_APPLICATION_ERROR(C_ERR_DATOS_INVALIDOS,
         'El nombre y apellido es obligatorio');
     END IF;
 
-    IF p_correo IS NOT NULL
-       AND NOT REGEXP_LIKE(p_correo, '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$') THEN
-      RAISE_APPLICATION_ERROR(C_ERR_DATOS_INVALIDOS, 'El correo no es valido');
+    IF LENGTH(TRIM(p_nombre_apellido)) > 200 THEN
+      RAISE_APPLICATION_ERROR(C_ERR_DATOS_INVALIDOS,
+        'El nombre y apellido no puede superar los 200 caracteres');
     END IF;
 
+    VALIDAR_CORREO(p_correo);
     VALIDAR_PASSWORD(p_password);
 
-    l_salt := GENERAR_SALT();
-    l_hash := HASH_PASSWORD(p_password, l_salt);
+    -- Un valor inválido en el alta cae a 'N': el default seguro es no ser
+    -- administrador. Acá NO se usa NORMALIZAR_ADMIN a secas porque su NULL
+    -- significa "no cambiar", que en un INSERT no tiene sentido.
+    l_es_admin := NVL(NORMALIZAR_ADMIN(p_es_admin), C_ADMIN_NO);
+
+    -- El hash se delega en PKG_AUTH a propósito: es el mismo algoritmo con el
+    -- que el login va a verificar después. Duplicarlo acá sería garantizar que
+    -- algún día se desincronicen.
+    l_salt := PKG_AUTH.GENERAR_SALT();
+    l_hash := PKG_AUTH.HASH_PASSWORD(p_password, l_salt);
 
     INSERT INTO USUARIOS (
       USUARIO, NOMBRE_APELLIDO, CORREO, CONTRASENA_HASH, SALT,
-      ACTIVO, FECHA_CREACION, FECHA_ACTUALIZACION
+      ACTIVO, ES_ADMIN, FECHA_CREACION, FECHA_ACTUALIZACION
     ) VALUES (
-      l_usuario, TRIM(p_nombre_apellido), LOWER(TRIM(p_correo)), l_hash, l_salt,
-      C_ESTADO_ACTIVO, SYSTIMESTAMP, SYSTIMESTAMP
+      l_usuario,
+      TRIM(p_nombre_apellido),
+      LOWER(TRIM(p_correo)),
+      l_hash,
+      l_salt,
+      C_ESTADO_ACTIVO,
+      l_es_admin,
+      SYSTIMESTAMP,
+      SYSTIMESTAMP
     )
     RETURNING ID_USUARIO INTO p_id_usuario;
 
   EXCEPTION
+    -- Lo atrapa la constraint UNIQUE de USUARIO. Se traduce a un error de
+    -- negocio para que el handler lo devuelva como 409 y no como 500.
     WHEN DUP_VAL_ON_INDEX THEN
-      RAISE_APPLICATION_ERROR(C_ERR_USUARIO_DUPLICADO,
+      RAISE_APPLICATION_ERROR(C_ERR_DUPLICADO,
         'Ya existe un usuario con ese nombre');
-  END CREAR_USUARIO;
+  END CREAR;
 
-  PROCEDURE ACTUALIZAR_USUARIO (
+  PROCEDURE ACTUALIZAR (
     p_id_usuario      IN NUMBER,
     p_nombre_apellido IN VARCHAR2 DEFAULT NULL,
     p_correo          IN VARCHAR2 DEFAULT NULL,
-    p_activo          IN VARCHAR2 DEFAULT NULL
+    p_activo          IN VARCHAR2 DEFAULT NULL,
+    p_es_admin        IN VARCHAR2 DEFAULT NULL
   ) IS
-    -- Solo 'A' o 'I' son estados validos. Cualquier otra cosa se descarta
-    -- como NULL, y el NVL de abajo conserva el estado actual: es preferible
-    -- ignorar un valor invalido a escribirlo en la columna.
-    l_estado VARCHAR2(1) := CASE UPPER(TRIM(p_activo))
-                              WHEN 'A' THEN 'A'
-                              WHEN 'I' THEN 'I'
-                              ELSE NULL
-                            END;
+    l_estado   VARCHAR2(1);
+    l_es_admin VARCHAR2(1);
   BEGIN
-    IF p_correo IS NOT NULL
-       AND NOT REGEXP_LIKE(p_correo, '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$') THEN
-      RAISE_APPLICATION_ERROR(C_ERR_DATOS_INVALIDOS, 'El correo no es valido');
+    VALIDAR_CORREO(p_correo);
+
+    IF p_nombre_apellido IS NOT NULL
+       AND LENGTH(TRIM(p_nombre_apellido)) > 200 THEN
+      RAISE_APPLICATION_ERROR(C_ERR_DATOS_INVALIDOS,
+        'El nombre y apellido no puede superar los 200 caracteres');
     END IF;
 
+    -- Los códigos se resuelven ACÁ, en PL/SQL, y entran al UPDATE como
+    -- variables. Llamar a una función del paquete dentro de la sentencia SQL
+    -- da PLS-00231: en contexto SQL no es visible.
+    l_estado   := NORMALIZAR_ESTADO(p_activo);
+    l_es_admin := NORMALIZAR_ADMIN(p_es_admin);
+
+    -- USUARIO no se modifica nunca: es la identidad con la que se inicia
+    -- sesión y cambiarla rompería las referencias que alguien tenga anotadas.
+    -- Para eso se da de baja y se crea otro.
     UPDATE USUARIOS
        SET NOMBRE_APELLIDO     = NVL(TRIM(p_nombre_apellido), NOMBRE_APELLIDO),
            CORREO              = NVL(LOWER(TRIM(p_correo)), CORREO),
-           -- NULL = no cambiar: un parametro ausente no pisa el estado.
+           -- NULL conserva el valor actual, y un código inválido también:
+           -- NORMALIZAR_* ya devolvió NULL para lo que no entendió.
            ACTIVO              = NVL(l_estado, ACTIVO),
+           ES_ADMIN            = NVL(l_es_admin, ES_ADMIN),
            FECHA_ACTUALIZACION = SYSTIMESTAMP
      WHERE ID_USUARIO = p_id_usuario;
 
+    -- Sin esto, actualizar un ID inexistente devuelve 200 y quien lo usó cree
+    -- que guardó.
     IF SQL%ROWCOUNT = 0 THEN
-      RAISE_APPLICATION_ERROR(C_ERR_USUARIO_NO_EXISTE, 'El usuario no existe');
+      RAISE_APPLICATION_ERROR(C_ERR_NO_EXISTE, 'El usuario no existe');
     END IF;
 
-    -- Si se inactivó por esta vía, hay que cortar las sesiones abiertas.
-    IF p_activo = 0 THEN
-      UPDATE TOKENS
-         SET ACTIVO = 0
-       WHERE ID_USUARIO = p_id_usuario
-         AND ACTIVO = 1;
+    -- Si esta modificación lo dejó inactivo, sus sesiones abiertas tienen que
+    -- morir con él. Si no, sigue navegando hasta que venza el token.
+    IF l_estado = C_ESTADO_INACTIVO THEN
+      PKG_AUTH.REVOCAR_TOKENS_USUARIO(p_id_usuario);
     END IF;
-  END ACTUALIZAR_USUARIO;
+  END ACTUALIZAR;
 
   PROCEDURE CAMBIAR_PASSWORD (
     p_id_usuario IN NUMBER,
@@ -295,10 +343,10 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
   BEGIN
     VALIDAR_PASSWORD(p_password);
 
-    -- Salt nuevo en cada cambio: reutilizarlo permitiría comparar el hash
-    -- viejo con el nuevo y detectar si la contraseña cambió realmente.
-    l_salt := GENERAR_SALT();
-    l_hash := HASH_PASSWORD(p_password, l_salt);
+    -- Salt nuevo en cada cambio: reutilizar el anterior deja el hash viejo y
+    -- el nuevo emparentados, y desperdicia la única defensa del salt.
+    l_salt := PKG_AUTH.GENERAR_SALT();
+    l_hash := PKG_AUTH.HASH_PASSWORD(p_password, l_salt);
 
     UPDATE USUARIOS
        SET CONTRASENA_HASH     = l_hash,
@@ -307,517 +355,107 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
      WHERE ID_USUARIO = p_id_usuario;
 
     IF SQL%ROWCOUNT = 0 THEN
-      RAISE_APPLICATION_ERROR(C_ERR_USUARIO_NO_EXISTE, 'El usuario no existe');
+      RAISE_APPLICATION_ERROR(C_ERR_NO_EXISTE, 'El usuario no existe');
     END IF;
 
-    -- Cambiar la clave invalida las sesiones abiertas en otros dispositivos.
-    UPDATE TOKENS
-       SET ACTIVO = 0
-     WHERE ID_USUARIO = p_id_usuario
-       AND ACTIVO = 1;
+    -- Cambiar la clave cierra las demás sesiones. Es lo que se espera cuando
+    -- se cambia por sospecha de robo: si las sesiones abiertas sobrevivieran,
+    -- el cambio no serviría de nada contra quien ya entró.
+    PKG_AUTH.REVOCAR_TOKENS_USUARIO(p_id_usuario);
   END CAMBIAR_PASSWORD;
 
-  PROCEDURE INACTIVAR_USUARIO (p_id_usuario IN NUMBER) IS
+  PROCEDURE INACTIVAR (p_id_usuario IN NUMBER) IS
   BEGIN
+    -- Se verifica la existencia aparte porque acá SQL%ROWCOUNT = 0 es ambiguo:
+    -- puede ser "no existe" o "ya estaba inactivo". El primero es un 404 y el
+    -- segundo no es un error.
+    EXIGIR_QUE_EXISTA(p_id_usuario);
+
     UPDATE USUARIOS
        SET ACTIVO              = C_ESTADO_INACTIVO,
            FECHA_ACTUALIZACION = SYSTIMESTAMP
      WHERE ID_USUARIO = p_id_usuario;
 
-    IF SQL%ROWCOUNT = 0 THEN
-      RAISE_APPLICATION_ERROR(C_ERR_USUARIO_NO_EXISTE, 'El usuario no existe');
-    END IF;
+    PKG_AUTH.REVOCAR_TOKENS_USUARIO(p_id_usuario);
+  END INACTIVAR;
 
-    -- Sin esto el usuario inactivo seguiría navegando con su token vigente.
-    UPDATE TOKENS
-       SET ACTIVO = 0
-     WHERE ID_USUARIO = p_id_usuario
-       AND ACTIVO = 1;
-  END INACTIVAR_USUARIO;
-
-  PROCEDURE ACTIVAR_USUARIO (p_id_usuario IN NUMBER) IS
+  PROCEDURE ACTIVAR (p_id_usuario IN NUMBER) IS
   BEGIN
+    EXIGIR_QUE_EXISTA(p_id_usuario);
+
     UPDATE USUARIOS
        SET ACTIVO              = C_ESTADO_ACTIVO,
            FECHA_ACTUALIZACION = SYSTIMESTAMP
      WHERE ID_USUARIO = p_id_usuario;
 
-    IF SQL%ROWCOUNT = 0 THEN
-      RAISE_APPLICATION_ERROR(C_ERR_USUARIO_NO_EXISTE, 'El usuario no existe');
-    END IF;
-  END ACTIVAR_USUARIO;
+    -- No se reactivan los tokens revocados: volver a habilitar la cuenta no
+    -- debería resucitar sesiones viejas. Que inicie sesión de nuevo.
+  END ACTIVAR;
 
-  PROCEDURE ELIMINAR_USUARIO (p_id_usuario IN NUMBER) IS
+  PROCEDURE ELIMINAR (p_id_usuario IN NUMBER) IS
   BEGIN
-    -- La FK de TOKENS bloquearía el DELETE; se limpian primero.
+    -- TOKENS tiene una FK contra USUARIOS: sin borrar los hijos primero, el
+    -- DELETE aborta con ORA-02292.
     DELETE FROM TOKENS WHERE ID_USUARIO = p_id_usuario;
 
     DELETE FROM USUARIOS WHERE ID_USUARIO = p_id_usuario;
 
     IF SQL%ROWCOUNT = 0 THEN
-      RAISE_APPLICATION_ERROR(C_ERR_USUARIO_NO_EXISTE, 'El usuario no existe');
+      RAISE_APPLICATION_ERROR(C_ERR_NO_EXISTE, 'El usuario no existe');
     END IF;
-  END ELIMINAR_USUARIO;
+  END ELIMINAR;
 
-  FUNCTION CONTAR_USUARIOS (
+  FUNCTION CONTAR (
     p_busqueda IN VARCHAR2 DEFAULT NULL,
     p_activo   IN VARCHAR2 DEFAULT NULL
   ) RETURN NUMBER IS
-    l_total  NUMBER;
-    l_busca  VARCHAR2(200) := '%' || LOWER(TRIM(p_busqueda)) || '%';
-    -- Ya es 'A'/'I': se normaliza y se compara como texto, sin conversiones.
-    l_estado VARCHAR2(1) := UPPER(TRIM(p_activo));
+    l_total   NUMBER;
+    l_busqueda VARCHAR2(200);
+    l_estado   VARCHAR2(1);
   BEGIN
+    l_busqueda := '%' || LOWER(TRIM(p_busqueda)) || '%';
+    l_estado   := NORMALIZAR_ESTADO(p_activo);
+
     SELECT COUNT(*)
       INTO l_total
       FROM USUARIOS
      WHERE (p_busqueda IS NULL
-            OR LOWER(USUARIO) LIKE l_busca
-            OR LOWER(NOMBRE_APELLIDO) LIKE l_busca
-            OR LOWER(CORREO) LIKE l_busca)
+            OR LOWER(USUARIO) LIKE l_busqueda
+            OR LOWER(NOMBRE_APELLIDO) LIKE l_busqueda
+            OR LOWER(CORREO) LIKE l_busqueda)
        AND (l_estado IS NULL OR UPPER(TRIM(ACTIVO)) = l_estado);
 
     RETURN l_total;
-  END CONTAR_USUARIOS;
-
-  FUNCTION VERIFICAR_CREDENCIALES (
-    p_usuario  IN VARCHAR2,
-    p_password IN VARCHAR2
-  ) RETURN NUMBER IS
-    l_id         NUMBER;
-    l_hash_guard VARCHAR2(256);
-    l_salt       VARCHAR2(32);
-  BEGIN
-    -- ACTIVO guarda 'A'/'I', no 1/0. Con `ACTIVO = 1` Oracle intentaba
-    -- convertir la columna a numero y moria con ORA-01722 en cada login.
-    -- Ese error subia hasta el WHEN OTHERS del handler y se veia como un 500
-    -- "Error al iniciar sesion", sin pista de que era un problema de tipos.
-    SELECT ID_USUARIO, CONTRASENA_HASH, SALT
-      INTO l_id, l_hash_guard, l_salt
-      FROM USUARIOS
-     WHERE USUARIO = LOWER(TRIM(p_usuario))
-       AND UPPER(TRIM(ACTIVO)) = C_ESTADO_ACTIVO;
-
-    IF COMPARAR_SEGURO(HASH_PASSWORD(p_password, l_salt), l_hash_guard) THEN
-      RETURN l_id;
-    END IF;
-
-    RETURN NULL;
-
-  EXCEPTION
-    WHEN NO_DATA_FOUND THEN
-      RETURN NULL;
-  END VERIFICAR_CREDENCIALES;
+  END CONTAR;
 
 END PKG_USUARIOS;
 /
 
 --------------------------------------------------------------------------------
--- 2. PKG_TOKENS
+-- 2. ORDS · MÓDULO /usuarios/   (todos los handlers requieren token)
 --
--- El token es un valor aleatorio de 64 hex (dos SYS_GUID concatenados y
--- recortados al largo de la columna TOKEN). Al validarse siempre contra la
--- base, una sesión se puede revocar al instante.
---------------------------------------------------------------------------------
-
-CREATE OR REPLACE PACKAGE PKG_TOKENS AS
-
-  C_HORAS_VIGENCIA CONSTANT NUMBER := 8;
-
-  PROCEDURE CREAR_TOKEN (
-    p_id_usuario       IN  NUMBER,
-    p_horas            IN  NUMBER DEFAULT C_HORAS_VIGENCIA,
-    p_token            OUT VARCHAR2,
-    p_fecha_expiracion OUT TIMESTAMP
-  );
-
-  -- Devuelve el ID del usuario si el token está activo y vigente; NULL si no.
-  FUNCTION VALIDAR_TOKEN (p_token IN VARCHAR2) RETURN NUMBER;
-
-  PROCEDURE REVOCAR_TOKEN (p_token IN VARCHAR2);
-
-  PROCEDURE REVOCAR_TOKENS_USUARIO (p_id_usuario IN NUMBER);
-
-  PROCEDURE LIMPIAR_TOKENS_VENCIDOS (p_afectados OUT NUMBER);
-
-END PKG_TOKENS;
-/
-
-CREATE OR REPLACE PACKAGE BODY PKG_TOKENS AS
-
-  PROCEDURE CREAR_TOKEN (
-    p_id_usuario       IN  NUMBER,
-    p_horas            IN  NUMBER DEFAULT C_HORAS_VIGENCIA,
-    p_token            OUT VARCHAR2,
-    p_fecha_expiracion OUT TIMESTAMP
-  ) IS
-    -- VARCHAR2 y no NUMBER: USUARIOS.ACTIVO guarda el codigo 'A'/'I'.
-    -- Leerlo en una variable numerica provoca ORA-01722.
-    l_activo VARCHAR2(1);
-  BEGIN
-    -- No se emiten sesiones para cuentas inactivas o inexistentes.
-    BEGIN
-      SELECT UPPER(TRIM(ACTIVO)) INTO l_activo
-        FROM USUARIOS
-       WHERE ID_USUARIO = p_id_usuario;
-    EXCEPTION
-      WHEN NO_DATA_FOUND THEN
-        RAISE_APPLICATION_ERROR(PKG_USUARIOS.C_ERR_USUARIO_NO_EXISTE,
-          'El usuario no existe');
-    END;
-
-    IF l_activo IS NULL OR l_activo != PKG_USUARIOS.C_ESTADO_ACTIVO THEN
-      RAISE_APPLICATION_ERROR(PKG_USUARIOS.C_ERR_USUARIO_NO_EXISTE,
-        'El usuario esta inactivo');
-    END IF;
-
-    -- Dos SYS_GUID dan 64 hex, el largo exacto de la columna TOKEN.
-    p_token := RAWTOHEX(SYS_GUID()) || RAWTOHEX(SYS_GUID());
-    p_fecha_expiracion := SYSTIMESTAMP
-      + NUMTODSINTERVAL(NVL(p_horas, C_HORAS_VIGENCIA), 'HOUR');
-
-    INSERT INTO TOKENS (
-      ID_USUARIO, TOKEN, FECHA_CREACION, FECHA_EXPIRACION, ACTIVO
-    ) VALUES (
-      p_id_usuario, p_token, SYSTIMESTAMP, p_fecha_expiracion, 1
-    );
-  END CREAR_TOKEN;
-
-  FUNCTION VALIDAR_TOKEN (p_token IN VARCHAR2) RETURN NUMBER IS
-    l_id_usuario NUMBER;
-  BEGIN
-    IF p_token IS NULL OR LENGTH(p_token) != 64 THEN
-      RETURN NULL;
-    END IF;
-
-    -- Se verifica también que el usuario siga activo: inactivarlo debe cortar
-    -- el acceso aunque el token todavía no haya vencido.
-    -- Ojo con los tipos: TOKENS.ACTIVO es NUMBER(1,0) (1/0) y USUARIOS.ACTIVO
-    -- es VARCHAR2(1) con el codigo 'A'/'I'. Se comparan distinto a proposito;
-    -- unificarlos a numero rompe el login con ORA-01722.
-    SELECT t.ID_USUARIO
-      INTO l_id_usuario
-      FROM TOKENS t
-      JOIN USUARIOS u ON u.ID_USUARIO = t.ID_USUARIO
-     WHERE t.TOKEN = p_token
-       AND t.ACTIVO = 1
-       AND UPPER(TRIM(u.ACTIVO)) = PKG_USUARIOS.C_ESTADO_ACTIVO
-       AND t.FECHA_EXPIRACION > SYSTIMESTAMP;
-
-    RETURN l_id_usuario;
-
-  EXCEPTION
-    WHEN NO_DATA_FOUND THEN
-      RETURN NULL;
-  END VALIDAR_TOKEN;
-
-  PROCEDURE REVOCAR_TOKEN (p_token IN VARCHAR2) IS
-  BEGIN
-    UPDATE TOKENS
-       SET ACTIVO = 0
-     WHERE TOKEN = p_token
-       AND ACTIVO = 1;
-    -- Sin error si no existe: cerrar sesión debe ser idempotente.
-  END REVOCAR_TOKEN;
-
-  PROCEDURE REVOCAR_TOKENS_USUARIO (p_id_usuario IN NUMBER) IS
-  BEGIN
-    UPDATE TOKENS
-       SET ACTIVO = 0
-     WHERE ID_USUARIO = p_id_usuario
-       AND ACTIVO = 1;
-  END REVOCAR_TOKENS_USUARIO;
-
-  PROCEDURE LIMPIAR_TOKENS_VENCIDOS (p_afectados OUT NUMBER) IS
-  BEGIN
-    UPDATE TOKENS
-       SET ACTIVO = 0
-     WHERE ACTIVO = 1
-       AND FECHA_EXPIRACION <= SYSTIMESTAMP;
-
-    p_afectados := SQL%ROWCOUNT;
-    COMMIT;
-  END LIMPIAR_TOKENS_VENCIDOS;
-
-END PKG_TOKENS;
-/
-
---------------------------------------------------------------------------------
--- 3. ORDS · MÓDULO /auth/   (endpoints públicos)
+-- BORRAR_MODULO_ORDS se crea en db/auth.sql, que se ejecuta antes que este
+-- archivo. No se redefine acá para que exista en un solo lugar.
 --
---   POST /auth/login    { usuario, password }        -> token + datos
---   POST /auth/logout   Authorization: Bearer <tok>  -> cierra la sesión
---   GET  /auth/me       Authorization: Bearer <tok>  -> usuario actual
+-- Cada handler declara sus parámetros con ORDS.DEFINE_PARAMETER:
+--   authorization       HEADER   / IN    -> el token
+--   resultado           RESPONSE / OUT   -> el cuerpo de la respuesta
+--   X-APEX-STATUS-CODE  HEADER   / OUT   -> el código HTTP (bind status_code)
 --
--- No se llama a ORDS.ENABLE_SCHEMA: en APEX el esquema del workspace ya está
--- habilitado y esa llamada falla con ORA-01031 (privilegios insuficientes).
---------------------------------------------------------------------------------
-
---------------------------------------------------------------------------------
--- Borra un módulo ORDS si existe, reintentando ante un interbloqueo.
+-- El cuerpo de un POST/PUT NO se declara: ORDS parsea el JSON y lo vincula a
+-- los binds del mismo nombre. Pasar 'BODY' como p_source_type aborta el script
+-- entero con ORA-02290, dejando el módulo sin crear.
 --
--- Antes esto era un `WHEN OTHERS THEN NULL` inline, pensado para tragarse el
--- caso "el módulo no existía todavía". El problema es que se tragaba TODO,
--- incluido un ORA-00060: el DELETE fallaba en silencio, la ejecución seguía, y
--- el DEFINE_MODULE de abajo moría con ORA-00001 (nombre duplicado) contra el
--- módulo que nunca se llegó a borrar.
+-- DOS TRAMPAS QUE YA COSTARON CARO, presentes en cada handler de abajo:
 --
--- El interbloqueo aparece cuando otra sesión tiene tomadas las filas de
--- metadatos de ORDS: típicamente el propio ORDS sirviendo peticiones de la app
--- mientras se reejecuta este script. Es transitorio, así que se reintenta; lo
--- que no se puede hacer es ignorarlo.
---------------------------------------------------------------------------------
-CREATE OR REPLACE PROCEDURE BORRAR_MODULO_ORDS (p_modulo IN VARCHAR2) AS
-  C_INTENTOS CONSTANT PLS_INTEGER := 3;
-  l_existe   PLS_INTEGER;
-BEGIN
-  FOR i IN 1 .. C_INTENTOS LOOP
-    BEGIN
-      -- Se consulta antes de borrar en vez de capturar el error de "no
-      -- existe": así el EXCEPTION queda libre para los fallos que sí importan.
-      SELECT COUNT(*)
-        INTO l_existe
-        FROM USER_ORDS_MODULES
-       WHERE NAME = p_modulo;
-
-      IF l_existe = 0 THEN
-        RETURN;  -- No existía: nada que borrar.
-      END IF;
-
-      ORDS.DELETE_MODULE(p_module_name => p_modulo);
-      COMMIT;  -- Libera los locks antes de que DEFINE_MODULE los vuelva a pedir.
-      RETURN;
-
-    EXCEPTION
-      WHEN OTHERS THEN
-        -- ORA-00060 (interbloqueo) y ORA-04020 (lock de objeto) son
-        -- transitorios: la otra sesión termina y el reintento pasa.
-        IF SQLCODE IN (-60, -4020) AND i < C_INTENTOS THEN
-          ROLLBACK;
-          DBMS_SESSION.SLEEP(2);
-        ELSE
-          -- Cualquier otro error, o se acabaron los reintentos: que se vea.
-          -- Seguir de largo dejaría el módulo viejo publicado y el script
-          -- terminaría "bien" sin haber aplicado ningún cambio.
-          RAISE;
-        END IF;
-    END;
-  END LOOP;
-END BORRAR_MODULO_ORDS;
-/
-
-BEGIN
-  BORRAR_MODULO_ORDS('auth');
-
-  ORDS.DEFINE_MODULE(
-    p_module_name    => 'auth',
-    p_base_path      => '/auth/',
-    p_items_per_page => 25,
-    p_status         => 'PUBLISHED',
-    p_comments       => 'Autenticacion: login, logout y sesion actual'
-  );
-
-  ----------------------------------------------------------------------------
-  -- POST /auth/login
-  ----------------------------------------------------------------------------
-  ORDS.DEFINE_TEMPLATE(p_module_name => 'auth', p_pattern => 'login');
-
-  ORDS.DEFINE_HANDLER(
-    p_module_name => 'auth',
-    p_pattern     => 'login',
-    p_method      => 'POST',
-    p_source_type => ORDS.source_type_plsql,
-    p_source      => q'~
-DECLARE
-  l_id_usuario NUMBER;
-  l_token      VARCHAR2(64);
-  l_expira     TIMESTAMP;
-  l_usuario    VARCHAR2(50);
-  l_nombre     VARCHAR2(200);
-  l_correo     VARCHAR2(100);
-BEGIN
-  l_id_usuario := PKG_USUARIOS.VERIFICAR_CREDENCIALES(:usuario, :password);
-
-  IF l_id_usuario IS NULL THEN
-    -- Mensaje generico a proposito: distinguir "no existe" de "clave
-    -- incorrecta" permitiria enumerar cuentas validas.
-    :status_code := 401;
-    :resultado := '{"error":"Usuario o contrasena incorrectos"}';
-    RETURN;
-  END IF;
-
-  PKG_TOKENS.CREAR_TOKEN(
-    p_id_usuario       => l_id_usuario,
-    p_token            => l_token,
-    p_fecha_expiracion => l_expira
-  );
-
-  SELECT USUARIO, NOMBRE_APELLIDO, CORREO
-    INTO l_usuario, l_nombre, l_correo
-    FROM USUARIOS
-   WHERE ID_USUARIO = l_id_usuario;
-
-  COMMIT;
-
-  :status_code := 200;
-  :resultado := JSON_OBJECT(
-    'token'   VALUE l_token,
-    'expira'  VALUE TO_CHAR(l_expira, 'YYYY-MM-DD"T"HH24:MI:SS'),
-    'usuario' VALUE JSON_OBJECT(
-       'id'             VALUE l_id_usuario,
-       'usuario'        VALUE l_usuario,
-       'nombreApellido' VALUE l_nombre,
-       'correo'         VALUE l_correo
-    )
-  );
-EXCEPTION
-  WHEN OTHERS THEN
-    ROLLBACK;
-    :status_code := 500;
-    -- El detalle del error va al log del servidor, no a la respuesta: al
-    -- cliente se le sigue dando un mensaje generico. Sin esta linea un
-    -- ORA-01722 por tipos se veia como "Error al iniciar sesion" y no habia
-    -- forma de saber que habia fallado realmente.
-    APEX_DEBUG.ERROR('auth/login: ' || SQLERRM || ' | ' ||
-                     DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
-    :resultado := '{"error":"Error al iniciar sesion"}';
-END;
-~'
-  );
-
-  -- :usuario y :password NO se declaran con DEFINE_PARAMETER. En un handler
-  -- plsql/block ORDS toma el JSON del body y lo vincula solo a los binds del
-  -- mismo nombre. No hay un p_source_type para el cuerpo: los validos son
-  -- HEADER, RESPONSE, URI y QUERY, y pasar 'BODY' aborta el script entero con
-  -- ORA-02290 (REST_PARAMS_SOURCE_TYPE_CK), dejando el modulo sin crear.
-  ORDS.DEFINE_PARAMETER(
-    p_module_name => 'auth', p_pattern => 'login', p_method => 'POST',
-    p_name => 'resultado', p_bind_variable_name => 'resultado',
-    p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
-
-  ORDS.DEFINE_PARAMETER(
-    p_module_name => 'auth', p_pattern => 'login', p_method => 'POST',
-    p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
-    p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
-
-  ----------------------------------------------------------------------------
-  -- POST /auth/logout
-  ----------------------------------------------------------------------------
-  ORDS.DEFINE_TEMPLATE(p_module_name => 'auth', p_pattern => 'logout');
-
-  ORDS.DEFINE_HANDLER(
-    p_module_name => 'auth',
-    p_pattern     => 'logout',
-    p_method      => 'POST',
-    p_source_type => ORDS.source_type_plsql,
-    p_source      => q'~
-BEGIN
-  PKG_TOKENS.REVOCAR_TOKEN(REPLACE(:authorization, 'Bearer ', ''));
-  COMMIT;
-  :status_code := 200;
-  :resultado := '{"ok":true}';
-EXCEPTION
-  WHEN OTHERS THEN
-    ROLLBACK;
-    :status_code := 500;
-    :resultado := '{"error":"Error al cerrar sesion"}';
-END;
-~'
-  );
-
-  ORDS.DEFINE_PARAMETER(
-    p_module_name => 'auth', p_pattern => 'logout', p_method => 'POST',
-    p_name => 'authorization', p_bind_variable_name => 'authorization',
-    p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
-
-  ORDS.DEFINE_PARAMETER(
-    p_module_name => 'auth', p_pattern => 'logout', p_method => 'POST',
-    p_name => 'resultado', p_bind_variable_name => 'resultado',
-    p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
-
-  ORDS.DEFINE_PARAMETER(
-    p_module_name => 'auth', p_pattern => 'logout', p_method => 'POST',
-    p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
-    p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
-
-  ----------------------------------------------------------------------------
-  -- GET /auth/me
-  ----------------------------------------------------------------------------
-  ORDS.DEFINE_TEMPLATE(p_module_name => 'auth', p_pattern => 'me');
-
-  ORDS.DEFINE_HANDLER(
-    p_module_name => 'auth',
-    p_pattern     => 'me',
-    p_method      => 'GET',
-    p_source_type => ORDS.source_type_plsql,
-    p_source      => q'~
-DECLARE
-  l_id_usuario NUMBER;
-  l_usuario    VARCHAR2(50);
-  l_nombre     VARCHAR2(200);
-  l_correo     VARCHAR2(100);
-BEGIN
-  l_id_usuario := PKG_TOKENS.VALIDAR_TOKEN(REPLACE(:authorization, 'Bearer ', ''));
-
-  IF l_id_usuario IS NULL THEN
-    :status_code := 401;
-    :resultado := '{"error":"Sesion invalida o vencida"}';
-    RETURN;
-  END IF;
-
-  SELECT USUARIO, NOMBRE_APELLIDO, CORREO
-    INTO l_usuario, l_nombre, l_correo
-    FROM USUARIOS
-   WHERE ID_USUARIO = l_id_usuario;
-
-  :status_code := 200;
-  :resultado := JSON_OBJECT(
-    'id'             VALUE l_id_usuario,
-    'usuario'        VALUE l_usuario,
-    'nombreApellido' VALUE l_nombre,
-    'correo'         VALUE l_correo
-  );
-EXCEPTION
-  WHEN OTHERS THEN
-    :status_code := 500;
-    :resultado := '{"error":"Error al obtener la sesion"}';
-END;
-~'
-  );
-
-  ORDS.DEFINE_PARAMETER(
-    p_module_name => 'auth', p_pattern => 'me', p_method => 'GET',
-    p_name => 'authorization', p_bind_variable_name => 'authorization',
-    p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
-
-  ORDS.DEFINE_PARAMETER(
-    p_module_name => 'auth', p_pattern => 'me', p_method => 'GET',
-    p_name => 'resultado', p_bind_variable_name => 'resultado',
-    p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
-
-  ORDS.DEFINE_PARAMETER(
-    p_module_name => 'auth', p_pattern => 'me', p_method => 'GET',
-    p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
-    p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
-
-  COMMIT;
-END;
-/
-
---------------------------------------------------------------------------------
--- 4. ORDS · MÓDULO /usuarios/   (requieren token de sesión)
+--  1. Un query param ausente llega como CADENA VACÍA, no como NULL.
+--     TO_NUMBER('') lanza ORA-01722, y `:param IS NULL` no protege porque una
+--     cadena vacía no es NULL. Por eso todo TO_NUMBER lleva NULLIF(:param,'').
 --
---   GET    /usuarios/              ?busqueda=&activo=&pagina=&tamanio=
---   POST   /usuarios/              { usuario, nombreApellido, correo, password }
---   GET    /usuarios/:id
---   PUT    /usuarios/:id           { nombreApellido, correo, activo }
---   DELETE /usuarios/:id           baja física
---   POST   /usuarios/:id/inactivar
---   POST   /usuarios/:id/activar
---   POST   /usuarios/:id/password  { password }
---
--- Cada handler valida el header Authorization contra PKG_TOKENS.VALIDAR_TOKEN.
--- Sin esa comprobación el ABM quedaría abierto a internet.
+--  2. Las conversiones van DENTRO del BEGIN, nunca en el DECLARE. El DECLARE
+--     se ejecuta antes de que exista el bloque EXCEPTION: una excepción ahí
+--     escapa del handler y ORDS responde un 500 genérico sin que el EXCEPTION
+--     escrito llegue a correr.
 --------------------------------------------------------------------------------
 
 BEGIN
@@ -826,14 +464,22 @@ BEGIN
   ORDS.DEFINE_MODULE(
     p_module_name    => 'usuarios',
     p_base_path      => '/usuarios/',
-    p_items_per_page => 25,
+    p_items_per_page => 0,
     p_status         => 'PUBLISHED',
-    p_comments       => 'ABM de usuarios (requiere token)'
+    p_comments       => 'ABM de usuarios'
   );
 
-  ----------------------------------------------------------------------------
-  -- GET /usuarios/  · listado paginado
-  ----------------------------------------------------------------------------
+  ------------------------------------------------------------------------------
+  -- GET /usuarios/   → listado paginado
+  --
+  -- Query params (todos opcionales):
+  --   busqueda  texto libre sobre usuario, nombre y correo
+  --   activo    'A' o 'I'; cualquier otra cosa = sin filtro
+  --   pagina    1 por defecto
+  --   tamanio   25 por defecto, 200 como techo
+  --
+  -- 200 → { items: [...], total, pagina, tamanio }
+  ------------------------------------------------------------------------------
   ORDS.DEFINE_TEMPLATE(p_module_name => 'usuarios', p_pattern => '.');
 
   ORDS.DEFINE_HANDLER(
@@ -844,84 +490,78 @@ BEGIN
     p_source      => q'~
 DECLARE
   l_sesion   NUMBER;
-  l_items    CLOB;
-  l_total    NUMBER;
-  l_tamanio  NUMBER;
-  l_pagina   NUMBER;
-  l_estado   VARCHAR2(1);
   l_busqueda VARCHAR2(200);
-  l_busca    VARCHAR2(200);
+  l_patron   VARCHAR2(200);
+  l_estado   VARCHAR2(1);
+  l_pagina   NUMBER;
+  l_tamanio  NUMBER;
+  l_offset   NUMBER;
+  l_total    NUMBER;
+  l_items    CLOB;
 BEGIN
-  l_sesion := PKG_TOKENS.VALIDAR_TOKEN(REPLACE(:authorization, 'Bearer ', ''));
+  l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(:authorization));
   IF l_sesion IS NULL THEN
     :status_code := 401;
     :resultado := '{"error":"Sesion invalida o vencida"}';
     RETURN;
   END IF;
 
-  -- Los TO_NUMBER van DENTRO del BEGIN, no en el DECLARE.
-  --
-  -- El DECLARE se ejecuta antes que el bloque EXCEPTION exista, asi que una
-  -- excepcion ahi no la captura el WHEN OTHERS: escapa del handler y ORDS
-  -- responde 500 sin dejar rastro de por que.
-  --
-  -- Y pasaba: un parametro que el cliente no manda no llega NULL sino como
-  -- cadena vacia, y TO_NUMBER('') es ORA-01722. El listado de usuarios pide
-  -- ?tamanio=100 sin pagina, y ese solo caso tiraba abajo el endpoint entero.
-  -- Por eso NULLIF(..., '') antes de convertir: cadena vacia -> NULL -> NVL
-  -- aplica el valor por defecto.
-  l_tamanio := LEAST(GREATEST(NVL(TO_NUMBER(NULLIF(:tamanio, '')), 20), 1), 100);
+  -- Todas las conversiones adentro del BEGIN. NULLIF convierte la cadena
+  -- vacia del parametro ausente en NULL antes de que TO_NUMBER la toque.
   l_pagina  := GREATEST(NVL(TO_NUMBER(NULLIF(:pagina, '')), 1), 1);
+  l_tamanio := NVL(TO_NUMBER(NULLIF(:tamanio, '')), PKG_USUARIOS.C_TAMANIO_DEFECTO);
+  l_tamanio := LEAST(GREATEST(l_tamanio, 1), PKG_USUARIOS.C_TAMANIO_MAXIMO);
+  l_offset  := (l_pagina - 1) * l_tamanio;
 
-  -- El estado es texto en todo el sistema: 'A' o 'I', igual que la columna.
-  -- Nada de TO_NUMBER acá — es lo que hacía morir el endpoint con ORA-01722.
-  -- Cualquier valor que no sea A o I se trata como "sin filtro".
-  l_estado := CASE UPPER(TRIM(NULLIF(:activo, '')))
-                WHEN 'A' THEN 'A'
-                WHEN 'I' THEN 'I'
-                ELSE NULL
-              END;
-
-  -- Misma normalizacion para la busqueda: sin esto, un ?busqueda= vacio
-  -- filtraba por '%%' en vez de no filtrar, y el IS NULL de abajo nunca daba
-  -- verdadero.
   l_busqueda := NULLIF(TRIM(:busqueda), '');
-  l_busca    := '%' || LOWER(l_busqueda) || '%';
+  l_patron   := '%' || LOWER(l_busqueda) || '%';
+  -- Se resuelve en PL/SQL y entra al SELECT como variable: una funcion del
+  -- paquete no es visible desde una sentencia SQL (PLS-00231).
+  l_estado   := PKG_USUARIOS.NORMALIZAR_ESTADO(NULLIF(:activo, ''));
 
-  -- Nunca se exponen CONTRASENA_HASH ni SALT.
+  l_total := PKG_USUARIOS.CONTAR(l_busqueda, l_estado);
+
+  -- RETURNING ... INTO un CLOB: un listado de 200 filas supera holgadamente
+  -- los 4000 bytes de un VARCHAR2 y se truncaria.
+  --
+  -- Ni CONTRASENA_HASH ni SALT aparecen en este SELECT, ni deben aparecer.
   SELECT JSON_ARRAYAGG(
            JSON_OBJECT(
-             'id'             VALUE ID_USUARIO,
-             'usuario'        VALUE USUARIO,
-             'nombreApellido' VALUE NOMBRE_APELLIDO,
-             'correo'         VALUE CORREO,
-             -- El estado sale tal cual esta en la columna: 'A' o 'I'. No se
-             -- traduce a 1/0. Esa traduccion obligaba a retraducir en cada
-             -- filtro de entrada y era el origen de los ORA-01722.
-             'activo'         VALUE UPPER(TRIM(ACTIVO)),
-             'fechaCreacion'  VALUE TO_CHAR(FECHA_CREACION, 'YYYY-MM-DD"T"HH24:MI:SS')
+             'id'                  VALUE ID_USUARIO,
+             'usuario'             VALUE USUARIO,
+             'nombreApellido'      VALUE NOMBRE_APELLIDO,
+             'correo'              VALUE CORREO,
+             'activo'              VALUE UPPER(TRIM(ACTIVO)),
+             'esAdmin'             VALUE NVL(UPPER(TRIM(ES_ADMIN)), 'N'),
+             'fechaCreacion'       VALUE TO_CHAR(FECHA_CREACION, 'YYYY-MM-DD"T"HH24:MI:SS'),
+             'fechaActualizacion'  VALUE TO_CHAR(FECHA_ACTUALIZACION, 'YYYY-MM-DD"T"HH24:MI:SS')
              RETURNING CLOB
-           ) RETURNING CLOB
+           )
+           -- El ORDER BY va en los dos niveles a proposito: el de la
+           -- subconsulta decide QUE filas entran en la pagina (es el que
+           -- acompaña al OFFSET), y este decide en que orden quedan dentro
+           -- del array. Sin el de aca, el orden del array no esta garantizado
+           -- aunque la subconsulta venga ordenada.
+           ORDER BY NOMBRE_APELLIDO
+           RETURNING CLOB
          )
     INTO l_items
     FROM (
-      SELECT ID_USUARIO, USUARIO, NOMBRE_APELLIDO, CORREO,
-             ACTIVO, FECHA_CREACION
+      SELECT ID_USUARIO, USUARIO, NOMBRE_APELLIDO, CORREO, ACTIVO, ES_ADMIN,
+             FECHA_CREACION, FECHA_ACTUALIZACION
         FROM USUARIOS
        WHERE (l_busqueda IS NULL
-              OR LOWER(USUARIO) LIKE l_busca
-              OR LOWER(NOMBRE_APELLIDO) LIKE l_busca
-              OR LOWER(CORREO) LIKE l_busca)
-         -- l_estado ya viene como 'A'/'I', el mismo codigo que guarda la
-         -- columna: la comparacion es texto contra texto, sin conversiones.
+              OR LOWER(USUARIO) LIKE l_patron
+              OR LOWER(NOMBRE_APELLIDO) LIKE l_patron
+              OR LOWER(CORREO) LIKE l_patron)
          AND (l_estado IS NULL OR UPPER(TRIM(ACTIVO)) = l_estado)
        ORDER BY NOMBRE_APELLIDO
-      OFFSET (l_pagina - 1) * l_tamanio ROWS FETCH NEXT l_tamanio ROWS ONLY
+       OFFSET l_offset ROWS FETCH NEXT l_tamanio ROWS ONLY
     );
 
-  l_total := PKG_USUARIOS.CONTAR_USUARIOS(l_busqueda, l_estado);
-
   :status_code := 200;
+  -- JSON_ARRAYAGG devuelve NULL cuando no hay filas, no un array vacio: sin
+  -- el NVL el frontend recibiria "items":null y reventaria al iterarlo.
   :resultado := JSON_OBJECT(
     'items'   VALUE NVL(l_items, TO_CLOB('[]')) FORMAT JSON,
     'total'   VALUE l_total,
@@ -932,7 +572,9 @@ BEGIN
 EXCEPTION
   WHEN OTHERS THEN
     :status_code := 500;
-    :resultado := '{"error":"Error al listar usuarios"}';
+    APEX_DEBUG.ERROR('usuarios GET /: ' || SQLERRM || ' | ' ||
+                     DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
+    :resultado := '{"error":"Error al listar los usuarios"}';
 END;
 ~'
   );
@@ -952,9 +594,12 @@ END;
     p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
     p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
-  ----------------------------------------------------------------------------
-  -- POST /usuarios/  · alta
-  ----------------------------------------------------------------------------
+  ------------------------------------------------------------------------------
+  -- POST /usuarios/   → alta
+  --
+  -- Body: { usuario, nombreApellido, correo?, password, esAdmin? }
+  -- 201 → { id, ok: true }     409 → usuario duplicado
+  ------------------------------------------------------------------------------
   ORDS.DEFINE_HANDLER(
     p_module_name => 'usuarios',
     p_pattern     => '.',
@@ -965,34 +610,41 @@ DECLARE
   l_sesion NUMBER;
   l_id     NUMBER;
 BEGIN
-  l_sesion := PKG_TOKENS.VALIDAR_TOKEN(REPLACE(:authorization, 'Bearer ', ''));
+  l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(:authorization));
   IF l_sesion IS NULL THEN
     :status_code := 401;
     :resultado := '{"error":"Sesion invalida o vencida"}';
     RETURN;
   END IF;
 
-  PKG_USUARIOS.CREAR_USUARIO(
+  PKG_USUARIOS.CREAR(
     p_usuario         => :usuario,
     p_nombre_apellido => :nombreApellido,
     p_correo          => :correo,
     p_password        => :password,
+    p_es_admin        => :esAdmin,
     p_id_usuario      => l_id
   );
-  COMMIT;
 
+  COMMIT;
   :status_code := 201;
-  :resultado := JSON_OBJECT('id' VALUE l_id, 'ok' VALUE 'true');
+  :resultado := JSON_OBJECT('id' VALUE l_id, 'ok' VALUE 'true' FORMAT JSON);
 EXCEPTION
   WHEN OTHERS THEN
     ROLLBACK;
-    -- Los errores -20001..-20004 son de negocio: se devuelve 400 con el
-    -- mensaje real. Cualquier otro es un fallo interno y se oculta.
-    IF SQLCODE BETWEEN -20004 AND -20001 THEN
+    IF SQLCODE = -20001 THEN
+      -- Duplicado: 409 y no 400. El dato no es invalido, el estado del
+      -- servidor es el que lo rechaza.
+      :status_code := 409;
+      :resultado := JSON_OBJECT('error' VALUE SUBSTR(SQLERRM, 12));
+    ELSIF SQLCODE BETWEEN -20004 AND -20002 THEN
       :status_code := 400;
+      -- SUBSTR(...,12) recorta el prefijo "ORA-20004: " que Oracle antepone.
       :resultado := JSON_OBJECT('error' VALUE SUBSTR(SQLERRM, 12));
     ELSE
       :status_code := 500;
+      APEX_DEBUG.ERROR('usuarios POST /: ' || SQLERRM || ' | ' ||
+                       DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
       :resultado := '{"error":"Error al crear el usuario"}';
     END IF;
 END;
@@ -1014,9 +666,9 @@ END;
     p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
     p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
-  ----------------------------------------------------------------------------
-  -- GET /usuarios/:id
-  ----------------------------------------------------------------------------
+  ------------------------------------------------------------------------------
+  -- GET /usuarios/:id   → detalle
+  ------------------------------------------------------------------------------
   ORDS.DEFINE_TEMPLATE(p_module_name => 'usuarios', p_pattern => ':id');
 
   ORDS.DEFINE_HANDLER(
@@ -1027,40 +679,40 @@ END;
     p_source      => q'~
 DECLARE
   l_sesion NUMBER;
-  l_json   CLOB;
+  l_id     NUMBER;
 BEGIN
-  l_sesion := PKG_TOKENS.VALIDAR_TOKEN(REPLACE(:authorization, 'Bearer ', ''));
+  l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(:authorization));
   IF l_sesion IS NULL THEN
     :status_code := 401;
     :resultado := '{"error":"Sesion invalida o vencida"}';
     RETURN;
   END IF;
 
+  l_id := TO_NUMBER(NULLIF(:id, ''));
+
   SELECT JSON_OBJECT(
            'id'                 VALUE ID_USUARIO,
            'usuario'            VALUE USUARIO,
            'nombreApellido'     VALUE NOMBRE_APELLIDO,
            'correo'             VALUE CORREO,
-           -- 'A'/'I' -> 1/0: el frontend tipa `activo` como number. CASE
-           -- inline: en SQL no se invoca una funcion de PKG_USUARIOS.
-           -- 'A'/'I' tal cual la columna, sin traducir a numeros.
            'activo'             VALUE UPPER(TRIM(ACTIVO)),
+           'esAdmin'            VALUE NVL(UPPER(TRIM(ES_ADMIN)), 'N'),
            'fechaCreacion'      VALUE TO_CHAR(FECHA_CREACION, 'YYYY-MM-DD"T"HH24:MI:SS'),
            'fechaActualizacion' VALUE TO_CHAR(FECHA_ACTUALIZACION, 'YYYY-MM-DD"T"HH24:MI:SS')
-           RETURNING CLOB
          )
-    INTO l_json
+    INTO :resultado
     FROM USUARIOS
-   WHERE ID_USUARIO = TO_NUMBER(:id);
+   WHERE ID_USUARIO = l_id;
 
   :status_code := 200;
-  :resultado := l_json;
 EXCEPTION
   WHEN NO_DATA_FOUND THEN
     :status_code := 404;
     :resultado := '{"error":"El usuario no existe"}';
   WHEN OTHERS THEN
     :status_code := 500;
+    APEX_DEBUG.ERROR('usuarios GET /:id: ' || SQLERRM || ' | ' ||
+                     DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
     :resultado := '{"error":"Error al obtener el usuario"}';
 END;
 ~'
@@ -1081,9 +733,13 @@ END;
     p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
     p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
-  ----------------------------------------------------------------------------
-  -- PUT /usuarios/:id  · modificación
-  ----------------------------------------------------------------------------
+  ------------------------------------------------------------------------------
+  -- PUT /usuarios/:id   → modificación
+  --
+  -- Body: { nombreApellido?, correo?, activo?, esAdmin? }
+  -- Los campos ausentes no se modifican. USUARIO y la contraseña no se tocan
+  -- por acá.
+  ------------------------------------------------------------------------------
   ORDS.DEFINE_HANDLER(
     p_module_name => 'usuarios',
     p_pattern     => ':id',
@@ -1093,24 +749,22 @@ END;
 DECLARE
   l_sesion NUMBER;
 BEGIN
-  l_sesion := PKG_TOKENS.VALIDAR_TOKEN(REPLACE(:authorization, 'Bearer ', ''));
+  l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(:authorization));
   IF l_sesion IS NULL THEN
     :status_code := 401;
     :resultado := '{"error":"Sesion invalida o vencida"}';
     RETURN;
   END IF;
 
-  -- p_activo es 'A'/'I'; NULL significa "no cambiar", asi que un PUT que solo
-  -- toca el nombre simplemente no lo manda. El paquete descarta cualquier
-  -- valor que no sea A o I.
-  PKG_USUARIOS.ACTUALIZAR_USUARIO(
-    p_id_usuario      => TO_NUMBER(:id),
+  PKG_USUARIOS.ACTUALIZAR(
+    p_id_usuario      => TO_NUMBER(NULLIF(:id, '')),
     p_nombre_apellido => :nombreApellido,
     p_correo          => :correo,
-    p_activo          => NULLIF(:activo, '')
+    p_activo          => :activo,
+    p_es_admin        => :esAdmin
   );
-  COMMIT;
 
+  COMMIT;
   :status_code := 200;
   :resultado := '{"ok":true}';
 EXCEPTION
@@ -1124,6 +778,8 @@ EXCEPTION
       :resultado := JSON_OBJECT('error' VALUE SUBSTR(SQLERRM, 12));
     ELSE
       :status_code := 500;
+      APEX_DEBUG.ERROR('usuarios PUT /:id: ' || SQLERRM || ' | ' ||
+                       DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
       :resultado := '{"error":"Error al actualizar el usuario"}';
     END IF;
 END;
@@ -1145,9 +801,12 @@ END;
     p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
     p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
-  ----------------------------------------------------------------------------
-  -- DELETE /usuarios/:id  · baja física
-  ----------------------------------------------------------------------------
+  ------------------------------------------------------------------------------
+  -- DELETE /usuarios/:id   → baja física
+  --
+  -- Borra tambien sus tokens (la FK lo exige). Preferir /inactivar salvo que
+  -- haya que borrar el rastro.
+  ------------------------------------------------------------------------------
   ORDS.DEFINE_HANDLER(
     p_module_name => 'usuarios',
     p_pattern     => ':id',
@@ -1156,25 +815,28 @@ END;
     p_source      => q'~
 DECLARE
   l_sesion NUMBER;
+  l_id     NUMBER;
 BEGIN
-  l_sesion := PKG_TOKENS.VALIDAR_TOKEN(REPLACE(:authorization, 'Bearer ', ''));
+  l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(:authorization));
   IF l_sesion IS NULL THEN
     :status_code := 401;
     :resultado := '{"error":"Sesion invalida o vencida"}';
     RETURN;
   END IF;
 
-  -- Un usuario no puede borrarse a si mismo: dejaria la sesion activa
-  -- apuntando a una cuenta inexistente.
-  IF l_sesion = TO_NUMBER(:id) THEN
+  l_id := TO_NUMBER(NULLIF(:id, ''));
+
+  -- Nadie puede borrarse a si mismo: se quedaria sin sesion a mitad de la
+  -- operacion, y si era el ultimo administrador el sistema queda inaccesible.
+  IF l_id = l_sesion THEN
     :status_code := 400;
     :resultado := '{"error":"No podes eliminar tu propio usuario"}';
     RETURN;
   END IF;
 
-  PKG_USUARIOS.ELIMINAR_USUARIO(TO_NUMBER(:id));
-  COMMIT;
+  PKG_USUARIOS.ELIMINAR(l_id);
 
+  COMMIT;
   :status_code := 200;
   :resultado := '{"ok":true}';
 EXCEPTION
@@ -1185,6 +847,8 @@ EXCEPTION
       :resultado := '{"error":"El usuario no existe"}';
     ELSE
       :status_code := 500;
+      APEX_DEBUG.ERROR('usuarios DELETE /:id: ' || SQLERRM || ' | ' ||
+                       DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
       :resultado := '{"error":"Error al eliminar el usuario"}';
     END IF;
 END;
@@ -1206,9 +870,9 @@ END;
     p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
     p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
-  ----------------------------------------------------------------------------
-  -- POST /usuarios/:id/inactivar
-  ----------------------------------------------------------------------------
+  ------------------------------------------------------------------------------
+  -- POST /usuarios/:id/inactivar   → baja lógica
+  ------------------------------------------------------------------------------
   ORDS.DEFINE_TEMPLATE(p_module_name => 'usuarios', p_pattern => ':id/inactivar');
 
   ORDS.DEFINE_HANDLER(
@@ -1219,23 +883,28 @@ END;
     p_source      => q'~
 DECLARE
   l_sesion NUMBER;
+  l_id     NUMBER;
 BEGIN
-  l_sesion := PKG_TOKENS.VALIDAR_TOKEN(REPLACE(:authorization, 'Bearer ', ''));
+  l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(:authorization));
   IF l_sesion IS NULL THEN
     :status_code := 401;
     :resultado := '{"error":"Sesion invalida o vencida"}';
     RETURN;
   END IF;
 
-  IF l_sesion = TO_NUMBER(:id) THEN
+  l_id := TO_NUMBER(NULLIF(:id, ''));
+
+  -- Mismo motivo que en DELETE: inactivarse a si mismo revoca la sesion en
+  -- curso y deja al usuario afuera sin aviso.
+  IF l_id = l_sesion THEN
     :status_code := 400;
     :resultado := '{"error":"No podes inactivar tu propio usuario"}';
     RETURN;
   END IF;
 
-  PKG_USUARIOS.INACTIVAR_USUARIO(TO_NUMBER(:id));
-  COMMIT;
+  PKG_USUARIOS.INACTIVAR(l_id);
 
+  COMMIT;
   :status_code := 200;
   :resultado := '{"ok":true}';
 EXCEPTION
@@ -1246,6 +915,8 @@ EXCEPTION
       :resultado := '{"error":"El usuario no existe"}';
     ELSE
       :status_code := 500;
+      APEX_DEBUG.ERROR('usuarios POST /:id/inactivar: ' || SQLERRM || ' | ' ||
+                       DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
       :resultado := '{"error":"Error al inactivar el usuario"}';
     END IF;
 END;
@@ -1267,9 +938,9 @@ END;
     p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
     p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
-  ----------------------------------------------------------------------------
-  -- POST /usuarios/:id/activar
-  ----------------------------------------------------------------------------
+  ------------------------------------------------------------------------------
+  -- POST /usuarios/:id/activar   → alta lógica
+  ------------------------------------------------------------------------------
   ORDS.DEFINE_TEMPLATE(p_module_name => 'usuarios', p_pattern => ':id/activar');
 
   ORDS.DEFINE_HANDLER(
@@ -1281,16 +952,16 @@ END;
 DECLARE
   l_sesion NUMBER;
 BEGIN
-  l_sesion := PKG_TOKENS.VALIDAR_TOKEN(REPLACE(:authorization, 'Bearer ', ''));
+  l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(:authorization));
   IF l_sesion IS NULL THEN
     :status_code := 401;
     :resultado := '{"error":"Sesion invalida o vencida"}';
     RETURN;
   END IF;
 
-  PKG_USUARIOS.ACTIVAR_USUARIO(TO_NUMBER(:id));
-  COMMIT;
+  PKG_USUARIOS.ACTIVAR(TO_NUMBER(NULLIF(:id, '')));
 
+  COMMIT;
   :status_code := 200;
   :resultado := '{"ok":true}';
 EXCEPTION
@@ -1301,6 +972,8 @@ EXCEPTION
       :resultado := '{"error":"El usuario no existe"}';
     ELSE
       :status_code := 500;
+      APEX_DEBUG.ERROR('usuarios POST /:id/activar: ' || SQLERRM || ' | ' ||
+                       DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
       :resultado := '{"error":"Error al activar el usuario"}';
     END IF;
 END;
@@ -1322,9 +995,13 @@ END;
     p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
     p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
-  ----------------------------------------------------------------------------
-  -- POST /usuarios/:id/password  · cambio de contraseña
-  ----------------------------------------------------------------------------
+  ------------------------------------------------------------------------------
+  -- POST /usuarios/:id/password   → cambio de contraseña
+  --
+  -- Body: { password }
+  -- Revoca todas las sesiones del usuario, incluida la propia si se cambia la
+  -- de uno mismo: hay que volver a iniciar sesion.
+  ------------------------------------------------------------------------------
   ORDS.DEFINE_TEMPLATE(p_module_name => 'usuarios', p_pattern => ':id/password');
 
   ORDS.DEFINE_HANDLER(
@@ -1336,18 +1013,16 @@ END;
 DECLARE
   l_sesion NUMBER;
 BEGIN
-  l_sesion := PKG_TOKENS.VALIDAR_TOKEN(REPLACE(:authorization, 'Bearer ', ''));
+  l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(:authorization));
   IF l_sesion IS NULL THEN
     :status_code := 401;
     :resultado := '{"error":"Sesion invalida o vencida"}';
     RETURN;
   END IF;
 
-  PKG_USUARIOS.CAMBIAR_PASSWORD(TO_NUMBER(:id), :password);
-  COMMIT;
+  PKG_USUARIOS.CAMBIAR_PASSWORD(TO_NUMBER(NULLIF(:id, '')), :password);
 
-  -- Se revocaron todas las sesiones del usuario, incluida la propia si se
-  -- cambio la clave a si mismo: hay que volver a iniciar sesion.
+  COMMIT;
   :status_code := 200;
   :resultado := '{"ok":true}';
 EXCEPTION
@@ -1357,10 +1032,13 @@ EXCEPTION
       :status_code := 404;
       :resultado := '{"error":"El usuario no existe"}';
     ELSIF SQLCODE BETWEEN -20004 AND -20001 THEN
+      -- Incluye C_ERR_PASSWORD_DEBIL: el mensaje explica el requisito.
       :status_code := 400;
       :resultado := JSON_OBJECT('error' VALUE SUBSTR(SQLERRM, 12));
     ELSE
       :status_code := 500;
+      APEX_DEBUG.ERROR('usuarios POST /:id/password: ' || SQLERRM || ' | ' ||
+                       DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
       :resultado := '{"error":"Error al cambiar la contrasena"}';
     END IF;
 END;
@@ -1387,228 +1065,72 @@ END;
 /
 
 --------------------------------------------------------------------------------
--- 4b. NORMALIZACIÓN DE USUARIOS.ACTIVO
+-- 3. Usuario administrador inicial
 --
--- USUARIOS.ACTIVO es VARCHAR2(1) y guarda un CÓDIGO DE ESTADO: 'A' activo,
--- 'I' inactivo. Pero el DDL de la tabla declara `DEFAULT 1`, un número: toda
--- fila insertada sin especificar la columna quedó con el texto '1', que no es
--- un estado válido. Esas cuentas no pueden loguearse, porque el WHERE busca
--- 'A' y encuentra '1'.
+-- Solo si la tabla está vacía: reejecutar el script no debe pisar nada ni
+-- recrear un usuario que se dio de baja a propósito.
 --
--- Este bloque las lleva a 'A'/'I'. Es idempotente: al reejecutarlo no toca
--- nada si ya está todo normalizado.
---
--- Criterio: '1', 'S', 'Y' y NULL se consideran activos; '0', 'N' e 'I',
--- inactivos. Ante cualquier otro valor se elige 'I', el estado más
--- restrictivo — es preferible dejar afuera a alguien que debía entrar, y
--- corregirlo a mano, que habilitar una cuenta que debía estar cerrada.
+-- La contraseña se genera al azar en cada corrida y sale SOLO por
+-- DBMS_OUTPUT: no queda escrita en el repositorio. Copiala de la salida de
+-- este bloque y cambiala apenas entres.
 --------------------------------------------------------------------------------
 
 DECLARE
-  l_raros NUMBER;
+  l_total    PLS_INTEGER;
+  l_id       NUMBER;
+  l_password VARCHAR2(20);
 BEGIN
-  SELECT COUNT(*) INTO l_raros
-    FROM USUARIOS
-   WHERE ACTIVO IS NULL
-      OR UPPER(TRIM(ACTIVO)) NOT IN ('A', 'I');
+  SELECT COUNT(*) INTO l_total FROM USUARIOS;
 
-  IF l_raros > 0 THEN
-    -- Antes de tocar nada, queda registro de lo que había.
-    DBMS_OUTPUT.PUT_LINE('Valores no validos en USUARIOS.ACTIVO: ' || l_raros);
-
-    UPDATE USUARIOS
-       SET ACTIVO = CASE
-                      WHEN ACTIVO IS NULL                            THEN 'A'
-                      WHEN UPPER(TRIM(ACTIVO)) IN ('1', 'S', 'Y')    THEN 'A'
-                      ELSE 'I'
-                    END
-     WHERE ACTIVO IS NULL
-        OR UPPER(TRIM(ACTIVO)) NOT IN ('A', 'I');
-
-    COMMIT;
-    DBMS_OUTPUT.PUT_LINE('Normalizadas ' || l_raros || ' filas a ''A''/''I''.');
-  ELSE
-    DBMS_OUTPUT.PUT_LINE('USUARIOS.ACTIVO ya usa ''A''/''I'': nada que normalizar.');
-  END IF;
-END;
-/
-
--- Estado de la columna después de normalizar. Solo deberían verse A e I.
-SELECT ACTIVO, COUNT(*) AS CANTIDAD
-  FROM USUARIOS
- GROUP BY ACTIVO
- ORDER BY ACTIVO;
-
---------------------------------------------------------------------------------
--- 5. USUARIO ADMINISTRADOR INICIAL
---
--- Sólo se crea si la tabla está vacía, así el script se puede reejecutar.
---
--- >>> CAMBIA ESTA CONTRASENA APENAS INICIES SESION POR PRIMERA VEZ <<<
---------------------------------------------------------------------------------
-
-DECLARE
-  l_existe NUMBER;
-  l_id     NUMBER;
-BEGIN
-  SELECT COUNT(*) INTO l_existe FROM USUARIOS;
-
-  IF l_existe = 0 THEN
-    PKG_USUARIOS.CREAR_USUARIO(
-      p_usuario         => 'admin',
-      p_nombre_apellido => 'Administrador CTELL',
-      p_correo          => NULL,
-      p_password        => 'Ctell2026!',
-      p_id_usuario      => l_id
-    );
-    COMMIT;
-    DBMS_OUTPUT.PUT_LINE('Usuario admin creado con ID ' || l_id);
-    DBMS_OUTPUT.PUT_LINE('Contrasena inicial: Ctell2026!  <-- CAMBIALA AL INGRESAR');
-  ELSE
-    DBMS_OUTPUT.PUT_LINE('Ya existen usuarios: no se creo el admin inicial.');
-  END IF;
-END;
-/
-
---------------------------------------------------------------------------------
--- 6. VERIFICACIÓN
---------------------------------------------------------------------------------
-
-DECLARE
-  l_errores NUMBER;
-BEGIN
-  SELECT COUNT(*) INTO l_errores
-    FROM USER_ERRORS
-   WHERE NAME IN ('PKG_USUARIOS', 'PKG_TOKENS');
-
-  IF l_errores = 0 THEN
-    DBMS_OUTPUT.PUT_LINE('OK: paquetes compilados sin errores.');
-  ELSE
-    DBMS_OUTPUT.PUT_LINE('ATENCION: ' || l_errores || ' errores de compilacion.');
-  END IF;
-END;
-/
-
--- La columna correcta de USER_OBJECTS es OBJECT_NAME (no NAME).
-SELECT OBJECT_NAME, OBJECT_TYPE, STATUS
-  FROM USER_OBJECTS
- WHERE OBJECT_TYPE IN ('PACKAGE', 'PACKAGE BODY')
-   AND OBJECT_NAME IN ('PKG_USUARIOS', 'PKG_TOKENS')
- ORDER BY OBJECT_NAME, OBJECT_TYPE;
-
-SELECT NAME, LINE, POSITION, TEXT
-  FROM USER_ERRORS
- WHERE NAME IN ('PKG_USUARIOS', 'PKG_TOKENS')
- ORDER BY NAME, SEQUENCE;
-
-SELECT m.NAME AS modulo, m.URI_PREFIX, t.URI_TEMPLATE, h.METHOD
-  FROM USER_ORDS_MODULES m
-  JOIN USER_ORDS_TEMPLATES t ON t.MODULE_ID = m.ID
-  JOIN USER_ORDS_HANDLERS  h ON h.TEMPLATE_ID = t.ID
- WHERE m.NAME IN ('auth', 'usuarios')
- ORDER BY m.NAME, t.URI_TEMPLATE, h.METHOD;
-
---------------------------------------------------------------------------------
--- 7. PRUEBA DEL CIRCUITO DE LOGIN
---
--- Ejercita lo mismo que hace POST /auth/login, pero desde PL/SQL. Si esto
--- imprime OK, el problema (si queda alguno) está en ORDS o en el cliente, no
--- en los paquetes: eso separa las dos mitades del sistema y evita seguir
--- adivinando contra un 500 genérico.
---
--- No deja rastro: el token de prueba se revoca y se borra al final.
---------------------------------------------------------------------------------
-
-DECLARE
-  l_id      NUMBER;
-  l_token   VARCHAR2(64);
-  l_expira  TIMESTAMP;
-  l_valida  NUMBER;
-  l_estado  VARCHAR2(1);
-  l_usuario VARCHAR2(50) := 'admin';
-  l_pass    VARCHAR2(128) := 'Ctell2026!';
-BEGIN
-  DBMS_OUTPUT.PUT_LINE('--- Prueba de login para "' || l_usuario || '" ---');
-
-  -- Estado real del usuario de prueba, para que el diagnostico sea concreto.
-  BEGIN
-    SELECT UPPER(TRIM(ACTIVO)) INTO l_estado
-      FROM USUARIOS WHERE USUARIO = l_usuario;
-    DBMS_OUTPUT.PUT_LINE('   ACTIVO en la tabla = ''' || l_estado || '''');
-  EXCEPTION
-    WHEN NO_DATA_FOUND THEN
-      DBMS_OUTPUT.PUT_LINE('FALLA: no existe el usuario "' || l_usuario || '".');
-      RETURN;
-  END;
-
-  -- 1. Credenciales
-  l_id := PKG_USUARIOS.VERIFICAR_CREDENCIALES(l_usuario, l_pass);
-
-  IF l_id IS NULL THEN
-    DBMS_OUTPUT.PUT_LINE('FALLA: VERIFICAR_CREDENCIALES devolvio NULL.');
-    IF l_estado != 'A' THEN
-      DBMS_OUTPUT.PUT_LINE('  Causa: el usuario esta en estado ''' || l_estado ||
-                           ''', no ''A''.');
-    ELSE
-      DBMS_OUTPUT.PUT_LINE('  El usuario esta activo, asi que la contrasena');
-      DBMS_OUTPUT.PUT_LINE('  no coincide con la esperada.');
-    END IF;
+  IF l_total > 0 THEN
+    DBMS_OUTPUT.PUT_LINE('Ya hay usuarios: no se crea el administrador inicial');
     RETURN;
   END IF;
 
-  DBMS_OUTPUT.PUT_LINE('OK 1/4: credenciales validas, ID_USUARIO = ' || l_id);
+  -- 20 hex de SYS_GUID(): cumple el mínimo de 8 caracteres de
+  -- VALIDAR_PASSWORD con margen de sobra.
+  l_password := SUBSTR(RAWTOHEX(SYS_GUID()), 1, 20);
 
-  -- 2. Emisión del token
-  PKG_TOKENS.CREAR_TOKEN(
-    p_id_usuario       => l_id,
-    p_token            => l_token,
-    p_fecha_expiracion => l_expira
+  PKG_USUARIOS.CREAR(
+    p_usuario         => 'admin',
+    p_nombre_apellido => 'Administrador',
+    p_correo          => NULL,
+    p_password        => l_password,
+    p_es_admin        => 'S',
+    p_id_usuario      => l_id
   );
 
-  DBMS_OUTPUT.PUT_LINE('OK 2/4: token emitido (largo ' || LENGTH(l_token) ||
-                       '), vence ' || TO_CHAR(l_expira, 'YYYY-MM-DD HH24:MI:SS'));
-
-  -- 3. Validación del token recién emitido
-  l_valida := PKG_TOKENS.VALIDAR_TOKEN(l_token);
-
-  IF l_valida = l_id THEN
-    DBMS_OUTPUT.PUT_LINE('OK 3/4: el token valida y devuelve el mismo usuario.');
-  ELSE
-    DBMS_OUTPUT.PUT_LINE('FALLA: VALIDAR_TOKEN devolvio ' || NVL(TO_CHAR(l_valida), 'NULL'));
-    RETURN;
-  END IF;
-
-  -- 4. El JOIN de VALIDAR_TOKEN mezcla los dos tipos de ACTIVO: se comprueba
-  --    que el token deje de valer al inactivar al usuario, y no antes.
-  UPDATE USUARIOS SET ACTIVO = 'I' WHERE ID_USUARIO = l_id;
-
-  IF PKG_TOKENS.VALIDAR_TOKEN(l_token) IS NULL THEN
-    DBMS_OUTPUT.PUT_LINE('OK 4/4: inactivar al usuario invalida su token.');
-    DBMS_OUTPUT.PUT_LINE('>>> El backend funciona de punta a punta. <<<');
-  ELSE
-    DBMS_OUTPUT.PUT_LINE('FALLA: el token sigue valido con el usuario en ''I''.');
-  END IF;
-
-  -- Se restaura el estado original: la prueba no debe dejar al admin afuera.
-  UPDATE USUARIOS SET ACTIVO = l_estado WHERE ID_USUARIO = l_id;
-
-  -- Limpieza: la prueba no debe dejar sesiones abiertas.
-  DELETE FROM TOKENS WHERE TOKEN = l_token;
   COMMIT;
-
-EXCEPTION
-  WHEN OTHERS THEN
-    -- El paso 4 inactiva al usuario temporalmente. Si algo falla despues de
-    -- eso, el ROLLBACK lo deja como estaba: nunca se pierde el acceso.
-    ROLLBACK;
-    DBMS_OUTPUT.PUT_LINE('EXCEPCION: ' || SQLERRM);
-    DBMS_OUTPUT.PUT_LINE(DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
-    DBMS_OUTPUT.PUT_LINE('(Se revirtieron los cambios de la prueba.)');
+  DBMS_OUTPUT.PUT_LINE('Administrador inicial creado con ID ' || l_id);
+  DBMS_OUTPUT.PUT_LINE('Usuario: admin / Contrasena: ' || l_password || ' — CAMBIALA YA');
 END;
 /
 
--- Red de seguridad: si la prueba quedo a medias, esto devuelve al admin a 'A'.
--- Es un no-op cuando la prueba termino bien.
-UPDATE USUARIOS SET ACTIVO = 'A'
- WHERE USUARIO = 'admin' AND UPPER(TRIM(ACTIVO)) != 'A';
-COMMIT;
+--------------------------------------------------------------------------------
+-- 4. Verificación
+--
+-- En USER_OBJECTS la columna es OBJECT_NAME, no NAME: usar NAME da ORA-00904.
+--------------------------------------------------------------------------------
+
+SELECT OBJECT_NAME, OBJECT_TYPE, STATUS
+  FROM USER_OBJECTS
+ WHERE OBJECT_NAME = 'PKG_USUARIOS'
+ ORDER BY OBJECT_TYPE;
+
+-- Si algo salió INVALID arriba, acá está el motivo.
+SELECT NAME, LINE, POSITION, TEXT
+  FROM USER_ERRORS
+ WHERE NAME = 'PKG_USUARIOS'
+ ORDER BY SEQUENCE;
+
+-- Rutas publicadas: 8 handlers sobre 5 templates.
+SELECT t.URI_TEMPLATE, h.METHOD
+  FROM USER_ORDS_TEMPLATES t
+  JOIN USER_ORDS_HANDLERS  h ON h.TEMPLATE_ID = t.ID
+  JOIN USER_ORDS_MODULES   m ON m.ID = t.MODULE_ID
+ WHERE m.NAME = 'usuarios'
+ ORDER BY t.URI_TEMPLATE, h.METHOD;
+
+SELECT ID_USUARIO, USUARIO, NOMBRE_APELLIDO, ACTIVO, ES_ADMIN
+  FROM USUARIOS
+ ORDER BY ID_USUARIO;

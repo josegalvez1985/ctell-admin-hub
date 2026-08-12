@@ -39,6 +39,16 @@ function LoginPage() {
   const [recordar, setRecordar] = useState(false);
   const passwordRef = useRef<HTMLInputElement>(null);
 
+  // A propósito NO se redirige al panel cuando ya hay un token guardado.
+  //
+  // Tenerlo no prueba que sirva: puede estar vencido, revocado o ser de una
+  // sesión que el servidor ya no reconoce. Mandar al panel por su sola
+  // presencia deja atrapado a quien viene justamente a iniciar sesión de
+  // nuevo, y en esta pantalla eso es peor que el rebote que ahorraría.
+  //
+  // Si el token es válido, `/auth/me` lo confirma dentro del panel; si no lo
+  // es, `useCerrarSesionAlVencer` devuelve acá.
+
   // localStorage no existe en el servidor: leerlo durante el render rompe la
   // hidratación. Por eso la precarga ocurre después de montar.
   useEffect(() => {
@@ -82,7 +92,11 @@ function LoginPage() {
       // Se guarda recién con el login exitoso: recordar credenciales que no
       // sirven solo serviría para volver a fallar igual.
       setCredencialesRecordadas(recordar ? { usuario, password } : null);
-      navigate({ to: "/home" });
+      await navigate({ to: "/home" });
+      // `navigate` es asíncrono: sin el await, el botón quedaba en
+      // "Verificando…" mientras la ruta todavía se estaba resolviendo, y si la
+      // navegación no llegaba a completarse se quedaba así para siempre.
+      setLoading(false);
     } catch (err) {
       // Si las credenciales guardadas dejaron de servir (cambio de clave,
       // cuenta inactivada), se descartan: precargarlas de nuevo repetiría el

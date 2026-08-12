@@ -9,6 +9,9 @@ import { api, ApiError, getToken, getUsuarioSesion } from "@/lib/api";
  * inicial: el nombre aparece apenas carga el panel, sin esperar la red.
  * `GET /auth/me` corre igual en segundo plano para refrescarlos —si alguien
  * cambió el nombre desde otra sesión, se actualiza solo.
+ *
+ * De la sesión vencida se encarga `useCerrarSesionAlVencer`, montado en el
+ * layout `_auth`: escucha los 401 de cualquier petición, no sólo los de acá.
  */
 export function useUsuarioActual() {
   return useQuery({

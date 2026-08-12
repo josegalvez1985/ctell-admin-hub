@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { z } from "zod";
 
 import { useUsuarioActual } from "@/hooks/use-usuario-actual";
-import { api, ApiError, esActivo, type Usuario } from "@/lib/api";
+import { api, ApiError, esActivo, esAdmin, type Usuario } from "@/lib/api";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -39,6 +39,7 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 
 /** Reglas alineadas con las que valida PKG_USUARIOS: si acá pasa, allá también. */
 const PASSWORD = z.string().min(8, "Mínimo 8 caracteres").max(128, "Máximo 128 caracteres");
@@ -55,11 +56,15 @@ const schemaAlta = z.object({
   nombreApellido: z.string().trim().min(1, "Obligatorio").max(200, "Máximo 200 caracteres"),
   correo: z.union([z.string().trim().email("Correo inválido"), z.literal("")]),
   password: PASSWORD,
+  // Booleano en el formulario porque un switch lo es; se traduce a "S"/"N" al
+  // enviarlo. La traducción vive sólo acá, en el borde con el control de UI.
+  esAdmin: z.boolean(),
 });
 
 const schemaEdicion = z.object({
   nombreApellido: z.string().trim().min(1, "Obligatorio").max(200, "Máximo 200 caracteres"),
   correo: z.union([z.string().trim().email("Correo inválido"), z.literal("")]),
+  esAdmin: z.boolean(),
 });
 
 const schemaPassword = z
@@ -163,7 +168,7 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
     // ORA-01722 y el listado respondía 500.
     //
     // Sin ningún parámetro numérico el handler aplica sus valores por defecto
-    // (20 por página) y devuelve el total, que es lo que necesita el modal.
+    // (25 por página) y devuelve el total, que es lo que necesita el modal.
     //
     // La clave se omite en vez de mandarse como undefined: el proyecto usa
     // exactOptionalPropertyTypes, donde "ausente" y "undefined" no son lo mismo.
@@ -256,6 +261,11 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
                     {esYo && (
                       <Badge variant="outline" className="text-[10px]">
                         vos
+                      </Badge>
+                    )}
+                    {esAdmin(usuario.esAdmin) && (
+                      <Badge variant="outline" className="text-[10px]">
+                        admin
                       </Badge>
                     )}
                   </p>
@@ -373,7 +383,14 @@ function PanelAlta({ onVolver }: { onVolver: () => void }) {
   const form = useForm<FormAlta>({
     resolver: zodResolver(schemaAlta),
     // Sin defaults React avisa por inputs no controlados.
-    defaultValues: { usuario: "", nombreApellido: "", correo: "", password: "" },
+    defaultValues: {
+      usuario: "",
+      nombreApellido: "",
+      correo: "",
+      password: "",
+      // El default seguro es no ser administrador.
+      esAdmin: false,
+    },
   });
 
   const crear = useMutation({
@@ -382,6 +399,7 @@ function PanelAlta({ onVolver }: { onVolver: () => void }) {
         usuario: v.usuario,
         nombreApellido: v.nombreApellido,
         password: v.password,
+        esAdmin: v.esAdmin ? "S" : "N",
         // El backend valida el formato si el correo viene: mandar "" daría 400,
         // así que cuando está vacío la clave directamente no se incluye.
         ...(v.correo ? { correo: v.correo } : {}),
@@ -409,7 +427,7 @@ function PanelAlta({ onVolver }: { onVolver: () => void }) {
                 <Input
                   {...field}
                   onChange={(e) => field.onChange(e.target.value.toLowerCase().trim())}
-                  placeholder="nombre.apellido"
+                  placeholder="joseg"
                   autoComplete="off"
                 />
               </FormControl>
@@ -442,7 +460,7 @@ function PanelAlta({ onVolver }: { onVolver: () => void }) {
             <FormItem>
               <FormLabel>Correo (opcional)</FormLabel>
               <FormControl>
-                <Input {...field} type="email" placeholder="nombre@ctell.com" autoComplete="off" />
+                <Input {...field} type="email" placeholder="joseg@ctell.com" autoComplete="off" />
               </FormControl>
               <FormMessage />
             </FormItem>
@@ -460,6 +478,24 @@ function PanelAlta({ onVolver }: { onVolver: () => void }) {
               </FormControl>
               <FormDescription>Mínimo 8 caracteres.</FormDescription>
               <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <FormField
+          control={form.control}
+          name="esAdmin"
+          render={({ field }) => (
+            <FormItem className="flex items-center justify-between gap-4 rounded-lg border border-border px-3 py-3">
+              <div className="space-y-0.5">
+                <FormLabel>Es administrador</FormLabel>
+                <FormDescription>Puede gestionar las cuentas del sistema.</FormDescription>
+              </div>
+              <FormControl>
+                {/* Switch no es un input nativo: usa checked/onCheckedChange en
+                    vez del {...field} que sirve para los Input de texto. */}
+                <Switch checked={field.value} onCheckedChange={field.onChange} />
+              </FormControl>
             </FormItem>
           )}
         />
@@ -484,12 +520,20 @@ function PanelAlta({ onVolver }: { onVolver: () => void }) {
 
 function PanelEdicion({ usuario, onVolver }: { usuario: Usuario; onVolver: () => void }) {
   const queryClient = useQueryClient();
+  const { data: yo } = useUsuarioActual();
+
+  // Quitarse a uno mismo el rol de administrador es un camino sin vuelta: al
+  // guardar se pierde el acceso a esta pantalla, que es justamente donde se
+  // repondría. El backend lo permite —no es un caso que deba bloquear—, así
+  // que se evita acá, donde se puede explicar el motivo.
+  const esYo = usuario.id === yo?.id;
 
   const form = useForm<FormEdicion>({
     resolver: zodResolver(schemaEdicion),
     defaultValues: {
       nombreApellido: usuario.nombreApellido,
       correo: usuario.correo ?? "",
+      esAdmin: esAdmin(usuario.esAdmin),
     },
   });
 
@@ -497,6 +541,7 @@ function PanelEdicion({ usuario, onVolver }: { usuario: Usuario; onVolver: () =>
     mutationFn: (v: FormEdicion) =>
       api.usuarios.actualizar(usuario.id, {
         nombreApellido: v.nombreApellido,
+        esAdmin: v.esAdmin ? "S" : "N",
         // Vaciar el campo no borra el correo: ACTUALIZAR_USUARIO usa NVL, con
         // lo que un NULL conserva el valor anterior. Se omite la clave para
         // ser explícitos sobre eso en vez de simular un borrado que no ocurre.
@@ -544,6 +589,26 @@ function PanelEdicion({ usuario, onVolver }: { usuario: Usuario; onVolver: () =>
                 <Input {...field} type="email" autoComplete="off" />
               </FormControl>
               <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <FormField
+          control={form.control}
+          name="esAdmin"
+          render={({ field }) => (
+            <FormItem className="flex items-center justify-between gap-4 rounded-lg border border-border px-3 py-3">
+              <div className="space-y-0.5">
+                <FormLabel>Es administrador</FormLabel>
+                <FormDescription>
+                  {esYo
+                    ? "No podés cambiar tu propio rol: perderías el acceso a esta pantalla."
+                    : "Puede gestionar las cuentas del sistema."}
+                </FormDescription>
+              </div>
+              <FormControl>
+                <Switch checked={field.value} onCheckedChange={field.onChange} disabled={esYo} />
+              </FormControl>
             </FormItem>
           )}
         />

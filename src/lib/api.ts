@@ -42,6 +42,20 @@ export function esActivo(estado: Estado | undefined): boolean {
   return estado === "A";
 }
 
+/**
+ * Rol del usuario, con el mismo código que guarda la columna `ES_ADMIN`:
+ * "S" administrador, "N" no.
+ *
+ * Sigue el criterio de `Estado`: el código viaja igual de punta a punta, sin
+ * traducirse a booleano en la respuesta ni retraducirse en el frontend.
+ */
+export type Rol = "S" | "N";
+
+/** `true` si el usuario es administrador. */
+export function esAdmin(rol: Rol | undefined): boolean {
+  return rol === "S";
+}
+
 export type Usuario = {
   id: number;
   usuario: string;
@@ -53,6 +67,7 @@ export type Usuario = {
    * retraducir en cada filtro y era una fuente constante de ORA-01722.
    */
   activo: Estado;
+  esAdmin: Rol;
   fechaCreacion?: string;
   fechaActualizacion?: string;
 };
@@ -60,7 +75,11 @@ export type Usuario = {
 export type LoginResponse = {
   token: string;
   expira: string;
-  usuario: Pick<Usuario, "id" | "usuario" | "nombreApellido" | "correo">;
+  /**
+   * `/auth/login` devuelve el rol pero no el estado: para haber llegado hasta
+   * acá la cuenta tiene que estar activa, así que el dato no aportaría nada.
+   */
+  usuario: Pick<Usuario, "id" | "usuario" | "nombreApellido" | "correo" | "esAdmin">;
 };
 
 export type ListaUsuarios = {
@@ -69,6 +88,31 @@ export type ListaUsuarios = {
   pagina: number;
   tamanio: number;
 };
+
+/**
+ * Aviso de que la sesión dejó de valer, para que la app lleve al login.
+ *
+ * Lo dispara cualquier 401, venga de donde venga: un token vencido, revocado
+ * al cambiar la contraseña, de una cuenta que inactivaron, o simplemente
+ * inválido. Este módulo no puede navegar por su cuenta —importar el router
+ * desde acá crearía un ciclo, y `request()` no es un componente—, así que
+ * avisa y quien sepa navegar reacciona. Ver `useCerrarSesionAlVencer`.
+ *
+ * Es un `Set` y no un solo callback porque el hook se monta una vez por
+ * layout: si un día hay dos, los dos tienen que enterarse.
+ */
+type OyenteSesion = () => void;
+const oyentesSesion = new Set<OyenteSesion>();
+
+/** Suscribe un callback al cierre de sesión. Devuelve cómo desuscribirse. */
+export function alCerrarseSesion(oyente: OyenteSesion): () => void {
+  oyentesSesion.add(oyente);
+  return () => oyentesSesion.delete(oyente);
+}
+
+function notificarSesionCerrada() {
+  for (const oyente of oyentesSesion) oyente();
+}
 
 /** Error con el status HTTP, para distinguir 401 de un fallo real. */
 export class ApiError extends Error {
@@ -246,7 +290,7 @@ async function request<T>(
   // handler tampoco: llegan como HTML, y un JSON.parse a secas fallaría con
   // "Unexpected token <", ocultando el status que sí explica el problema.
   const texto = await res.text();
-  let data: { error?: string } | null = null;
+  let data: { error?: string; resultado?: string } | null = null;
   try {
     data = texto ? JSON.parse(texto) : null;
   } catch {
@@ -254,17 +298,36 @@ async function request<T>(
   }
 
   if (!res.ok) {
-    // Una sesión vencida debe limpiar el token local, o el usuario queda
-    // en un limbo enviando credenciales que ya no sirven.
-    if (res.status === 401) {
+    // Un 401 sólo significa "la sesión se cayó" en una petición autenticada.
+    // En el login (`auth: false`) significa "credenciales incorrectas": ahí no
+    // hay ninguna sesión que perder, y tratarlo igual rompía el acceso — el
+    // aviso de sesión vencida se disparaba con cada intento fallido y expulsaba
+    // de la pantalla a quien estaba tratando de entrar.
+    if (res.status === 401 && auth) {
+      // Se limpia el token local, o el usuario queda en un limbo enviando
+      // credenciales que ya no sirven.
       setToken(null);
       setUsuarioSesion(null);
+      // …y hay que sacarlo de la pantalla protegida donde quedó. Limpiar el
+      // token no alcanza: sin esto seguiría viendo el panel, con un toast de
+      // error y sin entender que lo que pasó fue que se le venció la sesión.
+      notificarSesionCerrada();
     }
     // El mensaje del backend es siempre el mejor: explica el caso concreto
     // ("El usuario ya existe"). Solo cuando no llega —porque la respuesta no
     // era JSON— se traduce el código a algo legible: "Error 401" no le dice
     // nada a quien está usando el sistema.
     throw new ApiError(data?.error ?? mensajeSegunEstado(res.status), res.status);
+  }
+
+  // Si la respuesta viene empaquetada en { resultado: "..." }, desempaquetarla
+  if (data && typeof data === "object" && "resultado" in data && typeof data.resultado === "string") {
+    try {
+      return JSON.parse(data.resultado) as T;
+    } catch {
+      // Si falla el parseo, devolver como estaba
+      return data as T;
+    }
   }
 
   return data as T;
@@ -306,7 +369,22 @@ export const api = {
     }
   },
 
-  me: () => request<Usuario>("/auth/me"),
+  async me(): Promise<Usuario> {
+    const raw = await request<{ resultado?: string } | Usuario>("/auth/me");
+    if (!raw) return raw as Usuario;
+
+    // Si tiene 'resultado' como string (empaquetado), desempaquetarlo
+    if ("resultado" in raw && typeof (raw as any).resultado === "string") {
+      return JSON.parse((raw as any).resultado) as Usuario;
+    }
+
+    // Si ya es Usuario (sin 'resultado'), devolverlo tal cual
+    if ("id" in raw && "usuario" in raw) {
+      return raw as Usuario;
+    }
+
+    return raw as Usuario;
+  },
 
   usuarios: {
     listar: (
@@ -333,30 +411,43 @@ export const api = {
       nombreApellido: string;
       correo?: string;
       password: string;
+      /** Omitido equivale a "N": el default seguro es no ser administrador. */
+      esAdmin?: Rol;
     }) =>
-      request<{ id: number; ok: string }>("/usuarios/", {
+      // Responde 201, no 200. `request` solo mira `res.ok`, así que da igual.
+      request<{ id: number; ok: boolean }>("/usuarios/", {
         method: "POST",
         body: JSON.stringify(datos),
       }),
 
+    /**
+     * Los campos ausentes no se modifican. `usuario` no se puede cambiar: es la
+     * identidad con la que se inicia sesión, y el backend ignora el campo.
+     */
     actualizar: (
       id: number,
-      datos: { nombreApellido?: string; correo?: string; activo?: Estado },
+      datos: {
+        nombreApellido?: string;
+        correo?: string;
+        activo?: Estado;
+        esAdmin?: Rol;
+      },
     ) =>
-      request<{ ok: string }>(`/usuarios/${id}`, {
+      request<{ ok: boolean }>(`/usuarios/${id}`, {
         method: "PUT",
         body: JSON.stringify(datos),
       }),
 
-    eliminar: (id: number) => request<{ ok: string }>(`/usuarios/${id}`, { method: "DELETE" }),
+    eliminar: (id: number) => request<{ ok: boolean }>(`/usuarios/${id}`, { method: "DELETE" }),
 
     inactivar: (id: number) =>
-      request<{ ok: string }>(`/usuarios/${id}/inactivar`, { method: "POST" }),
+      request<{ ok: boolean }>(`/usuarios/${id}/inactivar`, { method: "POST" }),
 
-    activar: (id: number) => request<{ ok: string }>(`/usuarios/${id}/activar`, { method: "POST" }),
+    activar: (id: number) =>
+      request<{ ok: boolean }>(`/usuarios/${id}/activar`, { method: "POST" }),
 
     cambiarPassword: (id: number, password: string) =>
-      request<{ ok: string }>(`/usuarios/${id}/password`, {
+      request<{ ok: boolean }>(`/usuarios/${id}/password`, {
         method: "POST",
         body: JSON.stringify({ password }),
       }),

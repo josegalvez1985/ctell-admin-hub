@@ -10,53 +10,58 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as ConfiguracionRouteImport } from './routes/configuracion'
-import { Route as HomeRouteImport } from './routes/home'
+import { Route as AuthRouteImport } from './routes/_auth'
+import { Route as AuthConfiguracionRouteImport } from './routes/_auth.configuracion'
+import { Route as AuthHomeRouteImport } from './routes/_auth.home'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ConfiguracionRoute = ConfiguracionRouteImport.update({
-  id: '/configuracion',
-  path: '/configuracion',
+const AuthRoute = AuthRouteImport.update({
+  id: '/_auth',
   getParentRoute: () => rootRouteImport,
 } as any)
-const HomeRoute = HomeRouteImport.update({
+const AuthConfiguracionRoute = AuthConfiguracionRouteImport.update({
+  id: '/configuracion',
+  path: '/configuracion',
+  getParentRoute: () => AuthRoute,
+} as any)
+const AuthHomeRoute = AuthHomeRouteImport.update({
   id: '/home',
   path: '/home',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => AuthRoute,
 } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/configuracion': typeof ConfiguracionRoute
-  '/home': typeof HomeRoute
+  '/configuracion': typeof AuthConfiguracionRoute
+  '/home': typeof AuthHomeRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/configuracion': typeof ConfiguracionRoute
-  '/home': typeof HomeRoute
+  '/configuracion': typeof AuthConfiguracionRoute
+  '/home': typeof AuthHomeRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/configuracion': typeof ConfiguracionRoute
-  '/home': typeof HomeRoute
+  '/_auth': typeof AuthRouteWithChildren
+  '/_auth/configuracion': typeof AuthConfiguracionRoute
+  '/_auth/home': typeof AuthHomeRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths: '/' | '/configuracion' | '/home'
   fileRoutesByTo: FileRoutesByTo
   to: '/' | '/configuracion' | '/home'
-  id: '__root__' | '/' | '/configuracion' | '/home'
+  id: '__root__' | '/' | '/_auth' | '/_auth/configuracion' | '/_auth/home'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  ConfiguracionRoute: typeof ConfiguracionRoute
-  HomeRoute: typeof HomeRoute
+  AuthRoute: typeof AuthRouteWithChildren
 }
 
 declare module '@tanstack/react-router' {
@@ -68,27 +73,45 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/configuracion': {
-      id: '/configuracion'
-      path: '/configuracion'
-      fullPath: '/configuracion'
-      preLoaderRoute: typeof ConfiguracionRouteImport
+    '/_auth': {
+      id: '/_auth'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof AuthRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/home': {
-      id: '/home'
+    '/_auth/configuracion': {
+      id: '/_auth/configuracion'
+      path: '/configuracion'
+      fullPath: '/configuracion'
+      preLoaderRoute: typeof AuthConfiguracionRouteImport
+      parentRoute: typeof AuthRoute
+    }
+    '/_auth/home': {
+      id: '/_auth/home'
       path: '/home'
       fullPath: '/home'
-      preLoaderRoute: typeof HomeRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof AuthHomeRouteImport
+      parentRoute: typeof AuthRoute
     }
   }
 }
 
+interface AuthRouteChildren {
+  AuthConfiguracionRoute: typeof AuthConfiguracionRoute
+  AuthHomeRoute: typeof AuthHomeRoute
+}
+
+const AuthRouteChildren: AuthRouteChildren = {
+  AuthConfiguracionRoute: AuthConfiguracionRoute,
+  AuthHomeRoute: AuthHomeRoute,
+}
+
+const AuthRouteWithChildren = AuthRoute._addFileChildren(AuthRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  ConfiguracionRoute: ConfiguracionRoute,
-  HomeRoute: HomeRoute,
+  AuthRoute: AuthRouteWithChildren,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

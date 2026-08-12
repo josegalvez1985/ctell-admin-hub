@@ -2,12 +2,14 @@
 
 Cómo agregar tablas, endpoints, páginas y formularios siguiendo los patrones de
 este proyecto. Está escrita sobre el código que ya existe: los ejemplos salen de
-`db/usuarios.sql` y `src/`, que sirven de plantilla para todo lo demás.
+[db/auth.sql](../db/auth.sql) y `src/`, que sirven de plantilla para todo lo
+demás.
 
 ## Índice
 
 1. [Arquitectura](#1-arquitectura)
 2. [Regla: un archivo SQL por tabla](#2-regla-un-archivo-sql-por-tabla)
+   - [El estado es `'A'`/`'I'`, nunca 1/0](#21-el-estado-es-ai-nunca-10)
 3. [Crear el backend de una tabla](#3-crear-el-backend-de-una-tabla)
 4. [Consumir la API desde el frontend](#4-consumir-la-api-desde-el-frontend)
 5. [Agregar una página](#5-agregar-una-página)
@@ -53,11 +55,19 @@ URL. `src/routeTree.gen.ts` se genera solo y **nunca se edita a mano**.
 
 ```
 db/
-├── usuarios.sql     PKG_USUARIOS + PKG_TOKENS + /auth/ + /usuarios/
+├── auth.sql         PKG_AUTH + /auth/        ← única excepción a la regla
+├── usuarios.sql     PKG_USUARIOS + /usuarios/
 ├── empresas.sql     PKG_EMPRESAS + /empresas/
-├── clientes.sql     PKG_CLIENTES + /clientes/
 └── articulos.sql    PKG_ARTICULOS + /articulos/
 ```
+
+**`auth.sql` se ejecuta primero.** Define `BORRAR_MODULO_ORDS`, que usan todos
+los demás, y `PKG_AUTH`, del que depende cualquier handler que valide un token.
+
+`auth.sql` es la excepción: no representa una tabla sino una responsabilidad
+—verificar credenciales y manejar sesiones— que cruza `USUARIOS` y `TOKENS`.
+Está separado del ABM porque cambia por motivos distintos: agregar un campo al
+alta de usuarios no debería obligar a tocar el login.
 
 El archivo lleva **el nombre de la tabla en minúscula**, sin prefijos numéricos,
 y contiene todo lo que esa tabla necesita:
@@ -76,6 +86,23 @@ la tabla afectada.
 **Idempotente.** Se tiene que poder reejecutar sin romper nada:
 `CREATE OR REPLACE` en los paquetes, `ORDS.DELETE_MODULE` antes de
 `ORDS.DEFINE_MODULE`, y los datos iniciales sólo si la tabla está vacía.
+
+**Antes de reejecutar, frená `npm run dev`.** El servidor de desarrollo le pega
+a ORDS, y esa sesión mantiene tomadas las filas de metadatos que
+`DELETE_MODULE` necesita. Con el dev levantado, la reejecución muere con
+`ORA-00060` (interbloqueo) y después con `ORA-00001` (nombre duplicado), porque
+el módulo viejo nunca llegó a borrarse.
+
+**Nunca uses `WHEN OTHERS THEN NULL` para borrar un módulo.** Parece inofensivo
+—"si no existe, seguí de largo"— pero se traga *cualquier* error, incluido el
+interbloqueo. El script termina sin quejarse y vos creés que aplicó los
+cambios, cuando en realidad ORDS sigue sirviendo la versión anterior. Usá
+`BORRAR_MODULO_ORDS`, que consulta `USER_ORDS_MODULES` antes de borrar,
+reintenta ante `ORA-00060` y **re-lanza** cualquier otro error.
+
+> El código corregido en el repo no cambia nada por sí solo: ORDS solo conoce
+> lo que se ejecutó en la hoja SQL de APEX. Si el script falló a mitad, el
+> endpoint viejo sigue publicado por más que el archivo esté bien.
 
 **No crea ni altera tablas.** El DDL lo administrás vos aparte. El archivo
 asume que la tabla ya existe.
@@ -99,12 +126,83 @@ SELECT STANDARD_HASH(p_salt || p_password, 'SHA256') INTO l_hash FROM DUAL;
 RETURN l_hash;
 ```
 
+**No se puede llamar a una función del paquete desde una sentencia SQL.**
+Dentro de un `SELECT` o un `UPDATE` estás en contexto SQL, y una función
+privada del paquete no es visible ahí (`PLS-00231`). Resolvé el valor antes,
+en PL/SQL, y pasalo como variable:
+
+```sql
+-- Mal: PLS-00231
+SELECT COUNT(*) INTO l_total FROM USUARIOS
+ WHERE ACTIVO = NUMERO_A_ESTADO(p_activo);
+
+-- Bien: se calcula en PL/SQL y el SELECT recibe un valor
+l_estado := NUMERO_A_ESTADO(p_activo);
+SELECT COUNT(*) INTO l_total FROM USUARIOS WHERE ACTIVO = l_estado;
+```
+
+---
+
+## 2.1 El estado es `'A'`/`'I'`, nunca 1/0
+
+> **Regla: el código de estado viaja igual de punta a punta — columna, JSON y
+> frontend. No se traduce en ningún punto.**
+
+Las columnas `ACTIVO` de `USUARIOS`, `MODULOS` y `PAGINAS` son `VARCHAR2(1)` y
+guardan `'A'` (activo) o `'I'` (inactivo). El JSON devuelve **ese mismo
+código**, y el frontend lo tipa como `Estado = "A" | "I"`.
+
+Hubo una versión que exponía `activo: 1/0` en la API y traducía en los dos
+sentidos. **No lo repitas.** Cada conversión era una oportunidad de
+`ORA-01722`, y un `TO_NUMBER(:activo)` sobre un valor de texto mataba el
+listado entero con un 500 sin mensaje. La traducción no aportaba nada: solo
+creaba puntos donde equivocarse.
+
+```sql
+-- Mal: traduce a número en la respuesta
+'activo' VALUE CASE WHEN ACTIVO = 'A' THEN 1 ELSE 0 END
+
+-- Bien: el código tal cual está en la columna
+'activo' VALUE UPPER(TRIM(ACTIVO))
+```
+
+```sql
+-- Mal: el filtro exige que llegue numérico; ?activo=A da ORA-01722
+p_activo IN NUMBER
+l_activo := TO_NUMBER(NULLIF(:activo, ''));
+
+-- Bien: texto contra texto, sin conversiones
+p_activo IN VARCHAR2
+l_estado := CASE UPPER(TRIM(NULLIF(:activo, '')))
+              WHEN 'A' THEN 'A'
+              WHEN 'I' THEN 'I'
+              ELSE NULL          -- valor inválido = sin filtro
+            END;
+```
+
+En los `UPDATE`, `NULL` significa **"no cambiar"**, y un valor inválido también
+se ignora: es preferible conservar el estado actual a escribir basura en la
+columna.
+
+Esto vale para **todas** las tablas, sin excepciones. `TOKENS.ACTIVO` era
+`NUMBER(1,0)` con 1/0 y se unificó a `VARCHAR2(1)` con `'A'` (vigente) e `'I'`
+(revocado). Dos columnas con el mismo nombre y distinto tipo obligaban a
+recordar cuál era cuál en cada comparación; ahora se comparan igual en todos
+lados.
+
+Cuando agregues una tabla nueva con estado, usá `VARCHAR2(1)` con `'A'`/`'I'`.
+
 ---
 
 ## 3. Crear el backend de una tabla
 
-Tomá [db/usuarios.sql](../db/usuarios.sql) como plantilla. La estructura es
-siempre la misma; abajo va condensada con `EMPRESAS` de ejemplo.
+Tomá [db/usuarios.sql](../db/usuarios.sql) como plantilla: tiene el ABM
+completo —listado paginado, alta, detalle, modificación, bajas lógica y física—
+con todos los patrones de este documento aplicados. La estructura es siempre la
+misma; abajo va condensada con `EMPRESAS` de ejemplo.
+
+> `BORRAR_MODULO_ORDS` lo define [db/auth.sql](../db/auth.sql) y los demás
+> archivos lo reutilizan. No lo copies en cada uno.
 
 ### Esqueleto
 
@@ -130,20 +228,22 @@ CREATE OR REPLACE PACKAGE PKG_EMPRESAS AS
     p_id_empresa   OUT NUMBER
   );
 
+  -- p_activo es el código de la columna: 'A' o 'I'. NULL = no cambiar.
   PROCEDURE ACTUALIZAR (
     p_id_empresa   IN NUMBER,
     p_razon_social IN VARCHAR2 DEFAULT NULL,
     p_ruc          IN VARCHAR2 DEFAULT NULL,
-    p_activo       IN NUMBER   DEFAULT NULL
+    p_activo       IN VARCHAR2 DEFAULT NULL
   );
 
   PROCEDURE INACTIVAR (p_id_empresa IN NUMBER);
   PROCEDURE ACTIVAR   (p_id_empresa IN NUMBER);
   PROCEDURE ELIMINAR  (p_id_empresa IN NUMBER);
 
+  -- p_activo: 'A' o 'I'. NULL = sin filtro.
   FUNCTION CONTAR (
     p_busqueda IN VARCHAR2 DEFAULT NULL,
-    p_activo   IN NUMBER   DEFAULT NULL
+    p_activo   IN VARCHAR2 DEFAULT NULL
   ) RETURN NUMBER;
 
 END PKG_EMPRESAS;
@@ -163,7 +263,13 @@ columna:
 ```sql
 UPDATE EMPRESAS
    SET RAZON_SOCIAL        = NVL(TRIM(p_razon_social), RAZON_SOCIAL),
-       ACTIVO              = NVL(p_activo, ACTIVO),
+       -- 'A'/'I' tal cual. NULL conserva el valor actual, y un código
+       -- inválido también: mejor ignorarlo que escribir basura.
+       ACTIVO              = CASE UPPER(TRIM(p_activo))
+                               WHEN 'A' THEN 'A'
+                               WHEN 'I' THEN 'I'
+                               ELSE ACTIVO
+                             END,
        FECHA_ACTUALIZACION = SYSTIMESTAMP
  WHERE ID_EMPRESA = p_id_empresa;
 
@@ -205,7 +311,7 @@ internet:
 DECLARE
   l_sesion NUMBER;
 BEGIN
-  l_sesion := PKG_TOKENS.VALIDAR_TOKEN(REPLACE(:authorization, 'Bearer ', ''));
+  l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(:authorization));
   IF l_sesion IS NULL THEN
     :status_code := 401;
     :resultado := '{"error":"Sesion invalida o vencida"}';
@@ -237,11 +343,60 @@ Cada handler necesita sus tres parámetros declarados con
 `ORDS.DEFINE_PARAMETER`: `authorization` (HEADER/IN), `resultado`
 (RESPONSE/OUT) y `X-APEX-STATUS-CODE` (HEADER/OUT, bind `status_code`).
 
-**Los parámetros de query llegan como texto**: convertí con `TO_NUMBER(:activo)`,
-nunca los uses directo en comparaciones numéricas.
+> El token se extrae con `PKG_AUTH.TOKEN_DE_HEADER`, no con un
+> `REPLACE(:authorization, 'Bearer ', '')` a mano. El esquema es
+> case-insensitive por RFC: con el `REPLACE` literal, un cliente que mande
+> `bearer xxx` deja el prefijo pegado al token y recibe un 401 que no hay forma
+> de explicar mirando las credenciales.
 
 **El JSON se arma con `JSON_OBJECT` / `JSON_ARRAYAGG`** y `RETURNING CLOB` en
 los listados, que pueden superar los 4000 bytes de un `VARCHAR2`.
+
+### Parámetros: las dos trampas que ya nos costaron caro
+
+Los query params llegan como **texto**, y hay que convertirlos. Pero convertir
+mal produce un 500 sin mensaje que es dificilísimo de diagnosticar. Estas dos
+reglas no son estilo: son la diferencia entre un endpoint que anda y uno que
+muere.
+
+#### 1. Un parámetro ausente llega como cadena vacía, no como NULL
+
+`TO_NUMBER('')` lanza **ORA-01722**. Y `:param IS NULL` **no protege**, porque
+una cadena vacía no es NULL:
+
+```sql
+-- Mal: si el cliente no manda `pagina`, ORA-01722
+l_pagina := NVL(TO_NUMBER(:pagina), 1);
+
+-- Mal también: el IS NULL nunca da verdadero con cadena vacía
+AND (:activo IS NULL OR ACTIVO = TO_NUMBER(:activo))
+
+-- Bien: NULLIF convierte la cadena vacía en NULL antes de tocar el número
+l_pagina := NVL(TO_NUMBER(NULLIF(:pagina, '')), 1);
+```
+
+> Pasó de verdad: el listado de usuarios pedía `?tamanio=100` sin `pagina`, y
+> ese solo caso tiraba abajo el endpoint entero.
+
+#### 2. Las conversiones van DENTRO del `BEGIN`, nunca en el `DECLARE`
+
+El `DECLARE` se ejecuta **antes de que exista el bloque `EXCEPTION`**. Una
+excepción ahí no la captura el `WHEN OTHERS`: escapa del handler y ORDS
+responde un 500 genérico, sin que el `EXCEPTION` que escribiste llegue a
+correr. Buscás el error en el lugar equivocado durante horas.
+
+```sql
+-- Mal: si esto falla, tu WHEN OTHERS no se entera
+DECLARE
+  l_pagina NUMBER := TO_NUMBER(NULLIF(:pagina, ''));
+BEGIN
+
+-- Bien: declarar vacío, asignar adentro
+DECLARE
+  l_pagina NUMBER;
+BEGIN
+  l_pagina := TO_NUMBER(NULLIF(:pagina, ''));
+```
 
 ### Verificación al final del archivo
 
@@ -272,7 +427,9 @@ export type Empresa = {
   id: number;
   razonSocial: string;
   ruc: string;
-  activo: number;
+  // El mismo código que la columna. Para preguntar si está activa,
+  // usá el helper: esActivo(empresa.activo) — no `=== 1`.
+  activo: Estado;
 };
 
 export const api = {
@@ -448,12 +605,20 @@ queryClient.invalidateQueries({ queryKey: ["empresas"] });
 debe incluirlos.
 
 **Mensajes genéricos en el login.** Distinguir "no existe" de "clave incorrecta"
-permite enumerar cuentas válidas.
+permite enumerar cuentas válidas. `/auth/login` responde el mismo 401 en los
+tres casos: usuario inexistente, clave incorrecta y cuenta inactiva.
 
-**Todo handler que no sea login valida el token.**
+**Todo handler que no sea login valida el token**, con
+`PKG_AUTH.VALIDAR_TOKEN`. Esa función comprueba además que la cuenta siga
+activa, no sólo que el token no haya vencido.
 
-**Inactivar un usuario revoca sus tokens.** Si no, sigue navegando con la sesión
-abierta.
+**Inactivar o eliminar un usuario revoca sus tokens**, con
+`PKG_AUTH.REVOCAR_TOKENS_USUARIO`. Sin eso seguiría navegando con la sesión que
+ya tenía abierta.
+
+**El hash se genera con `PKG_AUTH.HASH_PASSWORD`,** nunca reimplementándolo en
+otro paquete. Si el alta calculara el hash distinto del login, el usuario se
+crearía sin poder entrar.
 
 **Nada de credenciales en el repo.** Para el frontend, sólo variables `VITE_*`
 que sean públicas por definición.
@@ -472,6 +637,12 @@ Backend (`db/<tabla>.sql`):
 - [ ] Los `UPDATE` verifican `SQL%ROWCOUNT`
 - [ ] Errores de negocio en `-20001..-20004`, traducidos a 400/404
 - [ ] Consultas de verificación al final (con `OBJECT_NAME`)
+- [ ] **El estado es `'A'`/`'I'` en la columna, el JSON y el frontend** — sin
+      traducir a 1/0 en ningún punto
+- [ ] **Todo `TO_NUMBER(:param)` lleva `NULLIF(:param, '')`** — un parámetro
+      ausente llega como cadena vacía, no como NULL
+- [ ] **Las conversiones van dentro del `BEGIN`**, nunca en el `DECLARE`
+- [ ] Ninguna función del paquete se invoca desde una sentencia SQL
 
 Frontend:
 
@@ -488,11 +659,18 @@ Frontend:
 | -------------------------------------- | ---------------------------------------------- |
 | `PLS-00201: DBMS_CRYPTO`               | No hay grant; usá `SYS_GUID`/`STANDARD_HASH`   |
 | `PLS-00201: STANDARD_HASH`             | Es función SQL: envolvela en `SELECT … FROM DUAL` |
+| `PLS-00231` en un `SELECT`/`UPDATE`    | Función del paquete invocada desde SQL: resolvé el valor antes en PL/SQL |
 | `ORA-01031` en `ENABLE_SCHEMA`         | En APEX ya está habilitado: quitá la llamada    |
 | `ORA-00904: "NAME"`                    | En `USER_OBJECTS` la columna es `OBJECT_NAME`  |
+| `ORA-01722` al filtrar por estado      | `TO_NUMBER` sobre `ACTIVO`, que es `VARCHAR2` con `'A'`/`'I'` |
 | `ORA-06550` al compilar el handler     | Comillas del `q'~ … ~'` sin cerrar             |
+| **500 sin mensaje, con el `EXCEPTION` escrito** | La conversión está en el `DECLARE`: se ejecuta antes de que exista el `EXCEPTION` y escapa del handler |
+| **500 solo cuando falta un query param** | `TO_NUMBER('')`: un parámetro ausente llega como cadena vacía. Usá `NULLIF(:param, '')` |
 | El endpoint devuelve 404               | Falta `DEFINE_TEMPLATE` para ese patrón        |
 | Devuelve 200 pero no guardó            | Falta chequear `SQL%ROWCOUNT`                  |
 | 401 en todo                            | El token venció (8 h) o falta el header        |
+| 401 al loguearse con datos correctos   | `USUARIO` guardado con mayúsculas (el login compara contra `LOWER`), `ACTIVO` distinto de `'A'`, o el hash no se generó con el paquete |
+| `ORA-00060` al reejecutar el script    | Otra sesión tiene tomados los metadatos de ORDS: frená `npm run dev` antes |
+| `ORA-00001` en `DEFINE_MODULE`         | El `DELETE_MODULE` falló y su error se tragó un `WHEN OTHERS THEN NULL` |
 | `window is not defined`                | Acceso al DOM fuera de `useEffect` (hay SSR)   |
 | La lista no se actualiza tras guardar  | Falta `invalidateQueries`                      |

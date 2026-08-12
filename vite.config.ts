@@ -4,7 +4,7 @@
 // Config adicional vía defineConfig({ vite: { ... } }).
 import { defineConfig } from "@lovable.dev/vite-tanstack-config";
 
-export default defineConfig({
+const configuracionDelPreset = defineConfig({
   // Pages sólo sirve archivos estáticos: no puede ejecutar el servidor SSR que
   // genera nitro. El build pasa a SPA (`.output/public/_shell.html`) y el
   // ruteo lo resuelve el cliente. El backend es ORDS, así que no se pierde
@@ -41,5 +41,26 @@ export default defineConfig({
         },
       },
     },
+
+    // Vite 8 resuelve tsconfig paths de forma nativa via resolve.tsconfigPaths.
+    // El preset carga vite-tsconfig-paths, que es redundante ahora y genera una
+    // advertencia. Se filtra el plugin y se habilita la resolución nativa.
+    resolve: {
+      tsconfigPaths: true,
+    },
   },
 });
+
+// Quita vite-tsconfig-paths del listado de plugins (se carga en el preset).
+// Vite captura la lista de plugins durante la carga del archivo de config,
+// antes de que los hooks de los plugins corra, así que tenemos que hacerlo en
+// el config object que se retorna, no en un hook.
+export default async (env: Parameters<typeof configuracionDelPreset>[0]) => {
+  const config = await configuracionDelPreset(env);
+  if (Array.isArray(config.plugins)) {
+    config.plugins = config.plugins.filter(
+      (p) => !p || typeof p !== "object" || (p as { name?: string }).name !== "vite-tsconfig-paths"
+    );
+  }
+  return config;
+};

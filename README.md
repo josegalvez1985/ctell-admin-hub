@@ -47,7 +47,8 @@ Vite imprime la URL local al arrancar (normalmente `http://localhost:5173`).
 
 ```
 db/                      Backend: un archivo SQL por tabla
-└── usuarios.sql         PKG_USUARIOS + PKG_TOKENS + /auth/ + /usuarios/
+├── auth.sql             PKG_AUTH + módulo ORDS /auth/
+└── usuarios.sql         PKG_USUARIOS + módulo ORDS /usuarios/
 
 src/
 ├── routes/              Rutas (el archivo define la URL)
@@ -70,11 +71,20 @@ src/
 
 ```
 db/
+├── auth.sql         ya existe (autenticación, no es una tabla)
 ├── usuarios.sql     ya existe
-├── empresas.sql     PKG_EMPRESAS + módulo ORDS /empresas/
-├── clientes.sql     PKG_CLIENTES + módulo ORDS /clientes/
+├── empresas.sql     PKG_EMPRESAS  + módulo ORDS /empresas/
 └── articulos.sql    PKG_ARTICULOS + módulo ORDS /articulos/
 ```
+
+`auth.sql` es la única excepción a la regla: no corresponde a una tabla sino a
+una responsabilidad —verificar credenciales y manejar sesiones— que cruza
+`USUARIOS` y `TOKENS`. El ABM de usuarios va aparte, en `usuarios.sql`.
+
+**El orden importa: `auth.sql` primero.** `PKG_USUARIOS` llama a `PKG_AUTH`
+para hashear contraseñas y revocar sesiones, y además reutiliza el
+procedimiento `BORRAR_MODULO_ORDS` que ese archivo define. Al revés no
+compila.
 
 Cada archivo se ejecuta **de una sola vez y por separado** en la hoja de trabajo
 SQL de APEX, y contiene el paquete PL/SQL, el módulo ORDS con sus endpoints y
@@ -85,21 +95,57 @@ tablas**: el DDL se administra aparte.
 
 ### Endpoints publicados
 
-| Método   | Ruta                          | Auth  |
-| -------- | ----------------------------- | ----- |
-| `POST`   | `/auth/login`                 | —     |
-| `POST`   | `/auth/logout`                | token |
-| `GET`    | `/auth/me`                    | token |
-| `GET`    | `/usuarios/`                  | token |
-| `POST`   | `/usuarios/`                  | token |
-| `GET`    | `/usuarios/:id`               | token |
-| `PUT`    | `/usuarios/:id`               | token |
-| `DELETE` | `/usuarios/:id`               | token |
-| `POST`   | `/usuarios/:id/inactivar`     | token |
-| `POST`   | `/usuarios/:id/activar`       | token |
-| `POST`   | `/usuarios/:id/password`      | token |
+| Método | Ruta           | Auth  | Devuelve                                              |
+| ------ | -------------- | ----- | ----------------------------------------------------- |
+| `POST` | `/auth/login`  | —     | `token`, `expira`, `usuario`                          |
+| `POST` | `/auth/logout` | token | `{ ok: true }`                                        |
+| `GET`  | `/auth/me`     | token | `id`, `usuario`, `nombreApellido`, `correo`, `activo`, `esAdmin` |
 
 El token se envía como `Authorization: Bearer <token>` y vence a las 8 horas.
+El header se parsea con `PKG_AUTH.TOKEN_DE_HEADER`, que acepta el prefijo en
+cualquier capitalización (`Bearer`/`bearer`), como pide la RFC.
+
+`/auth/login` responde **401 con un único mensaje** —"Usuario o contrasena
+incorrectos"— tanto si el usuario no existe, como si la clave está mal o la
+cuenta está inactiva. Distinguir los casos permitiría enumerar cuentas válidas.
+
+Validar un token comprueba tres cosas, no una: que el token esté vigente, que
+no haya vencido, y que **la cuenta siga activa**. Por eso inactivar un usuario
+le corta el acceso al instante, aunque su token todavía no hubiera expirado.
+
+#### ABM de usuarios — `db/usuarios.sql`
+
+Todos requieren token.
+
+| Método   | Ruta                      | Qué hace                            |
+| -------- | ------------------------- | ----------------------------------- |
+| `GET`    | `/usuarios/`              | listado paginado                    |
+| `POST`   | `/usuarios/`              | alta → 201                          |
+| `GET`    | `/usuarios/:id`           | detalle                             |
+| `PUT`    | `/usuarios/:id`           | modificación                        |
+| `DELETE` | `/usuarios/:id`           | baja física                         |
+| `POST`   | `/usuarios/:id/inactivar` | baja lógica + revoca sus sesiones   |
+| `POST`   | `/usuarios/:id/activar`   | alta lógica                         |
+| `POST`   | `/usuarios/:id/password`  | cambio de clave + revoca sesiones   |
+
+El listado acepta `?busqueda=`, `?activo=A|I`, `?pagina=` y `?tamanio=`
+(25 por defecto, **200 como techo** — sin tope, un `?tamanio=999999` arma un
+CLOB enorme y el request muere por timeout).
+
+Tres decisiones que conviene conocer antes de tocarlo:
+
+- **`USUARIO` no se modifica.** Es la identidad con la que se inicia sesión;
+  para cambiarla se da de baja y se crea otro. El `PUT` lo ignora.
+- **Nadie puede eliminarse ni inactivarse a sí mismo** (400). Se quedaría sin
+  sesión a mitad de la operación, y si era el último administrador el sistema
+  queda inaccesible.
+- **Cambiar la contraseña revoca todas las sesiones**, incluida la propia. Es
+  lo que se espera cuando se cambia por sospecha de robo.
+
+El alta crea un **administrador inicial** (`admin`) sólo si la tabla está
+vacía. La contraseña se genera al azar en cada corrida y se imprime una única
+vez por `DBMS_OUTPUT` al ejecutar el script — no queda escrita en el
+repositorio. Copiala de ahí y cambiala apenas entres.
 
 > **Hash de contraseñas:** hoy usa `STANDARD_HASH` SHA-256 con salt, porque
 > `DBMS_CRYPTO` no está concedido en el workspace. SHA-256 no tiene factor de
@@ -107,6 +153,41 @@ El token se envía como `Authorization: Bearer <token>` y vence a las 8 horas.
 > `GRANT EXECUTE ON SYS.DBMS_CRYPTO`, migrá a PBKDF2 — la versión está lista en
 > un comentario dentro de `HASH_PASSWORD`. Migrar invalida los hashes
 > existentes: hay que resetear las contraseñas.
+
+### El estado es `'A'`/`'I'`
+
+Las columnas `ACTIVO` son `VARCHAR2(1)` con `'A'` (activo) o `'I'` (inactivo).
+**Ese mismo código viaja en el JSON y lo consume el frontend** —
+`Estado = "A" | "I"` en [src/lib/api.ts](src/lib/api.ts) — sin traducirse a
+1/0 en ningún punto.
+
+Hubo una versión que sí traducía, y cada conversión de ida y vuelta era una
+oportunidad de `ORA-01722`: un `TO_NUMBER` sobre un valor de texto mataba el
+listado entero con un 500 sin mensaje. La traducción no aportaba nada.
+
+Para preguntar si algo está activo, usá el helper `esActivo(x.activo)` en vez
+de comparar contra el literal.
+
+Esto vale para **todas** las tablas, sin excepciones. `TOKENS.ACTIVO` era
+`NUMBER(1,0)` con 1/0 y se unificó: hoy es `VARCHAR2(1)` con `'A'` (vigente) e
+`'I'` (revocado), igual que el resto. Tener dos columnas con el mismo nombre y
+distinto tipo obligaba a recordar cuál era cuál en cada comparación, y
+equivocarse costaba un `ORA-01722`.
+
+> El cambio se aplicó a mano sobre el DDL, vaciando `TOKENS` en el proceso.
+> Cuando agregues una tabla con estado, usá `VARCHAR2(1)` con `'A'`/`'I'`.
+
+### Reejecutar un archivo de `db/`
+
+**Frená `npm run dev` antes.** El servidor de desarrollo le pega a ORDS y esa
+sesión mantiene tomadas las filas de metadatos que `DELETE_MODULE` necesita:
+con el dev levantado, la reejecución muere con `ORA-00060` y el módulo viejo
+queda publicado.
+
+Y tenelo presente: **el código corregido en el repo no cambia nada por sí
+solo.** ORDS solo conoce lo que se ejecutó en la hoja SQL de APEX. Si el script
+falló a mitad, el endpoint viejo sigue sirviendo por más que el archivo esté
+bien — revisá siempre el resultado de cada paso.
 
 ## Temas y colores
 

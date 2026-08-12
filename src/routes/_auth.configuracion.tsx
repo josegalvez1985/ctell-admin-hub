@@ -9,7 +9,7 @@ import { UsuariosDialog } from "@/components/ctell/UsuariosDialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
-export const Route = createFileRoute("/configuracion")({
+export const Route = createFileRoute("/_auth/configuracion")({
   head: () => ({
     meta: [
       { title: "Configuración | CTELL" },
