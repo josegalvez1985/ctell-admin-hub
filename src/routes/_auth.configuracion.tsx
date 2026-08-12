@@ -1,9 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Check, Monitor, Moon, Sun, Users } from "lucide-react";
+import { Check, FileText, LayoutGrid, Monitor, Moon, ShieldCheck, Sun, Users } from "lucide-react";
 import { useState } from "react";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
 import { COLOR_THEMES } from "@/components/ctell/color-themes";
+import { ModulosDialog } from "@/components/ctell/ModulosDialog";
+import { PaginasDialog } from "@/components/ctell/PaginasDialog";
+import { PermisosDialog } from "@/components/ctell/PermisosDialog";
 import { useTheme, type Theme } from "@/components/ctell/theme-provider";
 import { UsuariosDialog } from "@/components/ctell/UsuariosDialog";
 import { Button } from "@/components/ui/button";
@@ -41,6 +44,9 @@ const themeOptions: { value: Theme; label: string; description: string; icon: ty
 function ConfiguracionPage() {
   const { theme, setTheme, colorTheme, setColorTheme } = useTheme();
   const [usuariosAbierto, setUsuariosAbierto] = useState(false);
+  const [modulosAbierto, setModulosAbierto] = useState(false);
+  const [paginasAbierto, setPaginasAbierto] = useState(false);
+  const [permisosAbierto, setPermisosAbierto] = useState(false);
 
   return (
     <AppLayout active="Configuración" title="Configuración" showSearch={false}>
@@ -55,9 +61,9 @@ function ConfiguracionPage() {
         <Card className="surface-card">
           <CardHeader>
             <CardTitle>Administración</CardTitle>
-            <CardDescription>Gestión de las cuentas que acceden al sistema.</CardDescription>
+            <CardDescription>Cuentas, estructura del menú y permisos de acceso.</CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-3">
             <button
               onClick={() => setUsuariosAbierto(true)}
               className="flex w-full items-center gap-4 rounded-xl border border-border p-4 text-left transition-colors hover:border-primary/40 hover:bg-accent/30"
@@ -75,10 +81,67 @@ function ConfiguracionPage() {
                 <span>Abrir</span>
               </Button>
             </button>
+
+            <button
+              onClick={() => setModulosAbierto(true)}
+              className="flex w-full items-center gap-4 rounded-xl border border-border p-4 text-left transition-colors hover:border-primary/40 hover:bg-accent/30"
+            >
+              <span className="gradient-primary flex size-10 shrink-0 items-center justify-center rounded-xl text-primary-foreground">
+                <LayoutGrid className="size-5" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-semibold text-foreground">Módulos</span>
+                <span className="mt-0.5 block text-xs text-muted-foreground">
+                  Crear, editar y eliminar los módulos del menú.
+                </span>
+              </span>
+              <Button asChild variant="outline" size="sm" className="pointer-events-none shrink-0">
+                <span>Abrir</span>
+              </Button>
+            </button>
+
+            <button
+              onClick={() => setPaginasAbierto(true)}
+              className="flex w-full items-center gap-4 rounded-xl border border-border p-4 text-left transition-colors hover:border-primary/40 hover:bg-accent/30"
+            >
+              <span className="gradient-primary flex size-10 shrink-0 items-center justify-center rounded-xl text-primary-foreground">
+                <FileText className="size-5" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-semibold text-foreground">Páginas</span>
+                <span className="mt-0.5 block text-xs text-muted-foreground">
+                  Las páginas que hay dentro de cada módulo.
+                </span>
+              </span>
+              <Button asChild variant="outline" size="sm" className="pointer-events-none shrink-0">
+                <span>Abrir</span>
+              </Button>
+            </button>
+
+            <button
+              onClick={() => setPermisosAbierto(true)}
+              className="flex w-full items-center gap-4 rounded-xl border border-border p-4 text-left transition-colors hover:border-primary/40 hover:bg-accent/30"
+            >
+              <span className="gradient-primary flex size-10 shrink-0 items-center justify-center rounded-xl text-primary-foreground">
+                <ShieldCheck className="size-5" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-semibold text-foreground">Permisos</span>
+                <span className="mt-0.5 block text-xs text-muted-foreground">
+                  Qué páginas puede ver cada usuario.
+                </span>
+              </span>
+              <Button asChild variant="outline" size="sm" className="pointer-events-none shrink-0">
+                <span>Abrir</span>
+              </Button>
+            </button>
           </CardContent>
         </Card>
 
         <UsuariosDialog open={usuariosAbierto} onOpenChange={setUsuariosAbierto} />
+        <ModulosDialog open={modulosAbierto} onOpenChange={setModulosAbierto} />
+        <PaginasDialog open={paginasAbierto} onOpenChange={setPaginasAbierto} />
+        <PermisosDialog open={permisosAbierto} onOpenChange={setPermisosAbierto} />
 
         <Card className="surface-card">
           <CardHeader>

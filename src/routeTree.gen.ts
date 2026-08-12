@@ -11,8 +11,11 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthRouteImport } from './routes/_auth'
+import { Route as AuthAdministracionRouteImport } from './routes/_auth.administracion'
 import { Route as AuthConfiguracionRouteImport } from './routes/_auth.configuracion'
 import { Route as AuthHomeRouteImport } from './routes/_auth.home'
+import { Route as AuthMenuRouteImport } from './routes/_auth.menu'
+import { Route as AuthPaisesRouteImport } from './routes/_auth.paises'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -22,6 +25,11 @@ const IndexRoute = IndexRouteImport.update({
 const AuthRoute = AuthRouteImport.update({
   id: '/_auth',
   getParentRoute: () => rootRouteImport,
+} as any)
+const AuthAdministracionRoute = AuthAdministracionRouteImport.update({
+  id: '/administracion',
+  path: '/administracion',
+  getParentRoute: () => AuthRoute,
 } as any)
 const AuthConfiguracionRoute = AuthConfiguracionRouteImport.update({
   id: '/configuracion',
@@ -33,30 +41,58 @@ const AuthHomeRoute = AuthHomeRouteImport.update({
   path: '/home',
   getParentRoute: () => AuthRoute,
 } as any)
+const AuthMenuRoute = AuthMenuRouteImport.update({
+  id: '/menu',
+  path: '/menu',
+  getParentRoute: () => AuthRoute,
+} as any)
+const AuthPaisesRoute = AuthPaisesRouteImport.update({
+  id: '/paises',
+  path: '/paises',
+  getParentRoute: () => AuthRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/administracion': typeof AuthAdministracionRoute
   '/configuracion': typeof AuthConfiguracionRoute
   '/home': typeof AuthHomeRoute
+  '/menu': typeof AuthMenuRoute
+  '/paises': typeof AuthPaisesRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/administracion': typeof AuthAdministracionRoute
   '/configuracion': typeof AuthConfiguracionRoute
   '/home': typeof AuthHomeRoute
+  '/menu': typeof AuthMenuRoute
+  '/paises': typeof AuthPaisesRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/_auth': typeof AuthRouteWithChildren
+  '/_auth/administracion': typeof AuthAdministracionRoute
   '/_auth/configuracion': typeof AuthConfiguracionRoute
   '/_auth/home': typeof AuthHomeRoute
+  '/_auth/menu': typeof AuthMenuRoute
+  '/_auth/paises': typeof AuthPaisesRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/configuracion' | '/home'
+  fullPaths:
+    '/' | '/administracion' | '/configuracion' | '/home' | '/menu' | '/paises'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/configuracion' | '/home'
-  id: '__root__' | '/' | '/_auth' | '/_auth/configuracion' | '/_auth/home'
+  to: '/' | '/administracion' | '/configuracion' | '/home' | '/menu' | '/paises'
+  id:
+    | '__root__'
+    | '/'
+    | '/_auth'
+    | '/_auth/administracion'
+    | '/_auth/configuracion'
+    | '/_auth/home'
+    | '/_auth/menu'
+    | '/_auth/paises'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -80,6 +116,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_auth/administracion': {
+      id: '/_auth/administracion'
+      path: '/administracion'
+      fullPath: '/administracion'
+      preLoaderRoute: typeof AuthAdministracionRouteImport
+      parentRoute: typeof AuthRoute
+    }
     '/_auth/configuracion': {
       id: '/_auth/configuracion'
       path: '/configuracion'
@@ -94,17 +137,37 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthHomeRouteImport
       parentRoute: typeof AuthRoute
     }
+    '/_auth/menu': {
+      id: '/_auth/menu'
+      path: '/menu'
+      fullPath: '/menu'
+      preLoaderRoute: typeof AuthMenuRouteImport
+      parentRoute: typeof AuthRoute
+    }
+    '/_auth/paises': {
+      id: '/_auth/paises'
+      path: '/paises'
+      fullPath: '/paises'
+      preLoaderRoute: typeof AuthPaisesRouteImport
+      parentRoute: typeof AuthRoute
+    }
   }
 }
 
 interface AuthRouteChildren {
+  AuthAdministracionRoute: typeof AuthAdministracionRoute
   AuthConfiguracionRoute: typeof AuthConfiguracionRoute
   AuthHomeRoute: typeof AuthHomeRoute
+  AuthMenuRoute: typeof AuthMenuRoute
+  AuthPaisesRoute: typeof AuthPaisesRoute
 }
 
 const AuthRouteChildren: AuthRouteChildren = {
+  AuthAdministracionRoute: AuthAdministracionRoute,
   AuthConfiguracionRoute: AuthConfiguracionRoute,
   AuthHomeRoute: AuthHomeRoute,
+  AuthMenuRoute: AuthMenuRoute,
+  AuthPaisesRoute: AuthPaisesRoute,
 }
 
 const AuthRouteWithChildren = AuthRoute._addFileChildren(AuthRouteChildren)

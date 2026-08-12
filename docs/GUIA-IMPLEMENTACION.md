@@ -1,9 +1,12 @@
-# Guía de implementación
+# Guía de implementación — Backend
 
-Cómo agregar tablas, endpoints, páginas y formularios siguiendo los patrones de
-este proyecto. Está escrita sobre el código que ya existe: los ejemplos salen de
-[db/auth.sql](../db/auth.sql) y `src/`, que sirven de plantilla para todo lo
-demás.
+Cómo agregar tablas y endpoints siguiendo los patrones de este proyecto. Está
+escrita sobre el código que ya existe: los ejemplos salen de
+[db/auth.sql](../db/auth.sql) y [db/modulos.sql](../db/modulos.sql), que sirven
+de plantilla para todo lo demás.
+
+> **Para el frontend hay guía aparte:** [GUIA-FRONTEND.md](GUIA-FRONTEND.md) —
+> páginas, formularios, tablas responsive y el menú dinámico.
 
 ## Índice
 
@@ -12,11 +15,9 @@ demás.
    - [El estado es `'A'`/`'I'`, nunca 1/0](#21-el-estado-es-ai-nunca-10)
 3. [Crear el backend de una tabla](#3-crear-el-backend-de-una-tabla)
 4. [Consumir la API desde el frontend](#4-consumir-la-api-desde-el-frontend)
-5. [Agregar una página](#5-agregar-una-página)
-6. [Formularios](#6-formularios)
-7. [Leer y mutar datos](#7-leer-y-mutar-datos)
-8. [Seguridad](#8-seguridad)
-9. [Checklist](#9-checklist)
+5. [Devolver lo que el consumidor necesita](#5-devolver-lo-que-el-consumidor-necesita)
+6. [Seguridad](#6-seguridad)
+7. [Checklist](#7-checklist)
 
 ---
 
@@ -35,7 +36,7 @@ Esto importa: **no se usan server functions de TanStack** (`createServerFn`) ni
 se conecta a la base desde ningún servidor intermedio. Toda la lógica de datos
 vive en paquetes PL/SQL, y el frontend sólo hace `fetch` contra ORDS —
 directo en producción, gracias a CORS habilitado en APEX (ver
-[8. Seguridad](#8-seguridad)).
+[6. Seguridad](#6-seguridad)).
 
 Tres cosas más a tener presentes:
 
@@ -70,8 +71,8 @@ db/
 └── articulos.sql    PKG_ARTICULOS + /articulos/
 ```
 
-**`auth.sql` se ejecuta primero.** Define `BORRAR_MODULO_ORDS`, que usan todos
-los demás, y `PKG_AUTH`, del que depende cualquier handler que valide un token.
+**`auth.sql` se ejecuta primero.** Define `PKG_AUTH`, del que depende cualquier
+procedimiento que valide un token.
 
 `auth.sql` es la excepción: no representa una tabla sino una responsabilidad
 —verificar credenciales y manejar sesiones— que cruza `USUARIOS` y `TOKENS`.
@@ -105,9 +106,10 @@ el módulo viejo nunca llegó a borrarse.
 **Nunca uses `WHEN OTHERS THEN NULL` para borrar un módulo.** Parece inofensivo
 —"si no existe, seguí de largo"— pero se traga *cualquier* error, incluido el
 interbloqueo. El script termina sin quejarse y vos creés que aplicó los
-cambios, cuando en realidad ORDS sigue sirviendo la versión anterior. Usá
-`BORRAR_MODULO_ORDS`, que consulta `USER_ORDS_MODULES` antes de borrar,
-reintenta ante `ORA-00060` y **re-lanza** cualquier otro error.
+cambios, cuando en realidad ORDS sigue sirviendo la versión anterior. Usá el
+`BORRAR_MODULO` privado del propio paquete (ver [db/modulos.sql](../db/modulos.sql)),
+que consulta `USER_ORDS_MODULES` antes de borrar, reintenta ante `ORA-00060` y
+**re-lanza** cualquier otro error.
 
 > El código corregido en el repo no cambia nada por sí solo: ORDS solo conoce
 > lo que se ejecutó en la hoja SQL de APEX. Si el script falló a mitad, el
@@ -205,20 +207,33 @@ Cuando agregues una tabla nueva con estado, usá `VARCHAR2(1)` con `'A'`/`'I'`.
 
 ## 3. Crear el backend de una tabla
 
-Tomá [db/usuarios.sql](../db/usuarios.sql) como plantilla: tiene el ABM
-completo —listado paginado, alta, detalle, modificación, bajas lógica y física—
-con todos los patrones de este documento aplicados. La estructura es siempre la
-misma; abajo va condensada con `EMPRESAS` de ejemplo.
+**Plantilla: [db/modulos.sql](../db/modulos.sql).** Es el patrón vigente y el
+que hay que copiar. `db/usuarios.sql` y `db/auth.sql` son anteriores y usan un
+estilo que ya no se sigue (ver "Lo que NO hay que hacer" más abajo).
 
-> `BORRAR_MODULO_ORDS` lo define [db/auth.sql](../db/auth.sql) y los demás
-> archivos lo reutilizan. No lo copies en cada uno.
+Reglas que definen el patrón:
+
+1. **Todo vive dentro de un solo paquete `PKG_<TABLA>`.** Nada de procedimientos
+   sueltos en el esquema, ni siquiera helpers.
+2. **Cada endpoint tiene nombre propio en la URL** (`/listar`, `/crear`,
+   `/actualizar/:id`, `/eliminar/:id`). Nada de patrones `'.'`.
+3. **El handler ORDS es una sola línea** que invoca al procedimiento del
+   paquete. Cero PL/SQL embebido como texto.
+4. **La única sentencia fuera del paquete** es la llamada que publica los
+   endpoints.
 
 ### Esqueleto
 
 ```sql
 --------------------------------------------------------------------------------
 -- CTELL · EMPRESAS
--- Script único: paquete PL/SQL + endpoints ORDS.
+--
+--   GET    /empresas/listar
+--   POST   /empresas/crear
+--   PUT    /empresas/actualizar/:id
+--   DELETE /empresas/eliminar/:id
+--
+-- REQUIERE db/auth.sql EJECUTADO ANTES (usa PKG_AUTH para validar el token).
 -- Base: https://oracleapex.com/ords/ctell/empresas/
 --------------------------------------------------------------------------------
 
@@ -227,159 +242,229 @@ SET SERVEROUTPUT ON
 
 CREATE OR REPLACE PACKAGE PKG_EMPRESAS AS
 
-  C_ERR_DUPLICADO   CONSTANT PLS_INTEGER := -20001;
-  C_ERR_NO_EXISTE   CONSTANT PLS_INTEGER := -20002;
-  C_ERR_DATOS       CONSTANT PLS_INTEGER := -20004;
-
-  PROCEDURE CREAR (
-    p_razon_social IN  VARCHAR2,
-    p_ruc          IN  VARCHAR2,
-    p_id_empresa   OUT NUMBER
+  PROCEDURE LISTAR (
+    p_authorization IN  VARCHAR2,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
   );
 
-  -- p_activo es el código de la columna: 'A' o 'I'. NULL = no cambiar.
+  PROCEDURE INSERTAR (
+    p_authorization IN  VARCHAR2,
+    p_razon_social  IN  VARCHAR2,
+    p_ruc           IN  VARCHAR2,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
+  );
+
+  -- Los parámetros ausentes (NULL) no modifican la columna correspondiente.
   PROCEDURE ACTUALIZAR (
-    p_id_empresa   IN NUMBER,
-    p_razon_social IN VARCHAR2 DEFAULT NULL,
-    p_ruc          IN VARCHAR2 DEFAULT NULL,
-    p_activo       IN VARCHAR2 DEFAULT NULL
+    p_authorization IN  VARCHAR2,
+    p_id            IN  VARCHAR2,
+    p_razon_social  IN  VARCHAR2,
+    p_ruc           IN  VARCHAR2,
+    p_activo        IN  VARCHAR2,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
   );
 
-  PROCEDURE INACTIVAR (p_id_empresa IN NUMBER);
-  PROCEDURE ACTIVAR   (p_id_empresa IN NUMBER);
-  PROCEDURE ELIMINAR  (p_id_empresa IN NUMBER);
+  PROCEDURE ELIMINAR (
+    p_authorization IN  VARCHAR2,
+    p_id            IN  VARCHAR2,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
+  );
 
-  -- p_activo: 'A' o 'I'. NULL = sin filtro.
-  FUNCTION CONTAR (
-    p_busqueda IN VARCHAR2 DEFAULT NULL,
-    p_activo   IN VARCHAR2 DEFAULT NULL
-  ) RETURN NUMBER;
+  -- Borra y republica el módulo ORDS. Se llama al final del archivo.
+  PROCEDURE PUBLICAR_ENDPOINTS;
 
 END PKG_EMPRESAS;
 /
 
 CREATE OR REPLACE PACKAGE BODY PKG_EMPRESAS AS
-  -- … implementación …
+
+  -- Privado: borra el módulo ORDS si existe, reintentando ante interbloqueo.
+  -- Copiar tal cual de db/modulos.sql (BORRAR_MODULO).
+  PROCEDURE BORRAR_MODULO IS
+    -- … ver db/modulos.sql …
+  BEGIN
+    NULL;
+  END BORRAR_MODULO;
+
+  -- … LISTAR, INSERTAR, ACTUALIZAR, ELIMINAR …
+
+  PROCEDURE PUBLICAR_ENDPOINTS IS
+  BEGIN
+    BORRAR_MODULO;
+
+    ORDS.DEFINE_MODULE(
+      p_module_name    => 'empresas',
+      p_base_path      => '/empresas/',
+      p_items_per_page => 0,
+      p_status         => 'PUBLISHED',
+      p_comments       => 'ABM de empresas'
+    );
+
+    ORDS.SET_MODULE_ORIGINS_ALLOWED(
+      p_module_name     => 'empresas',
+      p_origins_allowed => 'https://www.ctell.online,http://localhost:8080'
+    );
+
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'empresas', p_pattern => 'listar');
+
+    ORDS.DEFINE_HANDLER(
+      p_module_name => 'empresas',
+      p_pattern     => 'listar',
+      p_method      => 'GET',
+      p_source_type => ORDS.source_type_plsql,
+      p_source      => 'BEGIN PKG_EMPRESAS.LISTAR(:authorization, :status_code, :resultado); END;'
+    );
+
+    -- … los 3 DEFINE_PARAMETER de este handler, y lo mismo para los otros 3 …
+
+    COMMIT;
+  END PUBLICAR_ENDPOINTS;
+
 END PKG_EMPRESAS;
+/
+
+-- Única sentencia fuera del paquete.
+BEGIN
+  PKG_EMPRESAS.PUBLICAR_ENDPOINTS;
+END;
 /
 ```
 
-### Convenciones del paquete
+### Anatomía de un procedimiento
 
-**Los `UPDATE` respetan los NULL.** Un parámetro sin valor no debe pisar la
-columna:
-
-```sql
-UPDATE EMPRESAS
-   SET RAZON_SOCIAL        = NVL(TRIM(p_razon_social), RAZON_SOCIAL),
-       -- 'A'/'I' tal cual. NULL conserva el valor actual, y un código
-       -- inválido también: mejor ignorarlo que escribir basura.
-       ACTIVO              = CASE UPPER(TRIM(p_activo))
-                               WHEN 'A' THEN 'A'
-                               WHEN 'I' THEN 'I'
-                               ELSE ACTIVO
-                             END,
-       FECHA_ACTUALIZACION = SYSTIMESTAMP
- WHERE ID_EMPRESA = p_id_empresa;
-
-IF SQL%ROWCOUNT = 0 THEN
-  RAISE_APPLICATION_ERROR(C_ERR_NO_EXISTE, 'La empresa no existe');
-END IF;
-```
-
-**Siempre verificá `SQL%ROWCOUNT`.** Sin eso, actualizar un ID inexistente
-devuelve 200 y el usuario cree que guardó.
-
-**Preferí la baja lógica.** `ELIMINAR` sólo si de verdad hay que borrar el
-rastro; si hay tablas hijas, limpialas primero o la FK aborta el `DELETE`.
-
-**Códigos de error de negocio en `-20001..-20004`.** Los handlers los traducen
-a HTTP 400/404; cualquier otro código se oculta como 500.
-
-### Endpoints ORDS
-
-Un módulo por tabla, con este patrón de rutas:
-
-| Método   | Ruta                    | Qué hace           |
-| -------- | ----------------------- | ------------------ |
-| `GET`    | `/empresas/`            | listado paginado   |
-| `POST`   | `/empresas/`            | alta               |
-| `GET`    | `/empresas/:id`         | detalle            |
-| `PUT`    | `/empresas/:id`         | modificación       |
-| `DELETE` | `/empresas/:id`         | baja física        |
-| `POST`   | `/empresas/:id/inactivar` | baja lógica      |
-| `POST`   | `/empresas/:id/activar` | alta lógica        |
-
-El template para el listado y el alta es `'.'`; para el resto, `':id'` o
-`':id/accion'`.
-
-**No te olvides de `ORDS.SET_MODULE_ORIGINS_ALLOWED`.** Va justo después del
-`DEFINE_MODULE` del módulo nuevo — sin esto, el frontend en producción recibe
-un 500/"Service Unavailable" apenas pega contra este módulo, sin llegar
-siquiera al handler (detalle completo en [8. Seguridad](#8-seguridad)):
+Los cuatro siguen la misma forma: validan token, hacen lo suyo, devuelven
+`p_status_code` + `p_resultado`. Nunca lanzan excepción hacia afuera — el
+`WHEN OTHERS` traduce todo a un código HTTP.
 
 ```sql
-ORDS.DEFINE_MODULE(
-  p_module_name    => 'empresas',
-  p_base_path      => '/empresas/',
-  p_items_per_page => 0,
-  p_status         => 'PUBLISHED',
-  p_comments       => 'ABM de empresas'
-);
-
-ORDS.SET_MODULE_ORIGINS_ALLOWED(
-  p_module_name     => 'empresas',
-  p_origins_allowed => 'https://www.ctell.online,http://localhost:8080'
-);
-```
-
-**Todo handler valida el token primero.** Sin esto el ABM queda abierto a
-internet:
-
-```sql
-DECLARE
+PROCEDURE ELIMINAR (
+  p_authorization IN  VARCHAR2,
+  p_id            IN  VARCHAR2,
+  p_status_code   OUT NUMBER,
+  p_resultado     OUT CLOB
+) IS
   l_sesion NUMBER;
 BEGIN
-  l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(:authorization));
+  -- 1. Token primero. Sin esto el ABM queda abierto a internet.
+  l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
   IF l_sesion IS NULL THEN
-    :status_code := 401;
-    :resultado := '{"error":"Sesion invalida o vencida"}';
+    p_status_code := 401;
+    p_resultado := '{"error":"Sesion invalida o vencida"}';
     RETURN;
   END IF;
 
-  -- … la operación …
+  -- 2. La operación.
+  DELETE FROM EMPRESAS WHERE ID_EMPRESA = TO_NUMBER(NULLIF(p_id, ''));
+
+  -- 3. Sin esto, borrar un ID inexistente devuelve 200 y quien lo usó cree
+  --    que borró algo.
+  IF SQL%ROWCOUNT = 0 THEN
+    p_status_code := 404;
+    p_resultado := '{"error":"La empresa no existe"}';
+    RETURN;
+  END IF;
 
   COMMIT;
-  :status_code := 200;
-  :resultado := '{"ok":true}';
+  p_status_code := 200;
+  p_resultado := '{"ok":true}';
 EXCEPTION
+  WHEN DUP_VAL_ON_INDEX THEN
+    ROLLBACK;
+    p_status_code := 409;   -- El dato no es inválido: el estado lo rechaza.
+    p_resultado := '{"error":"Ya existe"}';
   WHEN OTHERS THEN
     ROLLBACK;
-    IF SQLCODE = -20002 THEN
-      :status_code := 404;
-      :resultado := '{"error":"No existe"}';
-    ELSIF SQLCODE BETWEEN -20004 AND -20001 THEN
-      :status_code := 400;
-      :resultado := JSON_OBJECT('error' VALUE SUBSTR(SQLERRM, 12));
-    ELSE
-      :status_code := 500;
-      :resultado := '{"error":"Error interno"}';
-    END IF;
-END;
+    p_status_code := 500;
+    -- El detalle va al log, nunca a la respuesta. Con SQLCODE adelante para
+    -- poder buscarlo en APEX_DEBUG_MESSAGES sin cruzar tablas de códigos.
+    APEX_DEBUG.ERROR('PKG_EMPRESAS.ELIMINAR: [' || SQLCODE || '] ' || SQLERRM ||
+                     ' | ' || DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
+    p_resultado := '{"error":"Error al eliminar la empresa"}';
+END ELIMINAR;
 ```
 
-Cada handler necesita sus tres parámetros declarados con
-`ORDS.DEFINE_PARAMETER`: `authorization` (HEADER/IN), `resultado`
-(RESPONSE/OUT) y `X-APEX-STATUS-CODE` (HEADER/OUT, bind `status_code`).
+**Los `UPDATE` respetan los NULL.** Un parámetro sin valor no pisa la columna:
+
+```sql
+-- El código se resuelve ANTES, en PL/SQL: una función del paquete no es
+-- visible desde una sentencia SQL (PLS-00231).
+l_estado := CASE UPPER(TRIM(p_activo))
+              WHEN 'A' THEN 'A'
+              WHEN 'I' THEN 'I'
+              ELSE NULL          -- valor inválido = no cambiar
+            END;
+
+UPDATE EMPRESAS
+   SET RAZON_SOCIAL = NVL(TRIM(p_razon_social), RAZON_SOCIAL),
+       ACTIVO       = NVL(l_estado, ACTIVO)
+ WHERE ID_EMPRESA = TO_NUMBER(NULLIF(p_id, ''));
+```
+
+**Todos los parámetros de entrada son `VARCHAR2`, incluso los numéricos.** ORDS
+los entrega como texto; convertir adentro con `TO_NUMBER(NULLIF(p_x, ''))`.
+
+### Parámetros ORDS de cada handler
+
+Los tres, siempre, para los cuatro endpoints:
+
+| `p_name`             | `p_bind_variable_name` | `p_source_type` | `p_access_method` |
+| -------------------- | ---------------------- | --------------- | ----------------- |
+| `authorization`      | `authorization`        | `HEADER`        | `IN`              |
+| `resultado`          | `resultado`            | `RESPONSE`      | `OUT`             |
+| `X-APEX-STATUS-CODE` | `status_code`          | `HEADER`        | `OUT`             |
+
+Los campos del body (`:razon_social`, `:ruc`, …) **no se declaran**: ORDS
+parsea el JSON y los vincula a los binds del mismo nombre. Pasar `'BODY'` como
+`p_source_type` aborta el script con `ORA-02290`.
 
 > El token se extrae con `PKG_AUTH.TOKEN_DE_HEADER`, no con un
-> `REPLACE(:authorization, 'Bearer ', '')` a mano. El esquema es
+> `REPLACE(p_authorization, 'Bearer ', '')` a mano. El esquema es
 > case-insensitive por RFC: con el `REPLACE` literal, un cliente que mande
 > `bearer xxx` deja el prefijo pegado al token y recibe un 401 que no hay forma
 > de explicar mirando las credenciales.
 
+### Lo que NO hay que hacer
+
+| ❌ Evitar | ✅ En su lugar |
+| --------- | ------------- |
+| `p_pattern => '.'` | `'listar'`, `'crear'`, `'actualizar/:id'`, `'eliminar/:id'` |
+| PL/SQL embebido en `q'~ … ~'` dentro de `DEFINE_HANDLER` | Una línea: `'BEGIN PKG_X.LISTAR(…); END;'` |
+| `CREATE OR REPLACE PROCEDURE` suelto | Todo dentro de `PKG_<TABLA>` |
+| Depender de helpers externos (`BORRAR_MODULO_ORDS`) | `BORRAR_MODULO` privado en el propio paquete |
+| `p_resultado := JSON_OBJECT(… RETURNING CLOB);` | `SELECT JSON_OBJECT(… RETURNING CLOB) INTO p_resultado FROM DUAL;` |
+
+Ese último merece explicación: **`JSON_OBJECT(... RETURNING CLOB)` como
+asignación PL/SQL directa falla con `PLS-00684`** dentro de un package body.
+Envuelto en un `SELECT … FROM DUAL` sí compila. Sin `RETURNING CLOB` la
+asignación directa funciona (devuelve `VARCHAR2`), pero se trunca a 4000 bytes
+— por eso los listados siempre necesitan el `SELECT`.
+
 **El JSON se arma con `JSON_OBJECT` / `JSON_ARRAYAGG`** y `RETURNING CLOB` en
-los listados, que pueden superar los 4000 bytes de un `VARCHAR2`.
+los listados. `JSON_ARRAYAGG` devuelve `NULL` cuando no hay filas, no un array
+vacío: sin `NVL(l_items, TO_CLOB('[]'))` el frontend recibe `"items":null` y
+revienta al iterarlo.
+
+### Probar un procedimiento sin pasar por ORDS
+
+La ventaja de tener todo en un paquete: cada procedimiento se prueba solo en la
+hoja SQL, con valores literales. Si falla, el error aparece ahí —no escondido
+detrás de un 500 genérico de ORDS.
+
+```sql
+DECLARE
+  l_status NUMBER;
+  l_result CLOB;
+BEGIN
+  PKG_EMPRESAS.LISTAR('Bearer TU_TOKEN', l_status, l_result);
+  DBMS_OUTPUT.PUT_LINE('status: ' || l_status);
+  DBMS_OUTPUT.PUT_LINE('resultado: ' || l_result);
+END;
+/
+```
 
 ### Parámetros: las dos trampas que ya nos costaron caro
 
@@ -499,139 +584,95 @@ export const api = {
 el status. Un 401 limpia el token automáticamente.
 
 ---
+## 5. Devolver lo que el consumidor necesita
 
-## 5. Agregar una página
+Un endpoint que devuelve la mitad de los campos rompe al consumidor de una
+forma difícil de diagnosticar: no falla, **funciona a medias**. Pasó de verdad
+con `/usuario-paginas/listar`.
 
-Creá el archivo en `src/routes/`. El nombre define la URL. Si la página exige
-sesión —el caso normal— llevá el prefijo `_auth.`, que la ubica bajo el layout
-protegido de [_auth.tsx](../src/routes/_auth.tsx):
+### El caso: el menú que se veía pero no navegaba
 
-| Archivo                      | URL               |
-| ----------------------------- | ----------------- |
-| `_auth.empresas.tsx`          | `/empresas`       |
-| `_auth.empresas.$id.tsx`      | `/empresas/:id`   |
-| `_auth.empresas.nuevo.tsx`    | `/empresas/nuevo` |
+`PKG_USUARIO_PAGINAS.LISTAR` devolvía `idUsuario, usuario, idPagina, pagina,
+idModulo, modulo, fechaAlta`. Suficiente para la pantalla de permisos, que era
+lo único que lo consumía cuando se escribió.
 
-```tsx
-import { createFileRoute } from "@tanstack/react-router";
+Cuando el menú dinámico empezó a usar el mismo endpoint, faltaban `ruta` y
+`entrada`. El resultado:
 
-import { AppLayout } from "@/components/ctell/AppLayout";
+- El menú **mostraba** "Base › Paises" perfectamente — `modulo` y `pagina` sí venían.
+- El link no navegaba a ningún lado — `ruta` llegaba `undefined` y el frontend
+  caía en un fallback `"#"`.
+- **Ningún error, en ningún lado.** Ni en PL/SQL, ni en la consola del navegador.
 
-export const Route = createFileRoute("/_auth/empresas")({
-  head: () => ({
-    meta: [{ title: "Empresas | CTELL" }],
-  }),
-  component: EmpresasPage,
-});
+Se buscó el problema en el CSS del menú, en el z-index, en TanStack Router y en
+tres instancias del dev server corriendo a la vez. Estaba en el `JSON_OBJECT`.
 
-function EmpresasPage() {
-  return (
-    <AppLayout active="Empresas" title="Empresas">
-      <main className="space-y-6 px-4 pb-28 pt-6 sm:px-6 lg:pb-10">
-        <h1 className="text-2xl font-bold text-foreground sm:text-3xl">Empresas</h1>
-      </main>
-    </AppLayout>
-  );
-}
+### La regla
+
+**Si el listado hace `JOIN` con una tabla, devolvé los campos de esa tabla que
+el consumidor va a necesitar** — no sólo el nombre para mostrar. El `JOIN` ya
+está hecho: agregar una columna al `JSON_OBJECT` no cuesta nada, y omitirla
+obliga a una segunda petición o a un bug silencioso.
+
+```sql
+-- Antes: alcanzaba para la pantalla de permisos, rompía el menú
+SELECT JSON_ARRAYAGG(
+         JSON_OBJECT(
+           'idPagina' VALUE up.ID_PAGINA,
+           'pagina'   VALUE p.NOMBRE,
+           'modulo'   VALUE m.NOMBRE
+           RETURNING CLOB)
+         RETURNING CLOB)
+  INTO l_items
+  FROM USUARIO_PAGINAS up
+  JOIN PAGINAS p ON p.ID_PAGINA = up.ID_PAGINA
+  JOIN MODULOS m ON m.ID_MODULO = p.ID_MODULO;
+
+-- Después: RUTA y ENTRADA salen del mismo JOIN que ya estaba
+SELECT JSON_ARRAYAGG(
+         JSON_OBJECT(
+           'idPagina'    VALUE up.ID_PAGINA,
+           'pagina'      VALUE p.NOMBRE,
+           'ruta'        VALUE p.RUTA,      -- adónde navega
+           'entrada'     VALUE p.ENTRADA,   -- bajo qué sección agrupa
+           'orden'       VALUE p.ORDEN,     -- en qué posición
+           'modulo'      VALUE m.NOMBRE,
+           'moduloIcono' VALUE m.ICONO      -- con qué ícono
+           RETURNING CLOB)
+         RETURNING CLOB)
+  INTO l_items
+  FROM USUARIO_PAGINAS up
+  JOIN PAGINAS p ON p.ID_PAGINA = up.ID_PAGINA
+  JOIN MODULOS m ON m.ID_MODULO = p.ID_MODULO;
 ```
 
-- **Envolvé siempre en `<AppLayout>`** — da el menú, el header y la barra móvil.
-- **`active`** debe coincidir con el `label` del item del menú.
-- **`pb-28`** evita que la barra inferior de móvil tape el contenido.
+### Cómo evitarlo
 
-Registrá la entrada en `navModules` de
-[AppLayout.tsx](../src/components/ctell/AppLayout.tsx).
+**El tipo de TypeScript es el contrato.** Cuando agregues un campo al
+`JSON_OBJECT`, agregalo también al tipo en `src/lib/api.ts`. Si el frontend usa
+un campo que el tipo no declara, `npx tsc --noEmit` lo marca:
+
+```
+Property 'ruta' does not exist on type 'UsuarioPagina'.
+```
+
+Ese error estuvo visible todo el tiempo. **Corré `npx tsc --noEmit` antes de
+dar por perdido un bug raro de UI** — el compilador suele saber la respuesta.
+
+### Un cambio en `db/` no existe hasta reejecutarlo
+
+Editar el `.sql` del repo no cambia nada por sí solo: ORDS sólo conoce lo que
+se ejecutó en APEX. Después de tocar un archivo `db/`:
+
+1. **Frená `npm run dev`** — la sesión dev mantiene tomadas las filas de
+   metadatos que `DELETE_MODULE` necesita, y sin eso da `ORA-00060` con el
+   endpoint viejo todavía publicado.
+2. Ejecutá el archivo completo en la hoja de trabajo SQL de APEX.
+3. Revisá las consultas de verificación del final.
 
 ---
 
-## 6. Formularios
-
-**react-hook-form + zod**, con los componentes de `@/components/ui/form`.
-
-```tsx
-const schema = z.object({
-  razonSocial: z.string().trim().min(3, "Mínimo 3 caracteres"),
-  ruc: z.string().regex(/^\d{6,8}-\d$/, "Formato: 1234567-8"),
-});
-
-type FormValues = z.infer<typeof schema>;
-
-function NuevaEmpresaPage() {
-  const navigate = useNavigate();
-  const queryClient = useQueryClient();
-
-  const form = useForm<FormValues>({
-    resolver: zodResolver(schema),
-    // Sin defaults React avisa por inputs no controlados.
-    defaultValues: { razonSocial: "", ruc: "" },
-  });
-
-  const mutation = useMutation({
-    mutationFn: (values: FormValues) => api.empresas.crear(values),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["empresas"] });
-      toast.success("Empresa creada");
-      navigate({ to: "/empresas" });
-    },
-    onError: (error) => {
-      // El backend manda el motivo real en los 400.
-      toast.error(error instanceof ApiError ? error.message : "No se pudo guardar");
-    },
-  });
-
-  return (
-    <Form {...form}>
-      <form onSubmit={form.handleSubmit((v) => mutation.mutate(v))} className="space-y-5">
-        <FormField
-          control={form.control}
-          name="razonSocial"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Razón social</FormLabel>
-              <FormControl>
-                <Input {...field} />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-        <Button type="submit" disabled={mutation.isPending}>
-          {mutation.isPending ? "Guardando…" : "Guardar"}
-        </Button>
-      </form>
-    </Form>
-  );
-}
-```
-
-**Validá en los dos lados.** El zod del formulario mejora la experiencia, pero
-la validación que cuenta es la del paquete PL/SQL: cualquiera puede llamar al
-endpoint sin pasar por tu formulario.
-
----
-
-## 7. Leer y mutar datos
-
-```tsx
-const { data, isLoading } = useQuery({
-  queryKey: ["empresas", { busqueda }],
-  queryFn: () => api.empresas.listar({ busqueda }),
-});
-```
-
-Después de mutar, invalidá o la lista queda desactualizada:
-
-```tsx
-queryClient.invalidateQueries({ queryKey: ["empresas"] });
-```
-
-> El `loader` de la ruta también sirve, pero corre antes de que el layout
-> `_auth.tsx` termine de resolver el token. Para datos detrás de sesión usá
-> `useQuery`.
-
----
-
-## 8. Seguridad
+## 6. Seguridad
 
 **Nunca devuelvas `CONTRASENA_HASH` ni `SALT`.** Ningún `SELECT` de un handler
 debe incluirlos.
@@ -680,33 +721,43 @@ que costó varias vueltas encontrar.
 
 ---
 
-## 9. Checklist
+## 7. Checklist
 
 Backend (`db/<tabla>.sql`):
 
 - [ ] Un archivo por tabla, nombrado como la tabla
-- [ ] Reejecutable: `CREATE OR REPLACE` + `ORDS.DELETE_MODULE`
+- [ ] **Todo dentro de `PKG_<TABLA>`** — ni un `CREATE PROCEDURE` suelto
+- [ ] **Endpoints con nombre**: `/listar`, `/crear`, `/actualizar/:id`,
+      `/eliminar/:id` — nada de `p_pattern => '.'`
+- [ ] **Cada `DEFINE_HANDLER` es una línea** que invoca al paquete — nada de
+      PL/SQL embebido en `q'~ … ~'`
+- [ ] `BORRAR_MODULO` privado en el paquete, no un helper externo
+- [ ] La única sentencia fuera del paquete es `PKG_<TABLA>.PUBLICAR_ENDPOINTS`
+- [ ] `ORDS.SET_MODULE_ORIGINS_ALLOWED` para este módulo (es por módulo)
 - [ ] No crea ni altera tablas
 - [ ] Sin `ORDS.ENABLE_SCHEMA` ni `DBMS_CRYPTO`
-- [ ] Todos los handlers validan el token
-- [ ] Los `UPDATE` verifican `SQL%ROWCOUNT`
-- [ ] Errores de negocio en `-20001..-20004`, traducidos a 400/404
+- [ ] Todos los procedimientos validan el token con `PKG_AUTH.VALIDAR_TOKEN`
+- [ ] Los `UPDATE`/`DELETE` verifican `SQL%ROWCOUNT` (si no, un ID inexistente
+      devuelve 200)
 - [ ] Consultas de verificación al final (con `OBJECT_NAME`)
 - [ ] **El estado es `'A'`/`'I'` en la columna, el JSON y el frontend** — sin
       traducir a 1/0 en ningún punto
-- [ ] **Todo `TO_NUMBER(:param)` lleva `NULLIF(:param, '')`** — un parámetro
-      ausente llega como cadena vacía, no como NULL
-- [ ] **Las conversiones van dentro del `BEGIN`**, nunca en el `DECLARE`
-- [ ] Ninguna función del paquete se invoca desde una sentencia SQL
+- [ ] **Todos los parámetros de entrada son `VARCHAR2`**, y todo `TO_NUMBER`
+      lleva `NULLIF(p_x, '')`
+- [ ] `JSON_OBJECT(… RETURNING CLOB)` va dentro de un `SELECT … FROM DUAL`,
+      nunca como asignación directa (`PLS-00684`)
+- [ ] `NVL(l_items, TO_CLOB('[]'))` en los listados
+- [ ] **Los listados con `JOIN` devuelven los campos que el consumidor necesita**,
+      no sólo el nombre para mostrar (ver [5](#5-devolver-lo-que-el-consumidor-necesita))
 
-Frontend:
+Después de ejecutarlo en APEX:
 
-- [ ] `npx tsc --noEmit` y `npm run lint` sin errores
-- [ ] Bloque agregado en `src/lib/api.ts`
-- [ ] Página envuelta en `<AppLayout>` y registrada en `navModules`
-- [ ] Formularios con `defaultValues` y validación zod
-- [ ] Mutaciones invalidan sus queries
-- [ ] Probado en claro/oscuro y en ancho de móvil
+- [ ] Se frenó `npm run dev` antes de reejecutar
+- [ ] Las consultas de verificación del final no muestran `INVALID` ni errores
+- [ ] El tipo en `src/lib/api.ts` refleja todos los campos del `JSON_OBJECT`
+- [ ] `npx tsc --noEmit` pasa sin errores
+
+> El checklist del frontend está en [GUIA-FRONTEND.md](GUIA-FRONTEND.md).
 
 ### Errores frecuentes
 
@@ -715,6 +766,7 @@ Frontend:
 | `PLS-00201: DBMS_CRYPTO`               | No hay grant; usá `SYS_GUID`/`STANDARD_HASH`   |
 | `PLS-00201: STANDARD_HASH`             | Es función SQL: envolvela en `SELECT … FROM DUAL` |
 | `PLS-00231` en un `SELECT`/`UPDATE`    | Función del paquete invocada desde SQL: resolvé el valor antes en PL/SQL |
+| **`PLS-00684: tipo de datos no válido para el valor de retorno de JSON`** | `JSON_OBJECT(… RETURNING CLOB)` como asignación directa dentro de un package body. Envolvelo en `SELECT … INTO … FROM DUAL` |
 | `ORA-01031` en `ENABLE_SCHEMA`         | En APEX ya está habilitado: quitá la llamada    |
 | `ORA-00904: "NAME"`                    | En `USER_OBJECTS` la columna es `OBJECT_NAME`  |
 | `ORA-01722` al filtrar por estado      | `TO_NUMBER` sobre `ACTIVO`, que es `VARCHAR2` con `'A'`/`'I'` |
@@ -731,3 +783,5 @@ Frontend:
 | **"Service Unavailable" (HTML de Oracle, no JSON) en un módulo que compila bien** | Falta `SET_MODULE_ORIGINS_ALLOWED` para ESE módulo. ORIGINS_ALLOWED es por módulo, no por workspace — configurarlo en `auth` no lo propaga a `usuarios` ni a ninguno nuevo. La petición cross-origin la rechaza ORDS antes de llegar al handler, así que ni el `WHEN OTHERS` con `SQLERRM` lo captura |
 | `window is not defined`                | Acceso al DOM fuera de `useEffect` (corre en el prerender de build) |
 | La lista no se actualiza tras guardar  | Falta `invalidateQueries`                      |
+| **La UI muestra los datos pero una acción no hace nada** | El `JSON_OBJECT` no devuelve un campo que el consumidor necesita: llega `undefined` y el frontend cae en un fallback silencioso. Corré `npx tsc --noEmit` — el tipo lo delata |
+| El cambio del `.sql` no surte efecto   | No se reejecutó en APEX: el repo y ORDS son dos cosas distintas |

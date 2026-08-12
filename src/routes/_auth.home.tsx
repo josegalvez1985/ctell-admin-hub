@@ -1,17 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
-import {
-  ArrowDownRight,
-  ArrowUpRight,
-  Banknote,
-  Boxes,
-  LayoutGrid,
-  ShoppingCart,
-  Tags,
-  Users,
-  Wallet,
-} from "lucide-react";
-
+import { ArrowDownRight, ArrowUpRight, Banknote } from "lucide-react";
 import { AppLayout } from "@/components/ctell/AppLayout";
+import { MenuDinamico } from "@/components/ctell/MenuDinamico";
 import { primerNombre, useUsuarioActual } from "@/hooks/use-usuario-actual";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,27 +14,17 @@ export const Route = createFileRoute("/_auth/home")({
       { title: "Dashboard | CTELL" },
       {
         name: "description",
-        content:
-          "Dashboard de CTELL: indicadores de compras, ventas, stock, tesorería y recursos humanos en tiempo real.",
+        content: "Dashboard de CTELL con indicadores y menú personalizado según permisos.",
       },
       { property: "og:title", content: "Dashboard | CTELL" },
       {
         property: "og:description",
-        content: "Indicadores de compras, ventas, stock, tesorería y RRHH en un solo panel.",
+        content: "Indicadores de compras, ventas, stock, tesorería y RRHH.",
       },
     ],
   }),
   component: HomePage,
 });
-
-const modules = [
-  { name: "Compras", icon: ShoppingCart, detail: "12 órdenes pendientes" },
-  { name: "Ventas", icon: Tags, detail: "38 facturas hoy" },
-  { name: "Stock", icon: Boxes, detail: "7 artículos críticos" },
-  { name: "Tesorería", icon: Wallet, detail: "4 pagos programados" },
-  { name: "RRHH", icon: Users, detail: "56 empleados activos" },
-  { name: "Reportes", icon: LayoutGrid, detail: "Cierre de mes" },
-];
 
 const kpis = [
   { label: "Ventas del mes", value: "₲ 486.250.000", delta: "+12,4%", up: true },
@@ -101,8 +81,6 @@ const stockCritico = [
 function HomePage() {
   const { data: usuario } = useUsuarioActual();
   const nombre = primerNombre(usuario?.nombreApellido);
-  // Con los datos que dejó el login no hay espera; el skeleton solo aparece si
-  // la sesión se restauró sin ellos (por ejemplo, tras recargar con F5).
   const esperandoNombre = !usuario;
 
   return (
@@ -111,8 +89,6 @@ function HomePage() {
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
             {esperandoNombre ? (
-              // Placeholder del alto del h1: sin esto el saludo aparece de
-              // golpe y empuja el resto del panel hacia abajo.
               <Skeleton className="h-8 w-56 sm:h-9" />
             ) : (
               <h1 className="text-2xl font-bold text-foreground sm:text-3xl">
@@ -147,30 +123,6 @@ function HomePage() {
               </p>
             </article>
           ))}
-        </section>
-
-        <section>
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-            Módulos
-          </h2>
-          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 xl:grid-cols-6">
-            {modules.map((module) => (
-              <button
-                key={module.name}
-                className="surface-card group flex flex-col items-start gap-3 p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-elevated"
-              >
-                <span className="gradient-primary flex size-10 items-center justify-center rounded-xl text-primary-foreground">
-                  <module.icon className="size-5" />
-                </span>
-                <span>
-                  <span className="block text-sm font-semibold text-foreground">{module.name}</span>
-                  <span className="mt-0.5 block text-xs text-muted-foreground">
-                    {module.detail}
-                  </span>
-                </span>
-              </button>
-            ))}
-          </div>
         </section>
 
         <div className="grid gap-4 xl:grid-cols-3">
@@ -228,6 +180,15 @@ function HomePage() {
             </div>
           </section>
         </div>
+
+        <section>
+          <h2 className="mb-4 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+            Acceso rápido
+          </h2>
+          <div className="max-w-2xl">
+            <MenuDinamico />
+          </div>
+        </section>
       </main>
     </AppLayout>
   );

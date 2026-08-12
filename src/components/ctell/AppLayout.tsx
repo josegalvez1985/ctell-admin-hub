@@ -2,24 +2,19 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
   Bell,
-  Boxes,
   Home,
-  LayoutGrid,
   LogOut,
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
   Search,
   Settings,
-  ShoppingCart,
-  Tags,
-  Users,
-  Wallet,
   X,
 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { Logo } from "@/components/ctell/Logo";
+import { MenuDinamico } from "@/components/ctell/MenuDinamico";
 import { ThemeToggle } from "@/components/ctell/ThemeToggle";
 import { iniciales, useUsuarioActual } from "@/hooks/use-usuario-actual";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -30,23 +25,8 @@ import { cn } from "@/lib/utils";
 
 const COLLAPSE_KEY = "ctell-sidebar-collapsed";
 
-export const navModules = [
-  { name: "Compras", icon: ShoppingCart, to: "/home" },
-  { name: "Ventas", icon: Tags, to: "/home" },
-  { name: "Stock", icon: Boxes, to: "/home" },
-  { name: "Tesorería", icon: Wallet, to: "/home" },
-  { name: "RRHH", icon: Users, to: "/home" },
-  { name: "Reportes", icon: LayoutGrid, to: "/home" },
-];
-
 const mobileMenuItems = [
   { label: "Inicio", icon: Home, to: "/home" },
-  { label: "Compras", icon: ShoppingCart, to: "/home" },
-  { label: "Ventas", icon: Tags, to: "/home" },
-  { label: "Stock", icon: Boxes, to: "/home" },
-  { label: "Tesorería", icon: Wallet, to: "/home" },
-  { label: "RRHH", icon: Users, to: "/home" },
-  { label: "Reportes", icon: LayoutGrid, to: "/home" },
   { label: "Configuración", icon: Settings, to: "/configuracion" },
   { label: "Salir", icon: LogOut, to: undefined, action: "logout" },
 ];
@@ -64,9 +44,9 @@ export function AppLayout({
 }: {
   children: ReactNode;
   /** Etiqueta del item de menú que debe marcarse como activo. */
-  active?: string;
+  active?: string | undefined;
   /** Título mostrado en el header móvil. */
-  title?: string;
+  title?: string | undefined;
   showSearch?: boolean;
 }) {
   const navigate = useNavigate();
@@ -124,7 +104,7 @@ export function AppLayout({
           {collapsed ? <Logo tone="dark" showWordmark={false} /> : <Logo tone="dark" />}
         </div>
 
-        <nav className="mt-8 flex-1 space-y-1">
+        <nav className="mt-8 flex-1 space-y-1 overflow-y-auto">
           <SideItem
             icon={Home}
             label="Dashboard"
@@ -132,16 +112,11 @@ export function AppLayout({
             active={active === "Dashboard"}
             collapsed={collapsed}
           />
-          {navModules.map((module) => (
-            <SideItem
-              key={module.name}
-              icon={module.icon}
-              label={module.name}
-              to={module.to}
-              active={active === module.name}
-              collapsed={collapsed}
-            />
-          ))}
+          {!collapsed && (
+            <div className="pt-4">
+              <MenuDinamico active={active} variant="dark" />
+            </div>
+          )}
         </nav>
 
         <div className="space-y-1 border-t border-sidebar-border pt-4">
@@ -328,6 +303,10 @@ export function AppLayout({
                 );
               })}
             </nav>
+
+            <div className="border-t border-border p-4">
+              <MenuDinamico active={active} />
+            </div>
 
             <div className="border-t border-border p-4">
               <div className="flex items-center gap-3 px-2">

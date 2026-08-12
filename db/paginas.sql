@@ -1,85 +1,96 @@
 --------------------------------------------------------------------------------
--- CTELL · USUARIOS
+-- CTELL · PAGINAS
 --
--- Un paquete (PKG_USUARIOS) con los 4 procedimientos — LISTAR, INSERTAR,
+-- Un paquete (PKG_PAGINAS) con los 4 procedimientos — LISTAR, INSERTAR,
 -- ACTUALIZAR, ELIMINAR — y la publicación de los endpoints ORDS. Todo vive
 -- dentro del paquete: no hay procedimientos sueltos ni PL/SQL embebido como
 -- texto dentro de los handlers.
 --
---   1. LISTAR      GET    /usuarios/listar
---   2. INSERTAR    POST   /usuarios/crear
---   3. ACTUALIZAR  PUT    /usuarios/actualizar/:id
---   4. ELIMINAR    DELETE /usuarios/eliminar/:id
+--   1. LISTAR      GET    /paginas/listar
+--   2. INSERTAR    POST   /paginas/crear
+--   3. ACTUALIZAR  PUT    /paginas/actualizar/:id
+--   4. ELIMINAR    DELETE /paginas/eliminar/:id
 --
 -- Se ejecuta una sola vez en la hoja de trabajo SQL de APEX, conectado con el
--- esquema del workspace. REQUIERE db/auth.sql EJECUTADO ANTES: usa PKG_AUTH
--- para validar el token y para hashear la contraseña en el alta.
+-- esquema del workspace. REQUIERE db/auth.sql EJECUTADO ANTES (usa PKG_AUTH
+-- para validar el token).
 --
--- Base de los endpoints: https://oracleapex.com/ords/ctell/usuarios/
+-- Base de los endpoints: https://oracleapex.com/ords/ctell/paginas/
 --
 -- Tabla (no la crea ni la altera; el DDL se administra aparte):
---   USUARIOS  ID_USUARIO, USUARIO, NOMBRE_APELLIDO, CORREO, CONTRASENA_HASH,
---             SALT, ACTIVO, ES_ADMIN, FECHA_CREACION, FECHA_ACTUALIZACION
+--   PAGINAS  ID_PAGINA, ID_MODULO, NOMBRE, RUTA, ENTRADA, ORDEN, ACTIVO
 --
--- ESTADO: ACTIVO es VARCHAR2(1) con 'A' (activo) / 'I' (inactivo). Ese mismo
--- código viaja en el JSON y lo consume el frontend, sin traducirse a 1/0.
--- ES_ADMIN sigue el mismo criterio con 'S'/'N'.
+-- RUTA: path del frontend para cargar la página ("/compras/ordenes", etc).
+-- Identifica qué componente renderizar en el menú dinámico.
 --
--- NUNCA SE DEVUELVEN CONTRASENA_HASH NI SALT. Ningún SELECT de este archivo
--- los incluye en una respuesta.
+-- ENTRADA: tipo de sección donde se agrupa la página: 'D' (Definiciones),
+-- 'O' (Operaciones), 'R' (Reportes). Afecta dónde aparece en el menú.
 --
--- CORS: ORIGINS_ALLOWED es POR MODULO, no a nivel de workspace. Se declara en
--- PUBLICAR_ENDPOINTS. Ver la explicación completa en db/auth.sql.
+-- FK_PAGINA_MODULO: ID_MODULO referencia MODULOS.ID_MODULO. Un ID de módulo
+-- inexistente da ORA-02291 en el INSERT/UPDATE, que se traduce a 400 en vez de
+-- dejarlo escapar como 500 genérico.
+--
+-- El listado hace JOIN con MODULOS para devolver también el nombre del módulo:
+-- el frontend lo necesita para agrupar y no tendría cómo resolverlo solo.
+--
+-- ESTADO: ACTIVO es VARCHAR2(1) con 'A' (activo) / 'I' (inactivo), sin
+-- traducirse a 1/0 en ningún punto.
+--
+-- CORS: ORIGINS_ALLOWED es POR MODULO ORDS, no a nivel de workspace. Se
+-- declara en PUBLICAR_ENDPOINTS. Ver la explicación completa en db/auth.sql.
 --------------------------------------------------------------------------------
 
 SET DEFINE OFF
 SET SERVEROUTPUT ON
 
 --------------------------------------------------------------------------------
--- 1. PKG_USUARIOS
+-- 1. PKG_PAGINAS
 --
 -- Probar un procedimiento solo, sin pasar por ORDS:
 --   DECLARE
 --     l_status NUMBER;
 --     l_result CLOB;
 --   BEGIN
---     PKG_USUARIOS.LISTAR('Bearer TU_TOKEN', l_status, l_result);
+--     PKG_PAGINAS.LISTAR('Bearer TU_TOKEN', NULL, l_status, l_result);
 --     DBMS_OUTPUT.PUT_LINE('status: ' || l_status);
 --     DBMS_OUTPUT.PUT_LINE('resultado: ' || l_result);
 --   END;
 --   /
 --------------------------------------------------------------------------------
 
-CREATE OR REPLACE PACKAGE PKG_USUARIOS AS
+CREATE OR REPLACE PACKAGE PKG_PAGINAS AS
 
+  -- p_id_modulo filtra por módulo. NULL o vacío = todas las páginas.
   PROCEDURE LISTAR (
     p_authorization IN  VARCHAR2,
+    p_id_modulo     IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   );
 
   PROCEDURE INSERTAR (
-    p_authorization   IN  VARCHAR2,
-    p_usuario         IN  VARCHAR2,
-    p_nombre_apellido IN  VARCHAR2,
-    p_correo          IN  VARCHAR2,
-    p_password        IN  VARCHAR2,
-    p_es_admin        IN  VARCHAR2,
-    p_status_code     OUT NUMBER,
-    p_resultado       OUT CLOB
+    p_authorization IN  VARCHAR2,
+    p_id_modulo     IN  VARCHAR2,
+    p_nombre        IN  VARCHAR2,
+    p_ruta          IN  VARCHAR2,
+    p_entrada       IN  VARCHAR2,
+    p_orden         IN  VARCHAR2,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
   );
 
   -- Los parámetros ausentes (NULL) no modifican la columna correspondiente.
-  -- USUARIO no se actualiza nunca: es la identidad con la que se inicia sesión.
   PROCEDURE ACTUALIZAR (
-    p_authorization   IN  VARCHAR2,
-    p_id              IN  VARCHAR2,
-    p_nombre_apellido IN  VARCHAR2,
-    p_correo          IN  VARCHAR2,
-    p_activo          IN  VARCHAR2,
-    p_es_admin        IN  VARCHAR2,
-    p_status_code     OUT NUMBER,
-    p_resultado       OUT CLOB
+    p_authorization IN  VARCHAR2,
+    p_id            IN  VARCHAR2,
+    p_id_modulo     IN  VARCHAR2,
+    p_nombre        IN  VARCHAR2,
+    p_ruta          IN  VARCHAR2,
+    p_entrada       IN  VARCHAR2,
+    p_orden         IN  VARCHAR2,
+    p_activo        IN  VARCHAR2,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
   );
 
   PROCEDURE ELIMINAR (
@@ -89,14 +100,14 @@ CREATE OR REPLACE PACKAGE PKG_USUARIOS AS
     p_resultado     OUT CLOB
   );
 
-  -- Borra y republica el módulo ORDS /usuarios/ con sus 4 endpoints.
+  -- Borra y republica el módulo ORDS /paginas/ con sus 4 endpoints.
   -- Se llama una sola vez, al final de este archivo.
   PROCEDURE PUBLICAR_ENDPOINTS;
 
-END PKG_USUARIOS;
+END PKG_PAGINAS;
 /
 
-CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
+CREATE OR REPLACE PACKAGE BODY PKG_PAGINAS AS
 
   ------------------------------------------------------------------------------
   -- Privado: borra el módulo ORDS si existe, reintentando ante un interbloqueo.
@@ -116,13 +127,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
         SELECT COUNT(*)
           INTO l_existe
           FROM USER_ORDS_MODULES
-         WHERE NAME = 'usuarios';
+         WHERE NAME = 'paginas';
 
         IF l_existe = 0 THEN
           RETURN;  -- No existía: nada que borrar.
         END IF;
 
-        ORDS.DELETE_MODULE(p_module_name => 'usuarios');
+        ORDS.DELETE_MODULE(p_module_name => 'paginas');
         COMMIT;  -- Libera los locks antes de que DEFINE_MODULE los vuelva a pedir.
         RETURN;
 
@@ -142,12 +153,14 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
 
   PROCEDURE LISTAR (
     p_authorization IN  VARCHAR2,
+    p_id_modulo     IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
-    l_sesion NUMBER;
-    l_total  NUMBER;
-    l_items  CLOB;
+    l_sesion     NUMBER;
+    l_id_modulo  NUMBER;
+    l_total      NUMBER;
+    l_items      CLOB;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -156,26 +169,38 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
       RETURN;
     END IF;
 
-    SELECT COUNT(*) INTO l_total FROM USUARIOS;
+    -- La conversión va acá, dentro del BEGIN: en el DECLARE se ejecutaría
+    -- antes de que exista el EXCEPTION y el error escaparía del procedimiento.
+    -- NULLIF convierte la cadena vacía del parámetro ausente en NULL antes de
+    -- que TO_NUMBER la toque (si no, ORA-01722).
+    l_id_modulo := TO_NUMBER(NULLIF(p_id_modulo, ''));
 
-    -- Ni CONTRASENA_HASH ni SALT aparecen acá, ni deben aparecer.
+    SELECT COUNT(*)
+      INTO l_total
+      FROM PAGINAS
+     WHERE l_id_modulo IS NULL OR ID_MODULO = l_id_modulo;
+
+    -- El JOIN trae el nombre del módulo: el frontend lo usa para agrupar y no
+    -- tendría cómo resolverlo por su cuenta sin otra petición.
     SELECT JSON_ARRAYAGG(
              JSON_OBJECT(
-               'id'                 VALUE ID_USUARIO,
-               'usuario'            VALUE USUARIO,
-               'nombreApellido'     VALUE NOMBRE_APELLIDO,
-               'correo'             VALUE CORREO,
-               'activo'             VALUE UPPER(TRIM(ACTIVO)),
-               'esAdmin'            VALUE NVL(UPPER(TRIM(ES_ADMIN)), 'N'),
-               'fechaCreacion'      VALUE TO_CHAR(FECHA_CREACION, 'YYYY-MM-DD"T"HH24:MI:SS'),
-               'fechaActualizacion' VALUE TO_CHAR(FECHA_ACTUALIZACION, 'YYYY-MM-DD"T"HH24:MI:SS')
+               'id'           VALUE p.ID_PAGINA,
+               'idModulo'     VALUE p.ID_MODULO,
+               'modulo'       VALUE m.NOMBRE,
+               'nombre'       VALUE p.NOMBRE,
+               'ruta'         VALUE p.RUTA,
+               'entrada'      VALUE p.ENTRADA,
+               'orden'        VALUE p.ORDEN,
+               'activo'       VALUE UPPER(TRIM(p.ACTIVO))
                RETURNING CLOB
              )
-             ORDER BY NOMBRE_APELLIDO
+             ORDER BY m.ORDEN, m.NOMBRE, p.ORDEN, p.NOMBRE
              RETURNING CLOB
            )
       INTO l_items
-      FROM USUARIOS;
+      FROM PAGINAS p
+      JOIN MODULOS m ON m.ID_MODULO = p.ID_MODULO
+     WHERE l_id_modulo IS NULL OR p.ID_MODULO = l_id_modulo;
 
     p_status_code := 200;
     -- JSON_OBJECT(... RETURNING CLOB) como asignación PL/SQL directa (sin
@@ -193,26 +218,25 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
   EXCEPTION
     WHEN OTHERS THEN
       p_status_code := 500;
-      APEX_DEBUG.ERROR('PKG_USUARIOS.LISTAR: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
+      APEX_DEBUG.ERROR('PKG_PAGINAS.LISTAR: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
                        DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
-      p_resultado := '{"error":"Error al listar los usuarios"}';
+      p_resultado := '{"error":"Error al listar las paginas"}';
   END LISTAR;
 
   PROCEDURE INSERTAR (
-    p_authorization   IN  VARCHAR2,
-    p_usuario         IN  VARCHAR2,
-    p_nombre_apellido IN  VARCHAR2,
-    p_correo          IN  VARCHAR2,
-    p_password        IN  VARCHAR2,
-    p_es_admin        IN  VARCHAR2,
-    p_status_code     OUT NUMBER,
-    p_resultado       OUT CLOB
+    p_authorization IN  VARCHAR2,
+    p_id_modulo     IN  VARCHAR2,
+    p_nombre        IN  VARCHAR2,
+    p_ruta          IN  VARCHAR2,
+    p_entrada       IN  VARCHAR2,
+    p_orden         IN  VARCHAR2,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
   ) IS
-    l_sesion  NUMBER;
-    l_usuario VARCHAR2(50);
-    l_salt    VARCHAR2(32);
-    l_hash    VARCHAR2(256);
-    l_id      NUMBER;
+    l_sesion    NUMBER;
+    l_id_modulo NUMBER;
+    l_entrada   VARCHAR2(1);
+    l_id        NUMBER;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -221,78 +245,66 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
       RETURN;
     END IF;
 
-    -- El nombre de usuario se guarda SIEMPRE en minúscula: el login busca con
-    -- LOWER(), así que uno guardado con mayúsculas no podría entrar nunca — y
-    -- el 401 resultante es indistinguible de una clave mal puesta.
-    l_usuario := LOWER(TRIM(p_usuario));
+    l_id_modulo := TO_NUMBER(NULLIF(p_id_modulo, ''));
+    l_entrada := CASE UPPER(TRIM(p_entrada))
+                   WHEN 'D' THEN 'D'
+                   WHEN 'O' THEN 'O'
+                   WHEN 'R' THEN 'R'
+                   ELSE NULL
+                 END;
 
-    IF l_usuario IS NULL OR TRIM(p_nombre_apellido) IS NULL THEN
+    IF l_id_modulo IS NULL OR TRIM(p_nombre) IS NULL OR TRIM(p_ruta) IS NULL OR l_entrada IS NULL THEN
       p_status_code := 400;
-      p_resultado := '{"error":"usuario y nombreApellido son obligatorios"}';
+      p_resultado := '{"error":"idModulo, nombre, ruta y entrada son obligatorios. entrada debe ser D, O o R"}';
       RETURN;
     END IF;
 
-    IF p_password IS NULL OR LENGTH(p_password) < 8 THEN
-      p_status_code := 400;
-      p_resultado := '{"error":"La contrasena debe tener al menos 8 caracteres"}';
-      RETURN;
-    END IF;
-
-    -- El hash se delega en PKG_AUTH a propósito: es el mismo algoritmo con el
-    -- que el login va a verificar después. Duplicarlo acá sería garantizar que
-    -- algún día se desincronicen.
-    l_salt := PKG_AUTH.GENERAR_SALT();
-    l_hash := PKG_AUTH.HASH_PASSWORD(p_password, l_salt);
-
-    INSERT INTO USUARIOS (
-      USUARIO, NOMBRE_APELLIDO, CORREO, CONTRASENA_HASH, SALT,
-      ACTIVO, ES_ADMIN, FECHA_CREACION, FECHA_ACTUALIZACION
-    ) VALUES (
-      l_usuario,
-      TRIM(p_nombre_apellido),
-      LOWER(TRIM(p_correo)),
-      l_hash,
-      l_salt,
-      'A',
-      -- Un valor inválido cae a 'N': el default seguro es no ser administrador.
-      CASE UPPER(TRIM(p_es_admin)) WHEN 'S' THEN 'S' ELSE 'N' END,
-      SYSTIMESTAMP,
-      SYSTIMESTAMP
+    INSERT INTO PAGINAS (ID_MODULO, NOMBRE, RUTA, ENTRADA, ORDEN, ACTIVO)
+    VALUES (
+      l_id_modulo,
+      TRIM(p_nombre),
+      TRIM(p_ruta),
+      l_entrada,
+      NVL(TO_NUMBER(NULLIF(p_orden, '')), 0),
+      'A'
     )
-    RETURNING ID_USUARIO INTO l_id;
+    RETURNING ID_PAGINA INTO l_id;
 
     COMMIT;
     p_status_code := 201;
     p_resultado := JSON_OBJECT('id' VALUE l_id, 'ok' VALUE 'true' FORMAT JSON);
   EXCEPTION
-    WHEN DUP_VAL_ON_INDEX THEN
-      ROLLBACK;
-      -- Duplicado: 409 y no 400. El dato no es inválido, el estado del
-      -- servidor es el que lo rechaza.
-      p_status_code := 409;
-      p_resultado := '{"error":"Ya existe un usuario con ese nombre"}';
     WHEN OTHERS THEN
       ROLLBACK;
-      p_status_code := 500;
-      APEX_DEBUG.ERROR('PKG_USUARIOS.INSERTAR: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
-                       DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
-      p_resultado := '{"error":"Error al crear el usuario"}';
+      -- ORA-02291: la FK contra MODULOS no encontró el padre. Es un dato
+      -- inválido del cliente (400), no un fallo del servidor.
+      IF SQLCODE = -2291 THEN
+        p_status_code := 400;
+        p_resultado := '{"error":"El modulo indicado no existe"}';
+      ELSE
+        p_status_code := 500;
+        APEX_DEBUG.ERROR('PKG_PAGINAS.INSERTAR: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
+                         DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
+        p_resultado := '{"error":"Error al crear la pagina"}';
+      END IF;
   END INSERTAR;
 
   PROCEDURE ACTUALIZAR (
-    p_authorization   IN  VARCHAR2,
-    p_id              IN  VARCHAR2,
-    p_nombre_apellido IN  VARCHAR2,
-    p_correo          IN  VARCHAR2,
-    p_activo          IN  VARCHAR2,
-    p_es_admin        IN  VARCHAR2,
-    p_status_code     OUT NUMBER,
-    p_resultado       OUT CLOB
+    p_authorization IN  VARCHAR2,
+    p_id            IN  VARCHAR2,
+    p_id_modulo     IN  VARCHAR2,
+    p_nombre        IN  VARCHAR2,
+    p_ruta          IN  VARCHAR2,
+    p_entrada       IN  VARCHAR2,
+    p_orden         IN  VARCHAR2,
+    p_activo        IN  VARCHAR2,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
   ) IS
-    l_sesion   NUMBER;
-    l_id       NUMBER;
-    l_estado   VARCHAR2(1);
-    l_es_admin VARCHAR2(1);
+    l_sesion    NUMBER;
+    l_id_modulo NUMBER;
+    l_entrada   VARCHAR2(1);
+    l_estado    VARCHAR2(1);
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -301,53 +313,37 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
       RETURN;
     END IF;
 
-    l_id := TO_NUMBER(NULLIF(p_id, ''));
+    l_id_modulo := TO_NUMBER(NULLIF(p_id_modulo, ''));
+    l_entrada := CASE UPPER(TRIM(p_entrada))
+                   WHEN 'D' THEN 'D'
+                   WHEN 'O' THEN 'O'
+                   WHEN 'R' THEN 'R'
+                   ELSE NULL
+                 END;
 
-    -- Los códigos se resuelven ACÁ, en PL/SQL, y entran al UPDATE como
-    -- variables. Un valor inválido queda NULL = no cambiar: es preferible
-    -- ignorarlo a escribir basura en la columna.
+    -- Valor invalido = NULL = no cambiar: es preferible ignorar un código que
+    -- no entendemos a escribir basura en la columna.
     l_estado := CASE UPPER(TRIM(p_activo))
                   WHEN 'A' THEN 'A'
                   WHEN 'I' THEN 'I'
                   ELSE NULL
                 END;
 
-    l_es_admin := CASE UPPER(TRIM(p_es_admin))
-                    WHEN 'S' THEN 'S'
-                    WHEN 'N' THEN 'N'
-                    ELSE NULL
-                  END;
-
-    -- Inactivarse a uno mismo revoca la sesión en curso y deja al usuario
-    -- afuera sin aviso.
-    IF l_id = l_sesion AND l_estado = 'I' THEN
-      p_status_code := 400;
-      p_resultado := '{"error":"No podes inactivar tu propio usuario"}';
-      RETURN;
-    END IF;
-
-    -- USUARIO no se modifica nunca: es la identidad con la que se inicia
-    -- sesión. Para cambiarla se da de baja y se crea otro.
-    UPDATE USUARIOS
-       SET NOMBRE_APELLIDO     = NVL(TRIM(p_nombre_apellido), NOMBRE_APELLIDO),
-           CORREO              = NVL(LOWER(TRIM(p_correo)), CORREO),
-           ACTIVO              = NVL(l_estado, ACTIVO),
-           ES_ADMIN            = NVL(l_es_admin, ES_ADMIN),
-           FECHA_ACTUALIZACION = SYSTIMESTAMP
-     WHERE ID_USUARIO = l_id;
+    UPDATE PAGINAS
+       SET ID_MODULO = NVL(l_id_modulo, ID_MODULO),
+           NOMBRE    = NVL(TRIM(p_nombre), NOMBRE),
+           RUTA      = NVL(TRIM(p_ruta), RUTA),
+           ENTRADA   = NVL(l_entrada, ENTRADA),
+           ORDEN     = NVL(TO_NUMBER(NULLIF(p_orden, '')), ORDEN),
+           ACTIVO    = NVL(l_estado, ACTIVO)
+     WHERE ID_PAGINA = TO_NUMBER(NULLIF(p_id, ''));
 
     -- Sin esto, actualizar un ID inexistente devuelve 200 y quien lo usó cree
     -- que guardó.
     IF SQL%ROWCOUNT = 0 THEN
       p_status_code := 404;
-      p_resultado := '{"error":"El usuario no existe"}';
+      p_resultado := '{"error":"La pagina no existe"}';
       RETURN;
-    END IF;
-
-    -- Si esta modificación lo dejó inactivo, sus sesiones abiertas tienen que
-    -- morir con él. Si no, sigue navegando hasta que venza el token.
-    IF l_estado = 'I' THEN
-      PKG_AUTH.REVOCAR_TOKENS_USUARIO(l_id);
     END IF;
 
     COMMIT;
@@ -356,10 +352,15 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
   EXCEPTION
     WHEN OTHERS THEN
       ROLLBACK;
-      p_status_code := 500;
-      APEX_DEBUG.ERROR('PKG_USUARIOS.ACTUALIZAR: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
-                       DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
-      p_resultado := '{"error":"Error al actualizar el usuario"}';
+      IF SQLCODE = -2291 THEN
+        p_status_code := 400;
+        p_resultado := '{"error":"El modulo indicado no existe"}';
+      ELSE
+        p_status_code := 500;
+        APEX_DEBUG.ERROR('PKG_PAGINAS.ACTUALIZAR: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
+                         DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
+        p_resultado := '{"error":"Error al actualizar la pagina"}';
+      END IF;
   END ACTUALIZAR;
 
   PROCEDURE ELIMINAR (
@@ -369,7 +370,6 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
     p_resultado     OUT CLOB
   ) IS
     l_sesion NUMBER;
-    l_id     NUMBER;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -378,26 +378,11 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
       RETURN;
     END IF;
 
-    l_id := TO_NUMBER(NULLIF(p_id, ''));
-
-    -- Nadie puede borrarse a sí mismo: se quedaría sin sesión a mitad de la
-    -- operación, y si era el último administrador el sistema queda inaccesible.
-    IF l_id = l_sesion THEN
-      p_status_code := 400;
-      p_resultado := '{"error":"No podes eliminar tu propio usuario"}';
-      RETURN;
-    END IF;
-
-    -- TOKENS tiene una FK contra USUARIOS: sin borrar los hijos primero, el
-    -- DELETE aborta con ORA-02292.
-    DELETE FROM TOKENS WHERE ID_USUARIO = l_id;
-
-    DELETE FROM USUARIOS WHERE ID_USUARIO = l_id;
+    DELETE FROM PAGINAS WHERE ID_PAGINA = TO_NUMBER(NULLIF(p_id, ''));
 
     IF SQL%ROWCOUNT = 0 THEN
-      ROLLBACK;
       p_status_code := 404;
-      p_resultado := '{"error":"El usuario no existe"}';
+      p_resultado := '{"error":"La pagina no existe"}';
       RETURN;
     END IF;
 
@@ -408,20 +393,20 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
     WHEN OTHERS THEN
       ROLLBACK;
       p_status_code := 500;
-      APEX_DEBUG.ERROR('PKG_USUARIOS.ELIMINAR: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
+      APEX_DEBUG.ERROR('PKG_PAGINAS.ELIMINAR: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
                        DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
-      p_resultado := '{"error":"Error al eliminar el usuario"}';
+      p_resultado := '{"error":"Error al eliminar la pagina"}';
   END ELIMINAR;
 
   ------------------------------------------------------------------------------
-  -- Publica el módulo ORDS /usuarios/ con sus 4 endpoints.
+  -- Publica el módulo ORDS /paginas/ con sus 4 endpoints.
   --
   -- Cada handler es una sola línea: invoca al procedimiento del paquete
   -- pasando los binds de ORDS como argumentos. Nada de PL/SQL embebido.
   --
   -- ORIGINS_ALLOWED es POR MODULO, no a nivel de workspace, y NO es un
   -- parámetro de DEFINE_MODULE (falla con PLS-00306 si se le pasa ahí). Sin
-  -- esto, toda petición cross-origin a /usuarios/* la rechaza ORDS antes de
+  -- esto, toda petición cross-origin a /paginas/* la rechaza ORDS antes de
   -- llegar a cualquiera de los 4 handlers. Ver la explicación en db/auth.sql.
   ------------------------------------------------------------------------------
   PROCEDURE PUBLICAR_ENDPOINTS IS
@@ -429,136 +414,139 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
     BORRAR_MODULO;
 
     ORDS.DEFINE_MODULE(
-      p_module_name    => 'usuarios',
-      p_base_path      => '/usuarios/',
+      p_module_name    => 'paginas',
+      p_base_path      => '/paginas/',
       p_items_per_page => 0,
       p_status         => 'PUBLISHED',
-      p_comments       => 'ABM de usuarios'
+      p_comments       => 'ABM de paginas del sistema'
     );
 
     ORDS.SET_MODULE_ORIGINS_ALLOWED(
-      p_module_name     => 'usuarios',
+      p_module_name     => 'paginas',
       p_origins_allowed => 'https://www.ctell.online,http://localhost:8080'
     );
 
     ----------------------------------------------------------------------------
-    -- GET /usuarios/listar
+    -- GET /paginas/listar
+    -- Query param opcional: ?idModulo=  (sin él, devuelve todas)
     ----------------------------------------------------------------------------
-    ORDS.DEFINE_TEMPLATE(p_module_name => 'usuarios', p_pattern => 'listar');
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'paginas', p_pattern => 'listar');
 
     ORDS.DEFINE_HANDLER(
-      p_module_name => 'usuarios',
+      p_module_name => 'paginas',
       p_pattern     => 'listar',
       p_method      => 'GET',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_USUARIOS.LISTAR(:authorization, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_PAGINAS.LISTAR(:authorization, :idModulo, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'usuarios', p_pattern => 'listar', p_method => 'GET',
+      p_module_name => 'paginas', p_pattern => 'listar', p_method => 'GET',
       p_name => 'authorization', p_bind_variable_name => 'authorization',
       p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'usuarios', p_pattern => 'listar', p_method => 'GET',
+      p_module_name => 'paginas', p_pattern => 'listar', p_method => 'GET',
       p_name => 'resultado', p_bind_variable_name => 'resultado',
       p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'usuarios', p_pattern => 'listar', p_method => 'GET',
+      p_module_name => 'paginas', p_pattern => 'listar', p_method => 'GET',
       p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
     ----------------------------------------------------------------------------
-    -- POST /usuarios/crear
-    -- Body: { usuario, nombreApellido, correo?, password, esAdmin? }
+    -- POST /paginas/crear
+    -- Body: { idModulo, nombre, ruta, entrada, orden? }
+    -- entrada: 'D' (Definiciones), 'O' (Operaciones), 'R' (Reportes)
     ----------------------------------------------------------------------------
-    ORDS.DEFINE_TEMPLATE(p_module_name => 'usuarios', p_pattern => 'crear');
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'paginas', p_pattern => 'crear');
 
     ORDS.DEFINE_HANDLER(
-      p_module_name => 'usuarios',
+      p_module_name => 'paginas',
       p_pattern     => 'crear',
       p_method      => 'POST',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_USUARIOS.INSERTAR(:authorization, :usuario, :nombreApellido, :correo, :password, :esAdmin, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_PAGINAS.INSERTAR(:authorization, :idModulo, :nombre, :ruta, :entrada, :orden, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'usuarios', p_pattern => 'crear', p_method => 'POST',
+      p_module_name => 'paginas', p_pattern => 'crear', p_method => 'POST',
       p_name => 'authorization', p_bind_variable_name => 'authorization',
       p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'usuarios', p_pattern => 'crear', p_method => 'POST',
+      p_module_name => 'paginas', p_pattern => 'crear', p_method => 'POST',
       p_name => 'resultado', p_bind_variable_name => 'resultado',
       p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'usuarios', p_pattern => 'crear', p_method => 'POST',
+      p_module_name => 'paginas', p_pattern => 'crear', p_method => 'POST',
       p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
     ----------------------------------------------------------------------------
-    -- PUT /usuarios/actualizar/:id
-    -- Body: { nombreApellido?, correo?, activo?, esAdmin? }  (ausentes = no cambia)
+    -- PUT /paginas/actualizar/:id
+    -- Body: { idModulo?, nombre?, ruta?, entrada?, orden?, activo? }  (ausentes = no cambia)
+    -- entrada: 'D' (Definiciones), 'O' (Operaciones), 'R' (Reportes)
     ----------------------------------------------------------------------------
-    ORDS.DEFINE_TEMPLATE(p_module_name => 'usuarios', p_pattern => 'actualizar/:id');
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'paginas', p_pattern => 'actualizar/:id');
 
     ORDS.DEFINE_HANDLER(
-      p_module_name => 'usuarios',
+      p_module_name => 'paginas',
       p_pattern     => 'actualizar/:id',
       p_method      => 'PUT',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_USUARIOS.ACTUALIZAR(:authorization, :id, :nombreApellido, :correo, :activo, :esAdmin, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_PAGINAS.ACTUALIZAR(:authorization, :id, :idModulo, :nombre, :ruta, :entrada, :orden, :activo, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'usuarios', p_pattern => 'actualizar/:id', p_method => 'PUT',
+      p_module_name => 'paginas', p_pattern => 'actualizar/:id', p_method => 'PUT',
       p_name => 'authorization', p_bind_variable_name => 'authorization',
       p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'usuarios', p_pattern => 'actualizar/:id', p_method => 'PUT',
+      p_module_name => 'paginas', p_pattern => 'actualizar/:id', p_method => 'PUT',
       p_name => 'resultado', p_bind_variable_name => 'resultado',
       p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'usuarios', p_pattern => 'actualizar/:id', p_method => 'PUT',
+      p_module_name => 'paginas', p_pattern => 'actualizar/:id', p_method => 'PUT',
       p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
     ----------------------------------------------------------------------------
-    -- DELETE /usuarios/eliminar/:id
+    -- DELETE /paginas/eliminar/:id
     ----------------------------------------------------------------------------
-    ORDS.DEFINE_TEMPLATE(p_module_name => 'usuarios', p_pattern => 'eliminar/:id');
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'paginas', p_pattern => 'eliminar/:id');
 
     ORDS.DEFINE_HANDLER(
-      p_module_name => 'usuarios',
+      p_module_name => 'paginas',
       p_pattern     => 'eliminar/:id',
       p_method      => 'DELETE',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_USUARIOS.ELIMINAR(:authorization, :id, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_PAGINAS.ELIMINAR(:authorization, :id, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'usuarios', p_pattern => 'eliminar/:id', p_method => 'DELETE',
+      p_module_name => 'paginas', p_pattern => 'eliminar/:id', p_method => 'DELETE',
       p_name => 'authorization', p_bind_variable_name => 'authorization',
       p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'usuarios', p_pattern => 'eliminar/:id', p_method => 'DELETE',
+      p_module_name => 'paginas', p_pattern => 'eliminar/:id', p_method => 'DELETE',
       p_name => 'resultado', p_bind_variable_name => 'resultado',
       p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'usuarios', p_pattern => 'eliminar/:id', p_method => 'DELETE',
+      p_module_name => 'paginas', p_pattern => 'eliminar/:id', p_method => 'DELETE',
       p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
     COMMIT;
   END PUBLICAR_ENDPOINTS;
 
-END PKG_USUARIOS;
+END PKG_PAGINAS;
 /
 
 --------------------------------------------------------------------------------
@@ -568,7 +556,7 @@ END PKG_USUARIOS;
 --------------------------------------------------------------------------------
 
 BEGIN
-  PKG_USUARIOS.PUBLICAR_ENDPOINTS;
+  PKG_PAGINAS.PUBLICAR_ENDPOINTS;
 END;
 /
 
@@ -578,26 +566,27 @@ END;
 
 SELECT OBJECT_NAME, OBJECT_TYPE, STATUS
   FROM USER_OBJECTS
- WHERE OBJECT_NAME = 'PKG_USUARIOS'
+ WHERE OBJECT_NAME = 'PKG_PAGINAS'
  ORDER BY OBJECT_TYPE;
 
 -- Si algo salió INVALID arriba, acá está el motivo.
 SELECT NAME, LINE, POSITION, TEXT
   FROM USER_ERRORS
- WHERE NAME = 'PKG_USUARIOS'
+ WHERE NAME = 'PKG_PAGINAS'
  ORDER BY SEQUENCE;
 
 SELECT NAME, STATUS, ORIGINS_ALLOWED
   FROM USER_ORDS_MODULES
- WHERE NAME = 'usuarios';
+ WHERE NAME = 'paginas';
 
 SELECT t.URI_TEMPLATE, h.METHOD
   FROM USER_ORDS_TEMPLATES t
   JOIN USER_ORDS_HANDLERS  h ON h.TEMPLATE_ID = t.ID
   JOIN USER_ORDS_MODULES   m ON m.ID = t.MODULE_ID
- WHERE m.NAME = 'usuarios'
+ WHERE m.NAME = 'paginas'
  ORDER BY t.URI_TEMPLATE, h.METHOD;
 
-SELECT ID_USUARIO, USUARIO, NOMBRE_APELLIDO, ACTIVO, ES_ADMIN
-  FROM USUARIOS
- ORDER BY NOMBRE_APELLIDO;
+SELECT p.ID_PAGINA, p.ID_MODULO, m.NOMBRE AS MODULO, p.NOMBRE, p.ORDEN, p.ACTIVO
+  FROM PAGINAS p
+  JOIN MODULOS m ON m.ID_MODULO = p.ID_MODULO
+ ORDER BY m.ORDEN, m.NOMBRE, p.ORDEN, p.NOMBRE;

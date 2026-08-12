@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { KeyRound, Loader2, Pencil, Plus, Search, Trash2, UserCheck, UserX } from "lucide-react";
+import { Loader2, Pencil, Plus, Search, Trash2, UserCheck, UserX } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
@@ -67,26 +67,11 @@ const schemaEdicion = z.object({
   esAdmin: z.boolean(),
 });
 
-const schemaPassword = z
-  .object({
-    password: PASSWORD,
-    repetir: z.string(),
-  })
-  .refine((v) => v.password === v.repetir, {
-    message: "Las contraseñas no coinciden",
-    path: ["repetir"],
-  });
-
 type FormAlta = z.infer<typeof schemaAlta>;
 type FormEdicion = z.infer<typeof schemaEdicion>;
-type FormPassword = z.infer<typeof schemaPassword>;
 
 /** Qué panel se está mostrando dentro del diálogo. */
-type Vista =
-  | { tipo: "lista" }
-  | { tipo: "alta" }
-  | { tipo: "edicion"; usuario: Usuario }
-  | { tipo: "password"; usuario: Usuario };
+type Vista = { tipo: "lista" } | { tipo: "alta" } | { tipo: "edicion"; usuario: Usuario };
 
 const MENSAJE_ERROR = (error: unknown, fallback: string) =>
   error instanceof ApiError ? error.message : fallback;
@@ -113,10 +98,6 @@ export function UsuariosDialog({
     },
     alta: { titulo: "Nuevo usuario", descripcion: "Creá una cuenta para acceder al sistema." },
     edicion: { titulo: "Editar usuario", descripcion: "Modificá los datos de la cuenta." },
-    password: {
-      titulo: "Cambiar contraseña",
-      descripcion: "Se cerrarán todas las sesiones abiertas de este usuario.",
-    },
   };
 
   const { titulo, descripcion } = titulos[vista.tipo];
@@ -134,9 +115,6 @@ export function UsuariosDialog({
         {vista.tipo === "edicion" && (
           <PanelEdicion usuario={vista.usuario} onVolver={() => setVista({ tipo: "lista" })} />
         )}
-        {vista.tipo === "password" && (
-          <PanelPassword usuario={vista.usuario} onVolver={() => setVista({ tipo: "lista" })} />
-        )}
       </DialogContent>
     </Dialog>
   );
@@ -150,36 +128,20 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
   const queryClient = useQueryClient();
   const { data: yo } = useUsuarioActual();
   const [busqueda, setBusqueda] = useState("");
-  const [busquedaAplicada, setBusquedaAplicada] = useState("");
   const [aEliminar, setAEliminar] = useState<Usuario | null>(null);
 
-  // La búsqueda no dispara una petición por tecla: se espera a que el usuario
-  // deje de escribir.
-  useEffect(() => {
-    const id = setTimeout(() => setBusquedaAplicada(busqueda.trim()), 350);
-    return () => clearTimeout(id);
-  }, [busqueda]);
-
   const { data, isPending, isError, error } = useQuery({
-    queryKey: ["usuarios", { busqueda: busquedaAplicada }],
-    // Sin `tamanio`: mandarlo hacía que la URL saliera como ?tamanio=100 sin
-    // `pagina`, y en ORDS un parámetro que el cliente no manda no llega NULL
-    // sino como cadena vacía. El TO_NUMBER('') del handler moría con
-    // ORA-01722 y el listado respondía 500.
-    //
-    // Sin ningún parámetro numérico el handler aplica sus valores por defecto
-    // (25 por página) y devuelve el total, que es lo que necesita el modal.
-    //
-    // La clave se omite en vez de mandarse como undefined: el proyecto usa
-    // exactOptionalPropertyTypes, donde "ausente" y "undefined" no son lo mismo.
-    queryFn: () => api.usuarios.listar(busquedaAplicada ? { busqueda: busquedaAplicada } : {}),
+    queryKey: ["usuarios"],
+    queryFn: () => api.usuarios.listar(),
   });
 
   const invalidar = () => queryClient.invalidateQueries({ queryKey: ["usuarios"] });
 
+  // Activar/inactivar no tienen endpoint propio: van por PUT con `activo`.
+  // El backend revoca las sesiones abiertas al dejar la cuenta inactiva.
   const cambiarEstado = useMutation({
     mutationFn: ({ usuario, activar }: { usuario: Usuario; activar: boolean }) =>
-      activar ? api.usuarios.activar(usuario.id) : api.usuarios.inactivar(usuario.id),
+      api.usuarios.actualizar(usuario.id, { activo: activar ? "A" : "I" }),
     onSuccess: (_, { activar }) => {
       invalidar();
       toast.success(activar ? "Usuario activado" : "Usuario inactivado");
@@ -200,7 +162,16 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
     },
   });
 
-  const usuarios = data?.items ?? [];
+  // El backend devuelve la lista completa: el filtro se aplica acá. Son pocas
+  // cuentas, así que no justifica un ida y vuelta por cada tecla.
+  const termino = busqueda.trim().toLowerCase();
+  const usuarios = (data?.items ?? []).filter(
+    (u) =>
+      termino === "" ||
+      u.usuario.toLowerCase().includes(termino) ||
+      u.nombreApellido.toLowerCase().includes(termino) ||
+      (u.correo ?? "").toLowerCase().includes(termino),
+  );
 
   return (
     <div className="space-y-4">
@@ -236,9 +207,7 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
 
       {!isPending && !isError && usuarios.length === 0 && (
         <p className="px-3 py-10 text-center text-sm text-muted-foreground">
-          {busquedaAplicada
-            ? `Sin resultados para "${busquedaAplicada}".`
-            : "Todavía no hay usuarios."}
+          {termino ? `Sin resultados para "${busqueda.trim()}".` : "Todavía no hay usuarios."}
         </p>
       )}
 
@@ -256,7 +225,10 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
                 className="flex flex-wrap items-center justify-between gap-3 px-3 py-3"
               >
                 <div className="min-w-0 flex-1">
-                  <p className="flex items-center gap-2 truncate text-sm font-semibold text-foreground">
+                  {/* div y no p: Badge renderiza un <div>, y el HTML no
+                      permite anidarlo dentro de un <p> — React lo reporta
+                      como error de hidratación. */}
+                  <div className="flex items-center gap-2 truncate text-sm font-semibold text-foreground">
                     {usuario.nombreApellido}
                     {esYo && (
                       <Badge variant="outline" className="text-[10px]">
@@ -268,7 +240,7 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
                         admin
                       </Badge>
                     )}
-                  </p>
+                  </div>
                   <p className="truncate text-xs text-muted-foreground">
                     {usuario.usuario}
                     {usuario.correo ? ` · ${usuario.correo}` : ""}
@@ -288,15 +260,6 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
                     onClick={() => onCambiarVista({ tipo: "edicion", usuario })}
                   >
                     <Pencil className="size-4" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    title="Cambiar contraseña"
-                    aria-label={`Cambiar contraseña de ${usuario.nombreApellido}`}
-                    onClick={() => onCambiarVista({ tipo: "password", usuario })}
-                  >
-                    <KeyRound className="size-4" />
                   </Button>
                   <Button
                     variant="ghost"
@@ -620,93 +583,6 @@ function PanelEdicion({ usuario, onVolver }: { usuario: Usuario; onVolver: () =>
           <Button type="submit" disabled={actualizar.isPending}>
             {actualizar.isPending && <Loader2 className="size-4 animate-spin" />}
             {actualizar.isPending ? "Guardando…" : "Guardar cambios"}
-          </Button>
-        </DialogFooter>
-      </form>
-    </Form>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/* Contraseña                                                                  */
-/* -------------------------------------------------------------------------- */
-
-function PanelPassword({ usuario, onVolver }: { usuario: Usuario; onVolver: () => void }) {
-  const { data: yo } = useUsuarioActual();
-  const esYo = usuario.id === yo?.id;
-
-  const form = useForm<FormPassword>({
-    resolver: zodResolver(schemaPassword),
-    defaultValues: { password: "", repetir: "" },
-  });
-
-  const cambiar = useMutation({
-    mutationFn: (v: FormPassword) => api.usuarios.cambiarPassword(usuario.id, v.password),
-    onSuccess: () => {
-      // El backend revoca TODAS las sesiones del usuario, incluida la propia:
-      // si me la cambié a mí mismo, mi token ya no sirve y hay que reingresar.
-      if (esYo) {
-        toast.success("Contraseña cambiada. Volvé a iniciar sesión.");
-        // Recargar lleva al login: el token local ya no vale nada.
-        setTimeout(() => window.location.reload(), 1500);
-        return;
-      }
-      toast.success("Contraseña cambiada. Se cerraron sus sesiones.");
-      onVolver();
-    },
-    onError: (e) => toast.error(MENSAJE_ERROR(e, "No se pudo cambiar la contraseña")),
-  });
-
-  return (
-    <Form {...form}>
-      <form onSubmit={form.handleSubmit((v) => cambiar.mutate(v))} className="space-y-4">
-        <div className="rounded-lg bg-muted px-3 py-2 text-sm">
-          <span className="text-muted-foreground">Usuario: </span>
-          <span className="font-medium text-foreground">{usuario.usuario}</span>
-        </div>
-
-        {esYo && (
-          <p className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-foreground">
-            Es tu propia cuenta: al cambiarla vas a tener que iniciar sesión de nuevo.
-          </p>
-        )}
-
-        <FormField
-          control={form.control}
-          name="password"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Nueva contraseña</FormLabel>
-              <FormControl>
-                <Input {...field} type="password" autoComplete="new-password" />
-              </FormControl>
-              <FormDescription>Mínimo 8 caracteres.</FormDescription>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        <FormField
-          control={form.control}
-          name="repetir"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Repetir contraseña</FormLabel>
-              <FormControl>
-                <Input {...field} type="password" autoComplete="new-password" />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        <DialogFooter>
-          <Button type="button" variant="outline" onClick={onVolver}>
-            Cancelar
-          </Button>
-          <Button type="submit" disabled={cambiar.isPending}>
-            {cambiar.isPending && <Loader2 className="size-4 animate-spin" />}
-            {cambiar.isPending ? "Guardando…" : "Cambiar contraseña"}
           </Button>
         </DialogFooter>
       </form>

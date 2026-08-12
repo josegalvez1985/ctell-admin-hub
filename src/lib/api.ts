@@ -81,8 +81,85 @@ export type LoginResponse = {
 export type ListaUsuarios = {
   items: Usuario[];
   total: number;
-  pagina: number;
-  tamanio: number;
+};
+
+export type Modulo = {
+  id: number;
+  nombre: string;
+  icono: string | null;
+  orden: number;
+  /** Mismo criterio que Usuario.activo: código 'A'/'I' tal cual la columna. */
+  activo: Estado;
+};
+
+export type ListaModulos = {
+  items: Modulo[];
+  total: number;
+};
+
+export type Pais = {
+  id: number;
+  nombrePais: string;
+  codigoPais: string | null;
+  activo: Estado;
+};
+
+export type ListaPaises = {
+  items: Pais[];
+  total: number;
+};
+
+export type Entrada = "D" | "O" | "R";
+
+export type Pagina = {
+  id: number;
+  idModulo: number;
+  /** Nombre del módulo al que pertenece: viene del JOIN, no de PAGINAS. */
+  modulo: string;
+  nombre: string;
+  /** Path del frontend para cargar la página ("/compras/ordenes", etc). */
+  ruta: string;
+  /** Sección: 'D' (Definiciones), 'O' (Operaciones), 'R' (Reportes). */
+  entrada: Entrada;
+  orden: number;
+  activo: Estado;
+};
+
+export type ListaPaginas = {
+  items: Pagina[];
+  total: number;
+};
+
+/**
+ * Permiso de un usuario sobre una página.
+ *
+ * No tiene `id` propio: la identidad es el par (idUsuario, idPagina), igual
+ * que la PK compuesta de USUARIO_PAGINAS. Por eso para quitar un permiso hay
+ * que mandar las dos claves.
+ */
+export type UsuarioPagina = {
+  idUsuario: number;
+  usuario: string;
+  idPagina: number;
+  /** Nombre de la página: viene del JOIN, no de USUARIO_PAGINAS. */
+  pagina: string;
+  /** Path del frontend, del JOIN con PAGINAS. Sin esto el menú no sabe adónde ir. */
+  ruta: string;
+  /** Sección donde se agrupa en el menú: 'D', 'O' o 'R'. También del JOIN. */
+  entrada: Entrada;
+  /** Posición dentro de su sección, del JOIN con PAGINAS. */
+  orden: number;
+  idModulo: number;
+  /** Nombre del módulo al que pertenece la página. */
+  modulo: string;
+  /** Ícono del módulo (nombre de lucide-react), del JOIN con MODULOS. */
+  moduloIcono: string | null;
+  fechaAlta: string;
+};
+
+export type ListaUsuarioPaginas = {
+  items: UsuarioPagina[];
+  total: number;
 };
 
 /**
@@ -388,24 +465,7 @@ export const api = {
   },
 
   usuarios: {
-    listar: (
-      params: {
-        busqueda?: string;
-        activo?: Estado;
-        pagina?: number;
-        tamanio?: number;
-      } = {},
-    ) => {
-      const qs = new URLSearchParams();
-      if (params.busqueda) qs.set("busqueda", params.busqueda);
-      if (params.activo !== undefined) qs.set("activo", params.activo);
-      if (params.pagina) qs.set("pagina", String(params.pagina));
-      if (params.tamanio) qs.set("tamanio", String(params.tamanio));
-      const q = qs.toString();
-      return request<ListaUsuarios>(`/usuarios/${q ? `?${q}` : ""}`);
-    },
-
-    obtener: (id: number) => request<Usuario>(`/usuarios/${id}`),
+    listar: () => request<ListaUsuarios>("/usuarios/listar"),
 
     crear: (datos: {
       usuario: string;
@@ -416,7 +476,7 @@ export const api = {
       esAdmin?: Rol;
     }) =>
       // Responde 201, no 200. `request` solo mira `res.ok`, así que da igual.
-      request<{ id: number; ok: boolean }>("/usuarios/", {
+      request<{ id: number; ok: boolean }>("/usuarios/crear", {
         method: "POST",
         body: JSON.stringify(datos),
       }),
@@ -424,6 +484,10 @@ export const api = {
     /**
      * Los campos ausentes no se modifican. `usuario` no se puede cambiar: es la
      * identidad con la que se inicia sesión, y el backend ignora el campo.
+     *
+     * Para activar o inactivar una cuenta se manda `activo: "A" | "I"` acá — no
+     * hay endpoints separados. El backend revoca las sesiones abiertas cuando
+     * la deja inactiva.
      */
     actualizar: (
       id: number,
@@ -434,23 +498,122 @@ export const api = {
         esAdmin?: Rol;
       },
     ) =>
-      request<{ ok: boolean }>(`/usuarios/${id}`, {
+      request<{ ok: boolean }>(`/usuarios/actualizar/${id}`, {
         method: "PUT",
         body: JSON.stringify(datos),
       }),
 
-    eliminar: (id: number) => request<{ ok: boolean }>(`/usuarios/${id}`, { method: "DELETE" }),
+    eliminar: (id: number) =>
+      request<{ ok: boolean }>(`/usuarios/eliminar/${id}`, { method: "DELETE" }),
+  },
 
-    inactivar: (id: number) =>
-      request<{ ok: boolean }>(`/usuarios/${id}/inactivar`, { method: "POST" }),
+  modulos: {
+    listar: () => request<ListaModulos>("/modulos/listar"),
 
-    activar: (id: number) =>
-      request<{ ok: boolean }>(`/usuarios/${id}/activar`, { method: "POST" }),
-
-    cambiarPassword: (id: number, password: string) =>
-      request<{ ok: boolean }>(`/usuarios/${id}/password`, {
+    crear: (datos: { nombre: string; icono?: string; orden?: number }) =>
+      request<{ id: number; ok: boolean }>("/modulos/crear", {
         method: "POST",
-        body: JSON.stringify({ password }),
+        body: JSON.stringify(datos),
       }),
+
+    /** Los campos ausentes no se modifican. */
+    actualizar: (
+      id: number,
+      datos: {
+        nombre?: string;
+        icono?: string;
+        orden?: number;
+        activo?: Estado;
+      },
+    ) =>
+      request<{ ok: boolean }>(`/modulos/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    eliminar: (id: number) =>
+      request<{ ok: boolean }>(`/modulos/eliminar/${id}`, { method: "DELETE" }),
+  },
+
+  paginas: {
+    /** Sin `idModulo` devuelve todas las páginas de todos los módulos. */
+    listar: (params: { idModulo?: number } = {}) => {
+      const q = params.idModulo ? `?idModulo=${params.idModulo}` : "";
+      return request<ListaPaginas>(`/paginas/listar${q}`);
+    },
+
+    crear: (datos: { idModulo: number; nombre: string; ruta: string; entrada: Entrada; orden?: number }) =>
+      request<{ id: number; ok: boolean }>("/paginas/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Los campos ausentes no se modifican. */
+    actualizar: (
+      id: number,
+      datos: {
+        idModulo?: number;
+        nombre?: string;
+        ruta?: string;
+        entrada?: Entrada;
+        orden?: number;
+        activo?: Estado;
+      },
+    ) =>
+      request<{ ok: boolean }>(`/paginas/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    eliminar: (id: number) =>
+      request<{ ok: boolean }>(`/paginas/eliminar/${id}`, { method: "DELETE" }),
+  },
+
+  usuarioPaginas: {
+    /** Sin `idUsuario` devuelve los permisos de todos los usuarios. */
+    listar: (params: { idUsuario?: number } = {}) => {
+      const q = params.idUsuario ? `?idUsuario=${params.idUsuario}` : "";
+      return request<ListaUsuarioPaginas>(`/usuario-paginas/listar${q}`);
+    },
+
+    /** Responde 409 si el usuario ya tenía acceso a esa página. */
+    asignar: (idUsuario: number, idPagina: number) =>
+      request<{ ok: boolean }>("/usuario-paginas/asignar", {
+        method: "POST",
+        body: JSON.stringify({ idUsuario, idPagina }),
+      }),
+
+    /** Las dos claves van en la URL: la PK de la tabla es compuesta. */
+    quitar: (idUsuario: number, idPagina: number) =>
+      request<{ ok: boolean }>(`/usuario-paginas/quitar/${idUsuario}/${idPagina}`, {
+        method: "DELETE",
+      }),
+  },
+
+  paises: {
+    listar: () => request<ListaPaises>("/paises/listar"),
+
+    crear: (datos: { nombrePais: string; codigoPais?: string }) =>
+      request<{ id: number; ok: boolean }>("/paises/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Los campos ausentes no se modifican. */
+    actualizar: (
+      id: number,
+      datos: {
+        nombrePais?: string;
+        codigoPais?: string;
+        activo?: Estado;
+      },
+    ) =>
+      request<{ ok: boolean }>(`/paises/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    eliminar: (id: number) =>
+      request<{ ok: boolean }>(`/paises/eliminar/${id}`, { method: "DELETE" }),
   },
 };
