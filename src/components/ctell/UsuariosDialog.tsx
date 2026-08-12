@@ -157,12 +157,17 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
 
   const { data, isPending, isError, error } = useQuery({
     queryKey: ["usuarios", { busqueda: busquedaAplicada }],
+    // Sin `tamanio`: mandarlo hacía que la URL saliera como ?tamanio=100 sin
+    // `pagina`, y en ORDS un parámetro que el cliente no manda no llega NULL
+    // sino como cadena vacía. El TO_NUMBER('') del handler moría con
+    // ORA-01722 y el listado respondía 500.
+    //
+    // Sin ningún parámetro numérico el handler aplica sus valores por defecto
+    // (20 por página) y devuelve el total, que es lo que necesita el modal.
+    //
     // La clave se omite en vez de mandarse como undefined: el proyecto usa
     // exactOptionalPropertyTypes, donde "ausente" y "undefined" no son lo mismo.
-    queryFn: () =>
-      api.usuarios.listar(
-        busquedaAplicada ? { busqueda: busquedaAplicada, tamanio: 100 } : { tamanio: 100 },
-      ),
+    queryFn: () => api.usuarios.listar(busquedaAplicada ? { busqueda: busquedaAplicada } : {}),
   });
 
   const invalidar = () => queryClient.invalidateQueries({ queryKey: ["usuarios"] });
