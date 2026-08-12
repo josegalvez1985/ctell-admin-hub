@@ -313,6 +313,26 @@ Un módulo por tabla, con este patrón de rutas:
 El template para el listado y el alta es `'.'`; para el resto, `':id'` o
 `':id/accion'`.
 
+**No te olvides de `ORDS.SET_MODULE_ORIGINS_ALLOWED`.** Va justo después del
+`DEFINE_MODULE` del módulo nuevo — sin esto, el frontend en producción recibe
+un 500/"Service Unavailable" apenas pega contra este módulo, sin llegar
+siquiera al handler (detalle completo en [8. Seguridad](#8-seguridad)):
+
+```sql
+ORDS.DEFINE_MODULE(
+  p_module_name    => 'empresas',
+  p_base_path      => '/empresas/',
+  p_items_per_page => 0,
+  p_status         => 'PUBLISHED',
+  p_comments       => 'ABM de empresas'
+);
+
+ORDS.SET_MODULE_ORIGINS_ALLOWED(
+  p_module_name     => 'empresas',
+  p_origins_allowed => 'https://www.ctell.online,http://localhost:8080'
+);
+```
+
 **Todo handler valida el token primero.** Sin esto el ABM queda abierto a
 internet:
 
@@ -637,16 +657,26 @@ que sean públicas por definición. Los datos que sí requieren generarse al
 azar (como una contraseña inicial) se imprimen por `DBMS_OUTPUT` en el
 momento, nunca hardcodeados en el script.
 
-**CORS en producción se habilita en APEX, no con un proxy.** ORDS no manda
-`Access-Control-Allow-Origin` por defecto, y `src/lib/api.ts` pega directo a
-`oracleapex.com` cuando `import.meta.env.DEV` es falso. Los orígenes
-permitidos se cargan en _Administración del Workspace → RESTful Services →
-orígenes permitidos_ — hoy son `https://www.ctell.online` (producción) y
+**CORS en producción se habilita en APEX, no con un proxy — y es POR MÓDULO.**
+ORDS no manda `Access-Control-Allow-Origin` por defecto, y `src/lib/api.ts`
+pega directo a `oracleapex.com` cuando `import.meta.env.DEV` es falso. Los
+orígenes permitidos son `https://www.ctell.online` (producción) y
 `http://localhost:8080` (desarrollo, sólo si se prueba sin el proxy de Vite).
-Sin ese origen cargado, el navegador bloquea la respuesta como cualquier otra
-llamada cross-origin. Se configura **una sola vez para todo el workspace**:
-un módulo nuevo (`empresas`, `articulos`, etc.) hereda esos orígenes sin tocar
-nada.
+
+A pesar de que la pantalla en APEX se llama _Administración del Workspace →
+RESTful Services → orígenes permitidos_ —lo que sugiere un ajuste global—,
+`ORIGINS_ALLOWED` se guarda **por módulo**, no a nivel de workspace. Cargarlo
+para `auth` no lo propaga a `usuarios` ni a ningún módulo nuevo: hay que
+repetirlo en cada uno con `ORDS.SET_MODULE_ORIGINS_ALLOWED(p_module_name,
+p_origins_allowed)`, llamado aparte de `ORDS.DEFINE_MODULE` (no es un
+parámetro de esa llamada). Cada archivo `db/<tabla>.sql` lo declara al lado
+de su `DEFINE_MODULE` — ver `db/auth.sql` para el ejemplo.
+
+Sin ese origen cargado en el módulo correspondiente, la petición ni siquiera
+llega al handler: ORDS la rechaza con un "Service Unavailable" genérico antes
+de ejecutar el PL/SQL, así que el `WHEN OTHERS` con `SQLERRM` tampoco ayuda a
+diagnosticarlo — este fue justamente el origen de un 500 real en producción
+que costó varias vueltas encontrar.
 
 ---
 
@@ -697,5 +727,7 @@ Frontend:
 | 401 al loguearse con datos correctos   | `USUARIO` guardado con mayúsculas (el login compara contra `LOWER`), `ACTIVO` distinto de `'A'`, o el hash no se generó con el paquete |
 | `ORA-00060` al reejecutar el script    | Otra sesión tiene tomados los metadatos de ORDS: frená `npm run dev` antes |
 | `ORA-00001` en `DEFINE_MODULE`         | El `DELETE_MODULE` falló y su error se tragó un `WHEN OTHERS THEN NULL` |
+| `PLS-00306` al llamar a `DEFINE_MODULE` | Le pasaste `p_origins_allowed`: esa versión de ORDS no tiene ese parámetro ahí. Usá `ORDS.SET_MODULE_ORIGINS_ALLOWED(p_module_name, p_origins_allowed)` aparte |
+| **"Service Unavailable" (HTML de Oracle, no JSON) en un módulo que compila bien** | Falta `SET_MODULE_ORIGINS_ALLOWED` para ESE módulo. ORIGINS_ALLOWED es por módulo, no por workspace — configurarlo en `auth` no lo propaga a `usuarios` ni a ninguno nuevo. La petición cross-origin la rechaza ORDS antes de llegar al handler, así que ni el `WHEN OTHERS` con `SQLERRM` lo captura |
 | `window is not defined`                | Acceso al DOM fuera de `useEffect` (corre en el prerender de build) |
 | La lista no se actualiza tras guardar  | Falta `invalidateQueries`                      |

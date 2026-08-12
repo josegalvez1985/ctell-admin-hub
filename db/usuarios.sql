@@ -39,10 +39,10 @@
 -- NUNCA SE DEVUELVEN CONTRASENA_HASH NI SALT. Ningún SELECT de este archivo
 -- los incluye en una respuesta.
 --
--- CORS: se configura UNA sola vez para todo el workspace (Administración del
--- Workspace -> RESTful Services -> orígenes permitidos), no por módulo. No
--- hay nada que agregar acá — orígenes vigentes y detalle en db/auth.sql
--- (hoy: https://www.ctell.online y http://localhost:8080).
+-- CORS: ORIGINS_ALLOWED es POR MODULO, no a nivel de workspace (a pesar de
+-- lo que dice la UI de "Administración del Workspace" -> RESTful Services).
+-- Cada módulo lo necesita por separado: ver p_origins_allowed en
+-- DEFINE_MODULE, más abajo. Detalle completo del porqué en db/auth.sql.
 --------------------------------------------------------------------------------
 
 SET DEFINE OFF
@@ -474,6 +474,21 @@ BEGIN
     p_comments       => 'ABM de usuarios'
   );
 
+  -- ORIGINS_ALLOWED es POR MODULO: hay que repetirlo en cada uno, no alcanza
+  -- con cargarlo en auth. Y NO es un parámetro de DEFINE_MODULE (esta versión
+  -- de ORDS solo acepta p_module_name/p_base_path/p_items_per_page/p_status/
+  -- p_comments — agregarlo ahí falla con PLS-00306). Va aparte, con
+  -- SET_MODULE_ORIGINS_ALLOWED(p_module_name, p_origins_allowed).
+  --
+  -- Sin esto, cualquier petición cross-origin a /usuarios/ (por ejemplo desde
+  -- www.ctell.online) la rechaza ORDS antes de llegar al handler, con un
+  -- "Service Unavailable" genérico que no tiene nada que ver con el código
+  -- PL/SQL de abajo.
+  ORDS.SET_MODULE_ORIGINS_ALLOWED(
+    p_module_name     => 'usuarios',
+    p_origins_allowed => 'https://www.ctell.online,http://localhost:8080'
+  );
+
   ------------------------------------------------------------------------------
   -- GET /usuarios/   → listado paginado
   --
@@ -577,7 +592,9 @@ BEGIN
 EXCEPTION
   WHEN OTHERS THEN
     :status_code := 500;
-    APEX_DEBUG.ERROR('usuarios GET /: ' || SQLERRM || ' | ' ||
+    -- SQLCODE en el log (no en la respuesta): agiliza leer APEX_DEBUG_MESSAGES
+    -- sin tener que cruzar el mensaje contra una tabla de códigos.
+    APEX_DEBUG.ERROR('usuarios GET /: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
                      DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
     :resultado := '{"error":"Error al listar los usuarios"}';
 END;

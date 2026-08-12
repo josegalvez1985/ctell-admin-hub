@@ -41,22 +41,25 @@
 -- conviene migrar HASH_PASSWORD a PBKDF2 (ver la nota dentro de la función).
 --
 -- CORS: por defecto ORDS no manda Access-Control-Allow-Origin, así que el
--- navegador bloquea llamadas a estos endpoints desde otro origen. Habilitarlo
--- NO es parte de este script: se configura UNA vez para todo el workspace en
--- APEX -> Administración del Workspace -> RESTful Services -> orígenes
--- permitidos. Sin ese paso, /auth/login responde igual pero el navegador
--- nunca deja leer la respuesta.
+-- navegador bloquea llamadas a estos endpoints desde otro origen.
 --
--- Orígenes permitidos vigentes (agregar acá cualquiera nuevo que se cargue en
--- APEX, para que quede como referencia sin tener que ir a buscarlo):
+-- ORIGINS_ALLOWED ES POR MODULO, NO A NIVEL DE WORKSPACE. La pantalla de APEX
+-- se llama "Administración del Workspace -> RESTful Services -> orígenes
+-- permitidos", lo que sugiere un ajuste global — no lo es. Cargarlo ahí para
+-- un módulo (o vía p_origins_allowed en DEFINE_MODULE) NO lo propaga a los
+-- demás. Confirmado en producción: auth tenía los orígenes cargados y
+-- usuarios no, y toda petición cross-origin a /usuarios/ (por ejemplo desde
+-- www.ctell.online) volvía un "Service Unavailable" genérico de ORDS —el
+-- handler ni llegaba a ejecutarse, así que el WHEN OTHERS con SQLERRM tampoco
+-- ayudaba— hasta que se cargó ORIGINS_ALLOWED también en ese módulo.
+--
+-- Por eso cada módulo lo declara con p_origins_allowed en su propio
+-- DEFINE_MODULE (ver más abajo), en vez de asumir que alcanza con configurarlo
+-- una vez en la UI. Orígenes vigentes hoy:
 --   https://www.ctell.online   producción
 --   http://localhost:8080      desarrollo (solo hace falta si se prueba
 --                               pegándole directo a ORDS sin el proxy de
---                               Vite; con el proxy, VITE nunca necesita CORS)
---
--- Se aplica al workspace entero: cualquier módulo nuevo (empresas, artículos,
--- lo que sea) hereda estos orígenes automáticamente. No hay nada que
--- configurar por módulo ni por archivo .sql.
+--                               Vite; con el proxy, Vite nunca necesita CORS)
 --------------------------------------------------------------------------------
 
 SET DEFINE OFF
@@ -448,6 +451,24 @@ BEGIN
     p_items_per_page => 0,
     p_status         => 'PUBLISHED',
     p_comments       => 'Autenticacion: login, logout y sesion actual'
+  );
+
+  -- ORIGINS_ALLOWED es POR MODULO, no a nivel de workspace, y NO es un
+  -- parámetro de DEFINE_MODULE (esta versión de ORDS solo acepta
+  -- p_module_name/p_base_path/p_items_per_page/p_status/p_comments — pasarle
+  -- p_origins_allowed ahí falla con PLS-00306). Va aparte, con
+  -- SET_MODULE_ORIGINS_ALLOWED(p_module_name, p_origins_allowed).
+  --
+  -- Cargarlo solo en auth y no en usuarios.sql dejó ese otro módulo
+  -- bloqueando toda petición cross-origin con un "Service Unavailable"
+  -- genérico de ORDS: el handler ni llegaba a ejecutarse, así que el WHEN
+  -- OTHERS con SQLERRM tampoco ayudaba a diagnosticarlo. Se declara acá para
+  -- que sobreviva a una reejecución del script: antes vivía solo en la
+  -- configuración manual de APEX, y un BORRAR_MODULO_ORDS + DEFINE_MODULE sin
+  -- esto lo habría borrado.
+  ORDS.SET_MODULE_ORIGINS_ALLOWED(
+    p_module_name     => 'auth',
+    p_origins_allowed => 'https://www.ctell.online,http://localhost:8080'
   );
 
   ------------------------------------------------------------------------------
