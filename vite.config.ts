@@ -23,6 +23,7 @@ const configuracionDelPreset = defineConfig({
     base: "/",
 
     server: {
+      port: 8080,
       // En desarrollo se evita CORS con un proxy: la app pide a /ords/...
       // (mismo origen que la página, así que no hay chequeo de CORS) y es
       // Vite quien reenvía la petición a APEX. Servidor contra servidor no
