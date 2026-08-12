@@ -42,11 +42,7 @@ import {
 
 /** Normaliza para comparar: sin acentos, sin mayúsculas, sin espacios de más. */
 function clave(texto: string): string {
-  return texto
-    .trim()
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "");
+  return texto.trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
 }
 
 /**
@@ -102,6 +98,8 @@ const ICONOS_PAGINA: Record<string, LucideIcon> = {
   pais: Globe,
   ciudades: MapPin,
   provincias: MapPin,
+  departamentos: MapPin,
+  departamento: MapPin,
   empresas: Building2,
   proveedores: Truck,
   clientes: Users,

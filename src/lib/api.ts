@@ -109,6 +109,22 @@ export type ListaPaises = {
   total: number;
 };
 
+export type Departamento = {
+  id: number;
+  idPais: number;
+  /** Nombre del país al que pertenece: viene del JOIN, no de DEPARTAMENTOS. */
+  pais: string;
+  /** Código del país, del mismo JOIN. */
+  codigoPais: string | null;
+  nombreDepartamento: string;
+  activo: Estado;
+};
+
+export type ListaDepartamentos = {
+  items: Departamento[];
+  total: number;
+};
+
 export type Entrada = "D" | "O" | "R";
 
 export type Pagina = {
@@ -542,7 +558,13 @@ export const api = {
       return request<ListaPaginas>(`/paginas/listar${q}`);
     },
 
-    crear: (datos: { idModulo: number; nombre: string; ruta: string; entrada: Entrada; orden?: number }) =>
+    crear: (datos: {
+      idModulo: number;
+      nombre: string;
+      ruta: string;
+      entrada: Entrada;
+      orden?: number;
+    }) =>
       request<{ id: number; ok: boolean }>("/paginas/crear", {
         method: "POST",
         body: JSON.stringify(datos),
@@ -615,5 +637,36 @@ export const api = {
 
     eliminar: (id: number) =>
       request<{ ok: boolean }>(`/paises/eliminar/${id}`, { method: "DELETE" }),
+  },
+
+  departamentos: {
+    /** Sin `idPais` devuelve los departamentos de todos los países. */
+    listar: (params: { idPais?: number } = {}) => {
+      const q = params.idPais ? `?idPais=${params.idPais}` : "";
+      return request<ListaDepartamentos>(`/departamentos/listar${q}`);
+    },
+
+    crear: (datos: { idPais: number; nombreDepartamento: string }) =>
+      request<{ id: number; ok: boolean }>("/departamentos/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Los campos ausentes no se modifican. */
+    actualizar: (
+      id: number,
+      datos: {
+        idPais?: number;
+        nombreDepartamento?: string;
+        activo?: Estado;
+      },
+    ) =>
+      request<{ ok: boolean }>(`/departamentos/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    eliminar: (id: number) =>
+      request<{ ok: boolean }>(`/departamentos/eliminar/${id}`, { method: "DELETE" }),
   },
 };

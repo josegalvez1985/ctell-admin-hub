@@ -67,6 +67,7 @@ const RUTAS_DISPONIBLES = [
   { valor: "/menu", label: "Menú" },
   { valor: "/administracion", label: "Administración" },
   { valor: "/paises", label: "Países" },
+  { valor: "/departamentos", label: "Departamentos" },
 ];
 
 const MENSAJE_ERROR = (error: unknown, fallback: string) =>
@@ -367,11 +368,7 @@ function PanelForm({ pagina, onVolver }: { pagina?: Pagina; onVolver: () => void
               <FormLabel>Ruta</FormLabel>
               {esEdicion ? (
                 <FormControl>
-                  <Input
-                    {...field}
-                    placeholder="/compras/ordenes"
-                    autoComplete="off"
-                  />
+                  <Input {...field} placeholder="/compras/ordenes" autoComplete="off" />
                 </FormControl>
               ) : (
                 <Select value={field.value} onValueChange={field.onChange}>
