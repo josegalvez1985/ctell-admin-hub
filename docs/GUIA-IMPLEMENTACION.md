@@ -639,11 +639,14 @@ momento, nunca hardcodeados en el script.
 
 **CORS en producción se habilita en APEX, no con un proxy.** ORDS no manda
 `Access-Control-Allow-Origin` por defecto, y `src/lib/api.ts` pega directo a
-`oracleapex.com` cuando `import.meta.env.DEV` es falso. Sin agregar
-`https://www.ctell.online` en _Administración del Workspace → RESTful
-Services → orígenes permitidos_, el navegador bloquea la respuesta como
-cualquier otra llamada cross-origin — mismo síntoma que un CORS mal
-configurado en cualquier API REST.
+`oracleapex.com` cuando `import.meta.env.DEV` es falso. Los orígenes
+permitidos se cargan en _Administración del Workspace → RESTful Services →
+orígenes permitidos_ — hoy son `https://www.ctell.online` (producción) y
+`http://localhost:8080` (desarrollo, sólo si se prueba sin el proxy de Vite).
+Sin ese origen cargado, el navegador bloquea la respuesta como cualquier otra
+llamada cross-origin. Se configura **una sola vez para todo el workspace**:
+un módulo nuevo (`empresas`, `articulos`, etc.) hereda esos orígenes sin tocar
+nada.
 
 ---
 

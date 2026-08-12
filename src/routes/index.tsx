@@ -148,7 +148,10 @@ function LoginPage() {
               ))}
             </dl>
           </div>
-          <p className="text-xs text-navy-foreground/50">
+          {/* new Date() difiere entre el prerender (build time) y el cliente:
+              suppressHydrationWarning evita que React descarte todo el árbol
+              por un año que puede no coincidir. */}
+          <p className="text-xs text-navy-foreground/50" suppressHydrationWarning>
             © {new Date().getFullYear()} CTELL S.A. Todos los derechos reservados.
           </p>
         </div>
