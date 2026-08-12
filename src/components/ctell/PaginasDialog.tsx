@@ -1,11 +1,13 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Pencil, Plus, Trash2 } from "lucide-react";
+import { Loader2, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 
+import { Combobox } from "@/components/ctell/Combobox";
+import { useTablaListado } from "@/hooks/use-tabla-listado";
 import { api, ApiError, esActivo, type Pagina, type Entrada } from "@/lib/api";
 import {
   AlertDialog,
@@ -52,7 +54,13 @@ const schema = z.object({
   nombre: z.string().trim().min(1, "Obligatorio").max(100, "Máximo 100 caracteres"),
   ruta: z.string().min(1, "Obligatorio").max(200, "Máximo 200 caracteres"),
   entrada: z.enum(["D", "O", "R"], { message: "Elegí una entrada válida" }),
-  orden: z.coerce.number().int(),
+  // Vacío en el alta = lo calcula el backend (último de ese módulo+entrada + 1).
+  // Por eso es string y no number: un `z.coerce.number()` convierte "" en 0 y
+  // la página nueva se iría al principio en vez de al final.
+  orden: z
+    .string()
+    .trim()
+    .refine((v) => v === "" || /^-?\d+$/.test(v), "Tiene que ser un número entero"),
   activo: z.boolean(),
 });
 
@@ -68,6 +76,9 @@ const RUTAS_DISPONIBLES = [
   { valor: "/administracion", label: "Administración" },
   { valor: "/paises", label: "Países" },
   { valor: "/departamentos", label: "Departamentos" },
+  { valor: "/ciudades", label: "Ciudades" },
+  { valor: "/empresas", label: "Empresas" },
+  { valor: "/sucursales", label: "Sucursales" },
 ];
 
 const MENSAJE_ERROR = (error: unknown, fallback: string) =>
@@ -143,11 +154,32 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
     },
   });
 
-  const paginas = data?.items ?? [];
+  // Búsqueda por cualquier campo visible. La lista ya viene ordenada por
+  // módulo/orden desde el backend, que es lo que define el menú.
+  const {
+    busqueda,
+    setBusqueda,
+    resultado: paginas,
+    termino,
+  } = useTablaListado(data?.items ?? [], (p) => [
+    p.nombre,
+    p.modulo,
+    p.ruta,
+    esActivo(p.activo) ? "Activa" : "Inactiva",
+  ]);
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-end">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative min-w-48 flex-1">
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={busqueda}
+            onChange={(e) => setBusqueda(e.target.value)}
+            placeholder="Buscar por nombre, módulo o ruta…"
+            className="pl-9"
+          />
+        </div>
         <Button onClick={() => onCambiarVista({ tipo: "alta" })}>
           <Plus className="size-4" />
           Nueva
@@ -170,7 +202,7 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
 
       {!isPending && !isError && paginas.length === 0 && (
         <p className="px-3 py-10 text-center text-sm text-muted-foreground">
-          Todavía no hay páginas.
+          {termino ? `Sin resultados para "${busqueda.trim()}".` : "Todavía no hay páginas."}
         </p>
       )}
 
@@ -224,6 +256,7 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
       {data && paginas.length > 0 && (
         <p className="text-xs text-muted-foreground">
           {paginas.length} de {data.total} página{data.total === 1 ? "" : "s"}
+          {termino ? " (filtradas)" : ""}
         </p>
       )}
 
@@ -283,7 +316,8 @@ function PanelForm({ pagina, onVolver }: { pagina?: Pagina; onVolver: () => void
       nombre: pagina?.nombre ?? "",
       ruta: pagina?.ruta ?? "",
       entrada: pagina?.entrada ?? "O",
-      orden: pagina?.orden ?? 0,
+      // En el alta queda vacío a propósito: el backend le asigna el siguiente.
+      orden: pagina ? String(pagina.orden) : "",
       activo: pagina ? esActivo(pagina.activo) : true,
     },
   });
@@ -296,7 +330,7 @@ function PanelForm({ pagina, onVolver }: { pagina?: Pagina; onVolver: () => void
             nombre: v.nombre,
             ruta: v.ruta,
             entrada: v.entrada as Entrada,
-            orden: v.orden,
+            orden: Number(v.orden),
             activo: v.activo ? "A" : "I",
           })
         : api.paginas.crear({
@@ -304,7 +338,9 @@ function PanelForm({ pagina, onVolver }: { pagina?: Pagina; onVolver: () => void
             nombre: v.nombre,
             ruta: v.ruta,
             entrada: v.entrada as Entrada,
-            orden: v.orden,
+            // Sin orden, el backend le da el siguiente de ese módulo+entrada.
+            // Mandar 0 lo mandaría al principio de la sección.
+            ...(v.orden === "" ? {} : { orden: Number(v.orden) }),
           }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["paginas"] });
@@ -326,20 +362,19 @@ function PanelForm({ pagina, onVolver }: { pagina?: Pagina; onVolver: () => void
           render={({ field }) => (
             <FormItem>
               <FormLabel>Módulo</FormLabel>
-              <Select value={field.value} onValueChange={field.onChange} disabled={cargandoModulos}>
-                <FormControl>
-                  <SelectTrigger>
-                    <SelectValue placeholder={cargandoModulos ? "Cargando…" : "Elegí un módulo"} />
-                  </SelectTrigger>
-                </FormControl>
-                <SelectContent>
-                  {(modulos?.items ?? []).map((m) => (
-                    <SelectItem key={m.id} value={String(m.id)}>
-                      {m.nombre}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <FormControl>
+                <Combobox
+                  opciones={(modulos?.items ?? []).map((m) => ({
+                    valor: String(m.id),
+                    etiqueta: m.nombre,
+                  }))}
+                  value={field.value}
+                  onChange={field.onChange}
+                  placeholder="Elegí un módulo"
+                  buscarPlaceholder="Buscar módulo…"
+                  cargando={cargandoModulos}
+                />
+              </FormControl>
               <FormDescription>La página se muestra dentro de este módulo.</FormDescription>
               <FormMessage />
             </FormItem>
@@ -371,20 +406,19 @@ function PanelForm({ pagina, onVolver }: { pagina?: Pagina; onVolver: () => void
                   <Input {...field} placeholder="/compras/ordenes" autoComplete="off" />
                 </FormControl>
               ) : (
-                <Select value={field.value} onValueChange={field.onChange}>
-                  <FormControl>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Elegí una ruta disponible" />
-                    </SelectTrigger>
-                  </FormControl>
-                  <SelectContent>
-                    {RUTAS_DISPONIBLES.map((ruta) => (
-                      <SelectItem key={ruta.valor} value={ruta.valor}>
-                        {ruta.label} ({ruta.valor})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <FormControl>
+                  <Combobox
+                    opciones={RUTAS_DISPONIBLES.map((ruta) => ({
+                      valor: ruta.valor,
+                      etiqueta: ruta.label,
+                      descripcion: ruta.valor,
+                    }))}
+                    value={field.value}
+                    onChange={field.onChange}
+                    placeholder="Elegí una ruta disponible"
+                    buscarPlaceholder="Buscar ruta…"
+                  />
+                </FormControl>
               )}
               <FormDescription>
                 {esEdicion
@@ -425,11 +459,19 @@ function PanelForm({ pagina, onVolver }: { pagina?: Pagina; onVolver: () => void
           name="orden"
           render={({ field }) => (
             <FormItem>
-              <FormLabel>Orden</FormLabel>
+              <FormLabel>Orden {!esEdicion && "(opcional)"}</FormLabel>
               <FormControl>
-                <Input {...field} type="number" />
+                <Input
+                  {...field}
+                  type="number"
+                  placeholder={esEdicion ? undefined : "Automático"}
+                />
               </FormControl>
-              <FormDescription>Define la posición dentro del módulo.</FormDescription>
+              <FormDescription>
+                {esEdicion
+                  ? "Define la posición dentro de la sección del módulo."
+                  : "Si lo dejás vacío, la página se agrega al final de su sección."}
+              </FormDescription>
               <FormMessage />
             </FormItem>
           )}

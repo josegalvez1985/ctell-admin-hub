@@ -14,6 +14,7 @@
  */
 import {
   Boxes,
+  Building,
   Building2,
   ClipboardList,
   Cog,
@@ -25,6 +26,7 @@ import {
   Globe,
   Landmark,
   LayoutGrid,
+  Map,
   MapPin,
   Package,
   Receipt,
@@ -54,6 +56,7 @@ function clave(texto: string): string {
  */
 const POR_NOMBRE: Record<string, LucideIcon> = {
   boxes: Boxes,
+  building: Building,
   building2: Building2,
   clipboardlist: ClipboardList,
   cog: Cog,
@@ -65,6 +68,7 @@ const POR_NOMBRE: Record<string, LucideIcon> = {
   globe: Globe,
   landmark: Landmark,
   layoutgrid: LayoutGrid,
+  map: Map,
   mappin: MapPin,
   package: Package,
   receipt: Receipt,
@@ -96,11 +100,20 @@ const ICONOS_MODULO: Record<string, LucideIcon> = {
 const ICONOS_PAGINA: Record<string, LucideIcon> = {
   paises: Globe,
   pais: Globe,
+  // La jerarquía geográfica usa tres íconos distintos: con el mismo MapPin
+  // para los tres, el menú no deja distinguir un nivel de otro de un vistazo.
+  departamentos: Map,
+  departamento: Map,
+  provincias: Map,
   ciudades: MapPin,
-  provincias: MapPin,
-  departamentos: MapPin,
-  departamento: MapPin,
+  ciudad: MapPin,
+  barrios: Building,
+  barrio: Building,
   empresas: Building2,
+  empresa: Building2,
+  // Distinto de empresas: la sucursal es un local, la empresa la organización.
+  sucursales: Store,
+  sucursal: Store,
   proveedores: Truck,
   clientes: Users,
   usuarios: UserCog,

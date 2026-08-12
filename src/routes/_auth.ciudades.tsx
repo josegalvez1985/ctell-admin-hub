@@ -8,9 +8,10 @@ import { toast } from "sonner";
 import { z } from "zod";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
+import { Combobox } from "@/components/ctell/Combobox";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
 import { useTablaListado } from "@/hooks/use-tabla-listado";
-import { api, ApiError, esActivo, type Estado, type Pais } from "@/lib/api";
+import { api, ApiError, esActivo, type Ciudad, type Estado } from "@/lib/api";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -53,32 +54,53 @@ import {
 } from "@/components/ui/table";
 
 const schema = z.object({
-  nombrePais: z.string().trim().min(1, "Obligatorio").max(100, "Máximo 100 caracteres"),
-  codigoPais: z.string().trim().max(3, "Máximo 3 caracteres").optional().or(z.literal("")),
+  // El combobox devuelve strings: el id se valida como texto no vacío y se
+  // convierte a número recién al enviar.
+  idDepartamento: z.string().min(1, "Elegí un departamento"),
+  nombreCiudad: z.string().trim().min(1, "Obligatorio").max(100, "Máximo 100 caracteres"),
   activo: z.boolean(),
 });
 
 type FormValues = z.infer<typeof schema>;
 
+/** Valor del filtro que significa "sin filtrar". El combobox no admite "". */
+const TODOS = "todos";
+
 const MENSAJE_ERROR = (error: unknown, fallback: string) =>
   error instanceof ApiError ? error.message : fallback;
 
-function PaisesPage() {
+function CiudadesPage() {
   const queryClient = useQueryClient();
-  const [editando, setEditando] = useState<Pais | null>(null);
+  const [editando, setEditando] = useState<Ciudad | null>(null);
   const [creando, setCreando] = useState(false);
-  const [aEliminar, setAEliminar] = useState<Pais | null>(null);
+  const [aEliminar, setAEliminar] = useState<Ciudad | null>(null);
+  const [filtroDepartamento, setFiltroDepartamento] = useState<string>(TODOS);
+
+  // El filtro se aplica en el backend (?idDepartamento=): la query lleva el
+  // departamento en la key para que cada selección tenga su propia entrada en
+  // la caché.
+  const idDepartamentoFiltro =
+    filtroDepartamento === TODOS ? undefined : Number(filtroDepartamento);
 
   const { data, isPending, isError, error } = useQuery({
-    queryKey: ["paises"],
-    queryFn: () => api.paises.listar(),
+    queryKey: ["ciudades", idDepartamentoFiltro ?? null],
+    queryFn: () =>
+      api.ciudades.listar(idDepartamentoFiltro ? { idDepartamento: idDepartamentoFiltro } : {}),
+  });
+
+  // Los departamentos alimentan el filtro y el formulario. Se piden una vez acá
+  // y TanStack Query los comparte con el dialog por la misma queryKey — la
+  // misma que usa la página de Departamentos cuando lista sin filtrar.
+  const { data: departamentos } = useQuery({
+    queryKey: ["departamentos", null],
+    queryFn: () => api.departamentos.listar(),
   });
 
   const eliminar = useMutation({
-    mutationFn: (pais: Pais) => api.paises.eliminar(pais.id),
+    mutationFn: (ciudad: Ciudad) => api.ciudades.eliminar(ciudad.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["paises"] });
-      toast.success("País eliminado");
+      queryClient.invalidateQueries({ queryKey: ["ciudades"] });
+      toast.success("Ciudad eliminada");
       setAEliminar(null);
     },
     onError: (e) => {
@@ -91,33 +113,56 @@ function PaisesPage() {
   // Ver el criterio general en la guía de frontend, sección "Listados".
   const { busqueda, setBusqueda, orden, alternarOrden, resultado, termino } = useTablaListado(
     data?.items ?? [],
-    (p) => [p.nombrePais, p.codigoPais, esActivo(p.activo) ? "Activo" : "Inactivo"],
+    (c) => [c.nombreCiudad, c.departamento, c.pais, esActivo(c.activo) ? "Activo" : "Inactivo"],
   );
 
+  const departamentosOpciones = (departamentos?.items ?? []).map((d) => ({
+    valor: String(d.id),
+    etiqueta: d.nombreDepartamento,
+    descripcion: d.pais,
+  }));
+
   return (
-    <AppLayout active="/paises" title="Países">
+    <AppLayout active="/ciudades" title="Ciudades">
       <main className="space-y-6 px-4 pb-28 pt-6 sm:px-6 lg:pb-10">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-bold text-foreground sm:text-3xl">Países</h1>
+            <h1 className="text-2xl font-bold text-foreground sm:text-3xl">Ciudades</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Catálogo de países disponibles en el sistema.
+              Ciudades de cada departamento disponibles en el sistema.
             </p>
           </div>
           <Button onClick={() => setCreando(true)}>
             <Plus className="size-4" />
-            Nuevo país
+            Nueva ciudad
           </Button>
         </div>
 
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={busqueda}
-            onChange={(e) => setBusqueda(e.target.value)}
-            placeholder="Buscar por nombre o código…"
-            className="pl-9"
-          />
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative min-w-48 flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={busqueda}
+              onChange={(e) => setBusqueda(e.target.value)}
+              placeholder="Buscar por ciudad, departamento…"
+              className="pl-9"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="shrink-0 text-sm text-muted-foreground">Departamento</span>
+            <div className="w-full sm:w-64">
+              <Combobox
+                opciones={[
+                  { valor: TODOS, etiqueta: "Todos los departamentos" },
+                  ...departamentosOpciones,
+                ]}
+                value={filtroDepartamento}
+                onChange={setFiltroDepartamento}
+                placeholder="Todos los departamentos"
+                buscarPlaceholder="Buscar departamento…"
+              />
+            </div>
+          </div>
         </div>
 
         {isPending && (
@@ -139,12 +184,14 @@ function PaisesPage() {
             <p className="text-sm text-muted-foreground">
               {termino
                 ? `Sin resultados para "${busqueda.trim()}".`
-                : "Todavía no hay países cargados."}
+                : filtroDepartamento === TODOS
+                  ? "Todavía no hay ciudades cargadas."
+                  : "Ese departamento todavía no tiene ciudades cargadas."}
             </p>
             {!termino && (
               <Button className="mt-4" onClick={() => setCreando(true)}>
                 <Plus className="size-4" />
-                Cargar el primero
+                Cargar la primera
               </Button>
             )}
           </div>
@@ -154,17 +201,17 @@ function PaisesPage() {
             de costado para leer una fila entera. */}
         {resultado.length > 0 && (
           <ul className="space-y-3 sm:hidden">
-            {resultado.map((pais) => {
-              const activo = esActivo(pais.activo);
+            {resultado.map((ciudad) => {
+              const activo = esActivo(ciudad.activo);
 
               return (
-                <li key={pais.id} className="surface-card p-4">
+                <li key={ciudad.id} className="surface-card p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
-                      <p className="truncate font-semibold text-foreground">{pais.nombrePais}</p>
-                      <p className="mt-0.5 text-xs text-muted-foreground">
-                        {pais.codigoPais || "Sin código"}
+                      <p className="truncate font-semibold text-foreground">
+                        {ciudad.nombreCiudad}
                       </p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">{ciudad.departamento}</p>
                     </div>
                     <Badge variant={activo ? "secondary" : "outline"} className="shrink-0">
                       {activo ? "Activo" : "Inactivo"}
@@ -176,7 +223,7 @@ function PaisesPage() {
                       variant="outline"
                       size="sm"
                       className="flex-1"
-                      onClick={() => setEditando(pais)}
+                      onClick={() => setEditando(ciudad)}
                     >
                       <Pencil className="size-4" />
                       Editar
@@ -185,7 +232,7 @@ function PaisesPage() {
                       variant="outline"
                       size="sm"
                       className="flex-1 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                      onClick={() => setAEliminar(pais)}
+                      onClick={() => setAEliminar(ciudad)}
                     >
                       <Trash2 className="size-4" />
                       Eliminar
@@ -203,16 +250,16 @@ function PaisesPage() {
               <TableHeader>
                 <TableRow>
                   <TableHeadOrdenable
-                    direccion={orden?.campo === "nombrePais" ? orden.direccion : null}
-                    onClick={() => alternarOrden("nombrePais")}
+                    direccion={orden?.campo === "nombreCiudad" ? orden.direccion : null}
+                    onClick={() => alternarOrden("nombreCiudad")}
                   >
-                    Nombre
+                    Ciudad
                   </TableHeadOrdenable>
                   <TableHeadOrdenable
-                    direccion={orden?.campo === "codigoPais" ? orden.direccion : null}
-                    onClick={() => alternarOrden("codigoPais")}
+                    direccion={orden?.campo === "departamento" ? orden.direccion : null}
+                    onClick={() => alternarOrden("departamento")}
                   >
-                    Código
+                    Departamento
                   </TableHeadOrdenable>
                   <TableHeadOrdenable
                     direccion={orden?.campo === "activo" ? orden.direccion : null}
@@ -224,16 +271,17 @@ function PaisesPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {resultado.map((pais) => {
-                  const activo = esActivo(pais.activo);
+                {resultado.map((ciudad) => {
+                  const activo = esActivo(ciudad.activo);
 
                   return (
-                    <TableRow key={pais.id}>
+                    <TableRow key={ciudad.id}>
                       <TableCell className="font-medium text-foreground">
-                        {pais.nombrePais}
+                        {ciudad.nombreCiudad}
                       </TableCell>
                       <TableCell className="text-muted-foreground">
-                        {pais.codigoPais || "—"}
+                        {ciudad.departamento}
+                        {ciudad.pais ? ` (${ciudad.pais})` : ""}
                       </TableCell>
                       <TableCell>
                         <Badge variant={activo ? "secondary" : "outline"}>
@@ -246,8 +294,8 @@ function PaisesPage() {
                             variant="ghost"
                             size="icon"
                             title="Editar"
-                            aria-label={`Editar ${pais.nombrePais}`}
-                            onClick={() => setEditando(pais)}
+                            aria-label={`Editar ${ciudad.nombreCiudad}`}
+                            onClick={() => setEditando(ciudad)}
                           >
                             <Pencil className="size-4" />
                           </Button>
@@ -255,8 +303,8 @@ function PaisesPage() {
                             variant="ghost"
                             size="icon"
                             title="Eliminar"
-                            aria-label={`Eliminar ${pais.nombrePais}`}
-                            onClick={() => setAEliminar(pais)}
+                            aria-label={`Eliminar ${ciudad.nombreCiudad}`}
+                            onClick={() => setAEliminar(ciudad)}
                           >
                             <Trash2 className="size-4 text-destructive" />
                           </Button>
@@ -272,13 +320,17 @@ function PaisesPage() {
 
         {data && resultado.length > 0 && (
           <p className="text-xs text-muted-foreground">
-            {resultado.length} de {data.items.length} país{data.items.length === 1 ? "" : "es"}
+            {resultado.length} de {data.items.length} ciudad
+            {data.items.length === 1 ? "" : "es"}
           </p>
         )}
 
-        <PaisFormDialog
+        <CiudadFormDialog
           open={creando || editando !== null}
-          pais={editando}
+          ciudad={editando}
+          // Al crear con un departamento filtrado, ese departamento viene
+          // preseleccionado: es el que la persona está mirando.
+          idDepartamentoPorDefecto={idDepartamentoFiltro}
           onClose={() => {
             setCreando(false);
             setEditando(null);
@@ -288,7 +340,7 @@ function PaisesPage() {
         <AlertDialog open={aEliminar !== null} onOpenChange={(o) => !o && setAEliminar(null)}>
           <AlertDialogContent>
             <AlertDialogHeader>
-              <AlertDialogTitle>¿Eliminar {aEliminar?.nombrePais}?</AlertDialogTitle>
+              <AlertDialogTitle>¿Eliminar {aEliminar?.nombreCiudad}?</AlertDialogTitle>
               <AlertDialogDescription>Esta acción no se puede deshacer.</AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
@@ -318,26 +370,39 @@ function PaisesPage() {
 /* Alta / Edición                                                              */
 /* -------------------------------------------------------------------------- */
 
-function PaisFormDialog({
+function CiudadFormDialog({
   open,
-  pais,
+  ciudad,
+  idDepartamentoPorDefecto,
   onClose,
 }: {
   open: boolean;
-  pais: Pais | null;
+  ciudad: Ciudad | null;
+  idDepartamentoPorDefecto: number | undefined;
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
-  const esEdicion = pais !== null;
+  const esEdicion = ciudad !== null;
+
+  const { data: departamentos, isPending: cargandoDepartamentos } = useQuery({
+    queryKey: ["departamentos", null],
+    queryFn: () => api.departamentos.listar(),
+  });
+
+  const departamentosOpciones = (departamentos?.items ?? []).map((d) => ({
+    valor: String(d.id),
+    etiqueta: d.nombreDepartamento,
+    descripcion: d.pais,
+  }));
 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     // Sin defaults React avisa por inputs no controlados. Un alta nace activa:
-    // cargar un país para dejarlo inactivo de entrada no tiene sentido.
+    // cargar una ciudad para dejarla inactiva de entrada no tiene sentido.
     values: {
-      nombrePais: pais?.nombrePais ?? "",
-      codigoPais: pais?.codigoPais ?? "",
-      activo: pais ? esActivo(pais.activo) : true,
+      idDepartamento: String(ciudad?.idDepartamento ?? idDepartamentoPorDefecto ?? ""),
+      nombreCiudad: ciudad?.nombreCiudad ?? "",
+      activo: ciudad ? esActivo(ciudad.activo) : true,
     },
   });
 
@@ -345,24 +410,24 @@ function PaisFormDialog({
     mutationFn: (v: FormValues) => {
       const activo: Estado = v.activo ? "A" : "I";
       return esEdicion
-        ? api.paises.actualizar(pais.id, {
-            nombrePais: v.nombrePais,
+        ? api.ciudades.actualizar(ciudad.id, {
+            idDepartamento: Number(v.idDepartamento),
+            nombreCiudad: v.nombreCiudad,
             activo,
-            ...(v.codigoPais ? { codigoPais: v.codigoPais } : {}),
           })
-        : api.paises.crear({
-            nombrePais: v.nombrePais,
-            ...(v.codigoPais ? { codigoPais: v.codigoPais } : {}),
+        : api.ciudades.crear({
+            idDepartamento: Number(v.idDepartamento),
+            nombreCiudad: v.nombreCiudad,
           });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["paises"] });
-      toast.success(esEdicion ? "País actualizado" : "País creado");
+      queryClient.invalidateQueries({ queryKey: ["ciudades"] });
+      toast.success(esEdicion ? "Ciudad actualizada" : "Ciudad creada");
       onClose();
     },
     onError: (e) =>
       toast.error(
-        MENSAJE_ERROR(e, esEdicion ? "No se pudo actualizar" : "No se pudo crear el país"),
+        MENSAJE_ERROR(e, esEdicion ? "No se pudo actualizar" : "No se pudo crear la ciudad"),
       ),
   });
 
@@ -370,9 +435,11 @@ function PaisFormDialog({
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{esEdicion ? "Editar país" : "Nuevo país"}</DialogTitle>
+          <DialogTitle>{esEdicion ? "Editar ciudad" : "Nueva ciudad"}</DialogTitle>
           <DialogDescription>
-            {esEdicion ? "Modificá los datos del país." : "Agregá un país al catálogo."}
+            {esEdicion
+              ? "Modificá los datos de la ciudad."
+              : "Agregá una ciudad a un departamento."}
           </DialogDescription>
         </DialogHeader>
 
@@ -380,13 +447,21 @@ function PaisFormDialog({
           <form onSubmit={form.handleSubmit((v) => guardar.mutate(v))} className="space-y-4">
             <FormField
               control={form.control}
-              name="nombrePais"
+              name="idDepartamento"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Nombre del país</FormLabel>
+                  <FormLabel>Departamento</FormLabel>
                   <FormControl>
-                    <Input {...field} placeholder="Argentina" autoComplete="off" />
+                    <Combobox
+                      opciones={departamentosOpciones}
+                      value={field.value}
+                      onChange={field.onChange}
+                      placeholder="Elegí un departamento"
+                      buscarPlaceholder="Buscar departamento…"
+                      cargando={cargandoDepartamentos}
+                    />
                   </FormControl>
+                  <FormDescription>La ciudad pertenece a este departamento.</FormDescription>
                   <FormMessage />
                 </FormItem>
               )}
@@ -394,14 +469,16 @@ function PaisFormDialog({
 
             <FormField
               control={form.control}
-              name="codigoPais"
+              name="nombreCiudad"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Código (opcional)</FormLabel>
+                  <FormLabel>Nombre de la ciudad</FormLabel>
                   <FormControl>
-                    <Input {...field} placeholder="ARG" autoComplete="off" maxLength={3} />
+                    <Input {...field} placeholder="Asunción" autoComplete="off" />
                   </FormControl>
-                  <FormDescription>Código de tres letras, como ARG o PRY.</FormDescription>
+                  <FormDescription>
+                    No puede repetirse dentro del mismo departamento.
+                  </FormDescription>
                   <FormMessage />
                 </FormItem>
               )}
@@ -417,7 +494,7 @@ function PaisFormDialog({
                     <div className="space-y-0.5">
                       <FormLabel>Activo</FormLabel>
                       <FormDescription>
-                        Un país inactivo deja de ofrecerse en los formularios.
+                        Una ciudad inactiva deja de ofrecerse en los formularios.
                       </FormDescription>
                     </div>
                     <FormControl>
@@ -434,7 +511,7 @@ function PaisFormDialog({
               </Button>
               <Button type="submit" disabled={guardar.isPending}>
                 {guardar.isPending && <Loader2 className="size-4 animate-spin" />}
-                {guardar.isPending ? "Guardando…" : esEdicion ? "Guardar cambios" : "Crear país"}
+                {guardar.isPending ? "Guardando…" : esEdicion ? "Guardar cambios" : "Crear ciudad"}
               </Button>
             </DialogFooter>
           </form>
@@ -444,12 +521,12 @@ function PaisFormDialog({
   );
 }
 
-export const Route = createFileRoute("/_auth/paises")({
+export const Route = createFileRoute("/_auth/ciudades")({
   head: () => ({
     meta: [
-      { title: "Países | CTELL" },
-      { name: "description", content: "Catálogo de países del sistema." },
+      { title: "Ciudades | CTELL" },
+      { name: "description", content: "Ciudades por departamento del sistema." },
     ],
   }),
-  component: PaisesPage,
+  component: CiudadesPage,
 });

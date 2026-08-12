@@ -16,13 +16,35 @@ pantalla ABM completa.
 3. [Registrarla en el menú](#3-registrarla-en-el-menú)
 4. [Consumir la API](#4-consumir-la-api)
 5. [Listados: tabla y tarjetas](#5-listados-tabla-y-tarjetas)
+   - [Todo listado busca y ordena](#51-todo-listado-busca-y-ordena)
 6. [Formularios](#6-formularios)
+   - [Elegir un valor de otra tabla: Combobox](#elegir-un-valor-de-otra-tabla-combobox-no-select)
 7. [El menú dinámico por dentro](#7-el-menú-dinámico-por-dentro)
 8. [Checklist](#8-checklist)
 
 ---
 
 ## 1. Lo que hay que saber antes de escribir
+
+> **Regla cero: copiá la página equivalente que ya funciona y cambiá los
+> nombres. No inventes una variante.**
+>
+> Para una tabla hija de otra (Ciudades cuelga de Departamentos, que cuelga de
+> Países), la referencia es
+> [_auth.departamentos.tsx](../src/routes/_auth.departamentos.tsx): filtro por
+> el padre con `Combobox`, `?idPadre=` al backend, tabla + tarjetas, diálogo de
+> alta/edición. Para una tabla sin padre,
+> [_auth.paises.tsx](../src/routes/_auth.paises.tsx).
+>
+> Esto no es pereza, es la lección más cara de este proyecto. Implementar
+> Ciudades "parecido pero a mi manera" —columnas de más, otra `queryKey`, el
+> filtro resuelto en el cliente en vez de en el backend— costó media docena de
+> idas y vueltas para terminar exactamente en el patrón de Departamentos. Cada
+> desviación parecía una mejora aislada y ninguna lo era.
+>
+> Si creés que el patrón existente está mal, cambialo **en todas las páginas a
+> la vez**, no sólo en la nueva. Dos páginas hermanas que hacen lo mismo de
+> forma distinta es peor que dos páginas con el mismo defecto.
 
 **El ruteo es por archivo.** Un archivo en `src/routes/` define una URL.
 `src/routeTree.gen.ts` se genera solo y **nunca se edita a mano**.
@@ -267,6 +289,135 @@ usuario no sabe qué hacer.
 
 ---
 
+## 5.1 Todo listado busca y ordena
+
+**Regla: todo listado del proyecto —página o diálogo, tabla o `<ul>`— lleva un
+buscador que filtra por cualquier campo visible. Si se muestra como `<Table>`,
+además cada columna ordena al hacer click en su header.**
+
+Es la misma regla para todos: no hay pantallas "simples" exentas. Un listado
+de 6 filas hoy puede tener 60 en seis meses, y agregarlo después implica tocar
+un componente que ya está en producción en vez de escribirlo bien la primera
+vez.
+
+### El hook: `useTablaListado`
+
+[use-tabla-listado.ts](../src/hooks/use-tabla-listado.ts) hace las dos cosas.
+Es client-side a propósito: los listados de este proyecto son catálogos
+chicos —países, departamentos, módulos— que el backend ya trae completos de
+una sola vez (ver [3. Crear el backend](GUIA-IMPLEMENTACION.md#3-crear-el-backend-de-una-tabla)),
+así que no se justifica un ida y vuelta al servidor por cada tecla o cada
+click en un header.
+
+```tsx
+const { busqueda, setBusqueda, orden, alternarOrden, resultado, termino } = useTablaListado(
+  data?.items ?? [],
+  // Qué campos entran en la búsqueda. Una función, no una lista de keys:
+  // "activo" hay que traducirlo a texto antes de que alguien pueda buscar
+  // "Activo" o "Inactivo" — buscar el código "A" a mano no ocurre.
+  (departamento) => [
+    departamento.nombreDepartamento,
+    departamento.pais,
+    esActivo(departamento.activo) ? "Activo" : "Inactivo",
+  ],
+);
+```
+
+`resultado` reemplaza a `data.items` en todo lo que sigue: el `.map()` de la
+tabla, el de las tarjetas, el conteo del pie de página. `termino` sirve para
+distinguir "no hay nada cargado" de "no hay nada que coincida" en el estado
+vacío (ver más abajo).
+
+### El input de búsqueda
+
+Mismo lugar en todas las pantallas: al lado del botón "Nuevo", con el ícono
+`Search` de lucide-react superpuesto.
+
+```tsx
+<div className="flex flex-wrap items-center gap-2">
+  <div className="relative min-w-48 flex-1">
+    <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+    <Input
+      value={busqueda}
+      onChange={(e) => setBusqueda(e.target.value)}
+      placeholder="Buscar por departamento, país…"
+      className="pl-9"
+    />
+  </div>
+  <Button onClick={() => setCreando(true)}>
+    <Plus className="size-4" />
+    Nuevo
+  </Button>
+</div>
+```
+
+El placeholder nombra los campos que realmente busca — no un genérico
+"Buscar…" que no le dice a quien usa el sistema qué puede escribir ahí.
+
+### El estado vacío distingue "sin datos" de "sin resultados"
+
+```tsx
+{
+  !isPending && !isError && resultado.length === 0 && (
+    <div className="surface-card px-3 py-16 text-center">
+      <p className="text-sm text-muted-foreground">
+        {termino
+          ? `Sin resultados para "${busqueda.trim()}".`
+          : "Todavía no hay departamentos cargados."}
+      </p>
+      {/* "Cargar el primero" no tiene sentido cuando lo que falta es afinar
+        la búsqueda, no cargar datos que ya existen. */}
+      {!termino && (
+        <Button className="mt-4" onClick={() => setCreando(true)}>
+          Cargar el primero
+        </Button>
+      )}
+    </div>
+  );
+}
+```
+
+### Headers ordenables: `TableHeadOrdenable`
+
+Sólo aplica a listados en `<Table>` (desktop). Las tarjetas de móvil no tienen
+headers — ahí el orden no se ofrece, y está bien así.
+
+[TableHeadOrdenable.tsx](../src/components/ctell/TableHeadOrdenable.tsx)
+reemplaza a `<TableHead>` en las columnas que tenga sentido ordenar (no en
+"Acciones"):
+
+```tsx
+<TableHeader>
+  <TableRow>
+    <TableHeadOrdenable
+      direccion={orden?.campo === "nombreDepartamento" ? orden.direccion : null}
+      onClick={() => alternarOrden("nombreDepartamento")}
+    >
+      Departamento
+    </TableHeadOrdenable>
+    <TableHeadOrdenable
+      direccion={orden?.campo === "pais" ? orden.direccion : null}
+      onClick={() => alternarOrden("pais")}
+    >
+      País
+    </TableHeadOrdenable>
+    <TableHead className="text-right">Acciones</TableHead>
+  </TableRow>
+</TableHeader>
+```
+
+Tres clicks en el mismo header: ascendente → descendente → vuelve al orden
+original que trajo el backend. El ícono cambia solo (flecha doble gris sin
+ordenar, arriba/abajo con la dirección activa).
+
+### Diálogos con `<ul>` en vez de `<Table>`
+
+`UsuariosDialog`, `ModulosDialog` y `PaginasDialog` muestran una lista simple,
+no una tabla con columnas — ahí sólo aplica el buscador, no hay headers que
+ordenar. El criterio es el mismo: si son más de un puñado de filas, buscan.
+
+---
+
 ## 6. Formularios
 
 **react-hook-form + zod**, con los componentes de `@/components/ui/form`.
@@ -358,6 +509,74 @@ const MENSAJE_ERROR = (error: unknown, fallback: string) =>
 cuenta es la del paquete PL/SQL, porque cualquiera puede llamar al endpoint sin
 pasar por el formulario.
 
+### Elegir un valor de otra tabla: `Combobox`, no `Select`
+
+**Regla: todo selector de una FK —país, módulo, usuario, cualquier lista que
+salga de otra tabla— usa `Combobox`, no el `<Select>` de shadcn.**
+
+Un `<Select>` nativo no filtra: con 200 países cargados, buscar "Paraguay"
+significa scrollear a mano por una lista alfabética. `<Select>` sigue siendo
+correcto para listas fijas y cortas que no salen de una tabla —"Activo/Inactivo",
+la `entrada` de una página (`D`/`O`/`R`)—, donde no hay nada que buscar.
+
+[Combobox.tsx](../src/components/ctell/Combobox.tsx) es un botón que abre un
+popover con un input de búsqueda arriba y las opciones filtrándose en vivo
+(`Command` + `Popover` de shadcn, ya instalados). No pide datos por su cuenta:
+arma `opciones` a partir de lo que ya haya cargado con `useQuery`, igual que
+antes se armaban los `<SelectItem>`.
+
+```tsx
+const { data: paises, isPending: cargandoPaises } = useQuery({
+  queryKey: ["paises"],
+  queryFn: () => api.paises.listar(),
+});
+
+const paisesOpciones = (paises?.items ?? []).map((p) => ({
+  valor: String(p.id),
+  etiqueta: p.nombrePais,
+  // Opcional: texto chico y gris debajo de la etiqueta — el código de país,
+  // el usuario de login, lo que ayude a distinguir entre opciones parecidas.
+  descripcion: p.codigoPais ?? undefined,
+}));
+
+<FormField
+  control={form.control}
+  name="idPais"
+  render={({ field }) => (
+    <FormItem>
+      <FormLabel>País</FormLabel>
+      <FormControl>
+        <Combobox
+          opciones={paisesOpciones}
+          value={field.value}
+          onChange={field.onChange}
+          placeholder="Elegí un país"
+          buscarPlaceholder="Buscar país…"
+          cargando={cargandoPaises}
+        />
+      </FormControl>
+      <FormDescription>El departamento pertenece a este país.</FormDescription>
+      <FormMessage />
+    </FormItem>
+  )}
+/>;
+```
+
+El `value` sigue siendo el `id` como string, igual que con `<Select>`: el
+`schema` de zod y la conversión a `Number(...)` al enviar no cambian.
+
+**También en los filtros de listado**, no sólo en el alta/edición — el
+selector de país en el filtro de Departamentos es el mismo componente:
+
+```tsx
+<Combobox
+  opciones={[{ valor: TODOS, etiqueta: "Todos los países" }, ...paisesOpciones]}
+  value={filtroPais}
+  onChange={setFiltroPais}
+  placeholder="Todos los países"
+/>
+```
+
 ### Confirmación de borrado
 
 ```tsx
@@ -412,6 +631,14 @@ explícito) y al mapa que corresponda. No se resuelve dinámicamente contra
 lucide-react a propósito: el bundler necesita saber en compilación qué se
 importa, y el paquete entero son miles de componentes.
 
+**Al crear una página, sumá su nombre a `ICONOS_PAGINA`.** Es un paso fácil de
+olvidar y no rompe nada —cae en el documento genérico—, pero deja la página
+nueva visualmente indistinguible del resto del menú.
+
+Y si la página pertenece a una jerarquía, **dale un ícono propio a cada nivel**.
+Países / Departamentos / Ciudades usan `Globe` / `Map` / `MapPin`: con el mismo
+ícono repetido, el menú no deja distinguir un nivel de otro de un vistazo.
+
 ### Por qué el link es un `<a>` y no un `<Link>`
 
 `<Link to>` de TanStack Router espera un literal del árbol de rutas. La ruta del
@@ -430,6 +657,54 @@ menú sale de la base como string cualquiera, así que se navega imperativamente
 `normalizarRuta()` limpia el valor antes: lo carga una persona en el ABM y puede
 venir con espacios o sin la barra inicial.
 
+### Todo arranca cerrado, y lo que se abre queda abierto
+
+Módulos y entradas (Definiciones / Operaciones / Reportes) **arrancan
+colapsados**. El usuario despliega lo que necesita; abrir cosas de entrada llena
+el sidebar de páginas que nadie pidió ver.
+
+Y una vez abiertos, **no se cierran solos al navegar**. Eso obliga a dos cosas,
+y las dos se aprendieron rompiéndolas:
+
+**1. El estado no se deriva en render.**
+
+```tsx
+// ❌ La entrada queda TRABADA abierta.
+// Parado en una página de Definiciones, contieneActivo es true, el OR gana
+// en cada render, y plegarla no hace nada visible.
+const [abierta, setAbierta] = useState(true);
+const desplegada = abierta || contieneActivo;
+```
+
+Si un valor se puede cambiar por interacción, no lo combines con un `||` contra
+una condición externa: el toggle queda muerto, sin error, sólo un click que
+aparentemente no hace nada. El bug además se disfraza — sólo pasa en la entrada
+que contiene la página activa, así que parece un problema de esa sección.
+
+**2. El estado tiene que vivir FUERA del componente.**
+
+`AppLayout` lo monta cada página, así que **navegar desmonta y remonta
+`MenuDinamico`**. Un `useState` vuelve a su valor inicial y cierra todo el menú
+justo al hacer click en una página — que es exactamente cuando el usuario menos
+lo espera.
+
+Por eso lo desplegado vive en un store module-level respaldado en
+`sessionStorage`, y se consume con `useSyncExternalStore`:
+
+```tsx
+const abiertos = useAbiertos();          // ReadonlySet<string>
+onClick={() => alternarClave(`m:${modulo.id}`)}
+```
+
+Las claves son `m:<idModulo>` y `e:<idModulo>:<entrada>`. Dos detalles que
+`useSyncExternalStore` no perdona: el `getSnapshot` tiene que devolver **la
+misma referencia** mientras nada cambie (reconstruir el Set en cada lectura es
+un bucle de renders), y el snapshot de servidor tiene que ser una **constante**,
+no una llamada que cree un objeto nuevo.
+
+Este patrón sirve para cualquier estado de UI que deba sobrevivir a la
+navegación. No lo pongas en `useState` dentro de algo que `AppLayout` monte.
+
 ---
 
 ## 8. Checklist
@@ -445,6 +720,9 @@ Antes de dar por terminada una pantalla:
 - [ ] Registrada en Administración → Páginas, y asignada en Permisos
 - [ ] Los cuatro estados del listado: cargando, error, vacío con acción, con datos
 - [ ] Tarjetas abajo de `sm`, tabla arriba
+- [ ] **Buscador con `useTablaListado`** que filtra por los campos visibles
+- [ ] **Headers ordenables (`TableHeadOrdenable`)** en cada columna de la tabla desktop
+- [ ] **Selectores de FK con `Combobox`**, no `<Select>` — país, módulo, usuario, etc.
 - [ ] Formularios con `values`/`defaultValues` y validación zod
 - [ ] Toggle de activo sólo en edición, no en el alta
 - [ ] Las mutaciones invalidan sus queries
@@ -452,14 +730,16 @@ Antes de dar por terminada una pantalla:
 
 ### Errores frecuentes
 
-| Síntoma                                           | Causa                                                                    |
-| ------------------------------------------------- | ------------------------------------------------------------------------ |
-| El item aparece en el menú pero el clic no navega | `PAGINAS.RUTA` no coincide con ninguna ruta del router                   |
-| El menú no muestra una página asignada            | El módulo o la página están inactivos, o falta el permiso                |
-| Todo se ve bien pero una acción no hace nada      | La API no devuelve un campo: llega `undefined`. Corré `npx tsc --noEmit` |
-| El texto no se lee en hover en el sidebar         | Falta `variant="dark"`: las clases claras no contrastan sobre el navy    |
-| El formulario muestra datos del registro anterior | Se usó `defaultValues` en vez de `values` en un dialog reutilizado       |
-| El error del backend no se ve al borrar           | Falta `e.preventDefault()` en el `AlertDialogAction`                     |
-| La lista no se actualiza tras guardar             | Falta `invalidateQueries`                                                |
-| `window is not defined`                           | Acceso al DOM fuera de `useEffect` (corre en el prerender de build)      |
-| Cambios que no aparecen por más que recargues     | Hay más de un `npm run dev` corriendo: mirá en qué puerto estás          |
+| Síntoma                                               | Causa                                                                                                                                                        |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| El item aparece en el menú pero el clic no navega     | `PAGINAS.RUTA` no coincide con ninguna ruta del router                                                                                                       |
+| El menú no muestra una página asignada                | El módulo o la página están inactivos, o falta el permiso                                                                                                    |
+| Todo se ve bien pero una acción no hace nada          | La API no devuelve un campo: llega `undefined`. Corré `npx tsc --noEmit`                                                                                     |
+| El texto no se lee en hover en el sidebar             | Falta `variant="dark"`: las clases claras no contrastan sobre el navy                                                                                        |
+| El formulario muestra datos del registro anterior     | Se usó `defaultValues` en vez de `values` en un dialog reutilizado                                                                                           |
+| El error del backend no se ve al borrar               | Falta `e.preventDefault()` en el `AlertDialogAction`                                                                                                         |
+| La lista no se actualiza tras guardar                 | Falta `invalidateQueries`                                                                                                                                    |
+| `window is not defined`                               | Acceso al DOM fuera de `useEffect` (corre en el prerender de build)                                                                                          |
+| Cambios que no aparecen por más que recargues         | Hay más de un `npm run dev` corriendo: mirá en qué puerto estás                                                                                              |
+| El buscador no encuentra nada que sí está en pantalla | Falta agregar ese campo al array que devuelve la función de `useTablaListado`                                                                                |
+| El Combobox no filtra por lo que se ve en pantalla    | El `filter` de `Command` compara contra `value` (el id): revisá que `Combobox` esté resolviendo `opcion.etiqueta`, no uses `Command` pelado sin ese `filter` |

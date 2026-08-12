@@ -211,6 +211,31 @@ Cuando agregues una tabla nueva con estado, usá `VARCHAR2(1)` con `'A'`/`'I'`.
 que hay que copiar. `db/usuarios.sql` y `db/auth.sql` son anteriores y usan un
 estilo que ya no se sigue (ver "Lo que NO hay que hacer" más abajo).
 
+> **Si la tabla cuelga de otra, la plantilla es
+> [db/departamentos.sql](../db/departamentos.sql)** — ahí está resuelto el
+> `LISTAR` con filtro opcional por el padre, el `JOIN` que trae su nombre, y la
+> traducción de `ORA-02291` (FK) a 400 y `ORA-02292` (hijos) a 409.
+>
+> **Copialo tal cual y cambiá los nombres.** El `LISTAR` de una tabla hija
+> siempre tiene esta forma, y desviarse de ella cuesta caro:
+>
+> ```sql
+> PROCEDURE LISTAR (
+>   p_authorization IN  VARCHAR2,
+>   p_id_padre      IN  VARCHAR2,   -- NULL/vacío = todos
+>   p_status_code   OUT NUMBER,
+>   p_resultado     OUT CLOB
+> )
+> -- …
+> l_id_padre := TO_NUMBER(NULLIF(p_id_padre, ''));
+> -- …
+> WHERE l_id_padre IS NULL OR ID_PADRE = l_id_padre;
+> ```
+>
+> El `WHERE l_x IS NULL OR col = l_x` es lo que hace funcionar el "todos" del
+> filtro. Sacar el parámetro para "simplificar" y filtrar en el cliente rompe
+> la simetría con las páginas hermanas sin ganar nada.
+
 Reglas que definen el patrón:
 
 1. **Todo vive dentro de un solo paquete `PKG_<TABLA>`.** Nada de procedimientos
@@ -386,6 +411,34 @@ EXCEPTION
     p_resultado := '{"error":"Error al eliminar la empresa"}';
 END ELIMINAR;
 ```
+
+**Un `ORDEN` ausente se calcula, no se rellena con 0.** Si la tabla tiene una
+columna de posición, el alta sin valor explícito toma el siguiente libre —
+`NVL(MAX(ORDEN), 0) + 1` **dentro del grupo con el que se muestra**, no global:
+
+```sql
+-- El alcance es (módulo, entrada) porque el menú ordena dentro de cada
+-- sección: Reportes de Compras numera aparte de Definiciones de Compras.
+SELECT NVL(MAX(ORDEN), 0) + 1
+  INTO l_orden
+  FROM PAGINAS
+ WHERE ID_MODULO = l_id_modulo
+   AND ENTRADA = l_entrada;
+```
+
+Tres decisiones ahí, todas por algo:
+
+- **`MAX`, no `COUNT`.** Si borraron la última, `COUNT` reutiliza un orden ya
+  usado y dos filas quedan empatadas.
+- **Se calcula en el backend**, que es el único que ve la tabla entera. El
+  frontend tendría que traerse todo para averiguarlo, y dos altas simultáneas se
+  pisarían igual.
+- **Un valor explícito gana**, para poder intercalar entre dos existentes sin
+  renumerar el resto.
+
+Del lado del frontend eso significa que el campo tiene que poder quedar
+**vacío**, y que un `z.coerce.number()` no sirve: convierte `""` en `0` y manda
+la fila nueva al principio en vez de al final.
 
 **Los `UPDATE` respetan los NULL.** Un parámetro sin valor no pisa la columna:
 

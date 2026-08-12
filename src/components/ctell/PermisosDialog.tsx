@@ -3,6 +3,7 @@ import { Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
+import { Combobox } from "@/components/ctell/Combobox";
 import { api, ApiError, esActivo, type Pagina } from "@/lib/api";
 import {
   Dialog,
@@ -13,13 +14,6 @@ import {
 } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 
 const MENSAJE_ERROR = (error: unknown, fallback: string) =>
@@ -77,19 +71,19 @@ function SelectorUsuario({ value, onChange }: { value: string; onChange: (v: str
 
   return (
     <div className="space-y-2">
-      <Label htmlFor="usuario-permisos">Usuario</Label>
-      <Select value={value} onValueChange={onChange} disabled={isPending}>
-        <SelectTrigger id="usuario-permisos">
-          <SelectValue placeholder={isPending ? "Cargando…" : "Elegí un usuario"} />
-        </SelectTrigger>
-        <SelectContent>
-          {(data?.items ?? []).map((u) => (
-            <SelectItem key={u.id} value={String(u.id)}>
-              {u.nombreApellido} ({u.usuario})
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      <Label>Usuario</Label>
+      <Combobox
+        opciones={(data?.items ?? []).map((u) => ({
+          valor: String(u.id),
+          etiqueta: u.nombreApellido,
+          descripcion: u.usuario,
+        }))}
+        value={value}
+        onChange={onChange}
+        placeholder="Elegí un usuario"
+        buscarPlaceholder="Buscar usuario…"
+        cargando={isPending}
+      />
     </div>
   );
 }

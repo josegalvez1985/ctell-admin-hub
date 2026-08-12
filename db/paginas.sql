@@ -236,6 +236,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_PAGINAS AS
     l_sesion    NUMBER;
     l_id_modulo NUMBER;
     l_entrada   VARCHAR2(1);
+    l_orden     NUMBER;
     l_id        NUMBER;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
@@ -259,13 +260,38 @@ CREATE OR REPLACE PACKAGE BODY PKG_PAGINAS AS
       RETURN;
     END IF;
 
+    -- Orden automático: el siguiente dentro de este módulo Y esta entrada.
+    --
+    -- Se calcula acá y no en el cliente porque es el único lugar que ve la
+    -- tabla entera; el frontend tendría que traerse todas las páginas para
+    -- averiguarlo, y dos altas simultáneas se pisarían igual.
+    --
+    -- El alcance es (módulo, entrada) porque el menú ordena dentro de cada
+    -- sección: Reportes de Compras numera aparte de Definiciones de Compras.
+    -- Con MAX global, una página nueva en Reportes nacería con un orden que la
+    -- manda al fondo de una lista con la que no comparte pantalla.
+    --
+    -- Un orden explícito gana: sirve para intercalar una página entre dos que
+    -- ya existen sin renumerar el resto.
+    IF NULLIF(p_orden, '') IS NOT NULL THEN
+      l_orden := TO_NUMBER(p_orden);
+    ELSE
+      -- NVL sobre el MAX, no COUNT: si borraron la última, COUNT reutilizaría
+      -- un orden ya usado y dos páginas quedarían empatadas.
+      SELECT NVL(MAX(ORDEN), 0) + 1
+        INTO l_orden
+        FROM PAGINAS
+       WHERE ID_MODULO = l_id_modulo
+         AND ENTRADA = l_entrada;
+    END IF;
+
     INSERT INTO PAGINAS (ID_MODULO, NOMBRE, RUTA, ENTRADA, ORDEN, ACTIVO)
     VALUES (
       l_id_modulo,
       TRIM(p_nombre),
       TRIM(p_ruta),
       l_entrada,
-      NVL(TO_NUMBER(NULLIF(p_orden, '')), 0),
+      l_orden,
       'A'
     )
     RETURNING ID_PAGINA INTO l_id;

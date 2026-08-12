@@ -1,13 +1,16 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Pencil, Plus, Trash2 } from "lucide-react";
+import { Loader2, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
+import { Combobox } from "@/components/ctell/Combobox";
+import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
+import { useTablaListado } from "@/hooks/use-tabla-listado";
 import { api, ApiError, esActivo, type Departamento, type Estado } from "@/lib/api";
 import {
   AlertDialog,
@@ -39,13 +42,6 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -58,7 +54,7 @@ import {
 } from "@/components/ui/table";
 
 const schema = z.object({
-  // El select devuelve strings: el id se valida como texto no vacío y se
+  // El combobox devuelve strings: el id se valida como texto no vacío y se
   // convierte a número recién al enviar.
   idPais: z.string().min(1, "Elegí un país"),
   nombreDepartamento: z.string().trim().min(1, "Obligatorio").max(100, "Máximo 100 caracteres"),
@@ -67,7 +63,7 @@ const schema = z.object({
 
 type FormValues = z.infer<typeof schema>;
 
-/** Valor del filtro que significa "sin filtrar". El Select no admite "". */
+/** Valor del filtro que significa "sin filtrar". El combobox no admite "". */
 const TODOS = "todos";
 
 const MENSAJE_ERROR = (error: unknown, fallback: string) =>
@@ -109,7 +105,18 @@ function DepartamentosPage() {
     },
   });
 
-  const departamentos = data?.items ?? [];
+  // Búsqueda por cualquier campo visible + orden por click en el header.
+  // Ver el criterio general en la guía de frontend, sección "Listados".
+  const { busqueda, setBusqueda, orden, alternarOrden, resultado, termino } = useTablaListado(
+    data?.items ?? [],
+    (d) => [d.nombreDepartamento, d.pais, d.codigoPais, esActivo(d.activo) ? "Activo" : "Inactivo"],
+  );
+
+  const paisesOpciones = (paises?.items ?? []).map((p) => ({
+    valor: String(p.id),
+    etiqueta: p.nombrePais,
+    descripcion: p.codigoPais ?? undefined,
+  }));
 
   return (
     <AppLayout active="/departamentos" title="Departamentos">
@@ -128,20 +135,27 @@ function DepartamentosPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-sm text-muted-foreground">País</span>
-          <Select value={filtroPais} onValueChange={setFiltroPais}>
-            <SelectTrigger className="w-full sm:w-64">
-              <SelectValue placeholder="Todos los países" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={TODOS}>Todos los países</SelectItem>
-              {(paises?.items ?? []).map((p) => (
-                <SelectItem key={p.id} value={String(p.id)}>
-                  {p.nombrePais}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="relative min-w-48 flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={busqueda}
+              onChange={(e) => setBusqueda(e.target.value)}
+              placeholder="Buscar por departamento, país…"
+              className="pl-9"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="shrink-0 text-sm text-muted-foreground">País</span>
+            <div className="w-full sm:w-64">
+              <Combobox
+                opciones={[{ valor: TODOS, etiqueta: "Todos los países" }, ...paisesOpciones]}
+                value={filtroPais}
+                onChange={setFiltroPais}
+                placeholder="Todos los países"
+                buscarPlaceholder="Buscar país…"
+              />
+            </div>
+          </div>
         </div>
 
         {isPending && (
@@ -158,25 +172,29 @@ function DepartamentosPage() {
           </p>
         )}
 
-        {!isPending && !isError && departamentos.length === 0 && (
+        {!isPending && !isError && resultado.length === 0 && (
           <div className="surface-card px-3 py-16 text-center">
             <p className="text-sm text-muted-foreground">
-              {filtroPais === TODOS
-                ? "Todavía no hay departamentos cargados."
-                : "Ese país todavía no tiene departamentos cargados."}
+              {termino
+                ? `Sin resultados para "${busqueda.trim()}".`
+                : filtroPais === TODOS
+                  ? "Todavía no hay departamentos cargados."
+                  : "Ese país todavía no tiene departamentos cargados."}
             </p>
-            <Button className="mt-4" onClick={() => setCreando(true)}>
-              <Plus className="size-4" />
-              Cargar el primero
-            </Button>
+            {!termino && (
+              <Button className="mt-4" onClick={() => setCreando(true)}>
+                <Plus className="size-4" />
+                Cargar el primero
+              </Button>
+            )}
           </div>
         )}
 
         {/* Móvil: tarjetas. Una tabla de 4 columnas en 360px obliga a scrollear
             de costado para leer una fila entera. */}
-        {departamentos.length > 0 && (
+        {resultado.length > 0 && (
           <ul className="space-y-3 sm:hidden">
-            {departamentos.map((departamento) => {
+            {resultado.map((departamento) => {
               const activo = esActivo(departamento.activo);
 
               return (
@@ -219,19 +237,34 @@ function DepartamentosPage() {
           </ul>
         )}
 
-        {departamentos.length > 0 && (
+        {resultado.length > 0 && (
           <div className="surface-card hidden overflow-x-auto sm:block">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Departamento</TableHead>
-                  <TableHead>País</TableHead>
-                  <TableHead>Estado</TableHead>
+                  <TableHeadOrdenable
+                    direccion={orden?.campo === "nombreDepartamento" ? orden.direccion : null}
+                    onClick={() => alternarOrden("nombreDepartamento")}
+                  >
+                    Departamento
+                  </TableHeadOrdenable>
+                  <TableHeadOrdenable
+                    direccion={orden?.campo === "pais" ? orden.direccion : null}
+                    onClick={() => alternarOrden("pais")}
+                  >
+                    País
+                  </TableHeadOrdenable>
+                  <TableHeadOrdenable
+                    direccion={orden?.campo === "activo" ? orden.direccion : null}
+                    onClick={() => alternarOrden("activo")}
+                  >
+                    Estado
+                  </TableHeadOrdenable>
                   <TableHead className="text-right">Acciones</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {departamentos.map((departamento) => {
+                {resultado.map((departamento) => {
                   const activo = esActivo(departamento.activo);
 
                   return (
@@ -278,9 +311,10 @@ function DepartamentosPage() {
           </div>
         )}
 
-        {data && departamentos.length > 0 && (
+        {data && resultado.length > 0 && (
           <p className="text-xs text-muted-foreground">
-            {departamentos.length} departamento{departamentos.length === 1 ? "" : "s"}
+            {resultado.length} de {data.items.length} departamento
+            {data.items.length === 1 ? "" : "s"}
           </p>
         )}
 
@@ -348,6 +382,12 @@ function DepartamentoFormDialog({
     queryFn: () => api.paises.listar(),
   });
 
+  const paisesOpciones = (paises?.items ?? []).map((p) => ({
+    valor: String(p.id),
+    etiqueta: p.nombrePais,
+    descripcion: p.codigoPais ?? undefined,
+  }));
+
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     // Sin defaults React avisa por inputs no controlados. Un alta nace activa:
@@ -404,20 +444,16 @@ function DepartamentoFormDialog({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>País</FormLabel>
-                  <Select value={field.value} onValueChange={field.onChange}>
-                    <FormControl>
-                      <SelectTrigger>
-                        <SelectValue placeholder={cargandoPaises ? "Cargando…" : "Elegí un país"} />
-                      </SelectTrigger>
-                    </FormControl>
-                    <SelectContent>
-                      {(paises?.items ?? []).map((p) => (
-                        <SelectItem key={p.id} value={String(p.id)}>
-                          {p.nombrePais}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <FormControl>
+                    <Combobox
+                      opciones={paisesOpciones}
+                      value={field.value}
+                      onChange={field.onChange}
+                      placeholder="Elegí un país"
+                      buscarPlaceholder="Buscar país…"
+                      cargando={cargandoPaises}
+                    />
+                  </FormControl>
                   <FormDescription>El departamento pertenece a este país.</FormDescription>
                   <FormMessage />
                 </FormItem>

@@ -125,6 +125,71 @@ export type ListaDepartamentos = {
   total: number;
 };
 
+export type Ciudad = {
+  id: number;
+  idDepartamento: number;
+  /** Nombre del departamento al que pertenece: viene del JOIN, no de CIUDADES. */
+  departamento: string;
+  idPais: number;
+  /** Nombre del país, del mismo JOIN (a través de DEPARTAMENTOS). */
+  pais: string;
+  nombreCiudad: string;
+  activo: Estado;
+};
+
+export type ListaCiudades = {
+  items: Ciudad[];
+  total: number;
+};
+
+export type Empresa = {
+  id: number;
+  nombreEmpresa: string;
+  ruc: string | null;
+  correoEmpresa: string | null;
+  telefono: string | null;
+  direccion: string | null;
+  /**
+   * Ubicación. Los tres niveles se guardan aunque la ciudad ya implique
+   * departamento y país: así lo pide el DDL, y el formulario los completa con
+   * combobox en cascada. Las tres FK son nullables — una empresa puede no
+   * tener dirección cargada todavía.
+   */
+  idCiudad: number | null;
+  /** Nombre de la ciudad: viene del JOIN, no de EMPRESAS. */
+  ciudad: string | null;
+  idDepartamento: number | null;
+  departamento: string | null;
+  idPais: number | null;
+  pais: string | null;
+  /** Código ISO de 3 letras. 'PYG' por defecto. */
+  monedaDefecto: string | null;
+  representanteLegal: string | null;
+  activo: Estado;
+};
+
+export type ListaEmpresas = {
+  items: Empresa[];
+  total: number;
+};
+
+export type Sucursal = {
+  id: number;
+  idEmpresa: number;
+  /** Nombre de la empresa a la que pertenece: viene del JOIN, no de SUCURSALES. */
+  empresa: string;
+  nombreSucursal: string;
+  codigoSucursal: string;
+  direccion: string | null;
+  telefono: string | null;
+  activo: Estado;
+};
+
+export type ListaSucursales = {
+  items: Sucursal[];
+  total: number;
+};
+
 export type Entrada = "D" | "O" | "R";
 
 export type Pagina = {
@@ -668,5 +733,127 @@ export const api = {
 
     eliminar: (id: number) =>
       request<{ ok: boolean }>(`/departamentos/eliminar/${id}`, { method: "DELETE" }),
+  },
+
+  ciudades: {
+    /** Sin `idDepartamento` devuelve las ciudades de todos los departamentos. */
+    listar: (params: { idDepartamento?: number } = {}) => {
+      const q = params.idDepartamento ? `?idDepartamento=${params.idDepartamento}` : "";
+      return request<ListaCiudades>(`/ciudades/listar${q}`);
+    },
+
+    crear: (datos: { idDepartamento: number; nombreCiudad: string }) =>
+      request<{ id: number; ok: boolean }>("/ciudades/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Los campos ausentes no se modifican. */
+    actualizar: (
+      id: number,
+      datos: {
+        idDepartamento?: number;
+        nombreCiudad?: string;
+        activo?: Estado;
+      },
+    ) =>
+      request<{ ok: boolean }>(`/ciudades/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    eliminar: (id: number) =>
+      request<{ ok: boolean }>(`/ciudades/eliminar/${id}`, { method: "DELETE" }),
+  },
+
+  empresas: {
+    /** Sin `idCiudad` devuelve las empresas de todas las ciudades. */
+    listar: (params: { idCiudad?: number } = {}) => {
+      const q = params.idCiudad ? `?idCiudad=${params.idCiudad}` : "";
+      return request<ListaEmpresas>(`/empresas/listar${q}`);
+    },
+
+    crear: (datos: {
+      nombreEmpresa: string;
+      ruc?: string;
+      correoEmpresa?: string;
+      telefono?: string;
+      direccion?: string;
+      idCiudad?: number;
+      idDepartamento?: number;
+      idPais?: number;
+      /** Omitida equivale a "PYG". */
+      monedaDefecto?: string;
+      representanteLegal?: string;
+    }) =>
+      request<{ id: number; ok: boolean }>("/empresas/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Los campos ausentes no se modifican. */
+    actualizar: (
+      id: number,
+      datos: {
+        nombreEmpresa?: string;
+        ruc?: string;
+        correoEmpresa?: string;
+        telefono?: string;
+        direccion?: string;
+        idCiudad?: number;
+        idDepartamento?: number;
+        idPais?: number;
+        monedaDefecto?: string;
+        representanteLegal?: string;
+        activo?: Estado;
+      },
+    ) =>
+      request<{ ok: boolean }>(`/empresas/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    eliminar: (id: number) =>
+      request<{ ok: boolean }>(`/empresas/eliminar/${id}`, { method: "DELETE" }),
+  },
+
+  sucursales: {
+    /** Sin `idEmpresa` devuelve las sucursales de todas las empresas. */
+    listar: (params: { idEmpresa?: number } = {}) => {
+      const q = params.idEmpresa ? `?idEmpresa=${params.idEmpresa}` : "";
+      return request<ListaSucursales>(`/sucursales/listar${q}`);
+    },
+
+    crear: (datos: {
+      idEmpresa: number;
+      nombreSucursal: string;
+      codigoSucursal: string;
+      direccion?: string;
+      telefono?: string;
+    }) =>
+      request<{ id: number; ok: boolean }>("/sucursales/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Los campos ausentes no se modifican. */
+    actualizar: (
+      id: number,
+      datos: {
+        idEmpresa?: number;
+        nombreSucursal?: string;
+        codigoSucursal?: string;
+        direccion?: string;
+        telefono?: string;
+        activo?: Estado;
+      },
+    ) =>
+      request<{ ok: boolean }>(`/sucursales/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    eliminar: (id: number) =>
+      request<{ ok: boolean }>(`/sucursales/eliminar/${id}`, { method: "DELETE" }),
   },
 };

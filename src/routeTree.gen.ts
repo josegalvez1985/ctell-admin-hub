@@ -12,11 +12,14 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthRouteImport } from './routes/_auth'
 import { Route as AuthAdministracionRouteImport } from './routes/_auth.administracion'
+import { Route as AuthCiudadesRouteImport } from './routes/_auth.ciudades'
 import { Route as AuthConfiguracionRouteImport } from './routes/_auth.configuracion'
 import { Route as AuthDepartamentosRouteImport } from './routes/_auth.departamentos'
+import { Route as AuthEmpresasRouteImport } from './routes/_auth.empresas'
 import { Route as AuthHomeRouteImport } from './routes/_auth.home'
 import { Route as AuthMenuRouteImport } from './routes/_auth.menu'
 import { Route as AuthPaisesRouteImport } from './routes/_auth.paises'
+import { Route as AuthSucursalesRouteImport } from './routes/_auth.sucursales'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -32,6 +35,11 @@ const AuthAdministracionRoute = AuthAdministracionRouteImport.update({
   path: '/administracion',
   getParentRoute: () => AuthRoute,
 } as any)
+const AuthCiudadesRoute = AuthCiudadesRouteImport.update({
+  id: '/ciudades',
+  path: '/ciudades',
+  getParentRoute: () => AuthRoute,
+} as any)
 const AuthConfiguracionRoute = AuthConfiguracionRouteImport.update({
   id: '/configuracion',
   path: '/configuracion',
@@ -40,6 +48,11 @@ const AuthConfiguracionRoute = AuthConfiguracionRouteImport.update({
 const AuthDepartamentosRoute = AuthDepartamentosRouteImport.update({
   id: '/departamentos',
   path: '/departamentos',
+  getParentRoute: () => AuthRoute,
+} as any)
+const AuthEmpresasRoute = AuthEmpresasRouteImport.update({
+  id: '/empresas',
+  path: '/empresas',
   getParentRoute: () => AuthRoute,
 } as any)
 const AuthHomeRoute = AuthHomeRouteImport.update({
@@ -57,65 +70,88 @@ const AuthPaisesRoute = AuthPaisesRouteImport.update({
   path: '/paises',
   getParentRoute: () => AuthRoute,
 } as any)
+const AuthSucursalesRoute = AuthSucursalesRouteImport.update({
+  id: '/sucursales',
+  path: '/sucursales',
+  getParentRoute: () => AuthRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/administracion': typeof AuthAdministracionRoute
+  '/ciudades': typeof AuthCiudadesRoute
   '/configuracion': typeof AuthConfiguracionRoute
   '/departamentos': typeof AuthDepartamentosRoute
+  '/empresas': typeof AuthEmpresasRoute
   '/home': typeof AuthHomeRoute
   '/menu': typeof AuthMenuRoute
   '/paises': typeof AuthPaisesRoute
+  '/sucursales': typeof AuthSucursalesRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/administracion': typeof AuthAdministracionRoute
+  '/ciudades': typeof AuthCiudadesRoute
   '/configuracion': typeof AuthConfiguracionRoute
   '/departamentos': typeof AuthDepartamentosRoute
+  '/empresas': typeof AuthEmpresasRoute
   '/home': typeof AuthHomeRoute
   '/menu': typeof AuthMenuRoute
   '/paises': typeof AuthPaisesRoute
+  '/sucursales': typeof AuthSucursalesRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/_auth': typeof AuthRouteWithChildren
   '/_auth/administracion': typeof AuthAdministracionRoute
+  '/_auth/ciudades': typeof AuthCiudadesRoute
   '/_auth/configuracion': typeof AuthConfiguracionRoute
   '/_auth/departamentos': typeof AuthDepartamentosRoute
+  '/_auth/empresas': typeof AuthEmpresasRoute
   '/_auth/home': typeof AuthHomeRoute
   '/_auth/menu': typeof AuthMenuRoute
   '/_auth/paises': typeof AuthPaisesRoute
+  '/_auth/sucursales': typeof AuthSucursalesRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
     | '/administracion'
+    | '/ciudades'
     | '/configuracion'
     | '/departamentos'
+    | '/empresas'
     | '/home'
     | '/menu'
     | '/paises'
+    | '/sucursales'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/administracion'
+    | '/ciudades'
     | '/configuracion'
     | '/departamentos'
+    | '/empresas'
     | '/home'
     | '/menu'
     | '/paises'
+    | '/sucursales'
   id:
     | '__root__'
     | '/'
     | '/_auth'
     | '/_auth/administracion'
+    | '/_auth/ciudades'
     | '/_auth/configuracion'
     | '/_auth/departamentos'
+    | '/_auth/empresas'
     | '/_auth/home'
     | '/_auth/menu'
     | '/_auth/paises'
+    | '/_auth/sucursales'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -146,6 +182,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthAdministracionRouteImport
       parentRoute: typeof AuthRoute
     }
+    '/_auth/ciudades': {
+      id: '/_auth/ciudades'
+      path: '/ciudades'
+      fullPath: '/ciudades'
+      preLoaderRoute: typeof AuthCiudadesRouteImport
+      parentRoute: typeof AuthRoute
+    }
     '/_auth/configuracion': {
       id: '/_auth/configuracion'
       path: '/configuracion'
@@ -158,6 +201,13 @@ declare module '@tanstack/react-router' {
       path: '/departamentos'
       fullPath: '/departamentos'
       preLoaderRoute: typeof AuthDepartamentosRouteImport
+      parentRoute: typeof AuthRoute
+    }
+    '/_auth/empresas': {
+      id: '/_auth/empresas'
+      path: '/empresas'
+      fullPath: '/empresas'
+      preLoaderRoute: typeof AuthEmpresasRouteImport
       parentRoute: typeof AuthRoute
     }
     '/_auth/home': {
@@ -181,25 +231,38 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthPaisesRouteImport
       parentRoute: typeof AuthRoute
     }
+    '/_auth/sucursales': {
+      id: '/_auth/sucursales'
+      path: '/sucursales'
+      fullPath: '/sucursales'
+      preLoaderRoute: typeof AuthSucursalesRouteImport
+      parentRoute: typeof AuthRoute
+    }
   }
 }
 
 interface AuthRouteChildren {
   AuthAdministracionRoute: typeof AuthAdministracionRoute
+  AuthCiudadesRoute: typeof AuthCiudadesRoute
   AuthConfiguracionRoute: typeof AuthConfiguracionRoute
   AuthDepartamentosRoute: typeof AuthDepartamentosRoute
+  AuthEmpresasRoute: typeof AuthEmpresasRoute
   AuthHomeRoute: typeof AuthHomeRoute
   AuthMenuRoute: typeof AuthMenuRoute
   AuthPaisesRoute: typeof AuthPaisesRoute
+  AuthSucursalesRoute: typeof AuthSucursalesRoute
 }
 
 const AuthRouteChildren: AuthRouteChildren = {
   AuthAdministracionRoute: AuthAdministracionRoute,
+  AuthCiudadesRoute: AuthCiudadesRoute,
   AuthConfiguracionRoute: AuthConfiguracionRoute,
   AuthDepartamentosRoute: AuthDepartamentosRoute,
+  AuthEmpresasRoute: AuthEmpresasRoute,
   AuthHomeRoute: AuthHomeRoute,
   AuthMenuRoute: AuthMenuRoute,
   AuthPaisesRoute: AuthPaisesRoute,
+  AuthSucursalesRoute: AuthSucursalesRoute,
 }
 
 const AuthRouteWithChildren = AuthRoute._addFileChildren(AuthRouteChildren)

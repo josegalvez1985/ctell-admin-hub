@@ -1,11 +1,12 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Pencil, Plus, Trash2 } from "lucide-react";
+import { Loader2, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 
+import { useTablaListado } from "@/hooks/use-tabla-listado";
 import { api, ApiError, esActivo, type Modulo } from "@/lib/api";
 import {
   AlertDialog,
@@ -126,11 +127,32 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
     },
   });
 
-  const modulos = data?.items ?? [];
+  // Búsqueda por cualquier campo visible. La lista de módulos ya viene
+  // ordenada por ORDEN desde el backend, que es lo que define el menú: acá no
+  // hay headers de columna que reordenar.
+  const {
+    busqueda,
+    setBusqueda,
+    resultado: modulos,
+    termino,
+  } = useTablaListado(data?.items ?? [], (m) => [
+    m.nombre,
+    m.icono,
+    esActivo(m.activo) ? "Activo" : "Inactivo",
+  ]);
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-end">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative min-w-48 flex-1">
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={busqueda}
+            onChange={(e) => setBusqueda(e.target.value)}
+            placeholder="Buscar por nombre…"
+            className="pl-9"
+          />
+        </div>
         <Button onClick={() => onCambiarVista({ tipo: "alta" })}>
           <Plus className="size-4" />
           Nuevo
@@ -153,7 +175,7 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
 
       {!isPending && !isError && modulos.length === 0 && (
         <p className="px-3 py-10 text-center text-sm text-muted-foreground">
-          Todavía no hay módulos.
+          {termino ? `Sin resultados para "${busqueda.trim()}".` : "Todavía no hay módulos."}
         </p>
       )}
 
@@ -207,6 +229,7 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
       {data && modulos.length > 0 && (
         <p className="text-xs text-muted-foreground">
           {modulos.length} de {data.total} módulo{data.total === 1 ? "" : "s"}
+          {termino ? " (filtrados)" : ""}
         </p>
       )}
 

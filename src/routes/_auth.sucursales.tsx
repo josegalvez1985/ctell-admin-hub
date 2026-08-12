@@ -8,9 +8,10 @@ import { toast } from "sonner";
 import { z } from "zod";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
+import { Combobox } from "@/components/ctell/Combobox";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
 import { useTablaListado } from "@/hooks/use-tabla-listado";
-import { api, ApiError, esActivo, type Estado, type Pais } from "@/lib/api";
+import { api, ApiError, esActivo, type Estado, type Sucursal } from "@/lib/api";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -53,32 +54,52 @@ import {
 } from "@/components/ui/table";
 
 const schema = z.object({
-  nombrePais: z.string().trim().min(1, "Obligatorio").max(100, "Máximo 100 caracteres"),
-  codigoPais: z.string().trim().max(3, "Máximo 3 caracteres").optional().or(z.literal("")),
+  // El combobox devuelve strings: el id se valida como texto no vacío y se
+  // convierte a número recién al enviar.
+  idEmpresa: z.string().min(1, "Elegí una empresa"),
+  nombreSucursal: z.string().trim().min(1, "Obligatorio").max(150, "Máximo 150 caracteres"),
+  codigoSucursal: z.string().trim().min(1, "Obligatorio").max(20, "Máximo 20 caracteres"),
+  direccion: z.string().trim().max(255, "Máximo 255 caracteres"),
+  telefono: z.string().trim().max(20, "Máximo 20 caracteres"),
   activo: z.boolean(),
 });
 
 type FormValues = z.infer<typeof schema>;
 
+/** Valor del filtro que significa "sin filtrar". El combobox no admite "". */
+const TODOS = "todos";
+
 const MENSAJE_ERROR = (error: unknown, fallback: string) =>
   error instanceof ApiError ? error.message : fallback;
 
-function PaisesPage() {
+function SucursalesPage() {
   const queryClient = useQueryClient();
-  const [editando, setEditando] = useState<Pais | null>(null);
+  const [editando, setEditando] = useState<Sucursal | null>(null);
   const [creando, setCreando] = useState(false);
-  const [aEliminar, setAEliminar] = useState<Pais | null>(null);
+  const [aEliminar, setAEliminar] = useState<Sucursal | null>(null);
+  const [filtroEmpresa, setFiltroEmpresa] = useState<string>(TODOS);
+
+  // El filtro se aplica en el backend (?idEmpresa=): la query lleva la empresa
+  // en la key para que cada selección tenga su propia entrada en la caché.
+  const idEmpresaFiltro = filtroEmpresa === TODOS ? undefined : Number(filtroEmpresa);
 
   const { data, isPending, isError, error } = useQuery({
-    queryKey: ["paises"],
-    queryFn: () => api.paises.listar(),
+    queryKey: ["sucursales", idEmpresaFiltro ?? null],
+    queryFn: () => api.sucursales.listar(idEmpresaFiltro ? { idEmpresa: idEmpresaFiltro } : {}),
+  });
+
+  // Las empresas alimentan el filtro y el formulario. Misma queryKey que usa
+  // la página de Empresas al listar sin filtrar, así se comparte la caché.
+  const { data: empresas } = useQuery({
+    queryKey: ["empresas", null],
+    queryFn: () => api.empresas.listar(),
   });
 
   const eliminar = useMutation({
-    mutationFn: (pais: Pais) => api.paises.eliminar(pais.id),
+    mutationFn: (sucursal: Sucursal) => api.sucursales.eliminar(sucursal.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["paises"] });
-      toast.success("País eliminado");
+      queryClient.invalidateQueries({ queryKey: ["sucursales"] });
+      toast.success("Sucursal eliminada");
       setAEliminar(null);
     },
     onError: (e) => {
@@ -91,33 +112,58 @@ function PaisesPage() {
   // Ver el criterio general en la guía de frontend, sección "Listados".
   const { busqueda, setBusqueda, orden, alternarOrden, resultado, termino } = useTablaListado(
     data?.items ?? [],
-    (p) => [p.nombrePais, p.codigoPais, esActivo(p.activo) ? "Activo" : "Inactivo"],
+    (s) => [
+      s.nombreSucursal,
+      s.codigoSucursal,
+      s.empresa,
+      esActivo(s.activo) ? "Activo" : "Inactivo",
+    ],
   );
 
+  const empresasOpciones = (empresas?.items ?? []).map((e) => ({
+    valor: String(e.id),
+    etiqueta: e.nombreEmpresa,
+    descripcion: e.ruc ?? undefined,
+  }));
+
   return (
-    <AppLayout active="/paises" title="Países">
+    <AppLayout active="/sucursales" title="Sucursales">
       <main className="space-y-6 px-4 pb-28 pt-6 sm:px-6 lg:pb-10">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-bold text-foreground sm:text-3xl">Países</h1>
+            <h1 className="text-2xl font-bold text-foreground sm:text-3xl">Sucursales</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Catálogo de países disponibles en el sistema.
+              Sucursales de cada empresa del sistema.
             </p>
           </div>
           <Button onClick={() => setCreando(true)}>
             <Plus className="size-4" />
-            Nuevo país
+            Nueva sucursal
           </Button>
         </div>
 
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={busqueda}
-            onChange={(e) => setBusqueda(e.target.value)}
-            placeholder="Buscar por nombre o código…"
-            className="pl-9"
-          />
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative min-w-48 flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={busqueda}
+              onChange={(e) => setBusqueda(e.target.value)}
+              placeholder="Buscar por sucursal, código, empresa…"
+              className="pl-9"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="shrink-0 text-sm text-muted-foreground">Empresa</span>
+            <div className="w-full sm:w-64">
+              <Combobox
+                opciones={[{ valor: TODOS, etiqueta: "Todas las empresas" }, ...empresasOpciones]}
+                value={filtroEmpresa}
+                onChange={setFiltroEmpresa}
+                placeholder="Todas las empresas"
+                buscarPlaceholder="Buscar empresa…"
+              />
+            </div>
+          </div>
         </div>
 
         {isPending && (
@@ -139,12 +185,14 @@ function PaisesPage() {
             <p className="text-sm text-muted-foreground">
               {termino
                 ? `Sin resultados para "${busqueda.trim()}".`
-                : "Todavía no hay países cargados."}
+                : filtroEmpresa === TODOS
+                  ? "Todavía no hay sucursales cargadas."
+                  : "Esa empresa todavía no tiene sucursales cargadas."}
             </p>
             {!termino && (
               <Button className="mt-4" onClick={() => setCreando(true)}>
                 <Plus className="size-4" />
-                Cargar el primero
+                Cargar la primera
               </Button>
             )}
           </div>
@@ -154,16 +202,18 @@ function PaisesPage() {
             de costado para leer una fila entera. */}
         {resultado.length > 0 && (
           <ul className="space-y-3 sm:hidden">
-            {resultado.map((pais) => {
-              const activo = esActivo(pais.activo);
+            {resultado.map((sucursal) => {
+              const activo = esActivo(sucursal.activo);
 
               return (
-                <li key={pais.id} className="surface-card p-4">
+                <li key={sucursal.id} className="surface-card p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
-                      <p className="truncate font-semibold text-foreground">{pais.nombrePais}</p>
+                      <p className="truncate font-semibold text-foreground">
+                        {sucursal.nombreSucursal}
+                      </p>
                       <p className="mt-0.5 text-xs text-muted-foreground">
-                        {pais.codigoPais || "Sin código"}
+                        {sucursal.codigoSucursal} · {sucursal.empresa}
                       </p>
                     </div>
                     <Badge variant={activo ? "secondary" : "outline"} className="shrink-0">
@@ -176,7 +226,7 @@ function PaisesPage() {
                       variant="outline"
                       size="sm"
                       className="flex-1"
-                      onClick={() => setEditando(pais)}
+                      onClick={() => setEditando(sucursal)}
                     >
                       <Pencil className="size-4" />
                       Editar
@@ -185,7 +235,7 @@ function PaisesPage() {
                       variant="outline"
                       size="sm"
                       className="flex-1 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                      onClick={() => setAEliminar(pais)}
+                      onClick={() => setAEliminar(sucursal)}
                     >
                       <Trash2 className="size-4" />
                       Eliminar
@@ -203,16 +253,22 @@ function PaisesPage() {
               <TableHeader>
                 <TableRow>
                   <TableHeadOrdenable
-                    direccion={orden?.campo === "nombrePais" ? orden.direccion : null}
-                    onClick={() => alternarOrden("nombrePais")}
+                    direccion={orden?.campo === "nombreSucursal" ? orden.direccion : null}
+                    onClick={() => alternarOrden("nombreSucursal")}
                   >
-                    Nombre
+                    Sucursal
                   </TableHeadOrdenable>
                   <TableHeadOrdenable
-                    direccion={orden?.campo === "codigoPais" ? orden.direccion : null}
-                    onClick={() => alternarOrden("codigoPais")}
+                    direccion={orden?.campo === "codigoSucursal" ? orden.direccion : null}
+                    onClick={() => alternarOrden("codigoSucursal")}
                   >
                     Código
+                  </TableHeadOrdenable>
+                  <TableHeadOrdenable
+                    direccion={orden?.campo === "empresa" ? orden.direccion : null}
+                    onClick={() => alternarOrden("empresa")}
+                  >
+                    Empresa
                   </TableHeadOrdenable>
                   <TableHeadOrdenable
                     direccion={orden?.campo === "activo" ? orden.direccion : null}
@@ -224,17 +280,18 @@ function PaisesPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {resultado.map((pais) => {
-                  const activo = esActivo(pais.activo);
+                {resultado.map((sucursal) => {
+                  const activo = esActivo(sucursal.activo);
 
                   return (
-                    <TableRow key={pais.id}>
+                    <TableRow key={sucursal.id}>
                       <TableCell className="font-medium text-foreground">
-                        {pais.nombrePais}
+                        {sucursal.nombreSucursal}
                       </TableCell>
                       <TableCell className="text-muted-foreground">
-                        {pais.codigoPais || "—"}
+                        {sucursal.codigoSucursal}
                       </TableCell>
+                      <TableCell className="text-muted-foreground">{sucursal.empresa}</TableCell>
                       <TableCell>
                         <Badge variant={activo ? "secondary" : "outline"}>
                           {activo ? "Activo" : "Inactivo"}
@@ -246,8 +303,8 @@ function PaisesPage() {
                             variant="ghost"
                             size="icon"
                             title="Editar"
-                            aria-label={`Editar ${pais.nombrePais}`}
-                            onClick={() => setEditando(pais)}
+                            aria-label={`Editar ${sucursal.nombreSucursal}`}
+                            onClick={() => setEditando(sucursal)}
                           >
                             <Pencil className="size-4" />
                           </Button>
@@ -255,8 +312,8 @@ function PaisesPage() {
                             variant="ghost"
                             size="icon"
                             title="Eliminar"
-                            aria-label={`Eliminar ${pais.nombrePais}`}
-                            onClick={() => setAEliminar(pais)}
+                            aria-label={`Eliminar ${sucursal.nombreSucursal}`}
+                            onClick={() => setAEliminar(sucursal)}
                           >
                             <Trash2 className="size-4 text-destructive" />
                           </Button>
@@ -272,13 +329,17 @@ function PaisesPage() {
 
         {data && resultado.length > 0 && (
           <p className="text-xs text-muted-foreground">
-            {resultado.length} de {data.items.length} país{data.items.length === 1 ? "" : "es"}
+            {resultado.length} de {data.items.length} sucursal
+            {data.items.length === 1 ? "" : "es"}
           </p>
         )}
 
-        <PaisFormDialog
+        <SucursalFormDialog
           open={creando || editando !== null}
-          pais={editando}
+          sucursal={editando}
+          // Al crear con una empresa filtrada, esa empresa viene
+          // preseleccionada: es la que la persona está mirando.
+          idEmpresaPorDefecto={idEmpresaFiltro}
           onClose={() => {
             setCreando(false);
             setEditando(null);
@@ -288,7 +349,7 @@ function PaisesPage() {
         <AlertDialog open={aEliminar !== null} onOpenChange={(o) => !o && setAEliminar(null)}>
           <AlertDialogContent>
             <AlertDialogHeader>
-              <AlertDialogTitle>¿Eliminar {aEliminar?.nombrePais}?</AlertDialogTitle>
+              <AlertDialogTitle>¿Eliminar {aEliminar?.nombreSucursal}?</AlertDialogTitle>
               <AlertDialogDescription>Esta acción no se puede deshacer.</AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
@@ -318,51 +379,78 @@ function PaisesPage() {
 /* Alta / Edición                                                              */
 /* -------------------------------------------------------------------------- */
 
-function PaisFormDialog({
+function SucursalFormDialog({
   open,
-  pais,
+  sucursal,
+  idEmpresaPorDefecto,
   onClose,
 }: {
   open: boolean;
-  pais: Pais | null;
+  sucursal: Sucursal | null;
+  idEmpresaPorDefecto: number | undefined;
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
-  const esEdicion = pais !== null;
+  const esEdicion = sucursal !== null;
+
+  const { data: empresas, isPending: cargandoEmpresas } = useQuery({
+    queryKey: ["empresas", null],
+    queryFn: () => api.empresas.listar(),
+  });
+
+  const empresasOpciones = (empresas?.items ?? []).map((e) => ({
+    valor: String(e.id),
+    etiqueta: e.nombreEmpresa,
+    descripcion: e.ruc ?? undefined,
+  }));
 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     // Sin defaults React avisa por inputs no controlados. Un alta nace activa:
-    // cargar un país para dejarlo inactivo de entrada no tiene sentido.
+    // cargar una sucursal para dejarla inactiva de entrada no tiene sentido.
     values: {
-      nombrePais: pais?.nombrePais ?? "",
-      codigoPais: pais?.codigoPais ?? "",
-      activo: pais ? esActivo(pais.activo) : true,
+      idEmpresa: String(sucursal?.idEmpresa ?? idEmpresaPorDefecto ?? ""),
+      nombreSucursal: sucursal?.nombreSucursal ?? "",
+      codigoSucursal: sucursal?.codigoSucursal ?? "",
+      direccion: sucursal?.direccion ?? "",
+      telefono: sucursal?.telefono ?? "",
+      activo: sucursal ? esActivo(sucursal.activo) : true,
     },
   });
 
   const guardar = useMutation({
     mutationFn: (v: FormValues) => {
       const activo: Estado = v.activo ? "A" : "I";
+      // Los opcionales vacíos no se mandan: en el UPDATE un campo ausente
+      // significa "no cambiar", que es justo lo que corresponde.
+      const opcionales = {
+        ...(v.direccion ? { direccion: v.direccion } : {}),
+        ...(v.telefono ? { telefono: v.telefono } : {}),
+      };
+
       return esEdicion
-        ? api.paises.actualizar(pais.id, {
-            nombrePais: v.nombrePais,
+        ? api.sucursales.actualizar(sucursal.id, {
+            idEmpresa: Number(v.idEmpresa),
+            nombreSucursal: v.nombreSucursal,
+            codigoSucursal: v.codigoSucursal,
             activo,
-            ...(v.codigoPais ? { codigoPais: v.codigoPais } : {}),
+            ...opcionales,
           })
-        : api.paises.crear({
-            nombrePais: v.nombrePais,
-            ...(v.codigoPais ? { codigoPais: v.codigoPais } : {}),
+        : api.sucursales.crear({
+            idEmpresa: Number(v.idEmpresa),
+            nombreSucursal: v.nombreSucursal,
+            codigoSucursal: v.codigoSucursal,
+            ...opcionales,
           });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["paises"] });
-      toast.success(esEdicion ? "País actualizado" : "País creado");
+      queryClient.invalidateQueries({ queryKey: ["sucursales"] });
+      toast.success(esEdicion ? "Sucursal actualizada" : "Sucursal creada");
       onClose();
     },
     onError: (e) =>
       toast.error(
-        MENSAJE_ERROR(e, esEdicion ? "No se pudo actualizar" : "No se pudo crear el país"),
+        MENSAJE_ERROR(e, esEdicion ? "No se pudo actualizar" : "No se pudo crear la sucursal"),
       ),
   });
 
@@ -370,9 +458,11 @@ function PaisFormDialog({
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{esEdicion ? "Editar país" : "Nuevo país"}</DialogTitle>
+          <DialogTitle>{esEdicion ? "Editar sucursal" : "Nueva sucursal"}</DialogTitle>
           <DialogDescription>
-            {esEdicion ? "Modificá los datos del país." : "Agregá un país al catálogo."}
+            {esEdicion
+              ? "Modificá los datos de la sucursal."
+              : "Agregá una sucursal a una empresa."}
           </DialogDescription>
         </DialogHeader>
 
@@ -380,12 +470,34 @@ function PaisFormDialog({
           <form onSubmit={form.handleSubmit((v) => guardar.mutate(v))} className="space-y-4">
             <FormField
               control={form.control}
-              name="nombrePais"
+              name="idEmpresa"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Nombre del país</FormLabel>
+                  <FormLabel>Empresa</FormLabel>
                   <FormControl>
-                    <Input {...field} placeholder="Argentina" autoComplete="off" />
+                    <Combobox
+                      opciones={empresasOpciones}
+                      value={field.value}
+                      onChange={field.onChange}
+                      placeholder="Elegí una empresa"
+                      buscarPlaceholder="Buscar empresa…"
+                      cargando={cargandoEmpresas}
+                    />
+                  </FormControl>
+                  <FormDescription>La sucursal pertenece a esta empresa.</FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="nombreSucursal"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Nombre de la sucursal</FormLabel>
+                  <FormControl>
+                    <Input {...field} placeholder="Casa Central" autoComplete="off" />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -394,14 +506,42 @@ function PaisFormDialog({
 
             <FormField
               control={form.control}
-              name="codigoPais"
+              name="codigoSucursal"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Código (opcional)</FormLabel>
+                  <FormLabel>Código</FormLabel>
                   <FormControl>
-                    <Input {...field} placeholder="ARG" autoComplete="off" maxLength={3} />
+                    <Input {...field} placeholder="CENTRAL" autoComplete="off" />
                   </FormControl>
-                  <FormDescription>Código de tres letras, como ARG o PRY.</FormDescription>
+                  <FormDescription>No puede repetirse dentro de la misma empresa.</FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="direccion"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Dirección (opcional)</FormLabel>
+                  <FormControl>
+                    <Input {...field} placeholder="Avda. España 123" autoComplete="off" />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="telefono"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Teléfono (opcional)</FormLabel>
+                  <FormControl>
+                    <Input {...field} placeholder="021 123 456" autoComplete="off" />
+                  </FormControl>
                   <FormMessage />
                 </FormItem>
               )}
@@ -417,7 +557,7 @@ function PaisFormDialog({
                     <div className="space-y-0.5">
                       <FormLabel>Activo</FormLabel>
                       <FormDescription>
-                        Un país inactivo deja de ofrecerse en los formularios.
+                        Una sucursal inactiva deja de ofrecerse en los formularios.
                       </FormDescription>
                     </div>
                     <FormControl>
@@ -434,7 +574,11 @@ function PaisFormDialog({
               </Button>
               <Button type="submit" disabled={guardar.isPending}>
                 {guardar.isPending && <Loader2 className="size-4 animate-spin" />}
-                {guardar.isPending ? "Guardando…" : esEdicion ? "Guardar cambios" : "Crear país"}
+                {guardar.isPending
+                  ? "Guardando…"
+                  : esEdicion
+                    ? "Guardar cambios"
+                    : "Crear sucursal"}
               </Button>
             </DialogFooter>
           </form>
@@ -444,12 +588,12 @@ function PaisFormDialog({
   );
 }
 
-export const Route = createFileRoute("/_auth/paises")({
+export const Route = createFileRoute("/_auth/sucursales")({
   head: () => ({
     meta: [
-      { title: "Países | CTELL" },
-      { name: "description", content: "Catálogo de países del sistema." },
+      { title: "Sucursales | CTELL" },
+      { name: "description", content: "Sucursales por empresa del sistema." },
     ],
   }),
-  component: PaisesPage,
+  component: SucursalesPage,
 });
