@@ -28,12 +28,31 @@ const TOKEN_KEY = "ctell-token";
 const USUARIO_KEY = "ctell-usuario";
 const USUARIO_RECORDADO_KEY = "ctell-usuario-recordado";
 
+/**
+ * Estado de un registro, tal como lo guarda la base: "A" activo, "I" inactivo.
+ *
+ * Es el mismo código en la columna, en el JSON y en el frontend. Antes la API
+ * traducía a 1/0 en la respuesta y había que retraducir en cada filtro; ese
+ * ida y vuelta era el origen de los ORA-01722 que rompían los listados.
+ */
+export type Estado = "A" | "I";
+
+/** `true` si el registro está activo. Evita repetir la comparación literal. */
+export function esActivo(estado: Estado | undefined): boolean {
+  return estado === "A";
+}
+
 export type Usuario = {
   id: number;
   usuario: string;
   nombreApellido: string;
   correo: string | null;
-  activo: number;
+  /**
+   * Estado de la cuenta, con el mismo código que guarda la base: "A" activo,
+   * "I" inactivo. No es 1/0 — traducir a números en la respuesta obligaba a
+   * retraducir en cada filtro y era una fuente constante de ORA-01722.
+   */
+  activo: Estado;
   fechaCreacion?: string;
   fechaActualizacion?: string;
 };
@@ -293,14 +312,14 @@ export const api = {
     listar: (
       params: {
         busqueda?: string;
-        activo?: number;
+        activo?: Estado;
         pagina?: number;
         tamanio?: number;
       } = {},
     ) => {
       const qs = new URLSearchParams();
       if (params.busqueda) qs.set("busqueda", params.busqueda);
-      if (params.activo !== undefined) qs.set("activo", String(params.activo));
+      if (params.activo !== undefined) qs.set("activo", params.activo);
       if (params.pagina) qs.set("pagina", String(params.pagina));
       if (params.tamanio) qs.set("tamanio", String(params.tamanio));
       const q = qs.toString();
@@ -322,7 +341,7 @@ export const api = {
 
     actualizar: (
       id: number,
-      datos: { nombreApellido?: string; correo?: string; activo?: number },
+      datos: { nombreApellido?: string; correo?: string; activo?: Estado },
     ) =>
       request<{ ok: string }>(`/usuarios/${id}`, {
         method: "PUT",

@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { z } from "zod";
 
 import { useUsuarioActual } from "@/hooks/use-usuario-actual";
-import { api, ApiError, type Usuario } from "@/lib/api";
+import { api, ApiError, esActivo, type Usuario } from "@/lib/api";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -240,7 +240,7 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
       {usuarios.length > 0 && (
         <ul className="divide-y divide-border rounded-lg border border-border">
           {usuarios.map((usuario) => {
-            const activo = usuario.activo === 1;
+            const activo = esActivo(usuario.activo);
             // El backend rechaza estas dos acciones sobre uno mismo (400); se
             // deshabilitan acá para no ofrecer algo que va a fallar.
             const esYo = usuario.id === yo?.id;

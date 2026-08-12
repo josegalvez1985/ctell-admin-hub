@@ -159,7 +159,7 @@ CREATE OR REPLACE PACKAGE PKG_PERMISOS AS
     p_nombre    IN VARCHAR2 DEFAULT NULL,
     p_icono     IN VARCHAR2 DEFAULT NULL,
     p_orden     IN NUMBER   DEFAULT NULL,
-    p_activo    IN NUMBER   DEFAULT NULL
+    p_activo    IN VARCHAR2 DEFAULT NULL
   );
 
   PROCEDURE ELIMINAR_MODULO (p_id_modulo IN NUMBER);
@@ -181,7 +181,7 @@ CREATE OR REPLACE PACKAGE PKG_PERMISOS AS
     p_nombre    IN VARCHAR2 DEFAULT NULL,
     p_ruta      IN VARCHAR2 DEFAULT NULL,
     p_orden     IN NUMBER   DEFAULT NULL,
-    p_activo    IN NUMBER   DEFAULT NULL
+    p_activo    IN VARCHAR2 DEFAULT NULL
   );
 
   PROCEDURE ELIMINAR_PAGINA (p_id_pagina IN NUMBER);
@@ -263,7 +263,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_PERMISOS AS
     p_nombre    IN VARCHAR2 DEFAULT NULL,
     p_icono     IN VARCHAR2 DEFAULT NULL,
     p_orden     IN NUMBER   DEFAULT NULL,
-    p_activo    IN NUMBER   DEFAULT NULL
+    p_activo    IN VARCHAR2 DEFAULT NULL
   ) IS
   BEGIN
     -- El CODIGO no se actualiza: es la referencia estable que usa el resto
@@ -272,13 +272,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_PERMISOS AS
        SET NOMBRE = NVL(TRIM(p_nombre), NOMBRE),
            ICONO  = NVL(TRIM(p_icono), ICONO),
            ORDEN  = NVL(p_orden, ORDEN),
-           -- CASE inline y no NUMERO_A_ESTADO(): un UPDATE es SQL, y una
-           -- funcion privada de paquete no se puede invocar desde ahi
-           -- (PLS-00231). El NULL sigue conservando el valor actual.
-           ACTIVO = CASE
-                      WHEN p_activo IS NULL THEN ACTIVO
-                      WHEN p_activo = 1     THEN C_ESTADO_ACTIVO
-                      ELSE C_ESTADO_INACTIVO
+           -- p_activo ya es el codigo de la columna: 'A' o 'I'. NULL conserva
+           -- el valor actual, y un valor invalido tambien: es preferible
+           -- ignorarlo a escribir basura en la columna.
+           ACTIVO = CASE UPPER(TRIM(p_activo))
+                      WHEN C_ESTADO_ACTIVO   THEN C_ESTADO_ACTIVO
+                      WHEN C_ESTADO_INACTIVO THEN C_ESTADO_INACTIVO
+                      ELSE ACTIVO
                     END
      WHERE ID_MODULO = p_id_modulo;
 
@@ -353,7 +353,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_PERMISOS AS
     p_nombre    IN VARCHAR2 DEFAULT NULL,
     p_ruta      IN VARCHAR2 DEFAULT NULL,
     p_orden     IN NUMBER   DEFAULT NULL,
-    p_activo    IN NUMBER   DEFAULT NULL
+    p_activo    IN VARCHAR2 DEFAULT NULL
   ) IS
   BEGIN
     IF p_ruta IS NOT NULL THEN
@@ -365,11 +365,11 @@ CREATE OR REPLACE PACKAGE BODY PKG_PERMISOS AS
            NOMBRE    = NVL(TRIM(p_nombre), NOMBRE),
            RUTA      = NVL(LOWER(TRIM(p_ruta)), RUTA),
            ORDEN     = NVL(p_orden, ORDEN),
-           -- CASE inline: ver la nota en ACTUALIZAR_MODULO.
-           ACTIVO    = CASE
-                         WHEN p_activo IS NULL THEN ACTIVO
-                         WHEN p_activo = 1     THEN C_ESTADO_ACTIVO
-                         ELSE C_ESTADO_INACTIVO
+           -- 'A'/'I'; ver la nota en ACTUALIZAR_MODULO.
+           ACTIVO    = CASE UPPER(TRIM(p_activo))
+                         WHEN C_ESTADO_ACTIVO   THEN C_ESTADO_ACTIVO
+                         WHEN C_ESTADO_INACTIVO THEN C_ESTADO_INACTIVO
+                         ELSE ACTIVO
                        END
      WHERE ID_PAGINA = p_id_pagina;
 
@@ -573,7 +573,8 @@ BEGIN
              'nombre'  VALUE m.NOMBRE,
              'icono'   VALUE m.ICONO,
              'orden'   VALUE m.ORDEN,
-             'activo'  VALUE CASE WHEN UPPER(TRIM(m.ACTIVO)) = 'A' THEN 1 ELSE 0 END,
+             -- 'A'/'I' tal cual la columna, sin traducir a numeros.
+             'activo'  VALUE UPPER(TRIM(m.ACTIVO)),
              'paginas' VALUE (
                SELECT JSON_ARRAYAGG(
                         JSON_OBJECT(
@@ -582,7 +583,7 @@ BEGIN
                           'nombre' VALUE p.NOMBRE,
                           'ruta'   VALUE p.RUTA,
                           'orden'  VALUE p.ORDEN,
-                          'activo' VALUE CASE WHEN UPPER(TRIM(p.ACTIVO)) = 'A' THEN 1 ELSE 0 END
+                          'activo' VALUE UPPER(TRIM(p.ACTIVO))
                           RETURNING CLOB
                         ) ORDER BY p.ORDEN, p.NOMBRE RETURNING CLOB
                       )
@@ -719,12 +720,15 @@ BEGIN
     RETURN;
   END IF;
 
+  -- NULL = "no cambiar" en todos los opcionales, asi que un PUT parcial no
+  -- pisa lo que no manda. NULLIF(..., '') porque un parametro ausente llega
+  -- como cadena vacia, no como NULL, y TO_NUMBER('') es ORA-01722.
   PKG_PERMISOS.ACTUALIZAR_MODULO(
     p_id_modulo => TO_NUMBER(:id),
     p_nombre    => :nombre,
     p_icono     => :icono,
-    p_orden     => TO_NUMBER(:orden),
-    p_activo    => TO_NUMBER(:activo)
+    p_orden     => TO_NUMBER(NULLIF(:orden, '')),
+    p_activo    => NULLIF(:activo, '')
   );
   COMMIT;
 
@@ -880,7 +884,8 @@ BEGIN
              'nombre'       VALUE p.NOMBRE,
              'ruta'         VALUE p.RUTA,
              'orden'        VALUE p.ORDEN,
-             'activo'       VALUE CASE WHEN UPPER(TRIM(p.ACTIVO)) = 'A' THEN 1 ELSE 0 END
+             -- 'A'/'I' tal cual la columna, sin traducir a numeros.
+             'activo'       VALUE UPPER(TRIM(p.ACTIVO))
              RETURNING CLOB
            ) ORDER BY m.ORDEN, p.ORDEN, p.NOMBRE RETURNING CLOB
          )
@@ -1014,13 +1019,15 @@ BEGIN
     RETURN;
   END IF;
 
+  -- Mismo criterio que ACTUALIZAR_MODULO: NULL = "no cambiar" y NULLIF para
+  -- que un parametro ausente no muera en TO_NUMBER('').
   PKG_PERMISOS.ACTUALIZAR_PAGINA(
     p_id_pagina => TO_NUMBER(:id),
-    p_id_modulo => TO_NUMBER(:idModulo),
+    p_id_modulo => TO_NUMBER(NULLIF(:idModulo, '')),
     p_nombre    => :nombre,
     p_ruta      => :ruta,
-    p_orden     => TO_NUMBER(:orden),
-    p_activo    => TO_NUMBER(:activo)
+    p_orden     => TO_NUMBER(NULLIF(:orden, '')),
+    p_activo    => NULLIF(:activo, '')
   );
   COMMIT;
 

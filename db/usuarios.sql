@@ -31,11 +31,13 @@
 --
 -- ESTADO DE LOS USUARIOS
 -- USUARIOS.ACTIVO es VARCHAR2(1) y guarda un código: 'A' activo, 'I' inactivo.
--- TOKENS.ACTIVO, en cambio, es NUMBER(1,0) con 1/0. Las dos columnas se llaman
--- igual y NO son del mismo tipo: compararlas de la misma forma rompe el login
--- con ORA-01722. La API expone el estado como activo: 1/0 (así lo tipa
--- src/lib/api.ts); la traducción vive en PKG_USUARIOS.ESTADO_A_NUMERO y
--- NUMERO_A_ESTADO, y ningún handler compara 'A'/'I' a mano.
+-- Ese mismo código viaja en el JSON y lo consume el frontend (tipo `Estado` en
+-- src/lib/api.ts). No hay traducción a 1/0 en ningún punto: la había, y cada
+-- conversión de ida y vuelta era una oportunidad de ORA-01722 — un TO_NUMBER
+-- sobre una columna de texto tiraba abajo el listado entero.
+--
+-- TOKENS.ACTIVO sí es NUMBER(1,0) con 1/0. Se llama igual pero NO es del mismo
+-- tipo: es interna del manejo de sesiones y no se expone en ninguna API.
 --------------------------------------------------------------------------------
 
 SET DEFINE OFF
@@ -54,20 +56,14 @@ CREATE OR REPLACE PACKAGE PKG_USUARIOS AS
   C_ERR_DATOS_INVALIDOS   CONSTANT PLS_INTEGER := -20004;
 
   -- USUARIOS.ACTIVO es VARCHAR2(1) y guarda un CODIGO DE ESTADO, no un
-  -- booleano: 'A' = activo, 'I' = inactivo. La API, en cambio, expone
-  -- activo: 1/0 (asi lo tipa src/lib/api.ts). La traduccion entre ambos
-  -- mundos vive solo aca dentro; ningun handler compara 'A'/'I' a mano.
+  -- booleano: 'A' = activo, 'I' = inactivo. Ese mismo codigo viaja en el JSON
+  -- y lo consume el frontend (tipo `Estado` en src/lib/api.ts): no se traduce
+  -- a 1/0 en ningun punto.
   --
   -- Ojo: TOKENS.ACTIVO SI es NUMBER(1,0) con 1/0. Las dos columnas se
   -- llaman igual y son de tipos distintos.
   C_ESTADO_ACTIVO   CONSTANT VARCHAR2(1) := 'A';
   C_ESTADO_INACTIVO CONSTANT VARCHAR2(1) := 'I';
-
-  -- 'A' -> 1, 'I' -> 0. Para exponer el estado en el JSON de los endpoints.
-  FUNCTION ESTADO_A_NUMERO (p_estado IN VARCHAR2) RETURN NUMBER;
-
-  -- 1 -> 'A', 0 -> 'I'. Para traducir lo que llega desde la API.
-  FUNCTION NUMERO_A_ESTADO (p_activo IN NUMBER) RETURN VARCHAR2;
 
   FUNCTION GENERAR_SALT RETURN VARCHAR2;
 
@@ -85,11 +81,12 @@ CREATE OR REPLACE PACKAGE PKG_USUARIOS AS
   );
 
   -- Los parámetros NULL no se modifican. Para la clave usar CAMBIAR_PASSWORD.
+  -- p_activo es el código de la columna: 'A' o 'I'. NULL = no cambiar.
   PROCEDURE ACTUALIZAR_USUARIO (
     p_id_usuario      IN NUMBER,
     p_nombre_apellido IN VARCHAR2 DEFAULT NULL,
     p_correo          IN VARCHAR2 DEFAULT NULL,
-    p_activo          IN NUMBER   DEFAULT NULL
+    p_activo          IN VARCHAR2 DEFAULT NULL
   );
 
   PROCEDURE CAMBIAR_PASSWORD (
@@ -105,9 +102,10 @@ CREATE OR REPLACE PACKAGE PKG_USUARIOS AS
   -- Baja física. Preferí INACTIVAR_USUARIO salvo que quieras borrar el rastro.
   PROCEDURE ELIMINAR_USUARIO (p_id_usuario IN NUMBER);
 
+  -- p_activo es el código de la columna: 'A' o 'I'. NULL = sin filtro.
   FUNCTION CONTAR_USUARIOS (
     p_busqueda IN VARCHAR2 DEFAULT NULL,
-    p_activo   IN NUMBER   DEFAULT NULL
+    p_activo   IN VARCHAR2 DEFAULT NULL
   ) RETURN NUMBER;
 
   -- Devuelve el ID si las credenciales son correctas, NULL si no.
@@ -163,23 +161,6 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
   --------------------------------------------------------------------------
   -- Públicos
   --------------------------------------------------------------------------
-
-  FUNCTION ESTADO_A_NUMERO (p_estado IN VARCHAR2) RETURN NUMBER IS
-  BEGIN
-    -- Solo 'A' cuenta como activo. Cualquier otra cosa (incluido NULL o un
-    -- resto de datos viejos) se informa como inactivo: ante la duda, el
-    -- estado mas restrictivo.
-    RETURN CASE WHEN UPPER(TRIM(p_estado)) = C_ESTADO_ACTIVO THEN 1 ELSE 0 END;
-  END ESTADO_A_NUMERO;
-
-  FUNCTION NUMERO_A_ESTADO (p_activo IN NUMBER) RETURN VARCHAR2 IS
-  BEGIN
-    IF p_activo IS NULL THEN
-      RETURN NULL;  -- NULL = "no cambiar", lo aprovecha ACTUALIZAR_USUARIO.
-    END IF;
-
-    RETURN CASE WHEN p_activo = 1 THEN C_ESTADO_ACTIVO ELSE C_ESTADO_INACTIVO END;
-  END NUMERO_A_ESTADO;
 
   FUNCTION GENERAR_SALT RETURN VARCHAR2 IS
   BEGIN
@@ -268,8 +249,16 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
     p_id_usuario      IN NUMBER,
     p_nombre_apellido IN VARCHAR2 DEFAULT NULL,
     p_correo          IN VARCHAR2 DEFAULT NULL,
-    p_activo          IN NUMBER   DEFAULT NULL
+    p_activo          IN VARCHAR2 DEFAULT NULL
   ) IS
+    -- Solo 'A' o 'I' son estados validos. Cualquier otra cosa se descarta
+    -- como NULL, y el NVL de abajo conserva el estado actual: es preferible
+    -- ignorar un valor invalido a escribirlo en la columna.
+    l_estado VARCHAR2(1) := CASE UPPER(TRIM(p_activo))
+                              WHEN 'A' THEN 'A'
+                              WHEN 'I' THEN 'I'
+                              ELSE NULL
+                            END;
   BEGIN
     IF p_correo IS NOT NULL
        AND NOT REGEXP_LIKE(p_correo, '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$') THEN
@@ -279,10 +268,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
     UPDATE USUARIOS
        SET NOMBRE_APELLIDO     = NVL(TRIM(p_nombre_apellido), NOMBRE_APELLIDO),
            CORREO              = NVL(LOWER(TRIM(p_correo)), CORREO),
-           -- p_activo llega como 1/0 desde la API y se traduce a 'A'/'I'.
-           -- NUMERO_A_ESTADO devuelve NULL si p_activo es NULL, con lo que
-           -- el NVL conserva el estado actual: un parametro ausente no pisa.
-           ACTIVO              = NVL(NUMERO_A_ESTADO(p_activo), ACTIVO),
+           -- NULL = no cambiar: un parametro ausente no pisa el estado.
+           ACTIVO              = NVL(l_estado, ACTIVO),
            FECHA_ACTUALIZACION = SYSTIMESTAMP
      WHERE ID_USUARIO = p_id_usuario;
 
@@ -374,10 +361,12 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
 
   FUNCTION CONTAR_USUARIOS (
     p_busqueda IN VARCHAR2 DEFAULT NULL,
-    p_activo   IN NUMBER   DEFAULT NULL
+    p_activo   IN VARCHAR2 DEFAULT NULL
   ) RETURN NUMBER IS
-    l_total NUMBER;
-    l_busca VARCHAR2(200) := '%' || LOWER(TRIM(p_busqueda)) || '%';
+    l_total  NUMBER;
+    l_busca  VARCHAR2(200) := '%' || LOWER(TRIM(p_busqueda)) || '%';
+    -- Ya es 'A'/'I': se normaliza y se compara como texto, sin conversiones.
+    l_estado VARCHAR2(1) := UPPER(TRIM(p_activo));
   BEGIN
     SELECT COUNT(*)
       INTO l_total
@@ -386,8 +375,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
             OR LOWER(USUARIO) LIKE l_busca
             OR LOWER(NOMBRE_APELLIDO) LIKE l_busca
             OR LOWER(CORREO) LIKE l_busca)
-       -- p_activo llega como 1/0 y se traduce a 'A'/'I' para comparar.
-       AND (p_activo IS NULL OR UPPER(TRIM(ACTIVO)) = NUMERO_A_ESTADO(p_activo));
+       AND (l_estado IS NULL OR UPPER(TRIM(ACTIVO)) = l_estado);
 
     RETURN l_total;
   END CONTAR_USUARIOS;
@@ -860,7 +848,7 @@ DECLARE
   l_total    NUMBER;
   l_tamanio  NUMBER;
   l_pagina   NUMBER;
-  l_activo   NUMBER;
+  l_estado   VARCHAR2(1);
   l_busqueda VARCHAR2(200);
   l_busca    VARCHAR2(200);
 BEGIN
@@ -884,7 +872,15 @@ BEGIN
   -- aplica el valor por defecto.
   l_tamanio := LEAST(GREATEST(NVL(TO_NUMBER(NULLIF(:tamanio, '')), 20), 1), 100);
   l_pagina  := GREATEST(NVL(TO_NUMBER(NULLIF(:pagina, '')), 1), 1);
-  l_activo  := TO_NUMBER(NULLIF(:activo, ''));
+
+  -- El estado es texto en todo el sistema: 'A' o 'I', igual que la columna.
+  -- Nada de TO_NUMBER acá — es lo que hacía morir el endpoint con ORA-01722.
+  -- Cualquier valor que no sea A o I se trata como "sin filtro".
+  l_estado := CASE UPPER(TRIM(NULLIF(:activo, '')))
+                WHEN 'A' THEN 'A'
+                WHEN 'I' THEN 'I'
+                ELSE NULL
+              END;
 
   -- Misma normalizacion para la busqueda: sin esto, un ?busqueda= vacio
   -- filtraba por '%%' en vez de no filtrar, y el IS NULL de abajo nunca daba
@@ -899,13 +895,10 @@ BEGIN
              'usuario'        VALUE USUARIO,
              'nombreApellido' VALUE NOMBRE_APELLIDO,
              'correo'         VALUE CORREO,
-             -- La tabla guarda 'A'/'I' pero el frontend tipa activo como
-             -- number: se traduce a 1/0 para no romper el contrato del JSON.
-             --
-             -- El CASE va inline y no PKG_USUARIOS.ESTADO_A_NUMERO(): esto es
-             -- contexto SQL, y llamar ahi a una funcion de paquete PL/SQL
-             -- hacia fallar el handler entero con un 500.
-             'activo'         VALUE CASE WHEN UPPER(TRIM(ACTIVO)) = 'A' THEN 1 ELSE 0 END,
+             -- El estado sale tal cual esta en la columna: 'A' o 'I'. No se
+             -- traduce a 1/0. Esa traduccion obligaba a retraducir en cada
+             -- filtro de entrada y era el origen de los ORA-01722.
+             'activo'         VALUE UPPER(TRIM(ACTIVO)),
              'fechaCreacion'  VALUE TO_CHAR(FECHA_CREACION, 'YYYY-MM-DD"T"HH24:MI:SS')
              RETURNING CLOB
            ) RETURNING CLOB
@@ -919,20 +912,14 @@ BEGIN
               OR LOWER(USUARIO) LIKE l_busca
               OR LOWER(NOMBRE_APELLIDO) LIKE l_busca
               OR LOWER(CORREO) LIKE l_busca)
-         -- El query param llega como 1/0 y se traduce al codigo 'A'/'I'.
-         -- CASE inline por lo mismo que arriba: en SQL no se puede invocar
-         -- una funcion de PKG_USUARIOS.
-         --
-         -- Se compara contra l_activo y no contra :activo directo: un
-         -- parametro ausente llega como cadena vacia, que no es NULL, asi que
-         -- pasaba el IS NULL y moria en el TO_NUMBER con ORA-01722.
-         AND (l_activo IS NULL
-              OR UPPER(TRIM(ACTIVO)) = CASE WHEN l_activo = 1 THEN 'A' ELSE 'I' END)
+         -- l_estado ya viene como 'A'/'I', el mismo codigo que guarda la
+         -- columna: la comparacion es texto contra texto, sin conversiones.
+         AND (l_estado IS NULL OR UPPER(TRIM(ACTIVO)) = l_estado)
        ORDER BY NOMBRE_APELLIDO
       OFFSET (l_pagina - 1) * l_tamanio ROWS FETCH NEXT l_tamanio ROWS ONLY
     );
 
-  l_total := PKG_USUARIOS.CONTAR_USUARIOS(l_busqueda, l_activo);
+  l_total := PKG_USUARIOS.CONTAR_USUARIOS(l_busqueda, l_estado);
 
   :status_code := 200;
   :resultado := JSON_OBJECT(
@@ -1056,7 +1043,8 @@ BEGIN
            'correo'             VALUE CORREO,
            -- 'A'/'I' -> 1/0: el frontend tipa `activo` como number. CASE
            -- inline: en SQL no se invoca una funcion de PKG_USUARIOS.
-           'activo'             VALUE CASE WHEN UPPER(TRIM(ACTIVO)) = 'A' THEN 1 ELSE 0 END,
+           -- 'A'/'I' tal cual la columna, sin traducir a numeros.
+           'activo'             VALUE UPPER(TRIM(ACTIVO)),
            'fechaCreacion'      VALUE TO_CHAR(FECHA_CREACION, 'YYYY-MM-DD"T"HH24:MI:SS'),
            'fechaActualizacion' VALUE TO_CHAR(FECHA_ACTUALIZACION, 'YYYY-MM-DD"T"HH24:MI:SS')
            RETURNING CLOB
@@ -1112,11 +1100,14 @@ BEGIN
     RETURN;
   END IF;
 
+  -- p_activo es 'A'/'I'; NULL significa "no cambiar", asi que un PUT que solo
+  -- toca el nombre simplemente no lo manda. El paquete descarta cualquier
+  -- valor que no sea A o I.
   PKG_USUARIOS.ACTUALIZAR_USUARIO(
     p_id_usuario      => TO_NUMBER(:id),
     p_nombre_apellido => :nombreApellido,
     p_correo          => :correo,
-    p_activo          => TO_NUMBER(:activo)
+    p_activo          => NULLIF(:activo, '')
   );
   COMMIT;
 
@@ -1538,17 +1529,6 @@ DECLARE
   l_pass    VARCHAR2(128) := 'Ctell2026!';
 BEGIN
   DBMS_OUTPUT.PUT_LINE('--- Prueba de login para "' || l_usuario || '" ---');
-
-  -- 0. Traduccion de estado: si esto falla, todo lo demas falla en cascada.
-  IF PKG_USUARIOS.ESTADO_A_NUMERO('A') = 1
-     AND PKG_USUARIOS.ESTADO_A_NUMERO('I') = 0
-     AND PKG_USUARIOS.NUMERO_A_ESTADO(1) = 'A'
-     AND PKG_USUARIOS.NUMERO_A_ESTADO(0) = 'I' THEN
-    DBMS_OUTPUT.PUT_LINE('OK 0/4: la traduccion A/I <-> 1/0 funciona.');
-  ELSE
-    DBMS_OUTPUT.PUT_LINE('FALLA: la traduccion de estado no es correcta.');
-    RETURN;
-  END IF;
 
   -- Estado real del usuario de prueba, para que el diagnostico sea concreto.
   BEGIN

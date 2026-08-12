@@ -20,7 +20,11 @@ export function useUsuarioActual() {
     // solo muestran el nombre ya tienen todo lo que necesitan.
     placeholderData: () => {
       const sesion = getUsuarioSesion();
-      return sesion ? ({ ...sesion, activo: 1 } as Awaited<ReturnType<typeof api.me>>) : undefined;
+      // "A": si hay sesión, la cuenta está activa — el login rechaza a los
+      // inactivos, así que un token válido implica una cuenta habilitada.
+      return sesion
+        ? ({ ...sesion, activo: "A" } as Awaited<ReturnType<typeof api.me>>)
+        : undefined;
     },
     // El token dura 8 h y los datos del usuario no cambian entre pantallas.
     staleTime: 5 * 60 * 1000,
