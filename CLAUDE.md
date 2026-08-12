@@ -6,16 +6,16 @@
 
 ### Stack técnico
 
-| Capa | Tecnología |
-|------|-----------|
-| Frontend | TanStack Start (React 19 + SSR disabled) |
-| Ruteo | TanStack Router (file-based routing) |
-| Datos | TanStack Query |
-| Estilos | Tailwind CSS v4 + shadcn/ui |
-| Formularios | react-hook-form + zod |
-| Build | Vite 8 (SPA estática) |
-| Backend | Oracle APEX + ORDS (REST sobre PL/SQL) |
-| Hosting | GitHub Pages → www.ctell.online |
+| Capa        | Tecnología                               |
+| ----------- | ---------------------------------------- |
+| Frontend    | TanStack Start (React 19 + SSR disabled) |
+| Ruteo       | TanStack Router (file-based routing)     |
+| Datos       | TanStack Query                           |
+| Estilos     | Tailwind CSS v4 + shadcn/ui              |
+| Formularios | react-hook-form + zod                    |
+| Build       | Vite 8 (SPA estática)                    |
+| Backend     | Oracle APEX + ORDS (REST sobre PL/SQL)   |
+| Hosting     | GitHub Pages → www.ctell.online          |
 
 ## Estructura del proyecto
 
@@ -68,13 +68,14 @@ ctell-admin-hub/
 
 #### Autenticación — `/auth`
 
-| Método | Ruta | Auth | Devuelve |
-|--------|------|------|----------|
-| `POST` | `/auth/login` | — | `{ token, expira, usuario }` |
-| `POST` | `/auth/logout` | token | `{ ok: true }` |
-| `GET` | `/auth/me` | token | `{ id, usuario, nombreApellido, correo, activo, esAdmin }` |
+| Método | Ruta           | Auth  | Devuelve                                                   |
+| ------ | -------------- | ----- | ---------------------------------------------------------- |
+| `POST` | `/auth/login`  | —     | `{ token, expira, usuario }`                               |
+| `POST` | `/auth/logout` | token | `{ ok: true }`                                             |
+| `GET`  | `/auth/me`     | token | `{ id, usuario, nombreApellido, correo, activo, esAdmin }` |
 
 **Detalles de seguridad:**
+
 - Token en header: `Authorization: Bearer <token>` (case-insensitive per RFC).
 - Token vence a las 8 horas.
 - `/auth/login` devuelve **401 con un único mensaje** —"Usuario o contraseña incorrectos"— sin distinguir si el usuario no existe, la clave está mal o la cuenta está inactiva. Esto evita enumerar cuentas válidas.
@@ -84,24 +85,26 @@ ctell-admin-hub/
 
 Todos requieren token autenticado.
 
-| Método | Ruta | Qué hace |
-|--------|------|----------|
-| `GET` | `/usuarios/` | Listado paginado |
-| `POST` | `/usuarios/` | Alta → 201 |
-| `GET` | `/usuarios/:id` | Detalle |
-| `PUT` | `/usuarios/:id` | Modificación |
-| `DELETE` | `/usuarios/:id` | Baja física |
-| `POST` | `/usuarios/:id/inactivar` | Baja lógica + revoca sesiones |
-| `POST` | `/usuarios/:id/activar` | Alta lógica |
-| `POST` | `/usuarios/:id/password` | Cambio de clave + revoca sesiones |
+| Método   | Ruta                      | Qué hace                          |
+| -------- | ------------------------- | --------------------------------- |
+| `GET`    | `/usuarios/`              | Listado paginado                  |
+| `POST`   | `/usuarios/`              | Alta → 201                        |
+| `GET`    | `/usuarios/:id`           | Detalle                           |
+| `PUT`    | `/usuarios/:id`           | Modificación                      |
+| `DELETE` | `/usuarios/:id`           | Baja física                       |
+| `POST`   | `/usuarios/:id/inactivar` | Baja lógica + revoca sesiones     |
+| `POST`   | `/usuarios/:id/activar`   | Alta lógica                       |
+| `POST`   | `/usuarios/:id/password`  | Cambio de clave + revoca sesiones |
 
 **Parámetros del listado:**
+
 - `?busqueda=` — filtro por nombre/usuario
 - `?activo=A|I` — activos o inactivos
 - `?pagina=` — número de página
 - `?tamanio=` — cantidad por página (25 por defecto, **200 como techo máximo**)
 
 **Decisiones importantes:**
+
 - **`USUARIO` no se modifica.** Es la identidad de login; para cambiarlo hay que crear uno nuevo.
 - **Nadie puede eliminarse ni inactivarse a sí mismo** (400) — evita perder acceso a mitad de la operación.
 - **Cambiar contraseña revoca todas las sesiones**, incluida la propia. Es lo esperado si se cambia por sospecha de robo.
@@ -133,6 +136,7 @@ Las columnas `ACTIVO` son `VARCHAR2(1)` con valores `'A'` o `'I'`. **Este códig
 El sistema anclado al azul del logo (`#1362c0` → `oklch(0.506 0.164 256.5)`).
 
 **Preferencias del usuario:**
+
 - **Modo:** claro, oscuro o sistema.
 - **Acento:** 10 paletas predefinidas.
 
@@ -143,6 +147,7 @@ Ambas se guardan en `localStorage` y se aplican antes del primer render (script 
 ## Cliente HTTP: `src/lib/api.ts`
 
 El cliente HTTP maneja:
+
 - Rutas relativas en desarrollo (`/ords/ctell` → proxy Vite → ORDS).
 - Rutas absolutas en producción (`https://oracleapex.com/ords/ctell/` → directo a ORDS, sin proxy).
 - Token en `Authorization: Bearer <token>`.
@@ -155,31 +160,36 @@ Detalle importante: **Content-Type se envía solo cuando es POST/PUT** y hay bod
 ## CORS
 
 ### Problema
+
 Por defecto ORDS no manda `Access-Control-Allow-Origin`, así que el navegador bloquea llamadas directas a `oracleapex.com` desde otro origen.
 
 ### Solución
+
 Cada entorno lo resuelve distinto:
 
-| Entorno | Cómo evita el bloqueo | Config |
-|---------|------------------------|--------|
-| `npm run dev` | Proxy de Vite: la app pide a la ruta relativa `/ords/ctell` (mismo origen, sin CORS) y Vite reenvía a APEX | `server.proxy` en `vite.config.ts` |
-| Producción | CORS habilitado directo en ORDS: la app pega con URL absoluta a `oracleapex.com` | `ORDS.SET_MODULE_ORIGINS_ALLOWED` — ver abajo |
+| Entorno       | Cómo evita el bloqueo                                                                                      | Config                                        |
+| ------------- | ---------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| `npm run dev` | Proxy de Vite: la app pide a la ruta relativa `/ords/ctell` (mismo origen, sin CORS) y Vite reenvía a APEX | `server.proxy` en `vite.config.ts`            |
+| Producción    | CORS habilitado directo en ORDS: la app pega con URL absoluta a `oracleapex.com`                           | `ORDS.SET_MODULE_ORIGINS_ALLOWED` — ver abajo |
 
 **GitHub Pages** no puede hacer de proxy (sirve archivos estáticos), así que en producción no hay intermediario: la única forma de esquivar CORS ahí es que el propio ORDS lo habilite.
 
-**ORIGINS_ALLOWED es POR MÓDULO, no a nivel de workspace.** La pantalla de APEX se llama "Administración del Workspace → RESTful Services → orígenes permitidos", lo que sugiere un ajuste global — no lo es. Habilitarlo en `auth` no lo propaga a `usuarios` ni a ningún módulo nuevo. Cada `db/<tabla>.sql` tiene que llamar a `ORDS.SET_MODULE_ORIGINS_ALLOWED(p_module_name, p_origins_allowed)` aparte de su `DEFINE_MODULE` (no es un parámetro de esa llamada — pasarlo ahí falla con `PLS-00306`). Sin esto, ORDS rechaza la petición cross-origin *antes* de llegar al handler, con un "Service Unavailable" genérico — ni el `WHEN OTHERS` con `SQLERRM` lo captura, porque el PL/SQL nunca llega a ejecutarse. Costó varias vueltas diagnosticarlo la primera vez que pasó.
+**ORIGINS_ALLOWED es POR MÓDULO, no a nivel de workspace.** La pantalla de APEX se llama "Administración del Workspace → RESTful Services → orígenes permitidos", lo que sugiere un ajuste global — no lo es. Habilitarlo en `auth` no lo propaga a `usuarios` ni a ningún módulo nuevo. Cada `db/<tabla>.sql` tiene que llamar a `ORDS.SET_MODULE_ORIGINS_ALLOWED(p_module_name, p_origins_allowed)` aparte de su `DEFINE_MODULE` (no es un parámetro de esa llamada — pasarlo ahí falla con `PLS-00306`). Sin esto, ORDS rechaza la petición cross-origin _antes_ de llegar al handler, con un "Service Unavailable" genérico — ni el `WHEN OTHERS` con `SQLERRM` lo captura, porque el PL/SQL nunca llega a ejecutarse. Costó varias vueltas diagnosticarlo la primera vez que pasó.
 
 > El proyecto usó antes un Worker de Cloudflare como proxy delante del dominio. Se reemplazó por CORS directo en ORDS porque requería que `ctell.online` estuviera administrado por Cloudflare (nameservers desde Hostinger) — una dependencia externa de más.
 
 ## Deploy: GitHub Pages → www.ctell.online
 
 ### Automático
+
 Cada push a `main` triggerea el workflow `deploy-pages.yml`, que:
+
 1. Build SPA en `dist/client/`.
 2. Publica en GitHub Pages.
 3. Dominio: `www.ctell.online` (vía `public/CNAME`).
 
 ### Manual
+
 Pestaña **Actions** → _Deploy to GitHub Pages_ → _Run workflow_.
 
 ### Configuración inicial (una sola vez)
@@ -191,13 +201,13 @@ Pestaña **Actions** → _Deploy to GitHub Pages_ → _Run workflow_.
 
 ### DNS — Hostinger
 
-| Tipo | Nombre | Valor |
-|------|--------|-------|
-| `CNAME` | `www` | `josegalvez1985.github.io` |
-| `A` | `@` | `185.199.108.153` |
-| `A` | `@` | `185.199.109.153` |
-| `A` | `@` | `185.199.110.153` |
-| `A` | `@` | `185.199.111.153` |
+| Tipo    | Nombre | Valor                      |
+| ------- | ------ | -------------------------- |
+| `CNAME` | `www`  | `josegalvez1985.github.io` |
+| `A`     | `@`    | `185.199.108.153`          |
+| `A`     | `@`    | `185.199.109.153`          |
+| `A`     | `@`    | `185.199.110.153`          |
+| `A`     | `@`    | `185.199.111.153`          |
 
 Los cuatro registros `A` hacen que `ctell.online` sin `www` redirija con `www`. Borra los registros `A` que Hostinger crea solos (apuntarían a su hosting).
 
@@ -223,6 +233,7 @@ npx serve dist/client
 ### Para agregar una tabla nueva
 
 Ver [docs/GUIA-IMPLEMENTACION.md](docs/GUIA-IMPLEMENTACION.md) — explica cómo hacerlo de punta a punta:
+
 1. Paquete PL/SQL + endpoints ORDS (`db/[tabla].sql`).
 2. Cliente HTTP (`src/lib/api.ts`).
 3. Página y formulario (`src/routes/` + `src/components/`).
@@ -235,14 +246,14 @@ Ver [docs/GUIA-IMPLEMENTACION.md](docs/GUIA-IMPLEMENTACION.md) — explica cómo
 
 ## Comandos
 
-| Comando | Qué hace |
-|---------|----------|
-| `npm run dev` | Servidor dev con HMR (proxy CORS incluido) |
-| `npm run build` | Build de producción en `dist/client/` |
-| `npm run preview` | Sirve build ya generado |
-| `npm run lint` | ESLint + Prettier |
-| `npm run format` | Aplica formato a todo |
-| `npx tsc --noEmit` | Type checking |
+| Comando            | Qué hace                                   |
+| ------------------ | ------------------------------------------ |
+| `npm run dev`      | Servidor dev con HMR (proxy CORS incluido) |
+| `npm run build`    | Build de producción en `dist/client/`      |
+| `npm run preview`  | Sirve build ya generado                    |
+| `npm run lint`     | ESLint + Prettier                          |
+| `npm run format`   | Aplica formato a todo                      |
+| `npx tsc --noEmit` | Type checking                              |
 
 ## Puntos clave para recordar
 

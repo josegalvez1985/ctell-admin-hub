@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthRouteImport } from './routes/_auth'
 import { Route as AuthAdministracionRouteImport } from './routes/_auth.administracion'
 import { Route as AuthConfiguracionRouteImport } from './routes/_auth.configuracion'
+import { Route as AuthDepartamentosRouteImport } from './routes/_auth.departamentos'
 import { Route as AuthHomeRouteImport } from './routes/_auth.home'
 import { Route as AuthMenuRouteImport } from './routes/_auth.menu'
 import { Route as AuthPaisesRouteImport } from './routes/_auth.paises'
@@ -36,6 +37,11 @@ const AuthConfiguracionRoute = AuthConfiguracionRouteImport.update({
   path: '/configuracion',
   getParentRoute: () => AuthRoute,
 } as any)
+const AuthDepartamentosRoute = AuthDepartamentosRouteImport.update({
+  id: '/departamentos',
+  path: '/departamentos',
+  getParentRoute: () => AuthRoute,
+} as any)
 const AuthHomeRoute = AuthHomeRouteImport.update({
   id: '/home',
   path: '/home',
@@ -56,6 +62,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/administracion': typeof AuthAdministracionRoute
   '/configuracion': typeof AuthConfiguracionRoute
+  '/departamentos': typeof AuthDepartamentosRoute
   '/home': typeof AuthHomeRoute
   '/menu': typeof AuthMenuRoute
   '/paises': typeof AuthPaisesRoute
@@ -64,6 +71,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/administracion': typeof AuthAdministracionRoute
   '/configuracion': typeof AuthConfiguracionRoute
+  '/departamentos': typeof AuthDepartamentosRoute
   '/home': typeof AuthHomeRoute
   '/menu': typeof AuthMenuRoute
   '/paises': typeof AuthPaisesRoute
@@ -74,6 +82,7 @@ export interface FileRoutesById {
   '/_auth': typeof AuthRouteWithChildren
   '/_auth/administracion': typeof AuthAdministracionRoute
   '/_auth/configuracion': typeof AuthConfiguracionRoute
+  '/_auth/departamentos': typeof AuthDepartamentosRoute
   '/_auth/home': typeof AuthHomeRoute
   '/_auth/menu': typeof AuthMenuRoute
   '/_auth/paises': typeof AuthPaisesRoute
@@ -81,15 +90,29 @@ export interface FileRoutesById {
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    '/' | '/administracion' | '/configuracion' | '/home' | '/menu' | '/paises'
+    | '/'
+    | '/administracion'
+    | '/configuracion'
+    | '/departamentos'
+    | '/home'
+    | '/menu'
+    | '/paises'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/administracion' | '/configuracion' | '/home' | '/menu' | '/paises'
+  to:
+    | '/'
+    | '/administracion'
+    | '/configuracion'
+    | '/departamentos'
+    | '/home'
+    | '/menu'
+    | '/paises'
   id:
     | '__root__'
     | '/'
     | '/_auth'
     | '/_auth/administracion'
     | '/_auth/configuracion'
+    | '/_auth/departamentos'
     | '/_auth/home'
     | '/_auth/menu'
     | '/_auth/paises'
@@ -130,6 +153,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthConfiguracionRouteImport
       parentRoute: typeof AuthRoute
     }
+    '/_auth/departamentos': {
+      id: '/_auth/departamentos'
+      path: '/departamentos'
+      fullPath: '/departamentos'
+      preLoaderRoute: typeof AuthDepartamentosRouteImport
+      parentRoute: typeof AuthRoute
+    }
     '/_auth/home': {
       id: '/_auth/home'
       path: '/home'
@@ -157,6 +187,7 @@ declare module '@tanstack/react-router' {
 interface AuthRouteChildren {
   AuthAdministracionRoute: typeof AuthAdministracionRoute
   AuthConfiguracionRoute: typeof AuthConfiguracionRoute
+  AuthDepartamentosRoute: typeof AuthDepartamentosRoute
   AuthHomeRoute: typeof AuthHomeRoute
   AuthMenuRoute: typeof AuthMenuRoute
   AuthPaisesRoute: typeof AuthPaisesRoute
@@ -165,6 +196,7 @@ interface AuthRouteChildren {
 const AuthRouteChildren: AuthRouteChildren = {
   AuthAdministracionRoute: AuthAdministracionRoute,
   AuthConfiguracionRoute: AuthConfiguracionRoute,
+  AuthDepartamentosRoute: AuthDepartamentosRoute,
   AuthHomeRoute: AuthHomeRoute,
   AuthMenuRoute: AuthMenuRoute,
   AuthPaisesRoute: AuthPaisesRoute,

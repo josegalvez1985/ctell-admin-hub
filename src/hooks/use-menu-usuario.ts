@@ -36,8 +36,7 @@ export function useMenuUsuario() {
 
   const { data, isPending, isError, error } = useQuery({
     queryKey: ["menu-usuario", usuario?.id],
-    queryFn: () =>
-      usuario?.id ? api.usuarioPaginas.listar({ idUsuario: usuario.id }) : null,
+    queryFn: () => (usuario?.id ? api.usuarioPaginas.listar({ idUsuario: usuario.id }) : null),
     enabled: !!usuario?.id,
   });
 
@@ -81,13 +80,11 @@ export function useMenuUsuario() {
         ...m,
         entradas: Object.fromEntries(
           Object.entries(m.entradas)
-            .sort(
-              ([a], [b]) => (ENTRADA_ORDER[a] || 999) - (ENTRADA_ORDER[b] || 999)
-            )
+            .sort(([a], [b]) => (ENTRADA_ORDER[a] || 999) - (ENTRADA_ORDER[b] || 999))
             .map(([entrada, paginas]) => [
               entrada,
               paginas.sort((a, b) => a.orden - b.orden || a.nombre.localeCompare(b.nombre)),
-            ])
+            ]),
         ),
       }));
 

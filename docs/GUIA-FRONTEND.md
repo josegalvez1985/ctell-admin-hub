@@ -141,10 +141,10 @@ menú muestra el item pero el clic no lleva a ningún lado.
 
 **Convención:** el nombre de la página en la base coincide con el archivo.
 
-| Archivo               | Nombre en `PAGINAS` | `PAGINAS.RUTA` |
-| --------------------- | ------------------- | -------------- |
-| `_auth.empresas.tsx`  | Empresas            | `/empresas`    |
-| `_auth.paises.tsx`    | Paises              | `/paises`      |
+| Archivo              | Nombre en `PAGINAS` | `PAGINAS.RUTA` |
+| -------------------- | ------------------- | -------------- |
+| `_auth.empresas.tsx` | Empresas            | `/empresas`    |
+| `_auth.paises.tsx`   | Paises              | `/paises`      |
 
 ---
 
@@ -212,17 +212,17 @@ menú. Ver el caso completo en
 tarjetas abajo de `sm`, tabla de `sm` para arriba:
 
 ```tsx
-{/* Móvil: tarjetas. Una tabla de 4 columnas en 360px obliga a scrollear
-    de costado para leer una fila entera. */}
+{
+  /* Móvil: tarjetas. Una tabla de 4 columnas en 360px obliga a scrollear
+    de costado para leer una fila entera. */
+}
 <ul className="space-y-3 sm:hidden">
   {paises.map((pais) => (
     <li key={pais.id} className="surface-card p-4">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <p className="truncate font-semibold text-foreground">{pais.nombrePais}</p>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            {pais.codigoPais || "Sin código"}
-          </p>
+          <p className="mt-0.5 text-xs text-muted-foreground">{pais.codigoPais || "Sin código"}</p>
         </div>
         <Badge variant={esActivo(pais.activo) ? "secondary" : "outline"} className="shrink-0">
           {esActivo(pais.activo) ? "Activo" : "Inactivo"}
@@ -238,12 +238,14 @@ tarjetas abajo de `sm`, tabla de `sm` para arriba:
       </div>
     </li>
   ))}
-</ul>
+</ul>;
 
-{/* Escritorio: tabla */}
+{
+  /* Escritorio: tabla */
+}
 <div className="surface-card hidden overflow-x-auto sm:block">
   <Table>{/* … */}</Table>
-</div>
+</div>;
 ```
 
 Los cuatro estados de un listado se manejan siempre, en este orden:
@@ -300,23 +302,27 @@ El backend fuerza `'A'` en los INSERT: crear algo para dejarlo inactivo de
 entrada no tiene sentido. En edición sí, con un `Switch`:
 
 ```tsx
-{esEdicion && (
-  <FormField
-    control={form.control}
-    name="activo"
-    render={({ field }) => (
-      <FormItem className="flex items-center justify-between rounded-lg border border-border p-3">
-        <div className="space-y-0.5">
-          <FormLabel>Activo</FormLabel>
-          <FormDescription>Un país inactivo deja de ofrecerse en los formularios.</FormDescription>
-        </div>
-        <FormControl>
-          <Switch checked={field.value} onCheckedChange={field.onChange} />
-        </FormControl>
-      </FormItem>
-    )}
-  />
-)}
+{
+  esEdicion && (
+    <FormField
+      control={form.control}
+      name="activo"
+      render={({ field }) => (
+        <FormItem className="flex items-center justify-between rounded-lg border border-border p-3">
+          <div className="space-y-0.5">
+            <FormLabel>Activo</FormLabel>
+            <FormDescription>
+              Un país inactivo deja de ofrecerse en los formularios.
+            </FormDescription>
+          </div>
+          <FormControl>
+            <Switch checked={field.value} onCheckedChange={field.onChange} />
+          </FormControl>
+        </FormItem>
+      )}
+    />
+  );
+}
 ```
 
 El booleano del formulario se traduce a `Estado` al enviar:
@@ -372,11 +378,11 @@ pasar por el formulario.
 
 Tres piezas:
 
-| Archivo                                                              | Qué hace                                        |
-| -------------------------------------------------------------------- | ----------------------------------------------- |
-| [use-menu-usuario.ts](../src/hooks/use-menu-usuario.ts)               | Pide los permisos y los agrupa módulo → entrada  |
-| [MenuDinamico.tsx](../src/components/ctell/MenuDinamico.tsx)           | Renderiza el acordeón                            |
-| [menu-iconos.ts](../src/components/ctell/menu-iconos.ts)               | Resuelve el ícono de cada módulo, entrada y página |
+| Archivo                                                      | Qué hace                                           |
+| ------------------------------------------------------------ | -------------------------------------------------- |
+| [use-menu-usuario.ts](../src/hooks/use-menu-usuario.ts)      | Pide los permisos y los agrupa módulo → entrada    |
+| [MenuDinamico.tsx](../src/components/ctell/MenuDinamico.tsx) | Renderiza el acordeón                              |
+| [menu-iconos.ts](../src/components/ctell/menu-iconos.ts)     | Resuelve el ícono de cada módulo, entrada y página |
 
 Se monta en dos lugares de [AppLayout.tsx](../src/components/ctell/AppLayout.tsx):
 el sidebar de escritorio (`variant="dark"`) y el panel móvil (`variant="light"`,
@@ -446,14 +452,14 @@ Antes de dar por terminada una pantalla:
 
 ### Errores frecuentes
 
-| Síntoma                                          | Causa                                                                 |
-| ------------------------------------------------ | --------------------------------------------------------------------- |
-| El item aparece en el menú pero el clic no navega | `PAGINAS.RUTA` no coincide con ninguna ruta del router                |
-| El menú no muestra una página asignada            | El módulo o la página están inactivos, o falta el permiso              |
+| Síntoma                                           | Causa                                                                    |
+| ------------------------------------------------- | ------------------------------------------------------------------------ |
+| El item aparece en el menú pero el clic no navega | `PAGINAS.RUTA` no coincide con ninguna ruta del router                   |
+| El menú no muestra una página asignada            | El módulo o la página están inactivos, o falta el permiso                |
 | Todo se ve bien pero una acción no hace nada      | La API no devuelve un campo: llega `undefined`. Corré `npx tsc --noEmit` |
-| El texto no se lee en hover en el sidebar         | Falta `variant="dark"`: las clases claras no contrastan sobre el navy  |
-| El formulario muestra datos del registro anterior | Se usó `defaultValues` en vez de `values` en un dialog reutilizado     |
-| El error del backend no se ve al borrar           | Falta `e.preventDefault()` en el `AlertDialogAction`                   |
-| La lista no se actualiza tras guardar             | Falta `invalidateQueries`                                             |
-| `window is not defined`                           | Acceso al DOM fuera de `useEffect` (corre en el prerender de build)    |
-| Cambios que no aparecen por más que recargues     | Hay más de un `npm run dev` corriendo: mirá en qué puerto estás        |
+| El texto no se lee en hover en el sidebar         | Falta `variant="dark"`: las clases claras no contrastan sobre el navy    |
+| El formulario muestra datos del registro anterior | Se usó `defaultValues` en vez de `values` en un dialog reutilizado       |
+| El error del backend no se ve al borrar           | Falta `e.preventDefault()` en el `AlertDialogAction`                     |
+| La lista no se actualiza tras guardar             | Falta `invalidateQueries`                                                |
+| `window is not defined`                           | Acceso al DOM fuera de `useEffect` (corre en el prerender de build)      |
+| Cambios que no aparecen por más que recargues     | Hay más de un `npm run dev` corriendo: mirá en qué puerto estás          |

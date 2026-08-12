@@ -5,16 +5,16 @@ y recursos humanos, con login de usuarios.
 
 ## Stack
 
-| Capa        | Tecnología                          |
-| ----------- | ----------------------------------- |
+| Capa        | Tecnología                               |
+| ----------- | ---------------------------------------- |
 | Framework   | TanStack Start (React 19 + SSR disabled) |
-| Ruteo       | TanStack Router (rutas por archivo) |
-| Datos       | TanStack Query                      |
-| Estilos     | Tailwind CSS v4 + shadcn/ui         |
-| Formularios | react-hook-form + zod               |
-| Build       | Vite 8 (SPA estática)               |
-| Hosting     | GitHub Pages                        |
-| **Backend** | **Oracle APEX + ORDS (PL/SQL)**     |
+| Ruteo       | TanStack Router (rutas por archivo)      |
+| Datos       | TanStack Query                           |
+| Estilos     | Tailwind CSS v4 + shadcn/ui              |
+| Formularios | react-hook-form + zod                    |
+| Build       | Vite 8 (SPA estática)                    |
+| Hosting     | GitHub Pages                             |
+| **Backend** | **Oracle APEX + ORDS (PL/SQL)**          |
 
 El backend es independiente del frontend: son paquetes PL/SQL publicados como
 REST por ORDS, en `https://oracleapex.com/ords/ctell/`. El frontend sólo los
@@ -33,14 +33,14 @@ Vite imprime la URL local al arrancar (normalmente `http://localhost:5173`).
 
 ### Comandos
 
-| Comando            | Qué hace                             |
-| ------------------ | ------------------------------------ |
-| `npm run dev`      | Servidor de desarrollo con HMR       |
+| Comando            | Qué hace                              |
+| ------------------ | ------------------------------------- |
+| `npm run dev`      | Servidor de desarrollo con HMR        |
 | `npm run build`    | Build de producción en `dist/client/` |
-| `npm run preview`  | Sirve el build ya generado           |
-| `npm run lint`     | ESLint + Prettier                    |
-| `npm run format`   | Aplica formato a todo el proyecto    |
-| `npx tsc --noEmit` | Verificación de tipos                |
+| `npm run preview`  | Sirve el build ya generado            |
+| `npm run lint`     | ESLint + Prettier                     |
+| `npm run format`   | Aplica formato a todo el proyecto     |
+| `npx tsc --noEmit` | Verificación de tipos                 |
 
 ## Estructura
 
@@ -98,10 +98,10 @@ tablas**: el DDL se administra aparte.
 
 ### Endpoints publicados
 
-| Método | Ruta           | Auth  | Devuelve                                              |
-| ------ | -------------- | ----- | ----------------------------------------------------- |
-| `POST` | `/auth/login`  | —     | `token`, `expira`, `usuario`                          |
-| `POST` | `/auth/logout` | token | `{ ok: true }`                                        |
+| Método | Ruta           | Auth  | Devuelve                                                         |
+| ------ | -------------- | ----- | ---------------------------------------------------------------- |
+| `POST` | `/auth/login`  | —     | `token`, `expira`, `usuario`                                     |
+| `POST` | `/auth/logout` | token | `{ ok: true }`                                                   |
 | `GET`  | `/auth/me`     | token | `id`, `usuario`, `nombreApellido`, `correo`, `activo`, `esAdmin` |
 
 El token se envía como `Authorization: Bearer <token>` y vence a las 8 horas.
@@ -120,16 +120,16 @@ le corta el acceso al instante, aunque su token todavía no hubiera expirado.
 
 Todos requieren token.
 
-| Método   | Ruta                      | Qué hace                            |
-| -------- | ------------------------- | ----------------------------------- |
-| `GET`    | `/usuarios/`              | listado paginado                    |
-| `POST`   | `/usuarios/`              | alta → 201                          |
-| `GET`    | `/usuarios/:id`           | detalle                             |
-| `PUT`    | `/usuarios/:id`           | modificación                        |
-| `DELETE` | `/usuarios/:id`           | baja física                         |
-| `POST`   | `/usuarios/:id/inactivar` | baja lógica + revoca sus sesiones   |
-| `POST`   | `/usuarios/:id/activar`   | alta lógica                         |
-| `POST`   | `/usuarios/:id/password`  | cambio de clave + revoca sesiones   |
+| Método   | Ruta                      | Qué hace                          |
+| -------- | ------------------------- | --------------------------------- |
+| `GET`    | `/usuarios/`              | listado paginado                  |
+| `POST`   | `/usuarios/`              | alta → 201                        |
+| `GET`    | `/usuarios/:id`           | detalle                           |
+| `PUT`    | `/usuarios/:id`           | modificación                      |
+| `DELETE` | `/usuarios/:id`           | baja física                       |
+| `POST`   | `/usuarios/:id/inactivar` | baja lógica + revoca sus sesiones |
+| `POST`   | `/usuarios/:id/activar`   | alta lógica                       |
+| `POST`   | `/usuarios/:id/password`  | cambio de clave + revoca sesiones |
 
 El listado acepta `?busqueda=`, `?activo=A|I`, `?pagina=` y `?tamanio=`
 (25 por defecto, **200 como techo** — sin tope, un `?tamanio=999999` arma un
@@ -277,10 +277,10 @@ Por defecto ORDS **no manda `Access-Control-Allow-Origin`**, así que el
 navegador bloquea cualquier llamada directa a `oracleapex.com` desde otro
 origen. Este proyecto lo resuelve distinto en cada entorno:
 
-| Entorno       | Cómo evita el bloqueo                                                    |
-| ------------- | -------------------------------------------------------------------------- |
+| Entorno       | Cómo evita el bloqueo                                                                                                                                                                                                            |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `npm run dev` | Proxy de Vite: la app pide a la ruta relativa `/ords/ctell` (mismo origen que la página, sin chequeo de CORS) y Vite reenvía a APEX servidor contra servidor. Configurado en `server.proxy` de [vite.config.ts](vite.config.ts). |
-| Producción    | CORS habilitado directo en ORDS: la app pega con URL absoluta a `https://oracleapex.com/ords/ctell`, y es ORDS quien manda `Access-Control-Allow-Origin` para `https://www.ctell.online`. |
+| Producción    | CORS habilitado directo en ORDS: la app pega con URL absoluta a `https://oracleapex.com/ords/ctell`, y es ORDS quien manda `Access-Control-Allow-Origin` para `https://www.ctell.online`.                                        |
 
 [src/lib/api.ts](src/lib/api.ts) elige entre las dos según
 `import.meta.env.DEV`: relativa en dev, absoluta en producción.

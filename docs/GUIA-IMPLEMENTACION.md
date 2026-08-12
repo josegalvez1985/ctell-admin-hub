@@ -25,10 +25,10 @@ de plantilla para todo lo demás.
 
 El proyecto son **dos piezas separadas** que se hablan por HTTP:
 
-| Capa     | Dónde vive                | Qué hace                             |
-| -------- | ------------------------- | ------------------------------------ |
-| Backend  | Oracle APEX + ORDS        | Paquetes PL/SQL expuestos como REST  |
-| Frontend | React + TanStack Start    | Consume la API, corre en GitHub Pages |
+| Capa     | Dónde vive             | Qué hace                              |
+| -------- | ---------------------- | ------------------------------------- |
+| Backend  | Oracle APEX + ORDS     | Paquetes PL/SQL expuestos como REST   |
+| Frontend | React + TanStack Start | Consume la API, corre en GitHub Pages |
 
 Base de la API: `https://oracleapex.com/ords/ctell/`
 
@@ -104,7 +104,7 @@ a ORDS, y esa sesión mantiene tomadas las filas de metadatos que
 el módulo viejo nunca llegó a borrarse.
 
 **Nunca uses `WHEN OTHERS THEN NULL` para borrar un módulo.** Parece inofensivo
-—"si no existe, seguí de largo"— pero se traga *cualquier* error, incluido el
+—"si no existe, seguí de largo"— pero se traga _cualquier_ error, incluido el
 interbloqueo. El script termina sin quejarse y vos creés que aplicó los
 cambios, cuando en realidad ORDS sigue sirviendo la versión anterior. Usá el
 `BORRAR_MODULO` privado del propio paquete (ver [db/modulos.sql](../db/modulos.sql)),
@@ -429,13 +429,13 @@ parsea el JSON y los vincula a los binds del mismo nombre. Pasar `'BODY'` como
 
 ### Lo que NO hay que hacer
 
-| ❌ Evitar | ✅ En su lugar |
-| --------- | ------------- |
-| `p_pattern => '.'` | `'listar'`, `'crear'`, `'actualizar/:id'`, `'eliminar/:id'` |
-| PL/SQL embebido en `q'~ … ~'` dentro de `DEFINE_HANDLER` | Una línea: `'BEGIN PKG_X.LISTAR(…); END;'` |
-| `CREATE OR REPLACE PROCEDURE` suelto | Todo dentro de `PKG_<TABLA>` |
-| Depender de helpers externos (`BORRAR_MODULO_ORDS`) | `BORRAR_MODULO` privado en el propio paquete |
-| `p_resultado := JSON_OBJECT(… RETURNING CLOB);` | `SELECT JSON_OBJECT(… RETURNING CLOB) INTO p_resultado FROM DUAL;` |
+| ❌ Evitar                                                | ✅ En su lugar                                                     |
+| -------------------------------------------------------- | ------------------------------------------------------------------ |
+| `p_pattern => '.'`                                       | `'listar'`, `'crear'`, `'actualizar/:id'`, `'eliminar/:id'`        |
+| PL/SQL embebido en `q'~ … ~'` dentro de `DEFINE_HANDLER` | Una línea: `'BEGIN PKG_X.LISTAR(…); END;'`                         |
+| `CREATE OR REPLACE PROCEDURE` suelto                     | Todo dentro de `PKG_<TABLA>`                                       |
+| Depender de helpers externos (`BORRAR_MODULO_ORDS`)      | `BORRAR_MODULO` privado en el propio paquete                       |
+| `p_resultado := JSON_OBJECT(… RETURNING CLOB);`          | `SELECT JSON_OBJECT(… RETURNING CLOB) INTO p_resultado FROM DUAL;` |
 
 Ese último merece explicación: **`JSON_OBJECT(... RETURNING CLOB)` como
 asignación PL/SQL directa falla con `PLS-00684`** dentro de un package body.
@@ -555,9 +555,7 @@ export const api = {
       if (params.busqueda) qs.set("busqueda", params.busqueda);
       if (params.pagina) qs.set("pagina", String(params.pagina));
       const q = qs.toString();
-      return request<{ items: Empresa[]; total: number }>(
-        `/empresas/${q ? `?${q}` : ""}`,
-      );
+      return request<{ items: Empresa[]; total: number }>(`/empresas/${q ? `?${q}` : ""}`);
     },
 
     obtener: (id: number) => request<Empresa>(`/empresas/${id}`),
@@ -584,6 +582,7 @@ export const api = {
 el status. Un 401 limpia el token automáticamente.
 
 ---
+
 ## 5. Devolver lo que el consumidor necesita
 
 Un endpoint que devuelve la mitad de los campos rompe al consumidor de una
@@ -761,27 +760,27 @@ Después de ejecutarlo en APEX:
 
 ### Errores frecuentes
 
-| Síntoma                                | Causa                                          |
-| -------------------------------------- | ---------------------------------------------- |
-| `PLS-00201: DBMS_CRYPTO`               | No hay grant; usá `SYS_GUID`/`STANDARD_HASH`   |
-| `PLS-00201: STANDARD_HASH`             | Es función SQL: envolvela en `SELECT … FROM DUAL` |
-| `PLS-00231` en un `SELECT`/`UPDATE`    | Función del paquete invocada desde SQL: resolvé el valor antes en PL/SQL |
-| **`PLS-00684: tipo de datos no válido para el valor de retorno de JSON`** | `JSON_OBJECT(… RETURNING CLOB)` como asignación directa dentro de un package body. Envolvelo en `SELECT … INTO … FROM DUAL` |
-| `ORA-01031` en `ENABLE_SCHEMA`         | En APEX ya está habilitado: quitá la llamada    |
-| `ORA-00904: "NAME"`                    | En `USER_OBJECTS` la columna es `OBJECT_NAME`  |
-| `ORA-01722` al filtrar por estado      | `TO_NUMBER` sobre `ACTIVO`, que es `VARCHAR2` con `'A'`/`'I'` |
-| `ORA-06550` al compilar el handler     | Comillas del `q'~ … ~'` sin cerrar             |
-| **500 sin mensaje, con el `EXCEPTION` escrito** | La conversión está en el `DECLARE`: se ejecuta antes de que exista el `EXCEPTION` y escapa del handler |
-| **500 solo cuando falta un query param** | `TO_NUMBER('')`: un parámetro ausente llega como cadena vacía. Usá `NULLIF(:param, '')` |
-| El endpoint devuelve 404               | Falta `DEFINE_TEMPLATE` para ese patrón        |
-| Devuelve 200 pero no guardó            | Falta chequear `SQL%ROWCOUNT`                  |
-| 401 en todo                            | El token venció (8 h) o falta el header        |
-| 401 al loguearse con datos correctos   | `USUARIO` guardado con mayúsculas (el login compara contra `LOWER`), `ACTIVO` distinto de `'A'`, o el hash no se generó con el paquete |
-| `ORA-00060` al reejecutar el script    | Otra sesión tiene tomados los metadatos de ORDS: frená `npm run dev` antes |
-| `ORA-00001` en `DEFINE_MODULE`         | El `DELETE_MODULE` falló y su error se tragó un `WHEN OTHERS THEN NULL` |
-| `PLS-00306` al llamar a `DEFINE_MODULE` | Le pasaste `p_origins_allowed`: esa versión de ORDS no tiene ese parámetro ahí. Usá `ORDS.SET_MODULE_ORIGINS_ALLOWED(p_module_name, p_origins_allowed)` aparte |
+| Síntoma                                                                           | Causa                                                                                                                                                                                                                                                                                                 |
+| --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PLS-00201: DBMS_CRYPTO`                                                          | No hay grant; usá `SYS_GUID`/`STANDARD_HASH`                                                                                                                                                                                                                                                          |
+| `PLS-00201: STANDARD_HASH`                                                        | Es función SQL: envolvela en `SELECT … FROM DUAL`                                                                                                                                                                                                                                                     |
+| `PLS-00231` en un `SELECT`/`UPDATE`                                               | Función del paquete invocada desde SQL: resolvé el valor antes en PL/SQL                                                                                                                                                                                                                              |
+| **`PLS-00684: tipo de datos no válido para el valor de retorno de JSON`**         | `JSON_OBJECT(… RETURNING CLOB)` como asignación directa dentro de un package body. Envolvelo en `SELECT … INTO … FROM DUAL`                                                                                                                                                                           |
+| `ORA-01031` en `ENABLE_SCHEMA`                                                    | En APEX ya está habilitado: quitá la llamada                                                                                                                                                                                                                                                          |
+| `ORA-00904: "NAME"`                                                               | En `USER_OBJECTS` la columna es `OBJECT_NAME`                                                                                                                                                                                                                                                         |
+| `ORA-01722` al filtrar por estado                                                 | `TO_NUMBER` sobre `ACTIVO`, que es `VARCHAR2` con `'A'`/`'I'`                                                                                                                                                                                                                                         |
+| `ORA-06550` al compilar el handler                                                | Comillas del `q'~ … ~'` sin cerrar                                                                                                                                                                                                                                                                    |
+| **500 sin mensaje, con el `EXCEPTION` escrito**                                   | La conversión está en el `DECLARE`: se ejecuta antes de que exista el `EXCEPTION` y escapa del handler                                                                                                                                                                                                |
+| **500 solo cuando falta un query param**                                          | `TO_NUMBER('')`: un parámetro ausente llega como cadena vacía. Usá `NULLIF(:param, '')`                                                                                                                                                                                                               |
+| El endpoint devuelve 404                                                          | Falta `DEFINE_TEMPLATE` para ese patrón                                                                                                                                                                                                                                                               |
+| Devuelve 200 pero no guardó                                                       | Falta chequear `SQL%ROWCOUNT`                                                                                                                                                                                                                                                                         |
+| 401 en todo                                                                       | El token venció (8 h) o falta el header                                                                                                                                                                                                                                                               |
+| 401 al loguearse con datos correctos                                              | `USUARIO` guardado con mayúsculas (el login compara contra `LOWER`), `ACTIVO` distinto de `'A'`, o el hash no se generó con el paquete                                                                                                                                                                |
+| `ORA-00060` al reejecutar el script                                               | Otra sesión tiene tomados los metadatos de ORDS: frená `npm run dev` antes                                                                                                                                                                                                                            |
+| `ORA-00001` en `DEFINE_MODULE`                                                    | El `DELETE_MODULE` falló y su error se tragó un `WHEN OTHERS THEN NULL`                                                                                                                                                                                                                               |
+| `PLS-00306` al llamar a `DEFINE_MODULE`                                           | Le pasaste `p_origins_allowed`: esa versión de ORDS no tiene ese parámetro ahí. Usá `ORDS.SET_MODULE_ORIGINS_ALLOWED(p_module_name, p_origins_allowed)` aparte                                                                                                                                        |
 | **"Service Unavailable" (HTML de Oracle, no JSON) en un módulo que compila bien** | Falta `SET_MODULE_ORIGINS_ALLOWED` para ESE módulo. ORIGINS_ALLOWED es por módulo, no por workspace — configurarlo en `auth` no lo propaga a `usuarios` ni a ninguno nuevo. La petición cross-origin la rechaza ORDS antes de llegar al handler, así que ni el `WHEN OTHERS` con `SQLERRM` lo captura |
-| `window is not defined`                | Acceso al DOM fuera de `useEffect` (corre en el prerender de build) |
-| La lista no se actualiza tras guardar  | Falta `invalidateQueries`                      |
-| **La UI muestra los datos pero una acción no hace nada** | El `JSON_OBJECT` no devuelve un campo que el consumidor necesita: llega `undefined` y el frontend cae en un fallback silencioso. Corré `npx tsc --noEmit` — el tipo lo delata |
-| El cambio del `.sql` no surte efecto   | No se reejecutó en APEX: el repo y ORDS son dos cosas distintas |
+| `window is not defined`                                                           | Acceso al DOM fuera de `useEffect` (corre en el prerender de build)                                                                                                                                                                                                                                   |
+| La lista no se actualiza tras guardar                                             | Falta `invalidateQueries`                                                                                                                                                                                                                                                                             |
+| **La UI muestra los datos pero una acción no hace nada**                          | El `JSON_OBJECT` no devuelve un campo que el consumidor necesita: llega `undefined` y el frontend cae en un fallback silencioso. Corré `npx tsc --noEmit` — el tipo lo delata                                                                                                                         |
+| El cambio del `.sql` no surte efecto                                              | No se reejecutó en APEX: el repo y ORDS son dos cosas distintas                                                                                                                                                                                                                                       |

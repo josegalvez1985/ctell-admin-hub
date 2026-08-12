@@ -117,7 +117,10 @@ function ModuloAccordion({
         <IconoModulo className="size-4 shrink-0" />
         <span className="flex-1 text-left">{modulo.nombre}</span>
         <ChevronDown
-          className={cn("size-4 shrink-0 transition-transform duration-200", abierto && "rotate-180")}
+          className={cn(
+            "size-4 shrink-0 transition-transform duration-200",
+            abierto && "rotate-180",
+          )}
         />
       </button>
 
