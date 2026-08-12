@@ -490,15 +490,16 @@ BEGIN
   );
 
   ------------------------------------------------------------------------------
-  -- GET /usuarios/   → listado paginado
+  -- GET /usuarios/   → listado completo, sin filtros ni paginación
   --
-  -- Query params (todos opcionales):
-  --   busqueda  texto libre sobre usuario, nombre y correo
-  --   activo    'A' o 'I'; cualquier otra cosa = sin filtro
-  --   pagina    1 por defecto
-  --   tamanio   25 por defecto, 200 como techo
+  -- DIAGNOSTICO TEMPORAL: se simplificó a propósito (sin busqueda/activo/
+  -- pagina/tamanio) para aislar un 500 en producción que no venía del SELECT
+  -- ni del JSON —ambos se probaron sueltos contra datos reales y funcionan—
+  -- sino de algo en la parte de filtros/paginación que rodea al handler
+  -- completo. Cuando se confirme el origen, restaurar la versión con
+  -- paginación (está en el historial de git antes de este cambio).
   --
-  -- 200 → { items: [...], total, pagina, tamanio }
+  -- 200 → { items: [...], total }
   ------------------------------------------------------------------------------
   ORDS.DEFINE_TEMPLATE(p_module_name => 'usuarios', p_pattern => '.');
 
@@ -509,15 +510,9 @@ BEGIN
     p_source_type => ORDS.source_type_plsql,
     p_source      => q'~
 DECLARE
-  l_sesion   NUMBER;
-  l_busqueda VARCHAR2(200);
-  l_patron   VARCHAR2(200);
-  l_estado   VARCHAR2(1);
-  l_pagina   NUMBER;
-  l_tamanio  NUMBER;
-  l_offset   NUMBER;
-  l_total    NUMBER;
-  l_items    CLOB;
+  l_sesion NUMBER;
+  l_total  NUMBER;
+  l_items  CLOB;
 BEGIN
   l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(:authorization));
   IF l_sesion IS NULL THEN
@@ -526,24 +521,8 @@ BEGIN
     RETURN;
   END IF;
 
-  -- Todas las conversiones adentro del BEGIN. NULLIF convierte la cadena
-  -- vacia del parametro ausente en NULL antes de que TO_NUMBER la toque.
-  l_pagina  := GREATEST(NVL(TO_NUMBER(NULLIF(:pagina, '')), 1), 1);
-  l_tamanio := NVL(TO_NUMBER(NULLIF(:tamanio, '')), PKG_USUARIOS.C_TAMANIO_DEFECTO);
-  l_tamanio := LEAST(GREATEST(l_tamanio, 1), PKG_USUARIOS.C_TAMANIO_MAXIMO);
-  l_offset  := (l_pagina - 1) * l_tamanio;
+  SELECT COUNT(*) INTO l_total FROM USUARIOS;
 
-  l_busqueda := NULLIF(TRIM(:busqueda), '');
-  l_patron   := '%' || LOWER(l_busqueda) || '%';
-  -- Se resuelve en PL/SQL y entra al SELECT como variable: una funcion del
-  -- paquete no es visible desde una sentencia SQL (PLS-00231).
-  l_estado   := PKG_USUARIOS.NORMALIZAR_ESTADO(NULLIF(:activo, ''));
-
-  l_total := PKG_USUARIOS.CONTAR(l_busqueda, l_estado);
-
-  -- RETURNING ... INTO un CLOB: un listado de 200 filas supera holgadamente
-  -- los 4000 bytes de un VARCHAR2 y se truncaria.
-  --
   -- Ni CONTRASENA_HASH ni SALT aparecen en este SELECT, ni deben aparecer.
   SELECT JSON_ARRAYAGG(
            JSON_OBJECT(
@@ -557,36 +536,18 @@ BEGIN
              'fechaActualizacion'  VALUE TO_CHAR(FECHA_ACTUALIZACION, 'YYYY-MM-DD"T"HH24:MI:SS')
              RETURNING CLOB
            )
-           -- El ORDER BY va en los dos niveles a proposito: el de la
-           -- subconsulta decide QUE filas entran en la pagina (es el que
-           -- acompaña al OFFSET), y este decide en que orden quedan dentro
-           -- del array. Sin el de aca, el orden del array no esta garantizado
-           -- aunque la subconsulta venga ordenada.
            ORDER BY NOMBRE_APELLIDO
            RETURNING CLOB
          )
     INTO l_items
-    FROM (
-      SELECT ID_USUARIO, USUARIO, NOMBRE_APELLIDO, CORREO, ACTIVO, ES_ADMIN,
-             FECHA_CREACION, FECHA_ACTUALIZACION
-        FROM USUARIOS
-       WHERE (l_busqueda IS NULL
-              OR LOWER(USUARIO) LIKE l_patron
-              OR LOWER(NOMBRE_APELLIDO) LIKE l_patron
-              OR LOWER(CORREO) LIKE l_patron)
-         AND (l_estado IS NULL OR UPPER(TRIM(ACTIVO)) = l_estado)
-       ORDER BY NOMBRE_APELLIDO
-       OFFSET l_offset ROWS FETCH NEXT l_tamanio ROWS ONLY
-    );
+    FROM USUARIOS;
 
   :status_code := 200;
   -- JSON_ARRAYAGG devuelve NULL cuando no hay filas, no un array vacio: sin
   -- el NVL el frontend recibiria "items":null y reventaria al iterarlo.
   :resultado := JSON_OBJECT(
-    'items'   VALUE NVL(l_items, TO_CLOB('[]')) FORMAT JSON,
-    'total'   VALUE l_total,
-    'pagina'  VALUE l_pagina,
-    'tamanio' VALUE l_tamanio
+    'items' VALUE NVL(l_items, TO_CLOB('[]')) FORMAT JSON,
+    'total' VALUE l_total
     RETURNING CLOB
   );
 EXCEPTION
