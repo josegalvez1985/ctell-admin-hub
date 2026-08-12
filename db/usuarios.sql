@@ -38,6 +38,11 @@
 --
 -- NUNCA SE DEVUELVEN CONTRASENA_HASH NI SALT. Ningún SELECT de este archivo
 -- los incluye en una respuesta.
+--
+-- CORS: se configura UNA sola vez para todo el workspace (Administración del
+-- Workspace -> RESTful Services -> orígenes permitidos), no por módulo. No
+-- hay nada que agregar acá — orígenes vigentes y detalle en db/auth.sql
+-- (hoy: https://www.ctell.online y http://localhost:8080).
 --------------------------------------------------------------------------------
 
 SET DEFINE OFF

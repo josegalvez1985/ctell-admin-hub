@@ -27,13 +27,15 @@ El proyecto son **dos piezas separadas** que se hablan por HTTP:
 | Capa     | Dónde vive                | Qué hace                             |
 | -------- | ------------------------- | ------------------------------------ |
 | Backend  | Oracle APEX + ORDS        | Paquetes PL/SQL expuestos como REST  |
-| Frontend | React + TanStack Start    | Consume la API, corre en Cloudflare  |
+| Frontend | React + TanStack Start    | Consume la API, corre en GitHub Pages |
 
 Base de la API: `https://oracleapex.com/ords/ctell/`
 
 Esto importa: **no se usan server functions de TanStack** (`createServerFn`) ni
-se conecta a la base desde el Worker. Toda la lógica de datos vive en paquetes
-PL/SQL, y el frontend sólo hace `fetch` contra ORDS.
+se conecta a la base desde ningún servidor intermedio. Toda la lógica de datos
+vive en paquetes PL/SQL, y el frontend sólo hace `fetch` contra ORDS —
+directo en producción, gracias a CORS habilitado en APEX (ver
+[8. Seguridad](#8-seguridad)).
 
 Tres cosas más a tener presentes:
 
@@ -631,7 +633,17 @@ otro paquete. Si el alta calculara el hash distinto del login, el usuario se
 crearía sin poder entrar.
 
 **Nada de credenciales en el repo.** Para el frontend, sólo variables `VITE_*`
-que sean públicas por definición.
+que sean públicas por definición. Los datos que sí requieren generarse al
+azar (como una contraseña inicial) se imprimen por `DBMS_OUTPUT` en el
+momento, nunca hardcodeados en el script.
+
+**CORS en producción se habilita en APEX, no con un proxy.** ORDS no manda
+`Access-Control-Allow-Origin` por defecto, y `src/lib/api.ts` pega directo a
+`oracleapex.com` cuando `import.meta.env.DEV` es falso. Sin agregar
+`https://www.ctell.online` en _Administración del Workspace → RESTful
+Services → orígenes permitidos_, el navegador bloquea la respuesta como
+cualquier otra llamada cross-origin — mismo síntoma que un CORS mal
+configurado en cualquier API REST.
 
 ---
 

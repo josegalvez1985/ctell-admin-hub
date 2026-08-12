@@ -8,22 +8,18 @@
  */
 
 /**
- * Todas las peticiones van por ruta relativa, en desarrollo y en producción.
+ * En desarrollo, ruta relativa contra el proxy de Vite (ver `server.proxy` en
+ * vite.config.ts): la app pide a /ords/... —mismo origen que la página, así
+ * que no hay chequeo de CORS— y es Vite quien reenvía a APEX servidor contra
+ * servidor, donde la política de mismo origen no aplica.
  *
- * ORDS no manda `Access-Control-Allow-Origin`, así que una URL absoluta a
- * oracleapex.com la bloquearía el navegador por ser otro origen. La ruta
- * relativa esquiva el problema porque nunca se sale del origen de la página;
- * quien reenvía a APEX es un proxy, y hay uno distinto en cada entorno:
- *
- * - `npm run dev` → el proxy de Vite (ver `server.proxy` en vite.config.ts).
- * - Producción    → un Worker de Cloudflare delante del dominio, porque
- *                   GitHub Pages sirve archivos estáticos y no puede
- *                   reenviar nada. Ver cloudflare/worker.js.
- *
- * En los dos casos el reenvío es servidor contra servidor, donde la política
- * de mismo origen no aplica: es cosa del navegador.
+ * En producción se pega directo a oracleapex.com. Eso requiere que ORDS envíe
+ * `Access-Control-Allow-Origin` para www.ctell.online: se habilita en APEX →
+ * Administración del Workspace → RESTful Services → orígenes permitidos.
+ * Sin ese origen habilitado, el navegador bloquea la respuesta igual que
+ * bloquearía cualquier otra llamada cross-origin.
  */
-const BASE_URL = "/ords/ctell";
+const BASE_URL = import.meta.env.DEV ? "/ords/ctell" : "https://oracleapex.com/ords/ctell";
 const TOKEN_KEY = "ctell-token";
 const USUARIO_KEY = "ctell-usuario";
 const USUARIO_RECORDADO_KEY = "ctell-usuario-recordado";

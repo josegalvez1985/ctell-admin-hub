@@ -23,16 +23,15 @@ const configuracionDelPreset = defineConfig({
     base: "/",
 
     server: {
-      // El navegador bloquea las llamadas del frontend a oracleapex.com por
-      // ser de otro origen, y ORDS no envía Access-Control-Allow-Origin. En
-      // desarrollo se evita con un proxy: la app pide a /ords/... (mismo
-      // origen que la página, así que no hay chequeo de CORS) y es Vite quien
-      // reenvía la petición a APEX. Servidor contra servidor no aplica la
-      // política de mismo origen, que es cosa del navegador.
+      // En desarrollo se evita CORS con un proxy: la app pide a /ords/...
+      // (mismo origen que la página, así que no hay chequeo de CORS) y es
+      // Vite quien reenvía la petición a APEX. Servidor contra servidor no
+      // aplica la política de mismo origen, que es cosa del navegador.
       //
       // Esto solo corre con `npm run dev`. El build de producción no lleva
-      // proxy: ahí la app pega directo a oracleapex.com — ver BASE_URL en
-      // src/lib/api.ts.
+      // proxy: ahí la app pega directo a oracleapex.com, habilitado por CORS
+      // en APEX (Administración del Workspace → RESTful Services → orígenes
+      // permitidos) — ver BASE_URL en src/lib/api.ts.
       proxy: {
         "/ords": {
           target: "https://oracleapex.com",

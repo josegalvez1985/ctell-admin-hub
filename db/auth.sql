@@ -39,6 +39,24 @@
 -- Si más adelante se consigue
 --     GRANT EXECUTE ON SYS.DBMS_CRYPTO TO WKSP_CTELL;
 -- conviene migrar HASH_PASSWORD a PBKDF2 (ver la nota dentro de la función).
+--
+-- CORS: por defecto ORDS no manda Access-Control-Allow-Origin, así que el
+-- navegador bloquea llamadas a estos endpoints desde otro origen. Habilitarlo
+-- NO es parte de este script: se configura UNA vez para todo el workspace en
+-- APEX -> Administración del Workspace -> RESTful Services -> orígenes
+-- permitidos. Sin ese paso, /auth/login responde igual pero el navegador
+-- nunca deja leer la respuesta.
+--
+-- Orígenes permitidos vigentes (agregar acá cualquiera nuevo que se cargue en
+-- APEX, para que quede como referencia sin tener que ir a buscarlo):
+--   https://www.ctell.online   producción
+--   http://localhost:8080      desarrollo (solo hace falta si se prueba
+--                               pegándole directo a ORDS sin el proxy de
+--                               Vite; con el proxy, VITE nunca necesita CORS)
+--
+-- Se aplica al workspace entero: cualquier módulo nuevo (empresas, artículos,
+-- lo que sea) hereda estos orígenes automáticamente. No hay nada que
+-- configurar por módulo ni por archivo .sql.
 --------------------------------------------------------------------------------
 
 SET DEFINE OFF

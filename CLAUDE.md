@@ -47,9 +47,6 @@ ctell-admin-hub/
 │   │   └── api.ts            Cliente HTTP contra ORDS
 │   ├── router.tsx            Configuración del router
 │   └── styles.css            Design system: variables de color en oklch
-├── cloudflare/
-│   ├── worker.js             Proxy CORS para producción
-│   └── wrangler.toml
 ├── docs/
 │   └── GUIA-IMPLEMENTACION.md Cómo agregar una tabla nueva de punta a punta
 └── public/
@@ -147,34 +144,30 @@ Ambas se guardan en `localStorage` y se aplican antes del primer render (script 
 
 El cliente HTTP maneja:
 - Rutas relativas en desarrollo (`/ords/ctell` → proxy Vite → ORDS).
-- Rutas absolutas en producción (`https://oracleapex.com/ords/ctell/` → Worker Cloudflare → ORDS).
+- Rutas absolutas en producción (`https://oracleapex.com/ords/ctell/` → directo a ORDS, sin proxy).
 - Token en `Authorization: Bearer <token>`.
 - Gestión de errores y parseo de respuestas.
 
+`BASE_URL` elige entre las dos según `import.meta.env.DEV` — ver `src/lib/api.ts`.
+
 Detalle importante: **Content-Type se envía solo cuando es POST/PUT** y hay body. En GET no se envía (previene headers innecesarios).
 
-## CORS y Proxy
+## CORS
 
 ### Problema
-ORDS no manda `Access-Control-Allow-Origin`, así que el navegador bloquea llamadas directas a `oracleapex.com`.
+Por defecto ORDS no manda `Access-Control-Allow-Origin`, así que el navegador bloquea llamadas directas a `oracleapex.com` desde otro origen.
 
 ### Solución
-Dos proxies, uno per entorno:
+Cada entorno lo resuelve distinto:
 
-| Entorno | Proxy | Config |
-|---------|-------|--------|
-| `npm run dev` | Vite | `server.proxy` en `vite.config.ts` |
-| Producción | Cloudflare Worker | `cloudflare/worker.js` |
+| Entorno | Cómo evita el bloqueo | Config |
+|---------|------------------------|--------|
+| `npm run dev` | Proxy de Vite: la app pide a la ruta relativa `/ords/ctell` (mismo origen, sin CORS) y Vite reenvía a APEX | `server.proxy` en `vite.config.ts` |
+| Producción | CORS habilitado directo en ORDS: la app pega con URL absoluta a `oracleapex.com` | APEX → Administración del Workspace → RESTful Services → orígenes permitidos → `https://www.ctell.online` |
 
-**GitHub Pages** no puede hacer proxy (sirve archivos estáticos), así que el Worker se pone **delante del dominio**: intercepta `/ords/*` → ORDS, deja pasar todo lo demás → Pages.
+**GitHub Pages** no puede hacer de proxy (sirve archivos estáticos), así que en producción no hay intermediario: la única forma de esquivar CORS ahí es que el propio ORDS lo habilite.
 
-### Deploy del Worker
-
-```sh
-npx wrangler deploy --config cloudflare/wrangler.toml
-```
-
-Requisito: el dominio tiene que estar administrado por Cloudflare (nameservers desde Hostinger). Alternativa: habilitar CORS en APEX (_Administración del Workspace → RESTful Services → orígenes permitidos_) y pegarle directo sin proxy.
+> El proyecto usó antes un Worker de Cloudflare como proxy delante del dominio. Se reemplazó por CORS directo en ORDS porque requería que `ctell.online` estuviera administrado por Cloudflare (nameservers desde Hostinger) — una dependencia externa de más.
 
 ## Deploy: GitHub Pages → www.ctell.online
 
@@ -255,6 +248,6 @@ Ver [docs/GUIA-IMPLEMENTACION.md](docs/GUIA-IMPLEMENTACION.md) — explica cómo
 2. **No hacen falta secrets:** workflow GitHub Actions usa `GITHUB_TOKEN` provisto.
 3. **`public/CNAME` es crítico:** cada deploy reemplaza el sitio, si falta el archivo Pages pierde el dominio.
 4. **SPA en Pages:** no hay servidor, todo se resuelve en el cliente.
-5. **Proxy dual:** Vite en dev, Worker en producción.
+5. **CORS por entorno:** proxy de Vite en dev, CORS directo en ORDS en producción (sin proxy ni Worker).
 6. **Estado uniforme:** `'A'`/`'I'` en todas las tablas, sin traducción.
 7. **Reejecutar `db/`:** frena dev primero (evita `ORA-00060`).
