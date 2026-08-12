@@ -203,7 +203,9 @@ export function AppLayout({
                 {usuario?.nombreApellido && (
                   <div className="flex items-center gap-3 border-l border-border pl-4">
                     <div className="text-right">
-                      <p className="text-sm font-semibold text-foreground">{usuario.nombreApellido}</p>
+                      <p className="text-sm font-semibold text-foreground">
+                        {usuario.nombreApellido}
+                      </p>
                       <p className="text-xs text-muted-foreground">
                         {usuario.esAdmin === "S" ? "Administrador" : "Usuario"}
                       </p>
@@ -223,12 +225,7 @@ export function AppLayout({
               <span className="absolute right-2 top-2 size-2 rounded-full bg-primary" />
             </Button>
             <Link to="/home" className="lg:hidden">
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label="Ir a inicio"
-                title="Ir a inicio"
-              >
+              <Button variant="ghost" size="icon" aria-label="Ir a inicio" title="Ir a inicio">
                 <Home className="size-5" />
               </Button>
             </Link>
@@ -340,7 +337,9 @@ export function AppLayout({
                   </AvatarFallback>
                 </Avatar>
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-foreground truncate">{usuario?.nombreApellido}</p>
+                  <p className="text-sm font-semibold text-foreground truncate">
+                    {usuario?.nombreApellido}
+                  </p>
                   <p className="text-xs text-muted-foreground">
                     {usuario?.esAdmin === "S" ? "Administrador" : "Usuario"}
                   </p>

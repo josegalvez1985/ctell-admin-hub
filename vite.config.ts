@@ -59,7 +59,7 @@ export default async (env: Parameters<typeof configuracionDelPreset>[0]) => {
   const config = await configuracionDelPreset(env);
   if (Array.isArray(config.plugins)) {
     config.plugins = config.plugins.filter(
-      (p) => !p || typeof p !== "object" || (p as { name?: string }).name !== "vite-tsconfig-paths"
+      (p) => !p || typeof p !== "object" || (p as { name?: string }).name !== "vite-tsconfig-paths",
     );
   }
   return config;

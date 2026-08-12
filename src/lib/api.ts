@@ -321,7 +321,12 @@ async function request<T>(
   }
 
   // Si la respuesta viene empaquetada en { resultado: "..." }, desempaquetarla
-  if (data && typeof data === "object" && "resultado" in data && typeof data.resultado === "string") {
+  if (
+    data &&
+    typeof data === "object" &&
+    "resultado" in data &&
+    typeof data.resultado === "string"
+  ) {
     try {
       return JSON.parse(data.resultado) as T;
     } catch {
@@ -374,8 +379,8 @@ export const api = {
     if (!raw) return raw as Usuario;
 
     // Si tiene 'resultado' como string (empaquetado), desempaquetarlo
-    if ("resultado" in raw && typeof (raw as any).resultado === "string") {
-      return JSON.parse((raw as any).resultado) as Usuario;
+    if ("resultado" in raw && typeof raw.resultado === "string") {
+      return JSON.parse(raw.resultado) as Usuario;
     }
 
     // Si ya es Usuario (sin 'resultado'), devolverlo tal cual

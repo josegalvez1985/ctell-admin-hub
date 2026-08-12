@@ -7,7 +7,7 @@ y recursos humanos, con login de usuarios.
 
 | Capa        | Tecnología                          |
 | ----------- | ----------------------------------- |
-| Framework   | TanStack Start (React 19 + SSR)     |
+| Framework   | TanStack Start (React 19 + SSR disabled) |
 | Ruteo       | TanStack Router (rutas por archivo) |
 | Datos       | TanStack Query                      |
 | Estilos     | Tailwind CSS v4 + shadcn/ui         |
@@ -53,12 +53,16 @@ db/                      Backend: un archivo SQL por tabla
 src/
 ├── routes/              Rutas (el archivo define la URL)
 │   ├── __root.tsx       Layout raíz: <html>, providers, meta global
-│   ├── index.tsx        "/"              → login
-│   ├── home.tsx         "/home"          → panel general
-│   └── configuracion.tsx "/configuracion" → preferencias
+│   ├── index.tsx        "/"                → login
+│   ├── _auth.tsx        Layout protegido (requiere token)
+│   ├── _auth.home.tsx           "/home"          → panel general
+│   └── _auth.configuracion.tsx  "/configuracion" → preferencias
 ├── components/
 │   ├── ctell/           Componentes propios del proyecto
 │   └── ui/              shadcn/ui (no editar a mano)
+├── hooks/
+│   ├── use-usuario-actual.ts        Hook de auth del usuario logueado
+│   └── use-cerrar-sesion-al-vencer.ts
 ├── lib/
 │   └── api.ts           Cliente HTTP contra ORDS
 └── styles.css           Design system (variables de color en oklch)

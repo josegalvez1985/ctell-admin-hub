@@ -40,9 +40,16 @@ Tres cosas más a tener presentes:
 **El ruteo del frontend es por archivo.** Un archivo en `src/routes/` define una
 URL. `src/routeTree.gen.ts` se genera solo y **nunca se edita a mano**.
 
-**Hay SSR.** El primer render ocurre en el servidor, así que todo acceso a
-`window`, `document` o `sessionStorage` va dentro de `useEffect` o detrás de
-`typeof window === "undefined"`.
+**No hay SSR.** `nitro: false` en [vite.config.ts](../vite.config.ts) fuerza el
+build a SPA: GitHub Pages sólo sirve estáticos y no puede correr un servidor.
+Aun así, evitá acceder a `window`, `document` o `sessionStorage` fuera de
+`useEffect` — el primer render sigue pasando por un paso de prerender en build
+time (ver `[prerender]` en la salida de `npm run build`), donde tampoco existen.
+
+**Las rutas protegidas van bajo `_auth.tsx`.** Es un layout de TanStack Router
+([src/routes/_auth.tsx](../src/routes/_auth.tsx)) que exige token antes de
+renderizar sus hijos; una página nueva que requiera sesión se nombra
+`_auth.<algo>.tsx`, no `<algo>.tsx` suelto.
 
 **El token de sesión vive en `sessionStorage`.** Lo maneja
 [src/lib/api.ts](../src/lib/api.ts); no lo leas por tu cuenta.
@@ -473,20 +480,22 @@ el status. Un 401 limpia el token automáticamente.
 
 ## 5. Agregar una página
 
-Creá el archivo en `src/routes/`. El nombre define la URL:
+Creá el archivo en `src/routes/`. El nombre define la URL. Si la página exige
+sesión —el caso normal— llevá el prefijo `_auth.`, que la ubica bajo el layout
+protegido de [_auth.tsx](../src/routes/_auth.tsx):
 
-| Archivo              | URL               |
-| -------------------- | ----------------- |
-| `empresas.tsx`       | `/empresas`       |
-| `empresas.$id.tsx`   | `/empresas/:id`   |
-| `empresas.nuevo.tsx` | `/empresas/nuevo` |
+| Archivo                      | URL               |
+| ----------------------------- | ----------------- |
+| `_auth.empresas.tsx`          | `/empresas`       |
+| `_auth.empresas.$id.tsx`      | `/empresas/:id`   |
+| `_auth.empresas.nuevo.tsx`    | `/empresas/nuevo` |
 
 ```tsx
 import { createFileRoute } from "@tanstack/react-router";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
 
-export const Route = createFileRoute("/empresas")({
+export const Route = createFileRoute("/_auth/empresas")({
   head: () => ({
     meta: [{ title: "Empresas | CTELL" }],
   }),
@@ -594,8 +603,9 @@ Después de mutar, invalidá o la lista queda desactualizada:
 queryClient.invalidateQueries({ queryKey: ["empresas"] });
 ```
 
-> El `loader` de la ruta también sirve, pero necesita el token — que en SSR no
-> existe todavía. Para datos detrás de sesión usá `useQuery`.
+> El `loader` de la ruta también sirve, pero corre antes de que el layout
+> `_auth.tsx` termine de resolver el token. Para datos detrás de sesión usá
+> `useQuery`.
 
 ---
 
@@ -672,5 +682,5 @@ Frontend:
 | 401 al loguearse con datos correctos   | `USUARIO` guardado con mayúsculas (el login compara contra `LOWER`), `ACTIVO` distinto de `'A'`, o el hash no se generó con el paquete |
 | `ORA-00060` al reejecutar el script    | Otra sesión tiene tomados los metadatos de ORDS: frená `npm run dev` antes |
 | `ORA-00001` en `DEFINE_MODULE`         | El `DELETE_MODULE` falló y su error se tragó un `WHEN OTHERS THEN NULL` |
-| `window is not defined`                | Acceso al DOM fuera de `useEffect` (hay SSR)   |
+| `window is not defined`                | Acceso al DOM fuera de `useEffect` (corre en el prerender de build) |
 | La lista no se actualiza tras guardar  | Falta `invalidateQueries`                      |
