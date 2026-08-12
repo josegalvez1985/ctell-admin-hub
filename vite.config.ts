@@ -4,11 +4,6 @@
 // Config adicional vía defineConfig({ vite: { ... } }).
 import { defineConfig } from "@lovable.dev/vite-tanstack-config";
 
-// GitHub Pages sirve el sitio bajo /<repo>/, no bajo la raíz del dominio. El
-// workflow define GITHUB_PAGES=true; en local queda "/" para que `npm run dev`
-// siga funcionando sin prefijo.
-const enPages = process.env["GITHUB_PAGES"] === "true";
-
 export default defineConfig({
   // Pages sólo sirve archivos estáticos: no puede ejecutar el servidor SSR que
   // genera nitro. El build pasa a SPA (`.output/public/_shell.html`) y el
@@ -21,7 +16,11 @@ export default defineConfig({
     spa: { enabled: true },
   },
   vite: {
-    base: enPages ? "/ctell-admin-hub/" : "/",
+    // El sitio se sirve en la raíz de www.ctell.online (ver public/CNAME), no
+    // bajo /<repo>/ como haría Pages sin dominio propio. Con el dominio
+    // configurado, un prefijo acá haría que los assets se pidieran a
+    // /ctell-admin-hub/assets/… — que no existe— y la app quedaría en blanco.
+    base: "/",
 
     server: {
       // El navegador bloquea las llamadas del frontend a oracleapex.com por

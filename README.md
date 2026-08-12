@@ -129,15 +129,40 @@ render mediante un script inline en `<head>`, para evitar el parpadeo.
 
 ## Despliegue
 
-Automático a **GitHub Pages** en cada push a `main`:
-<https://josegalvez1985.github.io/ctell-admin-hub/>
+Automático a **GitHub Pages** en cada push a `main`, sobre el dominio propio:
+<https://www.ctell.online>
 
 ### Configuración inicial (una sola vez)
 
-Repo → _Settings_ → _Pages_ → en **Source** elegí **GitHub Actions**.
+1. Repo → _Settings_ → _Pages_ → en **Source** elegí **GitHub Actions**.
+2. En esa misma pantalla, **Custom domain** = `www.ctell.online`.
+3. Una vez que GitHub emita el certificado (puede tardar hasta 24 h), tildá
+   **Enforce HTTPS**.
+4. En el DNS de Hostinger, ver [Dominio](#dominio) más abajo.
 
 No hacen falta secrets ni tokens: el workflow publica con el `GITHUB_TOKEN` que
 Actions provee solo.
+
+### Dominio
+
+El dominio se declara en [public/CNAME](public/CNAME). Ese archivo **no es
+decorativo**: cada deploy reemplaza el sitio entero, y si el CNAME no viaja
+dentro del artefacto, Pages pierde el dominio y vuelve a la URL de
+`github.io`. Por eso el workflow corta el deploy si el archivo no está.
+
+En el panel DNS de Hostinger:
+
+| Tipo    | Nombre | Valor                      |
+| ------- | ------ | -------------------------- |
+| `CNAME` | `www`  | `josegalvez1985.github.io` |
+| `A`     | `@`    | `185.199.108.153`          |
+| `A`     | `@`    | `185.199.109.153`          |
+| `A`     | `@`    | `185.199.110.153`          |
+| `A`     | `@`    | `185.199.111.153`          |
+
+Los cuatro registros `A` son los que hacen que `ctell.online` sin `www`
+redirija al dominio con `www`. Hay que borrar los registros `A` que Hostinger
+crea solos apuntando a su propio hosting, o el dominio seguiría resolviendo ahí.
 
 ### Cómo funciona
 
@@ -151,17 +176,50 @@ build es una SPA y no usa SSR.
   un archivo, y el router del cliente resuelve la ruta.
 - `.nojekyll` evita que Pages ignore los archivos que empiezan con `_`.
 
-El sitio vive en `/ctell-admin-hub/`, no en la raíz del dominio, así que:
-
-- `base` de Vite se activa con `GITHUB_PAGES=true` (en local queda `/`).
-- El router recibe `basepath` en [src/router.tsx](src/router.tsx) — sin eso,
-  `base` sólo arregla los assets y las rutas darían 404.
-- Los assets de `public/` no pasan por el bundler: sus rutas llevan
-  `import.meta.env.BASE_URL` a mano.
+Con el dominio propio el sitio vive en la **raíz**, así que `base` es `/` fijo
+en [vite.config.ts](vite.config.ts). Si alguna vez volviera a servirse desde un
+subdirectorio, hay que cambiar `base` **y** nada más: el router toma su
+`basepath` de `import.meta.env.BASE_URL` ([src/router.tsx](src/router.tsx)) y
+los assets de `public/` —que no pasan por el bundler— ya llevan ese prefijo a
+mano.
 
 > Perder el SSR no cuesta nada acá: el backend es ORDS y los datos van detrás
 > de un token que en el servidor no existe, así que el SSR sólo aportaba el
 > primer render.
+
+### CORS contra ORDS
+
+ORDS **no manda `Access-Control-Allow-Origin`**, así que el navegador bloquea
+cualquier llamada directa a `oracleapex.com` desde otro origen. Por eso
+[src/lib/api.ts](src/lib/api.ts) usa siempre la ruta relativa `/ords/ctell`:
+nunca se sale del origen de la página, y quien reenvía a APEX es un proxy.
+
+Hay uno distinto en cada entorno, y los dos hacen lo mismo —reenviar servidor
+contra servidor, donde la política de mismo origen no aplica porque es cosa del
+navegador:
+
+| Entorno       | Proxy                          | Dónde se configura                            |
+| ------------- | ------------------------------ | --------------------------------------------- |
+| `npm run dev` | Vite                           | `server.proxy` en [vite.config.ts](vite.config.ts) |
+| Producción    | Cloudflare Worker              | [cloudflare/worker.js](cloudflare/worker.js)  |
+
+GitHub Pages no puede hacer de proxy —sirve archivos estáticos, sin servidor
+que reenvíe nada—, así que en producción el Worker se pone **delante** del
+dominio: intercepta `/ords/*` y deja pasar todo lo demás hacia Pages.
+
+Desplegar el Worker (una sola vez, y cada vez que cambie):
+
+```sh
+npx wrangler deploy --config cloudflare/wrangler.toml
+```
+
+> Requisito: el dominio tiene que estar administrado por Cloudflare —los
+> nameservers apuntados desde Hostinger—, o la ruta del Worker no intercepta
+> nada.
+
+La alternativa sería habilitar CORS en APEX (_Administración del Workspace →
+RESTful Services → orígenes permitidos_) y pegarle directo a ORDS, sin proxy ni
+Cloudflare. Es más simple, pero depende de tener acceso a esa configuración.
 
 ### Workflows
 
@@ -176,7 +234,7 @@ _Deploy to GitHub Pages_ → _Run workflow_.
 ### Probar el build de Pages en local
 
 ```sh
-GITHUB_PAGES=true npm run build
+npm run build
 npx serve dist/client
 ```
 

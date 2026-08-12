@@ -14,6 +14,9 @@ import { reportError } from "../lib/error-reporting";
 import { ThemeProvider, themeInitScript } from "../components/ctell/theme-provider";
 import { Toaster } from "../components/ui/sonner";
 
+/** Origen público del sitio. Ver public/CNAME: el dominio se configura ahí. */
+const SITIO = "https://www.ctell.online";
+
 function NotFoundComponent() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
@@ -95,6 +98,11 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
         content: "Compras, ventas, stock, tesorería y RRHH en un solo panel.",
       },
       { property: "og:type", content: "website" },
+      // og:url e og:image tienen que ser absolutas: quien las lee es un
+      // servidor externo (WhatsApp, Slack, Twitter), que no tiene contra qué
+      // resolver una ruta relativa.
+      { property: "og:url", content: SITIO },
+      { property: "og:image", content: `${SITIO}/icons/ctell-512.png` },
       { name: "twitter:card", content: "summary_large_image" },
     ],
     links: [
@@ -102,6 +110,9 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
         rel: "stylesheet",
         href: appCss,
       },
+      // ctell.online (sin www) redirige acá, pero un buscador que llegue por
+      // la otra forma vería dos sitios con el mismo contenido sin este canonical.
+      { rel: "canonical", href: SITIO },
       { rel: "preconnect", href: "https://fonts.googleapis.com" },
       { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
       {
@@ -109,8 +120,9 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
         href: "https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&family=Manrope:wght@400;500;600;700&display=swap",
       },
       // Los assets de public/ no pasan por el bundler, así que su ruta no se
-      // reescribe sola: hay que anteponer BASE_URL a mano o en GitHub Pages
-      // apuntarían a la raíz del dominio en vez de a /ctell-admin-hub/.
+      // reescribe sola. Hoy BASE_URL es "/" y esto es un no-op, pero si el
+      // sitio volviera a servirse desde un subdirectorio, sin el prefijo
+      // apuntarían a la raíz del dominio y darían 404.
       { rel: "manifest", href: `${import.meta.env.BASE_URL}manifest.webmanifest` },
       { rel: "icon", type: "image/png", href: `${import.meta.env.BASE_URL}favicon.png` },
       {

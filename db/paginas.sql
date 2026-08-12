@@ -488,12 +488,53 @@ END PKG_PERMISOS;
 --   DELETE /modulos/:id    baja
 --------------------------------------------------------------------------------
 
+--------------------------------------------------------------------------------
+-- Borra un módulo ORDS si existe, reintentando ante un interbloqueo.
+--
+-- Copia del que también define db/usuarios.sql: cada archivo se ejecuta por
+-- separado y no puede asumir que el otro ya corrió. `CREATE OR REPLACE` hace
+-- que redefinirlo sea inocuo.
+--
+-- Un `WHEN OTHERS THEN NULL` acá se tragaba el ORA-00060 del interbloqueo: el
+-- DELETE fallaba en silencio y el DEFINE_MODULE moría después con ORA-00001
+-- por nombre duplicado. El interbloqueo aparece cuando otra sesión tiene
+-- tomadas las filas de metadatos de ORDS —el propio ORDS sirviendo peticiones
+-- mientras se reejecuta el script—, es transitorio y se reintenta.
+--------------------------------------------------------------------------------
+CREATE OR REPLACE PROCEDURE BORRAR_MODULO_ORDS (p_modulo IN VARCHAR2) AS
+  C_INTENTOS CONSTANT PLS_INTEGER := 3;
+  l_existe   PLS_INTEGER;
 BEGIN
-  BEGIN
-    ORDS.DELETE_MODULE(p_module_name => 'modulos');
-  EXCEPTION
-    WHEN OTHERS THEN NULL;  -- no existía
-  END;
+  FOR i IN 1 .. C_INTENTOS LOOP
+    BEGIN
+      SELECT COUNT(*)
+        INTO l_existe
+        FROM USER_ORDS_MODULES
+       WHERE NAME = p_modulo;
+
+      IF l_existe = 0 THEN
+        RETURN;
+      END IF;
+
+      ORDS.DELETE_MODULE(p_module_name => p_modulo);
+      COMMIT;
+      RETURN;
+
+    EXCEPTION
+      WHEN OTHERS THEN
+        IF SQLCODE IN (-60, -4020) AND i < C_INTENTOS THEN
+          ROLLBACK;
+          DBMS_SESSION.SLEEP(2);
+        ELSE
+          RAISE;
+        END IF;
+    END;
+  END LOOP;
+END BORRAR_MODULO_ORDS;
+/
+
+BEGIN
+  BORRAR_MODULO_ORDS('modulos');
 
   ORDS.DEFINE_MODULE(
     p_module_name    => 'modulos',
@@ -797,11 +838,7 @@ END;
 --------------------------------------------------------------------------------
 
 BEGIN
-  BEGIN
-    ORDS.DELETE_MODULE(p_module_name => 'paginas');
-  EXCEPTION
-    WHEN OTHERS THEN NULL;
-  END;
+  BORRAR_MODULO_ORDS('paginas');
 
   ORDS.DEFINE_MODULE(
     p_module_name    => 'paginas',
@@ -1093,11 +1130,7 @@ END;
 --------------------------------------------------------------------------------
 
 BEGIN
-  BEGIN
-    ORDS.DELETE_MODULE(p_module_name => 'permisos');
-  EXCEPTION
-    WHEN OTHERS THEN NULL;
-  END;
+  BORRAR_MODULO_ORDS('permisos');
 
   ORDS.DEFINE_MODULE(
     p_module_name    => 'permisos',

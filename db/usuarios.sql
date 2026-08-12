@@ -565,12 +565,61 @@ END PKG_TOKENS;
 -- habilitado y esa llamada falla con ORA-01031 (privilegios insuficientes).
 --------------------------------------------------------------------------------
 
+--------------------------------------------------------------------------------
+-- Borra un módulo ORDS si existe, reintentando ante un interbloqueo.
+--
+-- Antes esto era un `WHEN OTHERS THEN NULL` inline, pensado para tragarse el
+-- caso "el módulo no existía todavía". El problema es que se tragaba TODO,
+-- incluido un ORA-00060: el DELETE fallaba en silencio, la ejecución seguía, y
+-- el DEFINE_MODULE de abajo moría con ORA-00001 (nombre duplicado) contra el
+-- módulo que nunca se llegó a borrar.
+--
+-- El interbloqueo aparece cuando otra sesión tiene tomadas las filas de
+-- metadatos de ORDS: típicamente el propio ORDS sirviendo peticiones de la app
+-- mientras se reejecuta este script. Es transitorio, así que se reintenta; lo
+-- que no se puede hacer es ignorarlo.
+--------------------------------------------------------------------------------
+CREATE OR REPLACE PROCEDURE BORRAR_MODULO_ORDS (p_modulo IN VARCHAR2) AS
+  C_INTENTOS CONSTANT PLS_INTEGER := 3;
+  l_existe   PLS_INTEGER;
 BEGIN
-  BEGIN
-    ORDS.DELETE_MODULE(p_module_name => 'auth');
-  EXCEPTION
-    WHEN OTHERS THEN NULL;  -- no existía
-  END;
+  FOR i IN 1 .. C_INTENTOS LOOP
+    BEGIN
+      -- Se consulta antes de borrar en vez de capturar el error de "no
+      -- existe": así el EXCEPTION queda libre para los fallos que sí importan.
+      SELECT COUNT(*)
+        INTO l_existe
+        FROM USER_ORDS_MODULES
+       WHERE NAME = p_modulo;
+
+      IF l_existe = 0 THEN
+        RETURN;  -- No existía: nada que borrar.
+      END IF;
+
+      ORDS.DELETE_MODULE(p_module_name => p_modulo);
+      COMMIT;  -- Libera los locks antes de que DEFINE_MODULE los vuelva a pedir.
+      RETURN;
+
+    EXCEPTION
+      WHEN OTHERS THEN
+        -- ORA-00060 (interbloqueo) y ORA-04020 (lock de objeto) son
+        -- transitorios: la otra sesión termina y el reintento pasa.
+        IF SQLCODE IN (-60, -4020) AND i < C_INTENTOS THEN
+          ROLLBACK;
+          DBMS_SESSION.SLEEP(2);
+        ELSE
+          -- Cualquier otro error, o se acabaron los reintentos: que se vea.
+          -- Seguir de largo dejaría el módulo viejo publicado y el script
+          -- terminaría "bien" sin haber aplicado ningún cambio.
+          RAISE;
+        END IF;
+    END;
+  END LOOP;
+END BORRAR_MODULO_ORDS;
+/
+
+BEGIN
+  BORRAR_MODULO_ORDS('auth');
 
   ORDS.DEFINE_MODULE(
     p_module_name    => 'auth',
@@ -784,11 +833,7 @@ END;
 --------------------------------------------------------------------------------
 
 BEGIN
-  BEGIN
-    ORDS.DELETE_MODULE(p_module_name => 'usuarios');
-  EXCEPTION
-    WHEN OTHERS THEN NULL;
-  END;
+  BORRAR_MODULO_ORDS('usuarios');
 
   ORDS.DEFINE_MODULE(
     p_module_name    => 'usuarios',
@@ -810,12 +855,14 @@ BEGIN
     p_source_type => ORDS.source_type_plsql,
     p_source      => q'~
 DECLARE
-  l_sesion  NUMBER;
-  l_items   CLOB;
-  l_total   NUMBER;
-  l_tamanio NUMBER := LEAST(GREATEST(NVL(TO_NUMBER(:tamanio), 20), 1), 100);
-  l_pagina  NUMBER := GREATEST(NVL(TO_NUMBER(:pagina), 1), 1);
-  l_busca   VARCHAR2(200);
+  l_sesion   NUMBER;
+  l_items    CLOB;
+  l_total    NUMBER;
+  l_tamanio  NUMBER;
+  l_pagina   NUMBER;
+  l_activo   NUMBER;
+  l_busqueda VARCHAR2(200);
+  l_busca    VARCHAR2(200);
 BEGIN
   l_sesion := PKG_TOKENS.VALIDAR_TOKEN(REPLACE(:authorization, 'Bearer ', ''));
   IF l_sesion IS NULL THEN
@@ -824,7 +871,26 @@ BEGIN
     RETURN;
   END IF;
 
-  l_busca := '%' || LOWER(TRIM(:busqueda)) || '%';
+  -- Los TO_NUMBER van DENTRO del BEGIN, no en el DECLARE.
+  --
+  -- El DECLARE se ejecuta antes que el bloque EXCEPTION exista, asi que una
+  -- excepcion ahi no la captura el WHEN OTHERS: escapa del handler y ORDS
+  -- responde 500 sin dejar rastro de por que.
+  --
+  -- Y pasaba: un parametro que el cliente no manda no llega NULL sino como
+  -- cadena vacia, y TO_NUMBER('') es ORA-01722. El listado de usuarios pide
+  -- ?tamanio=100 sin pagina, y ese solo caso tiraba abajo el endpoint entero.
+  -- Por eso NULLIF(..., '') antes de convertir: cadena vacia -> NULL -> NVL
+  -- aplica el valor por defecto.
+  l_tamanio := LEAST(GREATEST(NVL(TO_NUMBER(NULLIF(:tamanio, '')), 20), 1), 100);
+  l_pagina  := GREATEST(NVL(TO_NUMBER(NULLIF(:pagina, '')), 1), 1);
+  l_activo  := TO_NUMBER(NULLIF(:activo, ''));
+
+  -- Misma normalizacion para la busqueda: sin esto, un ?busqueda= vacio
+  -- filtraba por '%%' en vez de no filtrar, y el IS NULL de abajo nunca daba
+  -- verdadero.
+  l_busqueda := NULLIF(TRIM(:busqueda), '');
+  l_busca    := '%' || LOWER(l_busqueda) || '%';
 
   -- Nunca se exponen CONTRASENA_HASH ni SALT.
   SELECT JSON_ARRAYAGG(
@@ -849,21 +915,24 @@ BEGIN
       SELECT ID_USUARIO, USUARIO, NOMBRE_APELLIDO, CORREO,
              ACTIVO, FECHA_CREACION
         FROM USUARIOS
-       WHERE (:busqueda IS NULL
+       WHERE (l_busqueda IS NULL
               OR LOWER(USUARIO) LIKE l_busca
               OR LOWER(NOMBRE_APELLIDO) LIKE l_busca
               OR LOWER(CORREO) LIKE l_busca)
          -- El query param llega como 1/0 y se traduce al codigo 'A'/'I'.
          -- CASE inline por lo mismo que arriba: en SQL no se puede invocar
          -- una funcion de PKG_USUARIOS.
-         AND (:activo IS NULL
-              OR UPPER(TRIM(ACTIVO)) =
-                 CASE WHEN TO_NUMBER(:activo) = 1 THEN 'A' ELSE 'I' END)
+         --
+         -- Se compara contra l_activo y no contra :activo directo: un
+         -- parametro ausente llega como cadena vacia, que no es NULL, asi que
+         -- pasaba el IS NULL y moria en el TO_NUMBER con ORA-01722.
+         AND (l_activo IS NULL
+              OR UPPER(TRIM(ACTIVO)) = CASE WHEN l_activo = 1 THEN 'A' ELSE 'I' END)
        ORDER BY NOMBRE_APELLIDO
       OFFSET (l_pagina - 1) * l_tamanio ROWS FETCH NEXT l_tamanio ROWS ONLY
     );
 
-  l_total := PKG_USUARIOS.CONTAR_USUARIOS(:busqueda, TO_NUMBER(:activo));
+  l_total := PKG_USUARIOS.CONTAR_USUARIOS(l_busqueda, l_activo);
 
   :status_code := 200;
   :resultado := JSON_OBJECT(

@@ -10,11 +10,11 @@ export const getRouter = () => {
     context: { queryClient },
     scrollRestoration: true,
     defaultPreloadStaleTime: 0,
-    // En GitHub Pages la app vive en /ctell-admin-hub/, no en la raíz del
-    // dominio. `base` de Vite sólo reescribe las URLs de los assets: sin este
-    // basepath el router leería "/ctell-admin-hub/home" como ruta inexistente
-    // y mostraría el 404. import.meta.env.BASE_URL es el mismo valor que
-    // vite.config.ts calculó, así que en local sigue siendo "/".
+    // Hoy es "/" —el sitio vive en la raíz de www.ctell.online—, pero se deja
+    // atado a BASE_URL y no clavado: `base` de Vite sólo reescribe las URLs de
+    // los assets, así que si el sitio volviera a servirse desde un
+    // subdirectorio, sin este basepath el router leería "/<subdir>/home" como
+    // ruta inexistente y mostraría el 404.
     basepath: import.meta.env.BASE_URL,
   });
 

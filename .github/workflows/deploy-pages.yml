@@ -36,24 +36,23 @@ jobs:
       - name: Instalar dependencias
         run: npm install --no-save --no-audit --no-fund
 
+      # El sitio se sirve en la raíz de www.ctell.online, así que el build no
+      # lleva prefijo: `base` es "/" fijo en vite.config.ts.
       - name: Build (SPA estático)
         run: npm run build
-        env:
-          # Activa el base path /ctell-admin-hub/ en vite.config.ts.
-          GITHUB_PAGES: "true"
 
-      # Pages sirve index.html en la raíz y 404.html ante cualquier ruta que no
-      # exista como archivo. Ambos apuntan al mismo shell: así /home y
-      # /configuracion cargan la app y el router del cliente resuelve la ruta,
-      # en vez de devolver el 404 de GitHub.
-      # .nojekyll evita que Pages ignore los archivos que empiezan con "_".
-      # Con `nitro: false` la salida estática queda en dist/client (nitro es el
-      # que la movería a .output/public).
+      # Renombra el shell a index.html/404.html y agrega .nojekyll. Ver
+      # scripts/preparar-shell.mjs para el detalle de qué genera y por qué.
       - name: Preparar salida para Pages
-        run: |
-          cp dist/client/_shell.html dist/client/index.html
-          cp dist/client/_shell.html dist/client/404.html
-          touch dist/client/.nojekyll
+        run: node scripts/preparar-shell.mjs
+
+      # El artefacto reemplaza el sitio entero en cada deploy: si CNAME no
+      # viaja adentro, Pages pierde el dominio propio y vuelve a
+      # josegalvez1985.github.io. Vite copia public/ tal cual, así que el
+      # archivo ya debería estar; el chequeo corta el deploy si alguien lo
+      # borró, en vez de descubrirlo con el sitio caído.
+      - name: Verificar CNAME
+        run: test -f dist/client/CNAME && cat dist/client/CNAME
 
       - name: Subir artefacto
         uses: actions/upload-pages-artifact@v3

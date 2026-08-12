@@ -6,3 +6,6 @@ pnpm-lock.yaml
 package-lock.json
 bun.lock
 routeTree.gen.ts
+
+# Texto plano sin extensión: Prettier no infiere parser y aborta el `format`.
+public/CNAME

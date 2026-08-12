@@ -8,15 +8,22 @@
  */
 
 /**
- * En desarrollo se usa una ruta relativa para que las peticiones pasen por el
- * proxy de Vite (ver `server.proxy` en vite.config.ts): al salir del mismo
- * origen que la página, el navegador no aplica CORS y no hace falta tocar la
- * configuración de ORDS.
+ * Todas las peticiones van por ruta relativa, en desarrollo y en producción.
  *
- * En el build no hay proxy —GitHub Pages sirve archivos estáticos, sin
- * servidor que reenvíe nada—, así que ahí se pega directo a APEX.
+ * ORDS no manda `Access-Control-Allow-Origin`, así que una URL absoluta a
+ * oracleapex.com la bloquearía el navegador por ser otro origen. La ruta
+ * relativa esquiva el problema porque nunca se sale del origen de la página;
+ * quien reenvía a APEX es un proxy, y hay uno distinto en cada entorno:
+ *
+ * - `npm run dev` → el proxy de Vite (ver `server.proxy` en vite.config.ts).
+ * - Producción    → un Worker de Cloudflare delante del dominio, porque
+ *                   GitHub Pages sirve archivos estáticos y no puede
+ *                   reenviar nada. Ver cloudflare/worker.js.
+ *
+ * En los dos casos el reenvío es servidor contra servidor, donde la política
+ * de mismo origen no aplica: es cosa del navegador.
  */
-const BASE_URL = import.meta.env.DEV ? "/ords/ctell" : "https://oracleapex.com/ords/ctell";
+const BASE_URL = "/ords/ctell";
 const TOKEN_KEY = "ctell-token";
 const USUARIO_KEY = "ctell-usuario";
 const USUARIO_RECORDADO_KEY = "ctell-usuario-recordado";
@@ -152,6 +159,46 @@ export function setCredencialesRecordadas(credenciales: CredencialesRecordadas |
   }
 }
 
+/**
+ * Traduce un código HTTP a un mensaje que le sirva a quien usa el sistema.
+ *
+ * Es el último recurso: solo se usa cuando el backend no mandó su propio
+ * mensaje, que siempre es más preciso. Pasa cuando la respuesta no es JSON —un
+ * error de ORDS anterior al handler llega como HTML— y ahí lo único que se
+ * sabe es el número.
+ *
+ * Los mensajes dicen qué hacer, no qué falló: a quien está frente a la
+ * pantalla "Error 502" no le sirve de nada, "el servidor no responde,
+ * probá de nuevo en unos minutos" sí.
+ */
+function mensajeSegunEstado(status: number): string {
+  switch (status) {
+    case 400:
+      return "Los datos enviados no son válidos. Revisá el formulario e intentá de nuevo.";
+    case 401:
+      // Genérico a propósito: acá no se sabe si el 401 vino del login o de un
+      // token vencido en cualquier otra pantalla. El login lo reemplaza por
+      // uno específico, que en ese contexto sí es correcto.
+      return "Tu sesión no es válida o expiró. Iniciá sesión de nuevo.";
+    case 403:
+      return "No tenés permisos para hacer esto. Consultá con un administrador.";
+    case 404:
+      return "No se encontró lo que buscabas. Puede que se haya eliminado.";
+    case 409:
+      return "Ese registro ya existe.";
+    case 500:
+      return "Hubo un problema en el servidor. Si sigue pasando, avisá al administrador.";
+    case 502:
+    case 503:
+    case 504:
+      return "El servidor no está respondiendo. Probá de nuevo en unos minutos.";
+    default:
+      // Un código que no esperábamos: se informa sin tecnicismos, pero el
+      // número queda en ApiError.status para poder diagnosticarlo.
+      return "No se pudo completar la operación. Intentá de nuevo.";
+  }
+}
+
 async function request<T>(
   path: string,
   options: RequestInit & { auth?: boolean } = {},
@@ -194,7 +241,11 @@ async function request<T>(
       setToken(null);
       setUsuarioSesion(null);
     }
-    throw new ApiError(data?.error ?? `Error ${res.status}`, res.status);
+    // El mensaje del backend es siempre el mejor: explica el caso concreto
+    // ("El usuario ya existe"). Solo cuando no llega —porque la respuesta no
+    // era JSON— se traduce el código a algo legible: "Error 401" no le dice
+    // nada a quien está usando el sistema.
+    throw new ApiError(data?.error ?? mensajeSegunEstado(res.status), res.status);
   }
 
   return data as T;

@@ -54,6 +54,24 @@ function LoginPage() {
     if (!recordado.password) passwordRef.current?.focus();
   }, []);
 
+  /**
+   * Mensaje de error del login.
+   *
+   * El 401 se traduce acá y no en api.ts porque el significado depende del
+   * contexto: en el resto de la app un 401 es una sesión vencida, pero en el
+   * login —donde todavía no hay sesión— solo puede ser credenciales que no
+   * coinciden. Decirle "tu sesión expiró" a alguien que recién intenta entrar
+   * lo mandaría a buscar un problema que no existe.
+   */
+  function mensajeDeLogin(err: unknown): string {
+    if (err instanceof ApiError) {
+      return err.status === 401 ? "Usuario o contraseña incorrectos." : err.message;
+    }
+    // No es ApiError: la petición no llegó a completarse (sin conexión, DNS,
+    // servidor caído). No hay status que traducir.
+    return "No se pudo conectar con el servidor. Revisá tu conexión e intentá de nuevo.";
+  }
+
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
@@ -72,7 +90,8 @@ function LoginPage() {
       if (err instanceof ApiError && err.status === 401) {
         setCredencialesRecordadas(null);
       }
-      setError(err instanceof ApiError ? err.message : "No se pudo conectar con el servidor");
+
+      setError(mensajeDeLogin(err));
       setLoading(false);
     }
   }
