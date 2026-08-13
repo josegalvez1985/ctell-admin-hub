@@ -204,38 +204,42 @@ CREATE OR REPLACE PACKAGE BODY PKG_EMPRESAS AS
     -- para mostrarlos. Traer sólo el nombre obligaría a otra petición.
     --
     -- LOGO no se selecciona: es un BLOB y no entra en el JSON.
-    SELECT JSON_ARRAYAGG(
-             JSON_OBJECT(
-               'id'                  VALUE e.ID_EMPRESA,
-               'nombreEmpresa'       VALUE e.NOMBRE_EMPRESA,
-               'ruc'                 VALUE e.RUC,
-               'correoEmpresa'       VALUE e.CORREO_EMPRESA,
-               'telefono'            VALUE e.TELEFONO,
-               'direccion'           VALUE e.DIRECCION,
-               'idCiudad'            VALUE e.ID_CIUDAD,
-               'ciudad'              VALUE c.NOMBRE_CIUDAD,
-               'idDepartamento'      VALUE e.ID_DEPARTAMENTO,
-               'departamento'        VALUE d.NOMBRE_DEPARTAMENTO,
-               'idPais'              VALUE e.ID_PAIS,
-               'pais'                VALUE p.NOMBRE_PAIS,
-               'monedaDefecto'       VALUE e.MONEDA_DEFECTO,
-               'representanteLegal'  VALUE e.REPRESENTANTE_LEGAL,
-               'activo'              VALUE CASE UPPER(TRIM(e.ACTIVO))
-                                             WHEN 'I' THEN 'I'
-                                             WHEN '0' THEN 'I'
-                                             ELSE 'A'
-                                           END
-               RETURNING CLOB
-             )
-             ORDER BY e.NOMBRE_EMPRESA
-             RETURNING CLOB
-           )
+    -- El JSON_OBJECT se arma en una subconsulta y el JSON_ARRAYAGG agrega esa
+    -- columna, que ya viene tipada como CLOB. Anidado, el resultado intermedio
+    -- del agregado se materializa como VARCHAR2 y revienta al pasar los 4000
+    -- bytes: el listado anda con pocas filas y devuelve 500 cuando crece.
+    SELECT JSON_ARRAYAGG(fila ORDER BY nombre_empresa RETURNING CLOB)
       INTO l_items
-      FROM EMPRESAS e
-      LEFT JOIN CIUDADES      c ON c.ID_CIUDAD       = e.ID_CIUDAD
-      LEFT JOIN DEPARTAMENTOS d ON d.ID_DEPARTAMENTO = e.ID_DEPARTAMENTO
-      LEFT JOIN PAISES        p ON p.ID_PAIS         = e.ID_PAIS
-     WHERE l_id_ciudad IS NULL OR e.ID_CIUDAD = l_id_ciudad;
+      FROM (
+        SELECT JSON_OBJECT(
+                 'id'                  VALUE e.ID_EMPRESA,
+                 'nombreEmpresa'       VALUE e.NOMBRE_EMPRESA,
+                 'ruc'                 VALUE e.RUC,
+                 'correoEmpresa'       VALUE e.CORREO_EMPRESA,
+                 'telefono'            VALUE e.TELEFONO,
+                 'direccion'           VALUE e.DIRECCION,
+                 'idCiudad'            VALUE e.ID_CIUDAD,
+                 'ciudad'              VALUE c.NOMBRE_CIUDAD,
+                 'idDepartamento'      VALUE e.ID_DEPARTAMENTO,
+                 'departamento'        VALUE d.NOMBRE_DEPARTAMENTO,
+                 'idPais'              VALUE e.ID_PAIS,
+                 'pais'                VALUE p.NOMBRE_PAIS,
+                 'monedaDefecto'       VALUE e.MONEDA_DEFECTO,
+                 'representanteLegal'  VALUE e.REPRESENTANTE_LEGAL,
+                 'activo'              VALUE CASE UPPER(TRIM(e.ACTIVO))
+                                               WHEN 'I' THEN 'I'
+                                               WHEN '0' THEN 'I'
+                                               ELSE 'A'
+                                             END
+                 RETURNING CLOB
+               ) AS fila,
+               e.NOMBRE_EMPRESA AS nombre_empresa
+          FROM EMPRESAS e
+          LEFT JOIN CIUDADES      c ON c.ID_CIUDAD       = e.ID_CIUDAD
+          LEFT JOIN DEPARTAMENTOS d ON d.ID_DEPARTAMENTO = e.ID_DEPARTAMENTO
+          LEFT JOIN PAISES        p ON p.ID_PAIS         = e.ID_PAIS
+         WHERE l_id_ciudad IS NULL OR e.ID_CIUDAD = l_id_ciudad
+      );
 
     p_status_code := 200;
     -- JSON_OBJECT(... RETURNING CLOB) como asignación PL/SQL directa (sin

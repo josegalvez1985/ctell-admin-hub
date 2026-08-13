@@ -181,29 +181,39 @@ CREATE OR REPLACE PACKAGE BODY PKG_CIUDADES AS
     -- ACTIVO se normaliza a 'A'/'I': el DEFAULT del DDL es 1, así que puede
     -- haber filas viejas con '1'. Cualquier valor que no sea 'I' se considera
     -- activo, que es lo que ese default quería decir.
-    SELECT JSON_ARRAYAGG(
-             JSON_OBJECT(
-               'id'                 VALUE c.ID_CIUDAD,
-               'idDepartamento'     VALUE c.ID_DEPARTAMENTO,
-               'departamento'       VALUE d.NOMBRE_DEPARTAMENTO,
-               'idPais'             VALUE d.ID_PAIS,
-               'pais'               VALUE p.NOMBRE_PAIS,
-               'nombreCiudad'       VALUE c.NOMBRE_CIUDAD,
-               'activo'             VALUE CASE UPPER(TRIM(c.ACTIVO))
-                                            WHEN 'I' THEN 'I'
-                                            WHEN '0' THEN 'I'
-                                            ELSE 'A'
-                                          END
-               RETURNING CLOB
-             )
-             ORDER BY p.NOMBRE_PAIS, d.NOMBRE_DEPARTAMENTO, c.NOMBRE_CIUDAD
-             RETURNING CLOB
-           )
+    -- El JSON_OBJECT se arma en una subconsulta y el JSON_ARRAYAGG agrega esa
+    -- columna, que ya viene tipada como CLOB.
+    --
+    -- POR QUÉ ASÍ, y no anidado como en departamentos: anidado, el resultado
+    -- intermedio del agregado se materializa como VARCHAR2 y revienta al pasar
+    -- los 4000 bytes. Con UN departamento el JSON entra y el endpoint responde
+    -- 200; sin filtro, con todas las ciudades, se pasa y devuelve 500. Ese "con
+    -- uno anda, con todos no" es la firma de este bug — y por eso departamentos
+    -- nunca lo mostró: su listado es mucho más corto.
+    SELECT JSON_ARRAYAGG(fila ORDER BY nombre_departamento, nombre_ciudad RETURNING CLOB)
       INTO l_items
-      FROM CIUDADES c
-      JOIN DEPARTAMENTOS d ON d.ID_DEPARTAMENTO = c.ID_DEPARTAMENTO
-      JOIN PAISES p ON p.ID_PAIS = d.ID_PAIS
-     WHERE l_id_departamento IS NULL OR c.ID_DEPARTAMENTO = l_id_departamento;
+      FROM (
+        SELECT JSON_OBJECT(
+                 'id'                 VALUE c.ID_CIUDAD,
+                 'idDepartamento'     VALUE c.ID_DEPARTAMENTO,
+                 'departamento'       VALUE d.NOMBRE_DEPARTAMENTO,
+                 'idPais'             VALUE d.ID_PAIS,
+                 'pais'               VALUE p.NOMBRE_PAIS,
+                 'nombreCiudad'       VALUE c.NOMBRE_CIUDAD,
+                 'activo'             VALUE CASE UPPER(TRIM(c.ACTIVO))
+                                              WHEN 'I' THEN 'I'
+                                              WHEN '0' THEN 'I'
+                                              ELSE 'A'
+                                            END
+                 RETURNING CLOB
+               ) AS fila,
+               d.NOMBRE_DEPARTAMENTO AS nombre_departamento,
+               c.NOMBRE_CIUDAD       AS nombre_ciudad
+          FROM CIUDADES c
+          JOIN DEPARTAMENTOS d ON d.ID_DEPARTAMENTO = c.ID_DEPARTAMENTO
+          JOIN PAISES p ON p.ID_PAIS = d.ID_PAIS
+         WHERE l_id_departamento IS NULL OR c.ID_DEPARTAMENTO = l_id_departamento
+      );
 
     p_status_code := 200;
     -- JSON_OBJECT(... RETURNING CLOB) como asignación PL/SQL directa (sin

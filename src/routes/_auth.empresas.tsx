@@ -9,6 +9,7 @@ import { z } from "zod";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
 import { Combobox } from "@/components/ctell/Combobox";
+import { SIN_FILTRO, TableHeadFiltrable } from "@/components/ctell/TableHeadFiltrable";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
 import { useTablaListado } from "@/hooks/use-tabla-listado";
 import { api, ApiError, esActivo, type Empresa, type Estado } from "@/lib/api";
@@ -75,27 +76,34 @@ const schema = z.object({
 
 type FormValues = z.infer<typeof schema>;
 
-/** Valor del filtro que significa "sin filtrar". El combobox no admite "". */
-const TODOS = "todos";
-
 const MENSAJE_ERROR = (error: unknown, fallback: string) =>
   error instanceof ApiError ? error.message : fallback;
+
+/**
+ * Cuántas filas se muestran de entrada, y cuántas suma cada "Mostrar más".
+ *
+ * El endpoint devuelve todo de una vez —poco para la red, mucho para el DOM—,
+ * así que la tabla corta acá.
+ */
+const POR_PAGINA = 20;
 
 function EmpresasPage() {
   const queryClient = useQueryClient();
   const [editando, setEditando] = useState<Empresa | null>(null);
   const [creando, setCreando] = useState(false);
   const [aEliminar, setAEliminar] = useState<Empresa | null>(null);
-  const [filtroCiudad, setFiltroCiudad] = useState<string>(TODOS);
+  const [filtroCiudad, setFiltroCiudad] = useState<string>(SIN_FILTRO);
 
-  // El filtro se aplica en el backend (?idCiudad=): la query lleva la ciudad
-  // en la key para que cada selección tenga su propia entrada en la caché.
-  const idCiudadFiltro = filtroCiudad === TODOS ? undefined : Number(filtroCiudad);
-
+  // El endpoint trae todas las empresas y el filtro se aplica acá abajo, sobre
+  // la columna Ubicación. Cambiar de ciudad no dispara un viaje a la red.
   const { data, isPending, isError, error } = useQuery({
-    queryKey: ["empresas", idCiudadFiltro ?? null],
-    queryFn: () => api.empresas.listar(idCiudadFiltro ? { idCiudad: idCiudadFiltro } : {}),
+    queryKey: ["empresas", null],
+    queryFn: () => api.empresas.listar(),
   });
+
+  const empresasFiltradas = (data?.items ?? []).filter(
+    (e) => filtroCiudad === SIN_FILTRO || String(e.idCiudad) === filtroCiudad,
+  );
 
   // Las ciudades alimentan el filtro. Misma queryKey que usa la página de
   // Ciudades al listar sin filtrar, así TanStack Query las comparte.
@@ -120,7 +128,7 @@ function EmpresasPage() {
   // Búsqueda por cualquier campo visible + orden por click en el header.
   // Ver el criterio general en la guía de frontend, sección "Listados".
   const { busqueda, setBusqueda, orden, alternarOrden, resultado, termino } = useTablaListado(
-    data?.items ?? [],
+    empresasFiltradas,
     (e) => [e.nombreEmpresa, e.ruc, e.ciudad, e.pais, esActivo(e.activo) ? "Activo" : "Inactivo"],
   );
 
@@ -129,6 +137,21 @@ function EmpresasPage() {
     etiqueta: c.nombreCiudad,
     descripcion: c.departamento,
   }));
+
+  // Cuántas filas se están mostrando. Se resetea al cambiar el filtro o la
+  // búsqueda: seguir en "80 de 90" tras filtrar a 12 perdería el sentido.
+  const [visibles, setVisibles] = useState(POR_PAGINA);
+  const claveVista = `${filtroCiudad}|${termino}`;
+  const [claveAnterior, setClaveAnterior] = useState(claveVista);
+  if (claveVista !== claveAnterior) {
+    // Ajuste de estado en render, no useEffect: React re-renderiza antes de
+    // pintar, así que la lista nunca se ve con el valor viejo.
+    setClaveAnterior(claveVista);
+    setVisibles(POR_PAGINA);
+  }
+
+  const mostrados = resultado.slice(0, visibles);
+  const quedan = resultado.length - mostrados.length;
 
   return (
     <AppLayout active="/empresas" title="Empresas">
@@ -146,28 +169,15 @@ function EmpresasPage() {
           </Button>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="relative min-w-48 flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={busqueda}
-              onChange={(e) => setBusqueda(e.target.value)}
-              placeholder="Buscar por nombre, RUC, ciudad…"
-              className="pl-9"
-            />
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="shrink-0 text-sm text-muted-foreground">Ciudad</span>
-            <div className="w-full sm:w-64">
-              <Combobox
-                opciones={[{ valor: TODOS, etiqueta: "Todas las ciudades" }, ...ciudadesOpciones]}
-                value={filtroCiudad}
-                onChange={setFiltroCiudad}
-                placeholder="Todas las ciudades"
-                buscarPlaceholder="Buscar ciudad…"
-              />
-            </div>
-          </div>
+        {/* El filtro por ciudad vive en el header de la columna Ubicación. */}
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={busqueda}
+            onChange={(e) => setBusqueda(e.target.value)}
+            placeholder="Buscar por nombre, RUC, ciudad…"
+            className="pl-9"
+          />
         </div>
 
         {isPending && (
@@ -189,7 +199,7 @@ function EmpresasPage() {
             <p className="text-sm text-muted-foreground">
               {termino
                 ? `Sin resultados para "${busqueda.trim()}".`
-                : filtroCiudad === TODOS
+                : filtroCiudad === SIN_FILTRO
                   ? "Todavía no hay empresas cargadas."
                   : "Esa ciudad todavía no tiene empresas cargadas."}
             </p>
@@ -206,7 +216,7 @@ function EmpresasPage() {
             de costado para leer una fila entera. */}
         {resultado.length > 0 && (
           <ul className="space-y-3 sm:hidden">
-            {resultado.map((empresa) => {
+            {mostrados.map((empresa) => {
               const activo = esActivo(empresa.activo);
 
               return (
@@ -271,12 +281,19 @@ function EmpresasPage() {
                   >
                     RUC
                   </TableHeadOrdenable>
-                  <TableHeadOrdenable
+                  <TableHeadFiltrable
                     direccion={orden?.campo === "ciudad" ? orden.direccion : null}
-                    onClick={() => alternarOrden("ciudad")}
+                    onOrdenar={() => alternarOrden("ciudad")}
+                    opciones={ciudadesOpciones.map((c) => ({
+                      valor: c.valor,
+                      etiqueta: c.etiqueta,
+                    }))}
+                    valor={filtroCiudad}
+                    onFiltrar={setFiltroCiudad}
+                    buscarPlaceholder="Buscar ciudad…"
                   >
                     Ubicación
-                  </TableHeadOrdenable>
+                  </TableHeadFiltrable>
                   <TableHeadOrdenable
                     direccion={orden?.campo === "activo" ? orden.direccion : null}
                     onClick={() => alternarOrden("activo")}
@@ -287,7 +304,7 @@ function EmpresasPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {resultado.map((empresa) => {
+                {mostrados.map((empresa) => {
                   const activo = esActivo(empresa.activo);
 
                   return (
@@ -336,10 +353,19 @@ function EmpresasPage() {
           </div>
         )}
 
+        {quedan > 0 && (
+          <div className="flex justify-center">
+            <Button variant="outline" onClick={() => setVisibles((v) => v + POR_PAGINA)}>
+              Mostrar {Math.min(quedan, POR_PAGINA)} más
+            </Button>
+          </div>
+        )}
+
         {data && resultado.length > 0 && (
-          <p className="text-xs text-muted-foreground">
-            {resultado.length} de {data.items.length} empresa
-            {data.items.length === 1 ? "" : "s"}
+          <p className="text-center text-xs text-muted-foreground">
+            Mostrando {mostrados.length} de {resultado.length} empresa
+            {resultado.length === 1 ? "" : "s"}
+            {termino || filtroCiudad !== SIN_FILTRO ? ` (${data.items.length} en total)` : ""}
           </p>
         )}
 

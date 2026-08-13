@@ -180,27 +180,32 @@ CREATE OR REPLACE PACKAGE BODY PKG_DEPARTAMENTOS AS
     -- ACTIVO se normaliza a 'A'/'I': el DEFAULT del DDL es 1, así que puede
     -- haber filas viejas con '1'. Cualquier valor que no sea 'I' se considera
     -- activo, que es lo que ese default quería decir.
-    SELECT JSON_ARRAYAGG(
-             JSON_OBJECT(
-               'id'                 VALUE d.ID_DEPARTAMENTO,
-               'idPais'             VALUE d.ID_PAIS,
-               'pais'               VALUE p.NOMBRE_PAIS,
-               'codigoPais'         VALUE p.CODIGO_PAIS,
-               'nombreDepartamento' VALUE d.NOMBRE_DEPARTAMENTO,
-               'activo'             VALUE CASE UPPER(TRIM(d.ACTIVO))
-                                            WHEN 'I' THEN 'I'
-                                            WHEN '0' THEN 'I'
-                                            ELSE 'A'
-                                          END
-               RETURNING CLOB
-             )
-             ORDER BY p.NOMBRE_PAIS, d.NOMBRE_DEPARTAMENTO
-             RETURNING CLOB
-           )
+    -- El JSON_OBJECT se arma en una subconsulta y el JSON_ARRAYAGG agrega esa
+    -- columna, que ya viene tipada como CLOB. Anidado, el resultado intermedio
+    -- del agregado se materializa como VARCHAR2 y revienta al pasar los 4000
+    -- bytes: el listado anda con pocas filas y devuelve 500 cuando crece.
+    SELECT JSON_ARRAYAGG(fila ORDER BY nombre_pais, nombre_departamento RETURNING CLOB)
       INTO l_items
-      FROM DEPARTAMENTOS d
-      JOIN PAISES p ON p.ID_PAIS = d.ID_PAIS
-     WHERE l_id_pais IS NULL OR d.ID_PAIS = l_id_pais;
+      FROM (
+        SELECT JSON_OBJECT(
+                 'id'                 VALUE d.ID_DEPARTAMENTO,
+                 'idPais'             VALUE d.ID_PAIS,
+                 'pais'               VALUE p.NOMBRE_PAIS,
+                 'codigoPais'         VALUE p.CODIGO_PAIS,
+                 'nombreDepartamento' VALUE d.NOMBRE_DEPARTAMENTO,
+                 'activo'             VALUE CASE UPPER(TRIM(d.ACTIVO))
+                                              WHEN 'I' THEN 'I'
+                                              WHEN '0' THEN 'I'
+                                              ELSE 'A'
+                                            END
+                 RETURNING CLOB
+               ) AS fila,
+               p.NOMBRE_PAIS         AS nombre_pais,
+               d.NOMBRE_DEPARTAMENTO AS nombre_departamento
+          FROM DEPARTAMENTOS d
+          JOIN PAISES p ON p.ID_PAIS = d.ID_PAIS
+         WHERE l_id_pais IS NULL OR d.ID_PAIS = l_id_pais
+      );
 
     p_status_code := 200;
     -- JSON_OBJECT(... RETURNING CLOB) como asignación PL/SQL directa (sin

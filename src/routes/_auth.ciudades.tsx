@@ -9,6 +9,7 @@ import { z } from "zod";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
 import { Combobox } from "@/components/ctell/Combobox";
+import { SIN_FILTRO, TableHeadFiltrable } from "@/components/ctell/TableHeadFiltrable";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
 import { useTablaListado } from "@/hooks/use-tabla-listado";
 import { api, ApiError, esActivo, type Ciudad, type Estado } from "@/lib/api";
@@ -63,8 +64,14 @@ const schema = z.object({
 
 type FormValues = z.infer<typeof schema>;
 
-/** Valor del filtro que significa "sin filtrar". El combobox no admite "". */
-const TODOS = "todos";
+/**
+ * Cuántas filas se muestran de entrada, y cuántas suma cada "Mostrar más".
+ *
+ * El endpoint devuelve todas las ciudades de una vez —son pocas para la red,
+ * pero muchas para el DOM: sin este corte, "todos los departamentos" pinta
+ * miles de filas y la página se traba al abrirla.
+ */
+const POR_PAGINA = 20;
 
 const MENSAJE_ERROR = (error: unknown, fallback: string) =>
   error instanceof ApiError ? error.message : fallback;
@@ -74,19 +81,19 @@ function CiudadesPage() {
   const [editando, setEditando] = useState<Ciudad | null>(null);
   const [creando, setCreando] = useState(false);
   const [aEliminar, setAEliminar] = useState<Ciudad | null>(null);
-  const [filtroDepartamento, setFiltroDepartamento] = useState<string>(TODOS);
+  const [filtroDepartamento, setFiltroDepartamento] = useState<string>(SIN_FILTRO);
 
-  // El filtro se aplica en el backend (?idDepartamento=): la query lleva el
-  // departamento en la key para que cada selección tenga su propia entrada en
-  // la caché.
-  const idDepartamentoFiltro =
-    filtroDepartamento === TODOS ? undefined : Number(filtroDepartamento);
-
+  // El endpoint trae todas las ciudades y el filtro se aplica acá abajo, sobre
+  // la columna Departamento. Cambiar de departamento no dispara un viaje a la
+  // red, y el corte de POR_PAGINA evita que "todos" cargue el DOM de golpe.
   const { data, isPending, isError, error } = useQuery({
-    queryKey: ["ciudades", idDepartamentoFiltro ?? null],
-    queryFn: () =>
-      api.ciudades.listar(idDepartamentoFiltro ? { idDepartamento: idDepartamentoFiltro } : {}),
+    queryKey: ["ciudades", null],
+    queryFn: () => api.ciudades.listar(),
   });
+
+  const ciudadesFiltradas = (data?.items ?? []).filter(
+    (c) => filtroDepartamento === SIN_FILTRO || String(c.idDepartamento) === filtroDepartamento,
+  );
 
   // Los departamentos alimentan el filtro y el formulario. Se piden una vez acá
   // y TanStack Query los comparte con el dialog por la misma queryKey — la
@@ -112,7 +119,7 @@ function CiudadesPage() {
   // Búsqueda por cualquier campo visible + orden por click en el header.
   // Ver el criterio general en la guía de frontend, sección "Listados".
   const { busqueda, setBusqueda, orden, alternarOrden, resultado, termino } = useTablaListado(
-    data?.items ?? [],
+    ciudadesFiltradas,
     (c) => [c.nombreCiudad, c.departamento, c.pais, esActivo(c.activo) ? "Activo" : "Inactivo"],
   );
 
@@ -121,6 +128,22 @@ function CiudadesPage() {
     etiqueta: d.nombreDepartamento,
     descripcion: d.pais,
   }));
+
+  // Cuántas filas se están mostrando. Se resetea al cambiar el filtro o la
+  // búsqueda: seguir en "80 de 90" después de filtrar a 12 resultados mostraría
+  // todo de golpe y perdería el sentido del corte.
+  const [visibles, setVisibles] = useState(POR_PAGINA);
+  const claveVista = `${filtroDepartamento}|${termino}`;
+  const [claveAnterior, setClaveAnterior] = useState(claveVista);
+  if (claveVista !== claveAnterior) {
+    // Ajuste de estado en render, no useEffect: React lo re-renderiza antes de
+    // pintar, así que la lista nunca se ve con el valor viejo.
+    setClaveAnterior(claveVista);
+    setVisibles(POR_PAGINA);
+  }
+
+  const mostrados = resultado.slice(0, visibles);
+  const quedan = resultado.length - mostrados.length;
 
   return (
     <AppLayout active="/ciudades" title="Ciudades">
@@ -138,31 +161,15 @@ function CiudadesPage() {
           </Button>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="relative min-w-48 flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={busqueda}
-              onChange={(e) => setBusqueda(e.target.value)}
-              placeholder="Buscar por ciudad, departamento…"
-              className="pl-9"
-            />
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="shrink-0 text-sm text-muted-foreground">Departamento</span>
-            <div className="w-full sm:w-64">
-              <Combobox
-                opciones={[
-                  { valor: TODOS, etiqueta: "Todos los departamentos" },
-                  ...departamentosOpciones,
-                ]}
-                value={filtroDepartamento}
-                onChange={setFiltroDepartamento}
-                placeholder="Todos los departamentos"
-                buscarPlaceholder="Buscar departamento…"
-              />
-            </div>
-          </div>
+        {/* El filtro por departamento vive en el header de su columna. */}
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={busqueda}
+            onChange={(e) => setBusqueda(e.target.value)}
+            placeholder="Buscar por ciudad, departamento…"
+            className="pl-9"
+          />
         </div>
 
         {isPending && (
@@ -184,7 +191,7 @@ function CiudadesPage() {
             <p className="text-sm text-muted-foreground">
               {termino
                 ? `Sin resultados para "${busqueda.trim()}".`
-                : filtroDepartamento === TODOS
+                : filtroDepartamento === SIN_FILTRO
                   ? "Todavía no hay ciudades cargadas."
                   : "Ese departamento todavía no tiene ciudades cargadas."}
             </p>
@@ -201,7 +208,7 @@ function CiudadesPage() {
             de costado para leer una fila entera. */}
         {resultado.length > 0 && (
           <ul className="space-y-3 sm:hidden">
-            {resultado.map((ciudad) => {
+            {mostrados.map((ciudad) => {
               const activo = esActivo(ciudad.activo);
 
               return (
@@ -255,12 +262,19 @@ function CiudadesPage() {
                   >
                     Ciudad
                   </TableHeadOrdenable>
-                  <TableHeadOrdenable
+                  <TableHeadFiltrable
                     direccion={orden?.campo === "departamento" ? orden.direccion : null}
-                    onClick={() => alternarOrden("departamento")}
+                    onOrdenar={() => alternarOrden("departamento")}
+                    opciones={departamentosOpciones.map((d) => ({
+                      valor: d.valor,
+                      etiqueta: d.etiqueta,
+                    }))}
+                    valor={filtroDepartamento}
+                    onFiltrar={setFiltroDepartamento}
+                    buscarPlaceholder="Buscar departamento…"
                   >
                     Departamento
-                  </TableHeadOrdenable>
+                  </TableHeadFiltrable>
                   <TableHeadOrdenable
                     direccion={orden?.campo === "activo" ? orden.direccion : null}
                     onClick={() => alternarOrden("activo")}
@@ -271,7 +285,7 @@ function CiudadesPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {resultado.map((ciudad) => {
+                {mostrados.map((ciudad) => {
                   const activo = esActivo(ciudad.activo);
 
                   return (
@@ -318,10 +332,21 @@ function CiudadesPage() {
           </div>
         )}
 
+        {quedan > 0 && (
+          <div className="flex justify-center">
+            <Button variant="outline" onClick={() => setVisibles((v) => v + POR_PAGINA)}>
+              Mostrar {Math.min(quedan, POR_PAGINA)} más
+            </Button>
+          </div>
+        )}
+
         {data && resultado.length > 0 && (
-          <p className="text-xs text-muted-foreground">
-            {resultado.length} de {data.items.length} ciudad
-            {data.items.length === 1 ? "" : "es"}
+          <p className="text-center text-xs text-muted-foreground">
+            Mostrando {mostrados.length} de {resultado.length} ciudad
+            {resultado.length === 1 ? "" : "es"}
+            {/* El total sin recortar sólo se aclara si algo está filtrando; si
+                no, repetiría el mismo número dos veces. */}
+            {termino || filtroDepartamento !== SIN_FILTRO ? ` (${data.items.length} en total)` : ""}
           </p>
         )}
 
@@ -330,7 +355,9 @@ function CiudadesPage() {
           ciudad={editando}
           // Al crear con un departamento filtrado, ese departamento viene
           // preseleccionado: es el que la persona está mirando.
-          idDepartamentoPorDefecto={idDepartamentoFiltro}
+          idDepartamentoPorDefecto={
+            filtroDepartamento === SIN_FILTRO ? undefined : Number(filtroDepartamento)
+          }
           onClose={() => {
             setCreando(false);
             setEditando(null);

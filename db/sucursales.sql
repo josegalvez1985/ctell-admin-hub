@@ -188,29 +188,34 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
     -- ACTIVO se normaliza a 'A'/'I': el DEFAULT del DDL es 1, así que puede
     -- haber filas viejas con '1'. Cualquier valor que no sea 'I' se considera
     -- activo, que es lo que ese default quería decir.
-    SELECT JSON_ARRAYAGG(
-             JSON_OBJECT(
-               'id'              VALUE s.ID_SUCURSAL,
-               'idEmpresa'       VALUE s.ID_EMPRESA,
-               'empresa'         VALUE e.NOMBRE_EMPRESA,
-               'nombreSucursal'  VALUE s.NOMBRE_SUCURSAL,
-               'codigoSucursal'  VALUE s.CODIGO_SUCURSAL,
-               'direccion'       VALUE s.DIRECCION,
-               'telefono'        VALUE s.TELEFONO,
-               'activo'          VALUE CASE UPPER(TRIM(s.ACTIVO))
-                                         WHEN 'I' THEN 'I'
-                                         WHEN '0' THEN 'I'
-                                         ELSE 'A'
-                                       END
-               RETURNING CLOB
-             )
-             ORDER BY e.NOMBRE_EMPRESA, s.NOMBRE_SUCURSAL
-             RETURNING CLOB
-           )
+    -- El JSON_OBJECT se arma en una subconsulta y el JSON_ARRAYAGG agrega esa
+    -- columna, que ya viene tipada como CLOB. Anidado, el resultado intermedio
+    -- del agregado se materializa como VARCHAR2 y revienta al pasar los 4000
+    -- bytes: el listado anda con pocas filas y devuelve 500 cuando crece.
+    SELECT JSON_ARRAYAGG(fila ORDER BY nombre_empresa, nombre_sucursal RETURNING CLOB)
       INTO l_items
-      FROM SUCURSALES s
-      JOIN EMPRESAS e ON e.ID_EMPRESA = s.ID_EMPRESA
-     WHERE l_id_empresa IS NULL OR s.ID_EMPRESA = l_id_empresa;
+      FROM (
+        SELECT JSON_OBJECT(
+                 'id'              VALUE s.ID_SUCURSAL,
+                 'idEmpresa'       VALUE s.ID_EMPRESA,
+                 'empresa'         VALUE e.NOMBRE_EMPRESA,
+                 'nombreSucursal'  VALUE s.NOMBRE_SUCURSAL,
+                 'codigoSucursal'  VALUE s.CODIGO_SUCURSAL,
+                 'direccion'       VALUE s.DIRECCION,
+                 'telefono'        VALUE s.TELEFONO,
+                 'activo'          VALUE CASE UPPER(TRIM(s.ACTIVO))
+                                           WHEN 'I' THEN 'I'
+                                           WHEN '0' THEN 'I'
+                                           ELSE 'A'
+                                         END
+                 RETURNING CLOB
+               ) AS fila,
+               e.NOMBRE_EMPRESA  AS nombre_empresa,
+               s.NOMBRE_SUCURSAL AS nombre_sucursal
+          FROM SUCURSALES s
+          JOIN EMPRESAS e ON e.ID_EMPRESA = s.ID_EMPRESA
+         WHERE l_id_empresa IS NULL OR s.ID_EMPRESA = l_id_empresa
+      );
 
     p_status_code := 200;
     -- JSON_OBJECT(... RETURNING CLOB) como asignación PL/SQL directa (sin

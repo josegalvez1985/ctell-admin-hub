@@ -32,15 +32,15 @@ pantalla ABM completa.
 > Para una tabla hija de otra (Ciudades cuelga de Departamentos, que cuelga de
 > Países), la referencia es
 > [_auth.departamentos.tsx](../src/routes/_auth.departamentos.tsx): filtro por
-> el padre con `Combobox`, `?idPadre=` al backend, tabla + tarjetas, diálogo de
-> alta/edición. Para una tabla sin padre,
-> [_auth.paises.tsx](../src/routes/_auth.paises.tsx).
+> el padre en el header de su columna (`TableHeadFiltrable`), corte de a 20 con
+> "Mostrar más", tabla + tarjetas, diálogo de alta/edición. Para una tabla sin
+> padre, [_auth.paises.tsx](../src/routes/_auth.paises.tsx).
 >
 > Esto no es pereza, es la lección más cara de este proyecto. Implementar
-> Ciudades "parecido pero a mi manera" —columnas de más, otra `queryKey`, el
-> filtro resuelto en el cliente en vez de en el backend— costó media docena de
-> idas y vueltas para terminar exactamente en el patrón de Departamentos. Cada
-> desviación parecía una mejora aislada y ninguna lo era.
+> Ciudades "parecido pero a mi manera" —columnas de más, otra `queryKey`, otra
+> forma de filtrar— costó media docena de idas y vueltas para terminar
+> exactamente en el patrón de Departamentos. Cada desviación parecía una mejora
+> aislada y ninguna lo era.
 >
 > Si creés que el patrón existente está mal, cambialo **en todas las páginas a
 > la vez**, no sólo en la nueva. Dos páginas hermanas que hacen lo mismo de
@@ -327,6 +327,79 @@ const { busqueda, setBusqueda, orden, alternarOrden, resultado, termino } = useT
 tabla, el de las tarjetas, el conteo del pie de página. `termino` sirve para
 distinguir "no hay nada cargado" de "no hay nada que coincida" en el estado
 vacío (ver más abajo).
+
+### Filtrar por una columna: `TableHeadFiltrable`
+
+> **El filtro vive en el header de la columna que filtra, no en un campo suelto
+> arriba de la tabla.**
+
+[TableHeadFiltrable](../src/components/ctell/TableHeadFiltrable.tsx) es
+`TableHeadOrdenable` más un embudo que abre un desplegable con buscador. El
+texto del header ordena; el embudo filtra. Son dos botones porque son dos
+acciones distintas sobre la misma columna.
+
+```tsx
+const [filtroPais, setFiltroPais] = useState<string>(SIN_FILTRO);
+
+// El endpoint trae todo; el filtro recorta en memoria.
+const filtrados = (data?.items ?? []).filter(
+  (d) => filtroPais === SIN_FILTRO || String(d.idPais) === filtroPais,
+);
+
+// …y `filtrados` —no `data.items`— es lo que entra a useTablaListado.
+
+<TableHeadFiltrable
+  direccion={orden?.campo === "pais" ? orden.direccion : null}
+  onOrdenar={() => alternarOrden("pais")}
+  opciones={paisesOpciones.map((p) => ({ valor: p.valor, etiqueta: p.etiqueta }))}
+  valor={filtroPais}
+  onFiltrar={setFiltroPais}
+  buscarPlaceholder="Buscar país…"
+>
+  País
+</TableHeadFiltrable>;
+```
+
+`SIN_FILTRO` lo exporta el componente y vale `"__todos__"` — no `""`, que cmdk
+no admite, ni `"todos"`, que podría chocar con un valor real. La opción "Todos"
+la agrega el componente: no la pases en `opciones`.
+
+**El filtro se aplica en el cliente**, aunque el endpoint acepte `?idX=`. El
+listado ya viene entero, así que cambiar de valor es instantáneo y no dispara un
+viaje a la red. El parámetro del backend se deja igual: sigue siendo útil y
+quitarlo no gana nada.
+
+**El embudo se pinta resaltado cuando hay un filtro activo.** Un filtro que no
+se ve es un filtro que hace parecer que faltan datos.
+
+### Listados largos: cortar de a 20 con "Mostrar más"
+
+Traer todo de una vez está bien para la red y mal para el DOM: sin corte, un
+listado grande traba la página al abrirla. Las tablas muestran `POR_PAGINA = 20`
+y suman de a 20:
+
+```tsx
+const [visibles, setVisibles] = useState(POR_PAGINA);
+
+// Se resetea al cambiar filtro o búsqueda: seguir en "80 de 90" después de
+// filtrar a 12 resultados mostraría todo de golpe.
+const claveVista = `${filtroPais}|${termino}`;
+const [claveAnterior, setClaveAnterior] = useState(claveVista);
+if (claveVista !== claveAnterior) {
+  setClaveAnterior(claveVista);
+  setVisibles(POR_PAGINA);
+}
+
+const mostrados = resultado.slice(0, visibles);
+const quedan = resultado.length - mostrados.length;
+```
+
+Ese reset es **ajuste de estado en render, no `useEffect`**: React re-renderiza
+antes de pintar, así que la lista nunca se ve un frame con el valor viejo.
+
+El corte va sobre `resultado` —lo que ya salió de la búsqueda y el orden—, así
+que **buscar sigue buscando sobre todas las filas**, no sólo sobre las visibles.
+Tanto la tabla como las tarjetas de móvil iteran `mostrados`.
 
 ### El input de búsqueda
 
@@ -722,6 +795,10 @@ Antes de dar por terminada una pantalla:
 - [ ] Tarjetas abajo de `sm`, tabla arriba
 - [ ] **Buscador con `useTablaListado`** que filtra por los campos visibles
 - [ ] **Headers ordenables (`TableHeadOrdenable`)** en cada columna de la tabla desktop
+- [ ] **Filtro por columna con `TableHeadFiltrable`** si la tabla filtra por una FK —
+      en el header, no en un campo suelto arriba
+- [ ] **Corte de a 20 con "Mostrar más"**, y `mostrados` (no `resultado`) en la
+      tabla y en las tarjetas
 - [ ] **Selectores de FK con `Combobox`**, no `<Select>` — país, módulo, usuario, etc.
 - [ ] Formularios con `values`/`defaultValues` y validación zod
 - [ ] Toggle de activo sólo en edición, no en el alta

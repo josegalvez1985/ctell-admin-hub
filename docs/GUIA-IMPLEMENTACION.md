@@ -501,6 +501,45 @@ los listados. `JSON_ARRAYAGG` devuelve `NULL` cuando no hay filas, no un array
 vacío: sin `NVL(l_items, TO_CLOB('[]'))` el frontend recibe `"items":null` y
 revienta al iterarlo.
 
+#### El listado anda con pocas filas y da 500 cuando crece
+
+> **Nunca anides `JSON_OBJECT` dentro de `JSON_ARRAYAGG`.** Armá el objeto en
+> una subconsulta y agregá esa columna.
+
+Anidado, el resultado intermedio del agregado se materializa como `VARCHAR2` y
+revienta al pasar los **4000 bytes**, aunque los dos `RETURNING CLOB` estén
+puestos. El síntoma es venenoso porque **depende de la cantidad de datos**:
+
+- `?idDepartamento=5` → pocas filas, entra en 4000 bytes → **200 OK**
+- sin filtro → todas las filas, se pasa → **500**
+
+Parece un problema del filtro "todos", y no lo es. Cuesta encontrarlo porque el
+paquete compila perfecto, `USER_ERRORS` está vacío, y el mismo endpoint responde
+bien o mal según qué le pidas. Si un listado anda filtrado y falla sin filtrar,
+**es esto**, no el `WHERE`.
+
+```sql
+-- ❌ Anidado: muere al superar 4000 bytes
+SELECT JSON_ARRAYAGG(
+         JSON_OBJECT('id' VALUE c.ID, 'nombre' VALUE c.NOMBRE RETURNING CLOB)
+         ORDER BY c.NOMBRE
+         RETURNING CLOB)
+  INTO l_items
+  FROM CIUDADES c;
+
+-- ✅ El objeto se arma en la subconsulta; el agregado recibe una columna CLOB.
+-- Las claves del ORDER BY se exponen como columnas para poder ordenar afuera.
+SELECT JSON_ARRAYAGG(fila ORDER BY nombre RETURNING CLOB)
+  INTO l_items
+  FROM (
+    SELECT JSON_OBJECT('id' VALUE c.ID, 'nombre' VALUE c.NOMBRE RETURNING CLOB) AS fila,
+           c.NOMBRE AS nombre
+      FROM CIUDADES c
+  );
+```
+
+Todos los `db/*.sql` con listado usan esta forma. Copiala tal cual.
+
 ### Probar un procedimiento sin pasar por ORDS
 
 La ventaja de tener todo en un paquete: cada procedimiento se prueba solo en la
@@ -825,6 +864,7 @@ Después de ejecutarlo en APEX:
 | `ORA-06550` al compilar el handler                                                | Comillas del `q'~ … ~'` sin cerrar                                                                                                                                                                                                                                                                    |
 | **500 sin mensaje, con el `EXCEPTION` escrito**                                   | La conversión está en el `DECLARE`: se ejecuta antes de que exista el `EXCEPTION` y escapa del handler                                                                                                                                                                                                |
 | **500 solo cuando falta un query param**                                          | `TO_NUMBER('')`: un parámetro ausente llega como cadena vacía. Usá `NULLIF(:param, '')`                                                                                                                                                                                                               |
+| **El listado anda filtrado (`?idX=5`) pero da 500 sin filtro**                    | `JSON_OBJECT` anidado dentro de `JSON_ARRAYAGG`: el intermedio se materializa como VARCHAR2 y se pasa de 4000 bytes. Armá el objeto en una subconsulta — ver [3](#3-crear-el-backend-de-una-tabla). El paquete compila bien y `USER_ERRORS` está vacío, por eso despista                              |
 | El endpoint devuelve 404                                                          | Falta `DEFINE_TEMPLATE` para ese patrón                                                                                                                                                                                                                                                               |
 | Devuelve 200 pero no guardó                                                       | Falta chequear `SQL%ROWCOUNT`                                                                                                                                                                                                                                                                         |
 | 401 en todo                                                                       | El token venció (8 h) o falta el header                                                                                                                                                                                                                                                               |

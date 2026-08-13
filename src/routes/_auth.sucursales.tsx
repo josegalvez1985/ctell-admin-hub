@@ -9,6 +9,7 @@ import { z } from "zod";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
 import { Combobox } from "@/components/ctell/Combobox";
+import { SIN_FILTRO, TableHeadFiltrable } from "@/components/ctell/TableHeadFiltrable";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
 import { useTablaListado } from "@/hooks/use-tabla-listado";
 import { api, ApiError, esActivo, type Estado, type Sucursal } from "@/lib/api";
@@ -66,27 +67,34 @@ const schema = z.object({
 
 type FormValues = z.infer<typeof schema>;
 
-/** Valor del filtro que significa "sin filtrar". El combobox no admite "". */
-const TODOS = "todos";
-
 const MENSAJE_ERROR = (error: unknown, fallback: string) =>
   error instanceof ApiError ? error.message : fallback;
+
+/**
+ * Cuántas filas se muestran de entrada, y cuántas suma cada "Mostrar más".
+ *
+ * El endpoint devuelve todo de una vez —poco para la red, mucho para el DOM—,
+ * así que la tabla corta acá.
+ */
+const POR_PAGINA = 20;
 
 function SucursalesPage() {
   const queryClient = useQueryClient();
   const [editando, setEditando] = useState<Sucursal | null>(null);
   const [creando, setCreando] = useState(false);
   const [aEliminar, setAEliminar] = useState<Sucursal | null>(null);
-  const [filtroEmpresa, setFiltroEmpresa] = useState<string>(TODOS);
+  const [filtroEmpresa, setFiltroEmpresa] = useState<string>(SIN_FILTRO);
 
-  // El filtro se aplica en el backend (?idEmpresa=): la query lleva la empresa
-  // en la key para que cada selección tenga su propia entrada en la caché.
-  const idEmpresaFiltro = filtroEmpresa === TODOS ? undefined : Number(filtroEmpresa);
-
+  // El endpoint trae todas las sucursales y el filtro se aplica acá abajo,
+  // sobre la columna Empresa. Cambiar de empresa no dispara un viaje a la red.
   const { data, isPending, isError, error } = useQuery({
-    queryKey: ["sucursales", idEmpresaFiltro ?? null],
-    queryFn: () => api.sucursales.listar(idEmpresaFiltro ? { idEmpresa: idEmpresaFiltro } : {}),
+    queryKey: ["sucursales", null],
+    queryFn: () => api.sucursales.listar(),
   });
+
+  const sucursalesFiltradas = (data?.items ?? []).filter(
+    (s) => filtroEmpresa === SIN_FILTRO || String(s.idEmpresa) === filtroEmpresa,
+  );
 
   // Las empresas alimentan el filtro y el formulario. Misma queryKey que usa
   // la página de Empresas al listar sin filtrar, así se comparte la caché.
@@ -111,7 +119,7 @@ function SucursalesPage() {
   // Búsqueda por cualquier campo visible + orden por click en el header.
   // Ver el criterio general en la guía de frontend, sección "Listados".
   const { busqueda, setBusqueda, orden, alternarOrden, resultado, termino } = useTablaListado(
-    data?.items ?? [],
+    sucursalesFiltradas,
     (s) => [
       s.nombreSucursal,
       s.codigoSucursal,
@@ -125,6 +133,21 @@ function SucursalesPage() {
     etiqueta: e.nombreEmpresa,
     descripcion: e.ruc ?? undefined,
   }));
+
+  // Cuántas filas se están mostrando. Se resetea al cambiar el filtro o la
+  // búsqueda: seguir en "80 de 90" tras filtrar a 12 perdería el sentido.
+  const [visibles, setVisibles] = useState(POR_PAGINA);
+  const claveVista = `${filtroEmpresa}|${termino}`;
+  const [claveAnterior, setClaveAnterior] = useState(claveVista);
+  if (claveVista !== claveAnterior) {
+    // Ajuste de estado en render, no useEffect: React re-renderiza antes de
+    // pintar, así que la lista nunca se ve con el valor viejo.
+    setClaveAnterior(claveVista);
+    setVisibles(POR_PAGINA);
+  }
+
+  const mostrados = resultado.slice(0, visibles);
+  const quedan = resultado.length - mostrados.length;
 
   return (
     <AppLayout active="/sucursales" title="Sucursales">
@@ -142,28 +165,15 @@ function SucursalesPage() {
           </Button>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="relative min-w-48 flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={busqueda}
-              onChange={(e) => setBusqueda(e.target.value)}
-              placeholder="Buscar por sucursal, código, empresa…"
-              className="pl-9"
-            />
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="shrink-0 text-sm text-muted-foreground">Empresa</span>
-            <div className="w-full sm:w-64">
-              <Combobox
-                opciones={[{ valor: TODOS, etiqueta: "Todas las empresas" }, ...empresasOpciones]}
-                value={filtroEmpresa}
-                onChange={setFiltroEmpresa}
-                placeholder="Todas las empresas"
-                buscarPlaceholder="Buscar empresa…"
-              />
-            </div>
-          </div>
+        {/* El filtro por empresa vive en el header de su columna. */}
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={busqueda}
+            onChange={(e) => setBusqueda(e.target.value)}
+            placeholder="Buscar por sucursal, código, empresa…"
+            className="pl-9"
+          />
         </div>
 
         {isPending && (
@@ -185,7 +195,7 @@ function SucursalesPage() {
             <p className="text-sm text-muted-foreground">
               {termino
                 ? `Sin resultados para "${busqueda.trim()}".`
-                : filtroEmpresa === TODOS
+                : filtroEmpresa === SIN_FILTRO
                   ? "Todavía no hay sucursales cargadas."
                   : "Esa empresa todavía no tiene sucursales cargadas."}
             </p>
@@ -202,7 +212,7 @@ function SucursalesPage() {
             de costado para leer una fila entera. */}
         {resultado.length > 0 && (
           <ul className="space-y-3 sm:hidden">
-            {resultado.map((sucursal) => {
+            {mostrados.map((sucursal) => {
               const activo = esActivo(sucursal.activo);
 
               return (
@@ -264,12 +274,19 @@ function SucursalesPage() {
                   >
                     Código
                   </TableHeadOrdenable>
-                  <TableHeadOrdenable
+                  <TableHeadFiltrable
                     direccion={orden?.campo === "empresa" ? orden.direccion : null}
-                    onClick={() => alternarOrden("empresa")}
+                    onOrdenar={() => alternarOrden("empresa")}
+                    opciones={empresasOpciones.map((e) => ({
+                      valor: e.valor,
+                      etiqueta: e.etiqueta,
+                    }))}
+                    valor={filtroEmpresa}
+                    onFiltrar={setFiltroEmpresa}
+                    buscarPlaceholder="Buscar empresa…"
                   >
                     Empresa
-                  </TableHeadOrdenable>
+                  </TableHeadFiltrable>
                   <TableHeadOrdenable
                     direccion={orden?.campo === "activo" ? orden.direccion : null}
                     onClick={() => alternarOrden("activo")}
@@ -280,7 +297,7 @@ function SucursalesPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {resultado.map((sucursal) => {
+                {mostrados.map((sucursal) => {
                   const activo = esActivo(sucursal.activo);
 
                   return (
@@ -327,10 +344,19 @@ function SucursalesPage() {
           </div>
         )}
 
+        {quedan > 0 && (
+          <div className="flex justify-center">
+            <Button variant="outline" onClick={() => setVisibles((v) => v + POR_PAGINA)}>
+              Mostrar {Math.min(quedan, POR_PAGINA)} más
+            </Button>
+          </div>
+        )}
+
         {data && resultado.length > 0 && (
-          <p className="text-xs text-muted-foreground">
-            {resultado.length} de {data.items.length} sucursal
-            {data.items.length === 1 ? "" : "es"}
+          <p className="text-center text-xs text-muted-foreground">
+            Mostrando {mostrados.length} de {resultado.length} sucursal
+            {resultado.length === 1 ? "" : "es"}
+            {termino || filtroEmpresa !== SIN_FILTRO ? ` (${data.items.length} en total)` : ""}
           </p>
         )}
 
@@ -339,7 +365,7 @@ function SucursalesPage() {
           sucursal={editando}
           // Al crear con una empresa filtrada, esa empresa viene
           // preseleccionada: es la que la persona está mirando.
-          idEmpresaPorDefecto={idEmpresaFiltro}
+          idEmpresaPorDefecto={filtroEmpresa === SIN_FILTRO ? undefined : Number(filtroEmpresa)}
           onClose={() => {
             setCreando(false);
             setEditando(null);
