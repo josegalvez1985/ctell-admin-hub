@@ -18,7 +18,7 @@
 -- Base de los endpoints: https://oracleapex.com/ords/ctell/sucursales/
 --
 -- Tabla (no la crea ni la altera; el DDL se administra aparte):
---   SUCURSALES  ID_SUCURSAL, ID_EMPRESA, NOMBRE_SUCURSAL, CODIGO_SUCURSAL,
+--   SUCURSALES  ID_SUCURSAL, ID_EMPRESA, NOMBRE_SUCURSAL,
 --               DIRECCION, TELEFONO, ACTIVO,
 --               FECHA_CREACION, FECHA_ACTUALIZACION
 --
@@ -26,9 +26,9 @@
 -- inexistente da ORA-02291 en el INSERT/UPDATE, que se traduce a 400 en vez de
 -- 500 — el dato es inválido, no falló el servidor.
 --
--- UQ_SUCURSAL_EMPRESA impide dos sucursales con el mismo código dentro de la
--- misma empresa, pero sí permite repetir el código entre empresas distintas.
--- El DUP_VAL_ON_INDEX se traduce a 409 con ese matiz en el mensaje.
+-- La tabla NO tiene UNIQUE: dos sucursales de la misma empresa pueden llamarse
+-- igual. Si algún día se agrega uno, el DUP_VAL_ON_INDEX ya está contemplado en
+-- INSERTAR y ACTUALIZAR, que lo traducen a 409.
 --
 -- ESTADO: ACTIVO es VARCHAR2(1) con 'A' (activo) / 'I' (inactivo). Ese mismo
 -- código viaja en el JSON y lo consume el frontend, sin traducirse a 1/0.
@@ -74,7 +74,6 @@ CREATE OR REPLACE PACKAGE PKG_SUCURSALES AS
     p_authorization    IN  VARCHAR2,
     p_id_empresa       IN  VARCHAR2,
     p_nombre_sucursal  IN  VARCHAR2,
-    p_codigo_sucursal  IN  VARCHAR2,
     p_direccion        IN  VARCHAR2,
     p_telefono         IN  VARCHAR2,
     p_status_code      OUT NUMBER,
@@ -87,7 +86,6 @@ CREATE OR REPLACE PACKAGE PKG_SUCURSALES AS
     p_id               IN  VARCHAR2,
     p_id_empresa       IN  VARCHAR2,
     p_nombre_sucursal  IN  VARCHAR2,
-    p_codigo_sucursal  IN  VARCHAR2,
     p_direccion        IN  VARCHAR2,
     p_telefono         IN  VARCHAR2,
     p_activo           IN  VARCHAR2,
@@ -200,7 +198,6 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
                  'idEmpresa'       VALUE s.ID_EMPRESA,
                  'empresa'         VALUE e.NOMBRE_EMPRESA,
                  'nombreSucursal'  VALUE s.NOMBRE_SUCURSAL,
-                 'codigoSucursal'  VALUE s.CODIGO_SUCURSAL,
                  'direccion'       VALUE s.DIRECCION,
                  'telefono'        VALUE s.TELEFONO,
                  'activo'          VALUE CASE UPPER(TRIM(s.ACTIVO))
@@ -242,7 +239,6 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
     p_authorization    IN  VARCHAR2,
     p_id_empresa       IN  VARCHAR2,
     p_nombre_sucursal  IN  VARCHAR2,
-    p_codigo_sucursal  IN  VARCHAR2,
     p_direccion        IN  VARCHAR2,
     p_telefono         IN  VARCHAR2,
     p_status_code      OUT NUMBER,
@@ -261,22 +257,20 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
 
     l_id_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
 
-    IF l_id_empresa IS NULL OR TRIM(p_nombre_sucursal) IS NULL
-       OR TRIM(p_codigo_sucursal) IS NULL THEN
+    IF l_id_empresa IS NULL OR TRIM(p_nombre_sucursal) IS NULL THEN
       p_status_code := 400;
-      p_resultado := '{"error":"idEmpresa, nombreSucursal y codigoSucursal son obligatorios"}';
+      p_resultado := '{"error":"idEmpresa y nombreSucursal son obligatorios"}';
       RETURN;
     END IF;
 
     -- 'A' explícito: el DEFAULT de la columna es 1, que guardaría el literal
     -- '1' y rompería la comparación contra 'A'/'I' de todo el resto.
     INSERT INTO SUCURSALES (
-      ID_EMPRESA, NOMBRE_SUCURSAL, CODIGO_SUCURSAL, DIRECCION, TELEFONO,
+      ID_EMPRESA, NOMBRE_SUCURSAL, DIRECCION, TELEFONO,
       ACTIVO, FECHA_CREACION, FECHA_ACTUALIZACION
     ) VALUES (
       l_id_empresa,
       TRIM(p_nombre_sucursal),
-      TRIM(p_codigo_sucursal),
       TRIM(p_direccion),
       TRIM(p_telefono),
       'A',
@@ -291,11 +285,10 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
   EXCEPTION
     WHEN DUP_VAL_ON_INDEX THEN
       ROLLBACK;
-      -- UQ_SUCURSAL_EMPRESA es (ID_EMPRESA, CODIGO_SUCURSAL): el choque es
-      -- dentro de la misma empresa, no global. El mensaje lo dice para que no
-      -- parezca que el código está tomado en todos lados.
+      -- Hoy la tabla no tiene UNIQUE, así que esto no deberia dispararse. Se
+      -- deja contemplado por si se agrega uno mas adelante.
       p_status_code := 409;
-      p_resultado := '{"error":"Esa empresa ya tiene una sucursal con ese codigo"}';
+      p_resultado := '{"error":"Esa empresa ya tiene una sucursal con ese nombre"}';
     WHEN OTHERS THEN
       ROLLBACK;
       -- ORA-02291: la FK contra EMPRESAS no encontró el padre. Es un dato
@@ -316,7 +309,6 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
     p_id               IN  VARCHAR2,
     p_id_empresa       IN  VARCHAR2,
     p_nombre_sucursal  IN  VARCHAR2,
-    p_codigo_sucursal  IN  VARCHAR2,
     p_direccion        IN  VARCHAR2,
     p_telefono         IN  VARCHAR2,
     p_activo           IN  VARCHAR2,
@@ -349,7 +341,6 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
     UPDATE SUCURSALES
        SET ID_EMPRESA          = NVL(l_id_empresa, ID_EMPRESA),
            NOMBRE_SUCURSAL     = NVL(TRIM(p_nombre_sucursal), NOMBRE_SUCURSAL),
-           CODIGO_SUCURSAL     = NVL(TRIM(p_codigo_sucursal), CODIGO_SUCURSAL),
            DIRECCION           = NVL(TRIM(p_direccion), DIRECCION),
            TELEFONO            = NVL(TRIM(p_telefono), TELEFONO),
            ACTIVO              = NVL(l_estado, ACTIVO),
@@ -369,7 +360,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
     WHEN DUP_VAL_ON_INDEX THEN
       ROLLBACK;
       p_status_code := 409;
-      p_resultado := '{"error":"Esa empresa ya tiene una sucursal con ese codigo"}';
+      p_resultado := '{"error":"Esa empresa ya tiene una sucursal con ese nombre"}';
     WHEN OTHERS THEN
       ROLLBACK;
       IF SQLCODE = -2291 THEN
@@ -491,7 +482,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
 
     ----------------------------------------------------------------------------
     -- POST /sucursales/crear
-    -- Body: { idEmpresa, nombreSucursal, codigoSucursal, direccion?, telefono? }
+    -- Body: { idEmpresa, nombreSucursal, direccion?, telefono? }
     ----------------------------------------------------------------------------
     ORDS.DEFINE_TEMPLATE(p_module_name => 'sucursales', p_pattern => 'crear');
 
@@ -500,7 +491,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
       p_pattern     => 'crear',
       p_method      => 'POST',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_SUCURSALES.INSERTAR(:authorization, :idEmpresa, :nombreSucursal, :codigoSucursal, :direccion, :telefono, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_SUCURSALES.INSERTAR(:authorization, :idEmpresa, :nombreSucursal, :direccion, :telefono, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
@@ -520,8 +511,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
 
     ----------------------------------------------------------------------------
     -- PUT /sucursales/actualizar/:id
-    -- Body: { idEmpresa?, nombreSucursal?, codigoSucursal?, direccion?,
-    --         telefono?, activo? }  (ausentes = no cambia)
+    -- Body: { idEmpresa?, nombreSucursal?, direccion?, telefono?, activo? }
+    --       (ausentes = no cambia)
     ----------------------------------------------------------------------------
     ORDS.DEFINE_TEMPLATE(p_module_name => 'sucursales', p_pattern => 'actualizar/:id');
 
@@ -530,7 +521,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
       p_pattern     => 'actualizar/:id',
       p_method      => 'PUT',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_SUCURSALES.ACTUALIZAR(:authorization, :id, :idEmpresa, :nombreSucursal, :codigoSucursal, :direccion, :telefono, :activo, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_SUCURSALES.ACTUALIZAR(:authorization, :id, :idEmpresa, :nombreSucursal, :direccion, :telefono, :activo, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
@@ -640,7 +631,7 @@ SELECT t.URI_TEMPLATE, h.METHOD
  ORDER BY t.URI_TEMPLATE, h.METHOD;
 
 SELECT s.ID_SUCURSAL, s.ID_EMPRESA, e.NOMBRE_EMPRESA,
-       s.NOMBRE_SUCURSAL, s.CODIGO_SUCURSAL, s.ACTIVO
+       s.NOMBRE_SUCURSAL, s.ACTIVO
   FROM SUCURSALES s
   JOIN EMPRESAS e ON e.ID_EMPRESA = s.ID_EMPRESA
  ORDER BY e.NOMBRE_EMPRESA, s.NOMBRE_SUCURSAL;

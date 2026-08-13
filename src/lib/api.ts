@@ -179,7 +179,6 @@ export type Sucursal = {
   /** Nombre de la empresa a la que pertenece: viene del JOIN, no de SUCURSALES. */
   empresa: string;
   nombreSucursal: string;
-  codigoSucursal: string;
   direccion: string | null;
   telefono: string | null;
   activo: Estado;
@@ -827,7 +826,6 @@ export const api = {
     crear: (datos: {
       idEmpresa: number;
       nombreSucursal: string;
-      codigoSucursal: string;
       direccion?: string;
       telefono?: string;
     }) =>
@@ -842,7 +840,6 @@ export const api = {
       datos: {
         idEmpresa?: number;
         nombreSucursal?: string;
-        codigoSucursal?: string;
         direccion?: string;
         telefono?: string;
         activo?: Estado;

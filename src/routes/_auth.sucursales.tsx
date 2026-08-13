@@ -59,7 +59,6 @@ const schema = z.object({
   // convierte a número recién al enviar.
   idEmpresa: z.string().min(1, "Elegí una empresa"),
   nombreSucursal: z.string().trim().min(1, "Obligatorio").max(150, "Máximo 150 caracteres"),
-  codigoSucursal: z.string().trim().min(1, "Obligatorio").max(20, "Máximo 20 caracteres"),
   direccion: z.string().trim().max(255, "Máximo 255 caracteres"),
   telefono: z.string().trim().max(20, "Máximo 20 caracteres"),
   activo: z.boolean(),
@@ -120,12 +119,7 @@ function SucursalesPage() {
   // Ver el criterio general en la guía de frontend, sección "Listados".
   const { busqueda, setBusqueda, orden, alternarOrden, resultado, termino } = useTablaListado(
     sucursalesFiltradas,
-    (s) => [
-      s.nombreSucursal,
-      s.codigoSucursal,
-      s.empresa,
-      esActivo(s.activo) ? "Activo" : "Inactivo",
-    ],
+    (s) => [s.nombreSucursal, s.empresa, esActivo(s.activo) ? "Activo" : "Inactivo"],
   );
 
   const empresasOpciones = (empresas?.items ?? []).map((e) => ({
@@ -171,7 +165,7 @@ function SucursalesPage() {
           <Input
             value={busqueda}
             onChange={(e) => setBusqueda(e.target.value)}
-            placeholder="Buscar por sucursal, código, empresa…"
+            placeholder="Buscar por sucursal o empresa…"
             className="pl-9"
           />
         </div>
@@ -222,9 +216,7 @@ function SucursalesPage() {
                       <p className="truncate font-semibold text-foreground">
                         {sucursal.nombreSucursal}
                       </p>
-                      <p className="mt-0.5 text-xs text-muted-foreground">
-                        {sucursal.codigoSucursal} · {sucursal.empresa}
-                      </p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">{sucursal.empresa}</p>
                     </div>
                     <Badge variant={activo ? "secondary" : "outline"} className="shrink-0">
                       {activo ? "Activo" : "Inactivo"}
@@ -268,12 +260,6 @@ function SucursalesPage() {
                   >
                     Sucursal
                   </TableHeadOrdenable>
-                  <TableHeadOrdenable
-                    direccion={orden?.campo === "codigoSucursal" ? orden.direccion : null}
-                    onClick={() => alternarOrden("codigoSucursal")}
-                  >
-                    Código
-                  </TableHeadOrdenable>
                   <TableHeadFiltrable
                     direccion={orden?.campo === "empresa" ? orden.direccion : null}
                     onOrdenar={() => alternarOrden("empresa")}
@@ -304,9 +290,6 @@ function SucursalesPage() {
                     <TableRow key={sucursal.id}>
                       <TableCell className="font-medium text-foreground">
                         {sucursal.nombreSucursal}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">
-                        {sucursal.codigoSucursal}
                       </TableCell>
                       <TableCell className="text-muted-foreground">{sucursal.empresa}</TableCell>
                       <TableCell>
@@ -437,7 +420,6 @@ function SucursalFormDialog({
     values: {
       idEmpresa: String(sucursal?.idEmpresa ?? idEmpresaPorDefecto ?? ""),
       nombreSucursal: sucursal?.nombreSucursal ?? "",
-      codigoSucursal: sucursal?.codigoSucursal ?? "",
       direccion: sucursal?.direccion ?? "",
       telefono: sucursal?.telefono ?? "",
       activo: sucursal ? esActivo(sucursal.activo) : true,
@@ -458,14 +440,12 @@ function SucursalFormDialog({
         ? api.sucursales.actualizar(sucursal.id, {
             idEmpresa: Number(v.idEmpresa),
             nombreSucursal: v.nombreSucursal,
-            codigoSucursal: v.codigoSucursal,
             activo,
             ...opcionales,
           })
         : api.sucursales.crear({
             idEmpresa: Number(v.idEmpresa),
             nombreSucursal: v.nombreSucursal,
-            codigoSucursal: v.codigoSucursal,
             ...opcionales,
           });
     },
@@ -525,21 +505,6 @@ function SucursalFormDialog({
                   <FormControl>
                     <Input {...field} placeholder="Casa Central" autoComplete="off" />
                   </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name="codigoSucursal"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Código</FormLabel>
-                  <FormControl>
-                    <Input {...field} placeholder="CENTRAL" autoComplete="off" />
-                  </FormControl>
-                  <FormDescription>No puede repetirse dentro de la misma empresa.</FormDescription>
                   <FormMessage />
                 </FormItem>
               )}
