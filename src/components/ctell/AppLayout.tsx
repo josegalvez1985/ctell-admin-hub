@@ -104,7 +104,10 @@ export function AppLayout({
           {collapsed ? <Logo tone="dark" showWordmark={false} /> : <Logo tone="dark" />}
         </div>
 
-        <nav className="mt-8 flex-1 space-y-1 overflow-y-auto">
+        {/* scrollbar-fino: la barra nativa de Windows, gris y ancha, desentona
+            contra el sidebar oscuro. Toma su color de currentColor, así que se
+            adapta sola al tema. */}
+        <nav className="scrollbar-fino mt-8 flex-1 space-y-1 overflow-y-auto">
           <SideItem
             icon={Home}
             label="Dashboard"
@@ -243,7 +246,7 @@ export function AppLayout({
             className="fixed inset-0 z-20 bg-black/40 backdrop-blur-sm transition-opacity lg:hidden"
             onClick={() => setMenuAbierto(false)}
           />
-          <div className="fixed inset-x-0 bottom-0 z-30 max-h-[85vh] overflow-y-auto rounded-t-3xl border-t border-border bg-card shadow-2xl lg:hidden">
+          <div className="scrollbar-fino fixed inset-x-0 bottom-0 z-30 max-h-[85vh] overflow-y-auto rounded-t-3xl border-t border-border bg-card shadow-2xl lg:hidden">
             <div className="sticky top-0 flex items-center justify-between border-b border-border bg-card px-6 py-4">
               <h2 className="text-xl font-bold text-foreground">Menú</h2>
               <button

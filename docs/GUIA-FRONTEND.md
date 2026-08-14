@@ -12,6 +12,7 @@ pantalla ABM completa.
 ## Índice
 
 1. [Lo que hay que saber antes de escribir](#1-lo-que-hay-que-saber-antes-de-escribir)
+   - [La empresa activa](#la-empresa-activa)
 2. [Agregar una página](#2-agregar-una-página)
 3. [Registrarla en el menú](#3-registrarla-en-el-menú)
 4. [Consumir la API](#4-consumir-la-api)
@@ -20,6 +21,8 @@ pantalla ABM completa.
 6. [Formularios](#6-formularios)
    - [Elegir un valor de otra tabla: Combobox](#elegir-un-valor-de-otra-tabla-combobox-no-select)
 7. [El menú dinámico por dentro](#7-el-menú-dinámico-por-dentro)
+   - [Imágenes: siempre con respaldo](#71-imágenes-siempre-con-respaldo)
+   - [Paneles con scroll: `scrollbar-fino`](#72-paneles-con-scroll-scrollbar-fino)
 8. [Checklist](#8-checklist)
 
 ---
@@ -29,12 +32,18 @@ pantalla ABM completa.
 > **Regla cero: copiá la página equivalente que ya funciona y cambiá los
 > nombres. No inventes una variante.**
 >
-> Para una tabla hija de otra (Ciudades cuelga de Departamentos, que cuelga de
-> Países), la referencia es
-> [_auth.departamentos.tsx](../src/routes/_auth.departamentos.tsx): filtro por
-> el padre en el header de su columna (`TableHeadFiltrable`), corte de a 20 con
-> "Mostrar más", tabla + tarjetas, diálogo de alta/edición. Para una tabla sin
-> padre, [_auth.paises.tsx](../src/routes/_auth.paises.tsx).
+> Cuál copiar según el caso:
+>
+> | La tabla nueva…                | Copiá                                                            |
+> | ------------------------------ | ---------------------------------------------------------------- |
+> | no depende de nada             | [_auth.paises.tsx](../src/routes/_auth.paises.tsx)               |
+> | cuelga de otra (padre visible) | [_auth.departamentos.tsx](../src/routes/_auth.departamentos.tsx) |
+> | **es por empresa**             | [_auth.monedas.tsx](../src/routes/_auth.monedas.tsx)             |
+> | por empresa y con imagen       | [_auth.articulos.tsx](../src/routes/_auth.articulos.tsx)         |
+>
+> Todas traen lo mismo: filtro en el header de la columna que filtra
+> (`TableHeadFiltrable`), corte de a 20 con "Mostrar más", tabla en escritorio +
+> tarjetas en móvil, y diálogo de alta/edición.
 >
 > Esto no es pereza, es la lección más cara de este proyecto. Implementar
 > Ciudades "parecido pero a mi manera" —columnas de más, otra `queryKey`, otra
@@ -64,6 +73,55 @@ Una página nueva se llama `_auth.<algo>.tsx`, no `<algo>.tsx` suelto.
 **`npx tsc --noEmit` antes de dar por perdido un bug de UI.** El proyecto tiene
 `exactOptionalPropertyTypes` activado y el compilador detecta cosas que en
 runtime fallan en silencio — un campo que la API no devuelve, por ejemplo.
+
+### La empresa activa
+
+El login pide credenciales **y** a qué empresa conectarse. Varias tablas
+—Monedas, Unidades de medida, Categorías, Artículos— cuelgan de `EMPRESAS`, y su
+listado se filtra por la empresa elegida.
+
+```tsx
+import { useEmpresa } from "@/components/ctell/empresa-provider";
+
+const { empresa } = useEmpresa(); // { id, nombreEmpresa, tieneLogo } | null
+```
+
+En una página por empresa hay **dos cosas que no se pueden olvidar**:
+
+```tsx
+const { data } = useQuery({
+  // 1. El id va en la queryKey. Sin esto, al cambiar de empresa TanStack Query
+  //    sirve en caché el listado de la anterior.
+  queryKey: ["monedas", empresa?.id ?? null],
+  queryFn: () => api.monedas.listar({ idEmpresa: empresa!.id }),
+  // 2. `enabled` evita pedir sin empresa. El provider hidrata desde
+  //    localStorage DESPUÉS de montar, así que en el primer render `empresa`
+  //    todavía es null: sin esto la petición sale con idEmpresa vacío y trae
+  //    las filas de TODAS las empresas por un instante.
+  enabled: empresa !== null,
+});
+```
+
+El `!` en `empresa!.id` es seguro justamente por el `enabled`: la query no corre
+hasta que haya empresa.
+
+Y contemplá el caso `empresa === null` en el render — pasa si alguien entró con
+una sesión anterior a que el login pidiera elegirla:
+
+```tsx
+{
+  empresa === null && !isPending && (
+    <p>No hay una empresa activa. Cerrá sesión y volvé a entrar eligiendo una.</p>
+  );
+}
+```
+
+**El `idEmpresa` del formulario no es un campo.** Sale de la empresa activa y se
+pasa como prop al diálogo; no hay combobox de empresa en ninguna de estas
+pantallas.
+
+> El menú también filtra por empresa: solo muestra las páginas cuyo permiso
+> corresponde a la empresa activa (ver [7](#7-el-menú-dinámico-por-dentro)).
 
 ---
 
@@ -680,6 +738,30 @@ Se monta en dos lugares de [AppLayout.tsx](../src/components/ctell/AppLayout.tsx
 el sidebar de escritorio (`variant="dark"`) y el panel móvil (`variant="light"`,
 el default).
 
+### El menú se filtra por la empresa activa
+
+`useMenuUsuario` pide **todos** los permisos del usuario y recorta en el cliente
+los que corresponden a la empresa de la sesión:
+
+```ts
+const permisos = (data?.items ?? []).filter((p) => empresa !== null && p.idEmpresa === empresa.id);
+```
+
+El recorte se hace acá y no en la consulta para no repetir el pedido cada vez
+que se cambia de empresa.
+
+Dos consecuencias que explican el 90% de los "me quedé sin menú":
+
+- **Sin permisos en esa empresa, el menú queda vacío.** Es lo esperado, no un
+  bug.
+- **Los permisos con `idEmpresa` en null no aparecen en ninguna empresa.** Son
+  los cargados antes de que existiera la columna. Hay que reasignarlos desde el
+  ABM de permisos, que ahora registra la empresa activa —
+  `db/usuario-paginas.sql` trae una consulta al final que los lista.
+
+> Ojo con la PK: `(ID_USUARIO, ID_PAGINA)` **no incluye la empresa**, así que una
+> página se asigna a **una sola empresa por usuario**. Dársela en dos da 409.
+
 ### `variant` existe porque el sidebar es oscuro
 
 El sidebar usa `gradient-navy`; el panel móvil usa `bg-card`, que es claro. Las
@@ -711,6 +793,11 @@ nueva visualmente indistinguible del resto del menú.
 Y si la página pertenece a una jerarquía, **dale un ícono propio a cada nivel**.
 Países / Departamentos / Ciudades usan `Globe` / `Map` / `MapPin`: con el mismo
 ícono repetido, el menú no deja distinguir un nivel de otro de un vistazo.
+
+**Antes de elegir un ícono, mirá si ya está tomado.** Monedas quedó con
+`Banknote` y no con `Coins` porque `Coins` ya era "cobros": dos entradas
+distintas con el mismo dibujo se leen como la misma opción. Lo mismo con
+Categorías → `Tags` (la agrupación) en vez de `Package`, que es el artículo.
 
 ### Por qué el link es un `<a>` y no un `<Link>`
 
@@ -780,6 +867,71 @@ navegación. No lo pongas en `useState` dentro de algo que `AppLayout` monte.
 
 ---
 
+## 7.1 Imágenes: siempre con respaldo
+
+Los binarios (logo de empresa, imagen de artículo) no vienen en el JSON: se
+piden a su propio endpoint público con `urlLogoEmpresa(id)` /
+`urlImagenArticulo(id)`. Ya están resueltos en dos componentes:
+
+| Componente                                                       | Respaldo cuando no hay imagen  |
+| ---------------------------------------------------------------- | ------------------------------ |
+| [LogoEmpresa.tsx](../src/components/ctell/LogoEmpresa.tsx)       | Iniciales de la empresa ("CS") |
+| [ImagenArticulo.tsx](../src/components/ctell/ImagenArticulo.tsx) | Un ícono de paquete            |
+
+La diferencia es deliberada: una empresa se reconoce por sus iniciales, un
+artículo no —"CE" no dice nada de "Cemento Portland"—, así que ahí un marcador
+neutro comunica mejor.
+
+**Los dos caminos al respaldo importan por igual:**
+
+```tsx
+// 1. El listado dice que no hay imagen: ni se intenta la petición.
+const mostrarImagen = tieneImagen && !falloCarga;
+
+// 2. La petición falló (404, endpoint sin publicar todavía).
+<img src={urlImagenArticulo(id)} onError={() => setFalloCarga(true)} />;
+```
+
+Sin el `onError`, mientras el endpoint no esté publicado en APEX se vería el
+ícono de imagen rota del navegador en cada fila.
+
+Y `useEffect` reseteando `falloCarga` cuando cambia el `id`: sin eso, una fila
+reutilizada de la tabla arrastra el fallo de la anterior.
+
+**Al subir**, la imagen va por su propia mutación y no por el submit del
+formulario —son dos peticiones distintas, y encadenarlas haría que un error al
+guardar perdiera también la imagen. Validá tipo y tamaño antes de enviar, y
+limpiá el `input.value` siempre:
+
+```tsx
+const archivo = event.target.files?.[0];
+// Sin esto, elegir el mismo archivo dos veces seguidas no dispara el change.
+event.target.value = "";
+```
+
+---
+
+## 7.2 Paneles con scroll: `scrollbar-fino`
+
+La barra de desplazamiento nativa de Windows son 17px de gris opaco con flechas:
+contra el sidebar oscuro se ve como un recorte de otra aplicación. Cualquier
+contenedor con scroll propio lleva la utilidad `scrollbar-fino`, definida en
+[styles.css](../src/styles.css):
+
+```tsx
+<nav className="scrollbar-fino flex-1 overflow-y-auto">
+```
+
+Son 6px, redondeada y **translúcida**: toma su color de `currentColor`, así que
+la misma clase sirve sobre el sidebar oscuro y sobre una tarjeta clara sin
+repintarla.
+
+Lleva las dos sintaxis porque ningún navegador soporta ambas —
+`scrollbar-width` (Firefox, Chrome 121+) y `::-webkit-scrollbar` (Safari y
+Chrome anteriores). Cada navegador aplica la que entiende.
+
+---
+
 ## 8. Checklist
 
 Antes de dar por terminada una pantalla:
@@ -790,7 +942,12 @@ Antes de dar por terminada una pantalla:
 - [ ] Página envuelta en `<AppLayout>` con `active="/la-ruta"` (la ruta, no el nombre)
 - [ ] `pb-28` en el `<main>` para el botón flotante de móvil
 - [ ] La ruta agregada a `RUTAS_DISPONIBLES` en `PaginasDialog.tsx`
+- [ ] **El nombre de la página sumado a `ICONOS_PAGINA`** en `menu-iconos.ts`,
+      con un ícono que no esté ya usado por otra entrada
 - [ ] Registrada en Administración → Páginas, y asignada en Permisos
+- [ ] Si es una tabla por empresa: `empresa.id` en la `queryKey`, `enabled:
+    empresa !== null`, y el caso `empresa === null` contemplado en el render
+- [ ] Los contenedores con scroll propio llevan `scrollbar-fino`
 - [ ] Los cuatro estados del listado: cargando, error, vacío con acción, con datos
 - [ ] Tarjetas abajo de `sm`, tabla arriba
 - [ ] **Buscador con `useTablaListado`** que filtra por los campos visibles
@@ -807,16 +964,21 @@ Antes de dar por terminada una pantalla:
 
 ### Errores frecuentes
 
-| Síntoma                                               | Causa                                                                                                                                                        |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| El item aparece en el menú pero el clic no navega     | `PAGINAS.RUTA` no coincide con ninguna ruta del router                                                                                                       |
-| El menú no muestra una página asignada                | El módulo o la página están inactivos, o falta el permiso                                                                                                    |
-| Todo se ve bien pero una acción no hace nada          | La API no devuelve un campo: llega `undefined`. Corré `npx tsc --noEmit`                                                                                     |
-| El texto no se lee en hover en el sidebar             | Falta `variant="dark"`: las clases claras no contrastan sobre el navy                                                                                        |
-| El formulario muestra datos del registro anterior     | Se usó `defaultValues` en vez de `values` en un dialog reutilizado                                                                                           |
-| El error del backend no se ve al borrar               | Falta `e.preventDefault()` en el `AlertDialogAction`                                                                                                         |
-| La lista no se actualiza tras guardar                 | Falta `invalidateQueries`                                                                                                                                    |
-| `window is not defined`                               | Acceso al DOM fuera de `useEffect` (corre en el prerender de build)                                                                                          |
-| Cambios que no aparecen por más que recargues         | Hay más de un `npm run dev` corriendo: mirá en qué puerto estás                                                                                              |
-| El buscador no encuentra nada que sí está en pantalla | Falta agregar ese campo al array que devuelve la función de `useTablaListado`                                                                                |
-| El Combobox no filtra por lo que se ve en pantalla    | El `filter` de `Command` compara contra `value` (el id): revisá que `Combobox` esté resolviendo `opcion.etiqueta`, no uses `Command` pelado sin ese `filter` |
+| Síntoma                                                   | Causa                                                                                                                                                                                                           |
+| --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| El item aparece en el menú pero el clic no navega         | `PAGINAS.RUTA` no coincide con ninguna ruta del router                                                                                                                                                          |
+| El menú no muestra una página asignada                    | El módulo o la página están inactivos, o falta el permiso                                                                                                                                                       |
+| Todo se ve bien pero una acción no hace nada              | La API no devuelve un campo: llega `undefined`. Corré `npx tsc --noEmit`                                                                                                                                        |
+| El texto no se lee en hover en el sidebar                 | Falta `variant="dark"`: las clases claras no contrastan sobre el navy                                                                                                                                           |
+| El formulario muestra datos del registro anterior         | Se usó `defaultValues` en vez de `values` en un dialog reutilizado                                                                                                                                              |
+| El error del backend no se ve al borrar                   | Falta `e.preventDefault()` en el `AlertDialogAction`                                                                                                                                                            |
+| La lista no se actualiza tras guardar                     | Falta `invalidateQueries`                                                                                                                                                                                       |
+| `window is not defined`                                   | Acceso al DOM fuera de `useEffect` (corre en el prerender de build)                                                                                                                                             |
+| Cambios que no aparecen por más que recargues             | Hay más de un `npm run dev` corriendo: mirá en qué puerto estás                                                                                                                                                 |
+| El buscador no encuentra nada que sí está en pantalla     | Falta agregar ese campo al array que devuelve la función de `useTablaListado`                                                                                                                                   |
+| El Combobox no filtra por lo que se ve en pantalla        | El `filter` de `Command` compara contra `value` (el id): revisá que `Combobox` esté resolviendo `opcion.etiqueta`, no uses `Command` pelado sin ese `filter`                                                    |
+| **El menú quedó vacío después de entrar**                 | El usuario no tiene permisos **en esa empresa**, o los tiene con `idEmpresa` en null (cargados antes de que existiera la columna). Reasignalos desde el ABM de permisos entrando con la empresa que corresponda |
+| **Un listado por empresa trae filas de otra**             | Falta `enabled: empresa !== null`: en el primer render `empresa` todavía es null y la petición sale sin `idEmpresa`                                                                                             |
+| **Al cambiar de empresa se ven los datos de la anterior** | Falta `empresa.id` en la `queryKey`: TanStack Query cree que es la misma consulta                                                                                                                               |
+| Las imágenes se ven como ícono roto                       | Falta el `onError` que cae al respaldo. Si además es en todas, el endpoint de imagen no está publicado en APEX                                                                                                  |
+| Elegir el mismo archivo dos veces no hace nada            | Falta `event.target.value = ""` en el `onChange` del input file                                                                                                                                                 |

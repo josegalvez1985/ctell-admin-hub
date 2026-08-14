@@ -210,3 +210,50 @@
 @utility gradient-navy {
   background-image: var(--gradient-navy);
 }
+
+/**
+ * Barra de desplazamiento delgada, para paneles con scroll propio.
+ *
+ * La nativa de Windows son 17px de gris opaco con flechas en los extremos:
+ * contra el sidebar oscuro se ve como un recorte de otra aplicación. Esta es de
+ * 6px, redondeada y translúcida, así que toma el color de lo que tiene detrás y
+ * funciona igual sobre el sidebar oscuro que sobre una tarjeta clara.
+ *
+ * Van las dos sintaxis porque ningún navegador soporta ambas:
+ *   - `scrollbar-width`/`scrollbar-color` es el estándar — Firefox y Chrome 121+.
+ *   - `::-webkit-scrollbar` es lo que entienden Safari y los Chrome anteriores.
+ * Un navegador aplica una y descarta la otra; juntas cubren todo.
+ *
+ * `transparent` en el track y no un color: el fondo del contenedor se ve a
+ * través, y así la misma clase sirve en cualquier superficie sin repintarla.
+ */
+@utility scrollbar-fino {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklch, currentColor 25%, transparent) transparent;
+
+  &::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background-color: color-mix(in oklch, currentColor 25%, transparent);
+    border-radius: 9999px;
+  }
+
+  /* Se marca un poco más cuando el puntero está encima: da la señal de que se
+     puede arrastrar, sin llamar la atención el resto del tiempo. */
+  &::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in oklch, currentColor 40%, transparent);
+  }
+
+  /* Sin esto, en la esquina donde se cruzan las dos barras queda un cuadrado
+     con el gris del sistema. */
+  &::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}

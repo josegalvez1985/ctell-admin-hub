@@ -11,7 +11,7 @@
 --   3. ACTUALIZAR      PUT    /empresas/actualizar/:id
 --   4. ELIMINAR        DELETE /empresas/eliminar/:id
 --   5. LISTAR_PUBLICAS GET    /empresas/publicas      (SIN TOKEN)
---   6. SERVIR_LOGO     GET    /empresas/logo/:id      (SIN TOKEN)
+--   6. (sin PL/SQL)   GET    /empresas/logo/:id      (SIN TOKEN, media)
 --   7. GUARDAR_LOGO    PUT    /empresas/logo/:id      (con token)
 --
 -- Se ejecuta una sola vez en la hoja de trabajo SQL de APEX, conectado con el
@@ -45,6 +45,11 @@
 --     usarla directo como src de un <img>. Es PÚBLICO, igual que /publicas: lo
 --     consume el selector de empresa del login, donde todavía no hay sesión. Un
 --     logo es material de marca, lo mismo que ya expone el nombre.
+--     No pasa por el paquete: se publica con ORDS.source_type_media, que arma
+--     la respuesta binaria desde una consulta de dos columnas (mime, blob). El
+--     camino "normal" —un OUT BLOB como parámetro RESPONSE— NO funciona: el
+--     check REST_PARAMS_PARAM_TYPE_CK rechaza tanto 'BLOB' como 'RESOURCE' y
+--     aborta la publicación entera con ORA-02290.
 --
 --   PUT /empresas/logo/:id  recibe el binario en el body y lo guarda. Este SÍ
 --     pide token: escribir nunca es público.
@@ -139,15 +144,9 @@ CREATE OR REPLACE PACKAGE PKG_EMPRESAS AS
     p_resultado   OUT CLOB
   );
 
-  -- SIN TOKEN: devuelve el logo como binario crudo para usarlo de <img src>.
-  -- Sale por p_logo/p_mime, no por un JSON: ORDS los mapea al cuerpo y al
-  -- Content-Type de la respuesta. Sin logo cargado devuelve 404.
-  PROCEDURE SERVIR_LOGO (
-    p_id          IN  VARCHAR2,
-    p_status_code OUT NUMBER,
-    p_mime        OUT VARCHAR2,
-    p_logo        OUT BLOB
-  );
+  -- NO hay procedimiento para SERVIR el logo: el GET /empresas/logo/:id se
+  -- publica con ORDS.source_type_media, que arma la respuesta binaria desde una
+  -- consulta sin pasar por PL/SQL. Ver el detalle en PUBLICAR_ENDPOINTS.
 
   -- Guarda el logo. CON token: escribir nunca es público.
   -- p_logo llega como el cuerpo crudo del PUT; p_content_type, del header.
@@ -420,60 +419,6 @@ CREATE OR REPLACE PACKAGE BODY PKG_EMPRESAS AS
                        DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
       p_resultado := '{"error":"Error al listar las empresas"}';
   END LISTAR_PUBLICAS;
-
-  ------------------------------------------------------------------------------
-  -- Sirve el logo como binario, para usarlo directo en <img src="...">.
-  --
-  -- No valida token: lo consume el selector del login, donde no hay sesión. Un
-  -- logo es material de marca —lo mismo que ya expone el nombre en /publicas—,
-  -- no un dato de negocio.
-  --
-  -- La salida NO es JSON: p_logo va al cuerpo de la respuesta y p_mime al
-  -- header Content-Type, mapeados en PUBLICAR_ENDPOINTS. Por eso este
-  -- procedimiento no tiene p_resultado: mezclar un JSON de error con un cuerpo
-  -- binario no tendría cómo representarse.
-  ------------------------------------------------------------------------------
-  PROCEDURE SERVIR_LOGO (
-    p_id          IN  VARCHAR2,
-    p_status_code OUT NUMBER,
-    p_mime        OUT VARCHAR2,
-    p_logo        OUT BLOB
-  ) IS
-    l_id NUMBER;
-  BEGIN
-    l_id := TO_NUMBER(NULLIF(p_id, ''));
-
-    SELECT LOGO,
-           -- Las filas cargadas antes de que existiera LOGO_MIME no lo tienen.
-           -- image/png es la apuesta más segura para un logo; el navegador
-           -- igual detecta el formato real en la mayoría de los casos.
-           NVL(LOGO_MIME, 'image/png')
-      INTO p_logo, p_mime
-      FROM EMPRESAS
-     WHERE ID_EMPRESA = l_id;
-
-    -- La empresa existe pero nunca se le cargó un logo: 404 para que el
-    -- frontend caiga a las iniciales sin tratarlo como un fallo.
-    IF p_logo IS NULL OR DBMS_LOB.GETLENGTH(p_logo) = 0 THEN
-      p_status_code := 404;
-      p_mime := NULL;
-      p_logo := NULL;
-      RETURN;
-    END IF;
-
-    p_status_code := 200;
-  EXCEPTION
-    WHEN NO_DATA_FOUND THEN
-      p_status_code := 404;
-      p_mime := NULL;
-      p_logo := NULL;
-    WHEN OTHERS THEN
-      p_status_code := 500;
-      p_mime := NULL;
-      p_logo := NULL;
-      APEX_DEBUG.ERROR('PKG_EMPRESAS.SERVIR_LOGO: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
-                       DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
-  END SERVIR_LOGO;
 
   ------------------------------------------------------------------------------
   -- Guarda el logo de una empresa. CON token: escribir nunca es público.
@@ -874,23 +819,30 @@ CREATE OR REPLACE PACKAGE BODY PKG_EMPRESAS AS
     ----------------------------------------------------------------------------
     -- GET /empresas/logo/:id — SIN TOKEN
     --
-    -- Devuelve la imagen cruda, no un JSON. Dos diferencias con el resto de los
-    -- endpoints, y las dos importan:
+    -- Devuelve la imagen cruda, no un JSON, y por eso NO se publica como los
+    -- demás endpoints.
     --
-    --   p_source_type => 'RESPONSE' con p_param_type => 'RESOURCE' hace que
-    --   ORDS escriba el binario como cuerpo de la respuesta en vez de
-    --   serializarlo. OJO: el tipo NO es 'BLOB' —aunque el parámetro PL/SQL sí
-    --   lo sea—, porque REST_PARAMS_PARAM_TYPE_CK solo admite un conjunto
-    --   cerrado de valores y 'BLOB' no está entre ellos: la publicación entera
-    --   revienta con ORA-02290 antes de crear ningún endpoint.
+    -- POR QUÉ NO ES UN HANDLER PL/SQL CON PARÁMETRO DE SALIDA:
+    -- La forma "natural" sería un procedimiento con un OUT BLOB declarado como
+    -- p_source_type => 'RESPONSE'. No funciona: DEFINE_PARAMETER valida
+    -- p_param_type contra REST_PARAMS_PARAM_TYPE_CK, que admite un conjunto
+    -- cerrado de valores, y ni 'BLOB' ni 'RESOURCE' pasan esa restricción en
+    -- esta instalación. El ORA-02290 aborta PUBLICAR_ENDPOINTS a la mitad y
+    -- deja el módulo SIN NINGÚN endpoint — se cae la app entera, no solo el
+    -- logo.
     --
-    --   X-ORDS-STATUS-CODE, no X-APEX-STATUS-CODE: el segundo es el que usa el
-    --   motor de APEX para respuestas JSON. En un handler que devuelve un BLOB
-    --   hay que usar el de ORDS o el 404 del logo faltante se pierde y llega
-    --   como 200 con el cuerpo vacío — el <img> quedaría roto en vez de caer a
-    --   las iniciales.
+    -- LA FORMA QUE SÍ FUNCIONA: source_type_media. ORDS toma una consulta que
+    -- devuelve DOS columnas —content-type y BLOB, en ese orden— y arma la
+    -- respuesta binaria él mismo, sin parámetros de salida que declarar. Es el
+    -- mecanismo pensado para servir imágenes y el que usa APEX internamente.
     --
-    -- El mismo template lleva también el PUT que guarda el logo, más abajo.
+    -- El 404 del logo faltante sale solo: si la consulta no devuelve filas,
+    -- ORDS responde 404 sin que haya que manejar un status code a mano. Por eso
+    -- el WHERE filtra los BLOB vacíos en vez de devolverlos — así el <img> cae
+    -- a las iniciales en lugar de mostrar una imagen rota.
+    --
+    -- El mismo template lleva también el PUT que guarda el logo, más abajo. Ese
+    -- sí es un handler PL/SQL normal: recibe el binario, no lo devuelve.
     ----------------------------------------------------------------------------
     ORDS.DEFINE_TEMPLATE(p_module_name => 'empresas', p_pattern => 'logo/:id');
 
@@ -898,24 +850,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_EMPRESAS AS
       p_module_name => 'empresas',
       p_pattern     => 'logo/:id',
       p_method      => 'GET',
-      p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_EMPRESAS.SERVIR_LOGO(:id, :status_code, :content_type, :logo); END;'
+      p_source_type => ORDS.source_type_media,
+      p_source      => 'SELECT NVL(LOGO_MIME, ''image/png''), LOGO
+                          FROM EMPRESAS
+                         WHERE ID_EMPRESA = :id
+                           AND LOGO IS NOT NULL
+                           AND DBMS_LOB.GETLENGTH(LOGO) > 0'
     );
-
-    ORDS.DEFINE_PARAMETER(
-      p_module_name => 'empresas', p_pattern => 'logo/:id', p_method => 'GET',
-      p_name => 'logo', p_bind_variable_name => 'logo',
-      p_source_type => 'RESPONSE', p_param_type => 'RESOURCE', p_access_method => 'OUT');
-
-    ORDS.DEFINE_PARAMETER(
-      p_module_name => 'empresas', p_pattern => 'logo/:id', p_method => 'GET',
-      p_name => 'Content-Type', p_bind_variable_name => 'content_type',
-      p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'OUT');
-
-    ORDS.DEFINE_PARAMETER(
-      p_module_name => 'empresas', p_pattern => 'logo/:id', p_method => 'GET',
-      p_name => 'X-ORDS-STATUS-CODE', p_bind_variable_name => 'status_code',
-      p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
     ----------------------------------------------------------------------------
     -- PUT /empresas/logo/:id — con token
@@ -1067,14 +1008,19 @@ END;
 
 -- Valores que REST_PARAMS_PARAM_TYPE_CK acepta en p_param_type.
 --
--- Si la publicación falla con ORA-02290 nombrando esa restricción, es porque
--- algún DEFINE_PARAMETER usa un tipo que no está en esta lista — pasó con
--- 'BLOB', que parece natural para el logo pero no es un valor válido (el
--- correcto es 'RESOURCE'). El error corta PUBLICAR_ENDPOINTS a la mitad y deja
--- el módulo sin ningún endpoint, no solo sin el que falló.
+-- Si la publicación vuelve a fallar con ORA-02290 nombrando esa restricción, es
+-- porque algún DEFINE_PARAMETER usa un tipo que no está en esta lista. Pasó con
+-- 'BLOB' y también con 'RESOURCE' al intentar servir el logo por un parámetro
+-- de salida; la solución fue no usar un parámetro (ver source_type_media en
+-- PUBLICAR_ENDPOINTS). El error corta la publicación a la mitad y deja el
+-- módulo sin NINGÚN endpoint, no solo sin el que falló.
+--
+-- El OWNER es obligatorio: la restricción vive en ORDS_METADATA, y sin filtrar
+-- por esquema la consulta devuelve cero filas aunque exista.
 SELECT SEARCH_CONDITION
   FROM ALL_CONSTRAINTS
- WHERE CONSTRAINT_NAME = 'REST_PARAMS_PARAM_TYPE_CK';
+ WHERE OWNER = 'ORDS_METADATA'
+   AND CONSTRAINT_NAME = 'REST_PARAMS_PARAM_TYPE_CK';
 
 SELECT OBJECT_NAME, OBJECT_TYPE, STATUS
   FROM USER_OBJECTS

@@ -4,7 +4,9 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { Combobox } from "@/components/ctell/Combobox";
+import { useEmpresa } from "@/components/ctell/empresa-provider";
 import { api, ApiError, esActivo, type Pagina } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import {
   Dialog,
   DialogContent,
@@ -105,18 +107,40 @@ function PanelPermisos({ idUsuario }: { idUsuario: number }) {
     queryFn: () => api.usuarioPaginas.listar({ idUsuario }),
   });
 
+  // Los permisos se otorgan PARA LA EMPRESA ACTIVA: el menú solo muestra las
+  // páginas cuyo permiso es de la empresa con la que se inició sesión (ver
+  // use-menu-usuario.ts). Para dar accesos en otra empresa hay que entrar con
+  // ella.
+  const { empresa } = useEmpresa();
+
   // Un Set para preguntar "¿tiene permiso?" en O(1) por cada checkbox, en vez
   // de recorrer el array entero una vez por página.
-  const asignadas = new Set((permisosQuery.data?.items ?? []).map((p) => p.idPagina));
+  //
+  // Se filtra por empresa: el endpoint devuelve los permisos del usuario en
+  // TODAS las empresas, y sin este recorte los checkboxes aparecerían tildados
+  // por accesos de otra empresa que en esta no funcionan.
+  const asignadas = new Set(
+    (permisosQuery.data?.items ?? [])
+      .filter((p) => empresa !== null && p.idEmpresa === empresa.id)
+      .map((p) => p.idPagina),
+  );
 
   const invalidar = () =>
     queryClient.invalidateQueries({ queryKey: ["usuario-paginas", idUsuario] });
 
   const cambiar = useMutation({
-    mutationFn: ({ idPagina, dar }: { idPagina: number; dar: boolean }) =>
-      dar
-        ? api.usuarioPaginas.asignar(idUsuario, idPagina)
-        : api.usuarioPaginas.quitar(idUsuario, idPagina),
+    mutationFn: ({ idPagina, dar }: { idPagina: number; dar: boolean }) => {
+      if (dar) {
+        // Sin empresa el permiso se guardaría con ID_EMPRESA en NULL, y esas
+        // filas no las muestra ningún menú: quedaría creado pero inservible,
+        // sin ningún aviso. Mejor no dejar asignar que dejar un permiso mudo.
+        if (!empresa) {
+          throw new ApiError("No hay una empresa activa: volvé a iniciar sesión eligiendo una.", 0);
+        }
+        return api.usuarioPaginas.asignar(idUsuario, idPagina, empresa.id);
+      }
+      return api.usuarioPaginas.quitar(idUsuario, idPagina);
+    },
     onSuccess: () => invalidar(),
     onError: (e) => {
       toast.error(MENSAJE_ERROR(e, "No se pudo cambiar el permiso"));
@@ -167,6 +191,25 @@ function PanelPermisos({ idUsuario }: { idUsuario: number }) {
     porModulo.set(pagina.modulo, grupo);
   }
 
+  // Dentro de cada módulo, primero las que el usuario NO tiene.
+  //
+  // A esta pantalla se entra a DAR permisos, no a mirar los que ya están: lo
+  // que falta es lo que se viene a buscar, y dejarlo mezclado obliga a
+  // escanear checkboxes tildados para encontrarlo. Las asignadas quedan abajo,
+  // visibles para poder quitarlas.
+  //
+  // El orden se recalcula en cada render: al tildar una, la fila baja al grupo
+  // de asignadas. Es deliberado —refleja el estado nuevo— y no molesta porque
+  // el cambio ocurre después de hacer clic, no mientras se busca.
+  for (const grupo of porModulo.values()) {
+    grupo.sort((a, b) => {
+      const faltaA = asignadas.has(a.id) ? 1 : 0;
+      const faltaB = asignadas.has(b.id) ? 1 : 0;
+      // A igual condición, el orden del menú: primero ORDEN, después el nombre.
+      return faltaA - faltaB || a.orden - b.orden || a.nombre.localeCompare(b.nombre, "es");
+    });
+  }
+
   return (
     <div className="space-y-4">
       {[...porModulo.entries()].map(([modulo, susPaginas]) => (
@@ -175,11 +218,18 @@ function PanelPermisos({ idUsuario }: { idUsuario: number }) {
             {modulo}
           </p>
           <ul className="divide-y divide-border">
-            {susPaginas.map((pagina) => {
+            {susPaginas.map((pagina, i) => {
               const tiene = asignadas.has(pagina.id);
+              // Primera asignada del grupo, habiendo alguna sin asignar antes:
+              // ahí es donde termina "lo que falta" y empieza "lo que ya
+              // tiene". Sin esa marca el reordenamiento parece arbitrario.
+              const abreAsignadas = tiene && i > 0 && !asignadas.has(susPaginas[i - 1]!.id);
 
               return (
-                <li key={pagina.id} className="px-3 py-2.5">
+                <li
+                  key={pagina.id}
+                  className={cn("px-3 py-2.5", abreAsignadas && "border-t-2 border-t-border")}
+                >
                   <Label className="flex cursor-pointer items-center gap-3 text-sm font-normal">
                     <Checkbox
                       checked={tiene}
@@ -188,7 +238,11 @@ function PanelPermisos({ idUsuario }: { idUsuario: number }) {
                         cambiar.mutate({ idPagina: pagina.id, dar: v === true })
                       }
                     />
-                    <span className="text-foreground">{pagina.nombre}</span>
+                    {/* Las ya asignadas se atenúan: lo que se viene a buscar
+                        acá es lo que falta. */}
+                    <span className={tiene ? "text-muted-foreground" : "text-foreground"}>
+                      {pagina.nombre}
+                    </span>
                   </Label>
                 </li>
               );

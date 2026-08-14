@@ -13,6 +13,7 @@
  * entero son miles de componentes y el bundle lo nota.
  */
 import {
+  Banknote,
   Boxes,
   Building,
   Building2,
@@ -30,10 +31,12 @@ import {
   MapPin,
   Package,
   Receipt,
+  Ruler,
   Settings,
   ShoppingCart,
   Sliders,
   Store,
+  Tags,
   Truck,
   UserCog,
   Users,
@@ -55,6 +58,7 @@ function clave(texto: string): string {
  * nombre mal escrito en la base caería en el default en vez de romper.
  */
 const POR_NOMBRE: Record<string, LucideIcon> = {
+  banknote: Banknote,
   boxes: Boxes,
   building: Building,
   building2: Building2,
@@ -72,10 +76,12 @@ const POR_NOMBRE: Record<string, LucideIcon> = {
   mappin: MapPin,
   package: Package,
   receipt: Receipt,
+  ruler: Ruler,
   settings: Settings,
   shoppingcart: ShoppingCart,
   sliders: Sliders,
   store: Store,
+  tags: Tags,
   truck: Truck,
   usercog: UserCog,
   users: Users,
@@ -119,6 +125,19 @@ const ICONOS_PAGINA: Record<string, LucideIcon> = {
   usuarios: UserCog,
   articulos: Package,
   productos: Package,
+  // Banknote y no Coins: Coins ya es "cobros", y con el mismo ícono no se
+  // distinguiría la moneda —la divisa— del movimiento de caja.
+  monedas: Banknote,
+  moneda: Banknote,
+  // La regla es lo que mide, sin confundirse con "artículos" (la caja).
+  "unidades de medida": Ruler,
+  "unidad de medida": Ruler,
+  unidades: Ruler,
+  // Las etiquetas agrupan artículos; Boxes o Package los representarían a
+  // ellos, no a la agrupación.
+  categorias: Tags,
+  categoria: Tags,
+  rubros: Tags,
   deposito: Warehouse,
   depositos: Warehouse,
   ordenes: ClipboardList,

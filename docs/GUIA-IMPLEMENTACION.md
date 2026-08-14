@@ -14,6 +14,8 @@ de plantilla para todo lo demás.
 2. [Regla: un archivo SQL por tabla](#2-regla-un-archivo-sql-por-tabla)
    - [El estado es `'A'`/`'I'`, nunca 1/0](#21-el-estado-es-ai-nunca-10)
 3. [Crear el backend de una tabla](#3-crear-el-backend-de-una-tabla)
+   - [Tablas por empresa](#31-tablas-por-empresa)
+   - [Imágenes y otros binarios](#32-imágenes-y-otros-binarios)
 4. [Consumir la API desde el frontend](#4-consumir-la-api-desde-el-frontend)
 5. [Devolver lo que el consumidor necesita](#5-devolver-lo-que-el-consumidor-necesita)
 6. [Seguridad](#6-seguridad)
@@ -65,10 +67,20 @@ renderizar sus hijos; una página nueva que requiera sesión se nombra
 
 ```
 db/
-├── auth.sql         PKG_AUTH + /auth/        ← única excepción a la regla
-├── usuarios.sql     PKG_USUARIOS + /usuarios/
-├── empresas.sql     PKG_EMPRESAS + /empresas/
-└── articulos.sql    PKG_ARTICULOS + /articulos/
+├── auth.sql             PKG_AUTH + /auth/    ← única excepción a la regla
+├── usuarios.sql         PKG_USUARIOS + /usuarios/
+├── modulos.sql          ─┐
+├── paginas.sql           │ Menú y permisos
+├── usuario-paginas.sql  ─┘
+├── paises.sql           ─┐
+├── departamentos.sql     │ Jerarquía geográfica
+├── ciudades.sql         ─┘
+├── empresas.sql         + logo (BLOB) y listado público del login
+├── sucursales.sql
+├── monedas.sql          ─┐
+├── unidades-medida.sql   │ Por empresa (ver 3.1)
+├── categorias.sql        │
+└── articulos.sql        ─┘ + imagen (BLOB, ver 3.2)
 ```
 
 **`auth.sql` se ejecuta primero.** Define `PKG_AUTH`, del que depende cualquier
@@ -623,6 +635,147 @@ SELECT NAME, LINE, POSITION, TEXT
 
 ---
 
+## 3.1 Tablas por empresa
+
+`MONEDAS`, `UNIDADES_MEDIDA`, `CATEGORIAS` y `ARTICULOS` cuelgan de `EMPRESAS`:
+cada empresa tiene su propio juego. Si la tabla nueva es de este tipo, seguí
+`db/monedas.sql` — es el ejemplo más chico y completo.
+
+Tres cosas específicas:
+
+**El listado se filtra por `?idEmpresa=`.** El id sale de la empresa activa de
+la sesión, no de un combobox del formulario:
+
+```sql
+l_id_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
+
+SELECT COUNT(*) INTO l_total
+  FROM MONEDAS
+ WHERE l_id_empresa IS NULL OR ID_EMPRESA = l_id_empresa;
+```
+
+**No hagas `JOIN` contra `EMPRESAS`.** Como el listado ya viene filtrado por una
+sola empresa, su nombre sería la misma constante repetida en cada fila, y el
+frontend ya lo tiene en la empresa activa. Un `JOIN` que no aporta un dato
+distinto por fila no se hace — es la misma razón por la que `ciudades.sql` no
+llega hasta `PAISES`.
+
+**El `UNIQUE` casi siempre es compuesto con la empresa.** Fijate cuál es la otra
+columna antes de escribir el mensaje del 409, porque cambia según la tabla:
+
+| Tabla             | UNIQUE                           | Mensaje del 409                                |
+| ----------------- | -------------------------------- | ---------------------------------------------- |
+| `MONEDAS`         | `(ID_EMPRESA, NOMBRE_MONEDA)`    | "…ya tiene una moneda con ese nombre"          |
+| `CATEGORIAS`      | `(ID_EMPRESA, NOMBRE_CATEGORIA)` | "…ya tiene una categoría con ese nombre"       |
+| `UNIDADES_MEDIDA` | `(ID_EMPRESA, **ABREVIATURA**)`  | "…ya tiene una unidad con esa **abreviatura**" |
+
+En `UNIDADES_MEDIDA` lo único es la **abreviatura**, no el nombre: decir "ya
+existe una unidad con ese nombre" mandaría a cambiar el campo equivocado.
+
+---
+
+## 3.2 Imágenes y otros binarios
+
+Un BLOB **no entra en un `JSON_OBJECT`**, así que no viaja en el CRUD. Va por
+dos endpoints propios, como el logo en `db/empresas.sql` y la imagen en
+`db/articulos.sql`.
+
+### El `GET`: `source_type_media`, no un parámetro de salida
+
+Esto es lo que más caro cuesta descubrir, así que va primero. Lo natural sería
+un procedimiento con un `OUT BLOB` declarado como `RESPONSE`:
+
+```sql
+-- ✗ NO FUNCIONA
+ORDS.DEFINE_PARAMETER(
+  …, p_source_type => 'RESPONSE', p_param_type => 'BLOB', …);
+```
+
+`DEFINE_PARAMETER` valida `p_param_type` contra `REST_PARAMS_PARAM_TYPE_CK`, y
+**ni `'BLOB'` ni `'RESOURCE'` pasan esa restricción**. El `ORA-02290` aborta
+`PUBLICAR_ENDPOINTS` a la mitad, y como `BORRAR_MODULO` ya corrió, el módulo
+queda **sin ningún endpoint** — se cae la app entera, no solo la imagen.
+
+La forma que sí funciona es una consulta de dos columnas, content-type y BLOB:
+
+```sql
+ORDS.DEFINE_HANDLER(
+  p_module_name => 'articulos',
+  p_pattern     => 'imagen/:id',
+  p_method      => 'GET',
+  p_source_type => ORDS.source_type_media,
+  p_source      => 'SELECT NVL(IMAGEN_MIME, ''image/png''), IMAGEN
+                      FROM ARTICULOS
+                     WHERE ID_ARTICULO = :id
+                       AND IMAGEN IS NOT NULL
+                       AND DBMS_LOB.GETLENGTH(IMAGEN) > 0'
+);
+```
+
+Sin parámetros que declarar, así que la restricción ni entra en juego. Y el 404
+sale gratis: si la consulta no devuelve filas, ORDS responde 404 solo — por eso
+el `WHERE` filtra los BLOB vacíos en vez de devolverlos.
+
+### El `GET` es público, el `PUT` no
+
+El `GET` lo consume un `<img>`, y **el navegador no manda el header
+`Authorization` al descargar una imagen**. No hay forma de autenticarlo sin
+recurrir a URLs firmadas, así que el endpoint queda abierto.
+
+Eso obliga a preguntarse qué se está exponiendo: un logo es material de marca y
+no cuesta nada, pero la foto de un artículo ya es dato de negocio que cualquiera
+con el id puede ver. Se aceptó porque una foto no revela precios ni stock. Si
+algún día el binario fuera sensible, esta solución no sirve.
+
+El `PUT` **sí valida token** —escribir nunca es público— y solo acepta
+`image/*`: sin ese control, cualquier archivo quedaría guardado y se serviría de
+vuelta con su content-type a quien abra el listado.
+
+### `tieneImagen` en el listado, no el binario
+
+El listado devuelve un booleano, así el frontend sabe si pedir la imagen o
+dibujar el respaldo sin traerse todos los BLOB:
+
+```sql
+'tieneImagen' VALUE CASE
+                      WHEN a.IMAGEN IS NOT NULL
+                       AND DBMS_LOB.GETLENGTH(a.IMAGEN) > 0
+                      THEN 'true' ELSE 'false'
+                    END FORMAT JSON
+```
+
+`GETLENGTH > 0` y no `IS NOT NULL`: una fila puede tener un BLOB vacío, que no
+sirve como imagen y haría fallar el `<img>`.
+
+### La columna `_MIME`
+
+El content-type se guarda junto al binario (`LOGO_MIME`, `IMAGEN_MIME`). Sin
+eso habría que adivinar el formato al servirlo, y un PNG servido como
+`image/jpeg` no lo renderiza ningún navegador.
+
+Esas columnas son la **única excepción** a la regla de no tocar el DDL, y se
+agregan en un paso 0 idempotente:
+
+```sql
+DECLARE
+  l_existe PLS_INTEGER;
+BEGIN
+  SELECT COUNT(*) INTO l_existe
+    FROM USER_TAB_COLUMNS
+   WHERE TABLE_NAME = 'ARTICULOS' AND COLUMN_NAME = 'IMAGEN_MIME';
+
+  IF l_existe = 0 THEN
+    EXECUTE IMMEDIATE 'ALTER TABLE ARTICULOS ADD (IMAGEN_MIME VARCHAR2(100))';
+  END IF;
+END;
+/
+```
+
+El `COUNT` no es adorno: sin él, la segunda ejecución del archivo muere con
+`ORA-01430` y nada de lo que viene después llega a ejecutarse.
+
+---
+
 ## 4. Consumir la API desde el frontend
 
 Agregá el bloque de la tabla nueva en [src/lib/api.ts](../src/lib/api.ts),
@@ -840,6 +993,14 @@ Backend (`db/<tabla>.sql`):
 - [ ] `NVL(l_items, TO_CLOB('[]'))` en los listados
 - [ ] **Los listados con `JOIN` devuelven los campos que el consumidor necesita**,
       no sólo el nombre para mostrar (ver [5](#5-devolver-lo-que-el-consumidor-necesita))
+- [ ] **`LEFT JOIN` si la FK es nullable.** Con el interno, una fila sin ese
+      dato desaparece del listado sin ningún error visible
+- [ ] Si es una tabla por empresa: se filtra por `?idEmpresa=` y **no** hace
+      `JOIN` contra `EMPRESAS` (ver [3.1](#31-tablas-por-empresa))
+- [ ] El mensaje del 409 nombra **la columna del `UNIQUE`**, que no siempre es
+      el nombre (en `UNIDADES_MEDIDA` es la abreviatura)
+- [ ] Si hay BLOB: `source_type_media` para el `GET`, **nunca** un
+      `p_param_type => 'BLOB'` (ver [3.2](#32-imágenes-y-otros-binarios))
 
 Después de ejecutarlo en APEX:
 
@@ -877,3 +1038,7 @@ Después de ejecutarlo en APEX:
 | La lista no se actualiza tras guardar                                             | Falta `invalidateQueries`                                                                                                                                                                                                                                                                             |
 | **La UI muestra los datos pero una acción no hace nada**                          | El `JSON_OBJECT` no devuelve un campo que el consumidor necesita: llega `undefined` y el frontend cae en un fallback silencioso. Corré `npx tsc --noEmit` — el tipo lo delata                                                                                                                         |
 | El cambio del `.sql` no surte efecto                                              | No se reejecutó en APEX: el repo y ORDS son dos cosas distintas                                                                                                                                                                                                                                       |
+| **`ORA-02290: REST_PARAMS_PARAM_TYPE_CK` al publicar**                            | Un `DEFINE_PARAMETER` usa un `p_param_type` que el check no admite — pasa al intentar devolver un BLOB con `'BLOB'` o `'RESOURCE'`. Usá `ORDS.source_type_media`, que no necesita parámetro de salida. **Ojo: el error corta la publicación y deja el módulo sin NINGÚN endpoint**, no solo sin ese   |
+| **500 y "blocked by CORS policy" juntos en la consola**                           | El problema es el **500**, no el CORS: cuando el handler revienta, ORDS responde con una página de error que no lleva `Access-Control-Allow-Origin`, y el navegador reporta el bloqueo tapando la causa real. Ejecutá el procedimiento a mano en APEX para ver el `SQLERRM`                           |
+| **Una fila existe en la tabla pero no aparece en el listado**                     | `JOIN` interno sobre una FK nullable: la fila que no tiene ese dato se descarta en silencio. Va `LEFT JOIN`                                                                                                                                                                                           |
+| El `<img>` de un logo o imagen no carga                                           | El endpoint todavía no se publicó en APEX, o la fila tiene el BLOB vacío. El componente cae al respaldo por `onError`, así que se ve el ícono o las iniciales — no un ícono de imagen rota                                                                                                            |

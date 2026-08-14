@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { useEmpresa } from "@/components/ctell/empresa-provider";
 import { api, type UsuarioPagina } from "@/lib/api";
 import { useUsuarioActual } from "./use-usuario-actual";
 
@@ -33,6 +34,7 @@ const ENTRADA_ORDER: Record<string, number> = {
 
 export function useMenuUsuario() {
   const { data: usuario } = useUsuarioActual();
+  const { empresa } = useEmpresa();
 
   const { data, isPending, isError, error } = useQuery({
     queryKey: ["menu-usuario", usuario?.id],
@@ -40,13 +42,33 @@ export function useMenuUsuario() {
     enabled: !!usuario?.id,
   });
 
+  /**
+   * Permisos que aplican a la empresa activa.
+   *
+   * El endpoint devuelve TODOS los permisos del usuario, de todas las empresas;
+   * el recorte se hace acá para no repetir la consulta al cambiar de empresa.
+   *
+   * Un permiso vale en esta empresa si su `idEmpresa` coincide. Los que tienen
+   * `idEmpresa` en null NO se muestran: son de antes de que existiera la
+   * columna, y tratarlos como "válidos en todas" haría que el menú siguiera
+   * mostrando páginas que nadie habilitó para esta empresa — justo lo contrario
+   * de lo que el filtro busca. Para recuperarlos hay que reasignarlos desde el
+   * ABM de permisos, que ahora registra la empresa.
+   *
+   * Sin empresa activa no se muestra nada: no hay contra qué comparar, y un
+   * menú completo sería más engañoso que uno vacío.
+   */
+  const permisos = (data?.items ?? []).filter(
+    (p) => empresa !== null && p.idEmpresa === empresa.id,
+  );
+
   // Agrupar páginas por módulo y luego por entrada
   const modulos: MenuModulo[] = [];
 
-  if (data?.items) {
+  if (permisos.length > 0) {
     const modulosMap = new Map<number, MenuModulo>();
 
-    for (const permiso of data.items) {
+    for (const permiso of permisos) {
       if (!modulosMap.has(permiso.idModulo)) {
         modulosMap.set(permiso.idModulo, {
           id: permiso.idModulo,

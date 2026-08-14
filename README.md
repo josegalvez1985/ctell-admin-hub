@@ -46,21 +46,42 @@ Vite imprime la URL local al arrancar (normalmente `http://localhost:5173`).
 
 ```
 db/                      Backend: un archivo SQL por tabla
-├── auth.sql             PKG_AUTH + módulo ORDS /auth/
-└── usuarios.sql         PKG_USUARIOS + módulo ORDS /usuarios/
+├── auth.sql             PKG_AUTH + módulo ORDS /auth/  (ejecutar PRIMERO)
+├── usuarios.sql         ABM de usuarios
+├── modulos.sql          Módulos del menú
+├── paginas.sql          Páginas del menú
+├── usuario-paginas.sql  Permisos: qué página ve cada usuario, por empresa
+├── paises.sql           ─┐
+├── departamentos.sql     │ Jerarquía geográfica
+├── ciudades.sql         ─┘
+├── empresas.sql         Empresas + logo (BLOB) + listado público del login
+├── sucursales.sql       Sucursales de cada empresa
+├── monedas.sql          ─┐
+├── unidades-medida.sql   │ Definiciones POR EMPRESA
+├── categorias.sql       ─┘
+└── articulos.sql        Artículos + imagen (BLOB)
 
 src/
 ├── routes/              Rutas (el archivo define la URL)
 │   ├── __root.tsx       Layout raíz: <html>, providers, meta global
-│   ├── index.tsx        "/"                → login
+│   ├── index.tsx        "/" → login (elegir empresa + credenciales)
 │   ├── _auth.tsx        Layout protegido (requiere token)
 │   ├── _auth.home.tsx           "/home"          → panel general
-│   └── _auth.configuracion.tsx  "/configuracion" → preferencias
+│   ├── _auth.configuracion.tsx  "/configuracion" → preferencias
+│   └── _auth.<tabla>.tsx        una por cada ABM
 ├── components/
 │   ├── ctell/           Componentes propios del proyecto
+│   │   ├── empresa-provider.tsx  Empresa activa de la sesión
+│   │   ├── LogoEmpresa.tsx       Logo con iniciales de respaldo
+│   │   ├── ImagenArticulo.tsx    Imagen con ícono de respaldo
+│   │   ├── TableHeadFiltrable.tsx / TableHeadOrdenable.tsx
+│   │   ├── Combobox.tsx          Selector con buscador
+│   │   └── menu-iconos.ts        Íconos del menú, por nombre
 │   └── ui/              shadcn/ui (no editar a mano)
 ├── hooks/
-│   ├── use-usuario-actual.ts        Hook de auth del usuario logueado
+│   ├── use-usuario-actual.ts        Auth del usuario logueado
+│   ├── use-menu-usuario.ts          Menú según permisos + empresa activa
+│   ├── use-tabla-listado.ts         Búsqueda y orden de los listados
 │   └── use-cerrar-sesion-al-vencer.ts
 ├── lib/
 │   └── api.ts           Cliente HTTP contra ORDS
@@ -72,17 +93,68 @@ src/
 > **Regla: cada tabla tiene su propio archivo en `db/`, nombrado como la tabla,
 > con todo su CRUD adentro.**
 
-```
-db/
-├── auth.sql         ya existe (autenticación, no es una tabla)
-├── usuarios.sql     ya existe
-├── empresas.sql     PKG_EMPRESAS  + módulo ORDS /empresas/
-└── articulos.sql    PKG_ARTICULOS + módulo ORDS /articulos/
-```
+Cada archivo define `PKG_<TABLA>` con sus 4 procedimientos —`LISTAR`,
+`INSERTAR`, `ACTUALIZAR`, `ELIMINAR`— y publica su módulo ORDS. Los endpoints
+siguen siempre la misma forma:
+
+| Método   | Ruta                      |
+| -------- | ------------------------- |
+| `GET`    | `/<tabla>/listar`         |
+| `POST`   | `/<tabla>/crear`          |
+| `PUT`    | `/<tabla>/actualizar/:id` |
+| `DELETE` | `/<tabla>/eliminar/:id`   |
 
 `auth.sql` es la única excepción a la regla: no corresponde a una tabla sino a
 una responsabilidad —verificar credenciales y manejar sesiones— que cruza
 `USUARIOS` y `TOKENS`. El ABM de usuarios va aparte, en `usuarios.sql`.
+
+### Tablas por empresa
+
+`MONEDAS`, `UNIDADES_MEDIDA`, `CATEGORIAS` y `ARTICULOS` **cuelgan de
+`EMPRESAS`**: cada empresa tiene su propio juego. El `idEmpresa` no sale de un
+combobox del formulario sino de la **empresa activa de la sesión**, que se elige
+al iniciar sesión (ver [Empresa activa](#empresa-activa)).
+
+Consecuencia en el listado: **no hacen JOIN contra `EMPRESAS`**. Como ya vienen
+filtradas por una sola empresa, su nombre sería la misma constante repetida en
+cada fila, y el frontend ya lo tiene.
+
+### Imágenes (BLOB)
+
+`EMPRESAS.LOGO` y `ARTICULOS.IMAGEN` son BLOB y **no viajan en el JSON** — un
+binario no entra en un `JSON_OBJECT`. Cada uno tiene dos endpoints propios:
+
+| Método | Ruta                    | Auth  | Qué hace                   |
+| ------ | ----------------------- | ----- | -------------------------- |
+| `GET`  | `/empresas/logo/:id`    | —     | Devuelve la imagen cruda   |
+| `PUT`  | `/empresas/logo/:id`    | token | Guarda el binario del body |
+| `GET`  | `/articulos/imagen/:id` | —     | Devuelve la imagen cruda   |
+| `PUT`  | `/articulos/imagen/:id` | token | Guarda el binario del body |
+
+Los `GET` son **públicos** porque los consume un `<img>`, y el navegador no
+manda el header `Authorization` al descargar una imagen. Los `PUT` sí piden
+token: escribir nunca es público.
+
+El listado devuelve `tieneLogo` / `tieneImagen` (booleano) en vez del binario,
+así el frontend sabe si pedir la imagen o dibujar el respaldo —las iniciales de
+la empresa, un ícono en el artículo— sin traerse todos los BLOB.
+
+> **El `GET` de imagen NO se publica como los demás endpoints.** Lo natural
+> sería un procedimiento con un `OUT BLOB` como parámetro `RESPONSE`, y **no
+> funciona**: `DEFINE_PARAMETER` valida `p_param_type` contra
+> `REST_PARAMS_PARAM_TYPE_CK`, y ni `'BLOB'` ni `'RESOURCE'` pasan esa
+> restricción. El `ORA-02290` aborta la publicación a la mitad y deja el módulo
+> **sin ningún endpoint**, no solo sin el que falló.
+>
+> La forma que sí funciona es `ORDS.source_type_media`: una consulta que
+> devuelve dos columnas —content-type y BLOB— sin declarar parámetros de
+> salida. De yapa, el 404 sale gratis: si la consulta no devuelve filas, ORDS
+> responde 404 solo.
+
+El content-type se guarda junto al binario en `LOGO_MIME` / `IMAGEN_MIME`. Esas
+dos columnas son la **única excepción** a la regla de no tocar el DDL: los
+archivos las agregan en un paso 0 idempotente, que consulta `USER_TAB_COLUMNS`
+antes del `ALTER`.
 
 **El orden importa: `auth.sql` primero.** `PKG_USUARIOS` llama a `PKG_AUTH`
 para hashear contraseñas y revocar sesiones, y además reutiliza el
@@ -156,6 +228,66 @@ repositorio. Copiala de ahí y cambiala apenas entres.
 > `GRANT EXECUTE ON SYS.DBMS_CRYPTO`, migrá a PBKDF2 — la versión está lista en
 > un comentario dentro de `HASH_PASSWORD`. Migrar invalida los hashes
 > existentes: hay que resetear las contraseñas.
+
+## Empresa activa
+
+El login pide **dos cosas**: credenciales y **a qué empresa conectarse**. El
+selector muestra las empresas como botones con su logo, alimentados por
+`GET /empresas/publicas` — el **único endpoint del proyecto sin token**, porque
+en esa pantalla todavía no hay sesión.
+
+> Ese endpoint devuelve **solo `id` y `nombreEmpresa`** de las empresas activas.
+> No reutiliza la consulta de `/empresas/listar` a propósito: si mañana alguien
+> agrega una columna allá, no queremos que aparezca sola en una URL abierta a
+> internet. RUC, correo, teléfono y dirección siguen detrás del token.
+
+Elegir empresa es **obligatorio**: sin ella el botón de ingresar queda
+deshabilitado. La empresa queda disponible en toda la app:
+
+```tsx
+import { useEmpresa } from "@/components/ctell/empresa-provider";
+
+const { empresa } = useEmpresa(); // { id, nombreEmpresa, tieneLogo } | null
+```
+
+**Ciclo de vida:** vive en `localStorage` para que el login la deje
+preseleccionada la próxima vez, pero **se borra al cerrar sesión y ante un
+401**. Elegir empresa es parte de iniciar sesión, así que no sobrevive a
+cerrarla — si no, el siguiente que entre en esa PC arrancaría conectado a la
+empresa del anterior.
+
+Dos detalles que hay que respetar en cada página por empresa:
+
+```tsx
+const { data } = useQuery({
+  // El id va en la queryKey: al cambiar de empresa, TanStack Query trata el
+  // listado como otra consulta en vez de mostrar en caché el de la anterior.
+  queryKey: ["monedas", empresa?.id ?? null],
+  queryFn: () => api.monedas.listar({ idEmpresa: empresa!.id }),
+  // El provider hidrata desde localStorage DESPUÉS de montar: sin esto, la
+  // primera petición saldría sin idEmpresa y traería las de todas las empresas.
+  enabled: empresa !== null,
+});
+```
+
+### Permisos y menú
+
+`USUARIO_PAGINAS` define qué páginas ve cada usuario, y desde esta versión
+**también en qué empresa**: el menú solo muestra las páginas cuyo permiso
+corresponde a la empresa activa. Sin permisos en esa empresa, el menú queda
+vacío.
+
+Dos límites que vienen del DDL y conviene tener presentes:
+
+- **`ID_EMPRESA` no está en la PK**, que sigue siendo `(ID_USUARIO, ID_PAGINA)`.
+  Por eso una página se asigna a **una sola empresa por usuario**: dársela en
+  dos da 409. Para levantar ese límite hay que llevar la PK a
+  `(ID_USUARIO, ID_PAGINA, ID_EMPRESA)`.
+- **La columna es nullable**, y los permisos cargados antes de que existiera
+  **no aparecen en ningún menú**. Hay que reasignarlos desde el ABM de permisos.
+  `db/usuario-paginas.sql` trae al final una consulta que los lista y, comentado,
+  el `UPDATE` para migrarlos de una si el sistema venía usándose con una sola
+  empresa.
 
 ### El estado es `'A'`/`'I'`
 
@@ -285,9 +417,30 @@ origen. Este proyecto lo resuelve distinto en cada entorno:
 [src/lib/api.ts](src/lib/api.ts) elige entre las dos según
 `import.meta.env.DEV`: relativa en dev, absoluta en producción.
 
-**Configuración en APEX** (una sola vez, y cada vez que cambie el dominio):
-_Administración del Workspace → RESTful Services → orígenes permitidos_ →
-agregar `https://www.ctell.online`.
+> **`ORIGINS_ALLOWED` es POR MÓDULO, no a nivel de workspace.** La pantalla de
+> APEX —_Administración del Workspace → RESTful Services → orígenes
+> permitidos_— sugiere que es un ajuste global, y **no lo es**: habilitarlo en
+> `auth` no lo propaga a `usuarios` ni a ningún módulo nuevo.
+>
+> Cada `db/<tabla>.sql` llama a `ORDS.SET_MODULE_ORIGINS_ALLOWED` dentro de su
+> `PUBLICAR_ENDPOINTS`, como sentencia aparte del `DEFINE_MODULE` (pasarlo como
+> parámetro de esa llamada falla con `PLS-00306`).
+>
+> Sin eso, ORDS rechaza la petición cross-origin **antes** de llegar al handler,
+> con un "Service Unavailable" genérico que ni el `WHEN OTHERS` con `SQLERRM`
+> captura — porque el PL/SQL nunca llega a ejecutarse. Costó varias vueltas
+> diagnosticarlo la primera vez.
+
+> **Un 500 se ve como un error de CORS.** Cuando un handler revienta, ORDS
+> responde con una página de error que **no lleva** el header
+> `Access-Control-Allow-Origin`, y el navegador reporta el bloqueo CORS
+> ocultando la causa real. Si en la consola aparecen las dos cosas juntas —500 y
+> "blocked by CORS policy"— el problema es el 500, no el CORS.
+>
+> Para ver el error de verdad hay que ejecutar el procedimiento a mano en APEX:
+> el `WHEN OTHERS` manda el `SQLERRM` a `APEX_DEBUG`, que no se ve desde el
+> navegador. Cada archivo de `db/` trae el bloque `DECLARE ... BEGIN` listo para
+> eso en su encabezado.
 
 > No hay proxy en producción. GitHub Pages sirve archivos estáticos sin
 > servidor que reenvíe nada, así que la única forma de esquivar CORS ahí es

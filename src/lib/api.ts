@@ -129,11 +129,14 @@ export type ListaDepartamentos = {
 export type Ciudad = {
   id: number;
   idDepartamento: number;
-  /** Nombre del departamento al que pertenece: viene del JOIN, no de CIUDADES. */
+  /**
+   * Nombre del departamento al que pertenece: viene del JOIN, no de CIUDADES.
+   *
+   * No hay `pais` ni `idPais`: el listado hace un solo JOIN, contra
+   * DEPARTAMENTOS. El país es información del departamento, no de la ciudad —
+   * para verlo está la página de Departamentos.
+   */
   departamento: string;
-  idPais: number;
-  /** Nombre del país, del mismo JOIN (a través de DEPARTAMENTOS). */
-  pais: string;
   nombreCiudad: string;
   activo: Estado;
 };
@@ -189,6 +192,110 @@ export type Sucursal = {
   activo: Estado;
 };
 
+export type Moneda = {
+  id: number;
+  /**
+   * Empresa dueña de la moneda. Sale de la empresa activa de la sesión, no de
+   * un combobox: cada empresa tiene su propio juego de monedas.
+   *
+   * No hay campo `empresa` con el nombre: el listado siempre viene filtrado por
+   * una sola empresa, así que sería la misma constante en todas las filas.
+   */
+  idEmpresa: number;
+  nombreMoneda: string;
+  simbolo: string | null;
+  activo: Estado;
+};
+
+export type ListaMonedas = {
+  items: Moneda[];
+  total: number;
+};
+
+export type UnidadMedida = {
+  id: number;
+  /**
+   * Empresa dueña de la unidad. Sale de la empresa activa de la sesión, no de
+   * un combobox: cada empresa tiene su propio juego de unidades.
+   *
+   * No hay campo `empresa` con el nombre: el listado siempre viene filtrado por
+   * una sola empresa, así que sería la misma constante en todas las filas.
+   */
+  idEmpresa: number;
+  nombreUnidad: string;
+  /**
+   * Obligatoria, y es lo único que no puede repetirse dentro de una empresa —
+   * el UNIQUE es (ID_EMPRESA, ABREVIATURA), no el nombre. Al revés que en
+   * `Moneda`, donde el símbolo es opcional y lo único es el nombre.
+   */
+  abreviatura: string;
+  activo: Estado;
+};
+
+export type ListaUnidadesMedida = {
+  items: UnidadMedida[];
+  total: number;
+};
+
+export type Categoria = {
+  id: number;
+  /**
+   * Empresa dueña de la categoría. Sale de la empresa activa de la sesión, no
+   * de un combobox: cada empresa tiene su propio juego de categorías.
+   *
+   * No hay campo `empresa` con el nombre: el listado siempre viene filtrado por
+   * una sola empresa, así que sería la misma constante en todas las filas.
+   */
+  idEmpresa: number;
+  /** Único dentro de la empresa — el UNIQUE es (ID_EMPRESA, NOMBRE_CATEGORIA). */
+  nombreCategoria: string;
+  descripcion: string | null;
+  activo: Estado;
+};
+
+export type ListaCategorias = {
+  items: Categoria[];
+  total: number;
+};
+
+export type Articulo = {
+  id: number;
+  /** Empresa dueña del artículo. Sale de la empresa activa de la sesión. */
+  idEmpresa: number;
+  /**
+   * Las tres relaciones son OPCIONALES: un artículo puede cargarse sin
+   * categoría, sin moneda o sin unidad. Los nombres vienen del LEFT JOIN, así
+   * que son null cuando el id lo es.
+   */
+  idCategoria: number | null;
+  categoria: string | null;
+  idMoneda: number | null;
+  moneda: string | null;
+  simboloMoneda: string | null;
+  idUnidadMedida: number | null;
+  unidadMedida: string | null;
+  abreviaturaUnidad: string | null;
+  codigoArticulo: string | null;
+  nombreArticulo: string;
+  descripcion: string | null;
+  precioUltimaCompra: number | null;
+  /** Obligatorio: la columna es NOT NULL. */
+  precioVenta: number;
+  cantidadStock: number;
+  cantidadMinima: number;
+  /**
+   * Si tiene imagen cargada. El binario no viaja en el JSON: se pide aparte
+   * con `urlImagenArticulo(id)`.
+   */
+  tieneImagen: boolean;
+  activo: Estado;
+};
+
+export type ListaArticulos = {
+  items: Articulo[];
+  total: number;
+};
+
 export type ListaSucursales = {
   items: Sucursal[];
   total: number;
@@ -239,6 +346,17 @@ export type UsuarioPagina = {
   modulo: string;
   /** Ícono del módulo (nombre de lucide-react), del JOIN con MODULOS. */
   moduloIcono: string | null;
+  /**
+   * Empresa desde la que se otorgó el permiso. Es AUDITORÍA, no alcance: el
+   * permiso vale con cualquier empresa que el usuario elija al entrar, y el
+   * menú no filtra por este campo.
+   *
+   * Es null en los permisos cargados antes de que existiera la columna. No se
+   * puede usar para dar accesos distintos por empresa: la PK de la tabla sigue
+   * siendo (ID_USUARIO, ID_PAGINA), así que una misma página no admite dos
+   * filas para el mismo usuario. Ver el encabezado de db/usuario-paginas.sql.
+   */
+  idEmpresa: number | null;
   fechaAlta: string;
 };
 
@@ -365,6 +483,17 @@ export type ListaEmpresasPublicas = {
  */
 export function urlLogoEmpresa(id: number): string {
   return `${BASE_URL}/empresas/logo/${id}`;
+}
+
+/**
+ * URL de la imagen de un artículo, para usar directo en `<img src>`.
+ *
+ * Mismo criterio que `urlLogoEmpresa`: el navegador descarga la imagen con su
+ * propia petición y ahí no hay forma de mandar el header Authorization, así que
+ * el endpoint es público. Devuelve 404 si el artículo no tiene imagen.
+ */
+export function urlImagenArticulo(id: number): string {
+  return `${BASE_URL}/articulos/imagen/${id}`;
 }
 
 /**
@@ -753,11 +882,19 @@ export const api = {
       return request<ListaUsuarioPaginas>(`/usuario-paginas/listar${q}`);
     },
 
-    /** Responde 409 si el usuario ya tenía acceso a esa página. */
-    asignar: (idUsuario: number, idPagina: number) =>
+    /**
+     * Responde 409 si el usuario ya tenía acceso a esa página — incluso con
+     * otro `idEmpresa`: la PK es (idUsuario, idPagina) y la empresa no la
+     * integra, así que una página se asigna a UNA sola empresa por usuario.
+     *
+     * `idEmpresa` es obligatorio acá aunque la columna sea nullable: define en
+     * qué empresa vale el permiso, y el menú solo muestra las páginas de la
+     * empresa activa. Un permiso sin empresa no aparecería en ningún lado.
+     */
+    asignar: (idUsuario: number, idPagina: number, idEmpresa: number) =>
       request<{ ok: boolean }>("/usuario-paginas/asignar", {
         method: "POST",
-        body: JSON.stringify({ idUsuario, idPagina }),
+        body: JSON.stringify({ idUsuario, idPagina, idEmpresa }),
       }),
 
     /** Las dos claves van en la URL: la PK de la tabla es compuesta. */
@@ -962,5 +1099,194 @@ export const api = {
 
     eliminar: (id: number) =>
       request<{ ok: boolean }>(`/sucursales/eliminar/${id}`, { method: "DELETE" }),
+  },
+
+  monedas: {
+    /**
+     * Monedas de una empresa. `idEmpresa` sale de la empresa activa de la
+     * sesión (`useEmpresa()`), no de un filtro de la pantalla.
+     *
+     * Sin `idEmpresa` devuelve las de todas las empresas — no se usa desde la
+     * app, pero el endpoint lo permite para poder inspeccionarlo.
+     */
+    listar: (params: { idEmpresa?: number } = {}) => {
+      const q = params.idEmpresa ? `?idEmpresa=${params.idEmpresa}` : "";
+      return request<ListaMonedas>(`/monedas/listar${q}`);
+    },
+
+    crear: (datos: { idEmpresa: number; nombreMoneda: string; simbolo?: string }) =>
+      request<{ id: number; ok: boolean }>("/monedas/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Los campos ausentes no se modifican. */
+    actualizar: (
+      id: number,
+      datos: {
+        idEmpresa?: number;
+        nombreMoneda?: string;
+        simbolo?: string;
+        activo?: Estado;
+      },
+    ) =>
+      request<{ ok: boolean }>(`/monedas/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    eliminar: (id: number) =>
+      request<{ ok: boolean }>(`/monedas/eliminar/${id}`, { method: "DELETE" }),
+  },
+
+  unidadesMedida: {
+    /**
+     * Unidades de una empresa. `idEmpresa` sale de la empresa activa de la
+     * sesión (`useEmpresa()`), no de un filtro de la pantalla.
+     *
+     * Sin `idEmpresa` devuelve las de todas las empresas — no se usa desde la
+     * app, pero el endpoint lo permite para poder inspeccionarlo.
+     */
+    listar: (params: { idEmpresa?: number } = {}) => {
+      const q = params.idEmpresa ? `?idEmpresa=${params.idEmpresa}` : "";
+      return request<ListaUnidadesMedida>(`/unidades-medida/listar${q}`);
+    },
+
+    /** `abreviatura` es obligatoria: la columna es NOT NULL. */
+    crear: (datos: { idEmpresa: number; nombreUnidad: string; abreviatura: string }) =>
+      request<{ id: number; ok: boolean }>("/unidades-medida/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Los campos ausentes no se modifican. */
+    actualizar: (
+      id: number,
+      datos: {
+        idEmpresa?: number;
+        nombreUnidad?: string;
+        abreviatura?: string;
+        activo?: Estado;
+      },
+    ) =>
+      request<{ ok: boolean }>(`/unidades-medida/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    eliminar: (id: number) =>
+      request<{ ok: boolean }>(`/unidades-medida/eliminar/${id}`, { method: "DELETE" }),
+  },
+
+  categorias: {
+    /**
+     * Categorías de una empresa. `idEmpresa` sale de la empresa activa de la
+     * sesión (`useEmpresa()`), no de un filtro de la pantalla.
+     *
+     * Sin `idEmpresa` devuelve las de todas las empresas — no se usa desde la
+     * app, pero el endpoint lo permite para poder inspeccionarlo.
+     */
+    listar: (params: { idEmpresa?: number } = {}) => {
+      const q = params.idEmpresa ? `?idEmpresa=${params.idEmpresa}` : "";
+      return request<ListaCategorias>(`/categorias/listar${q}`);
+    },
+
+    crear: (datos: { idEmpresa: number; nombreCategoria: string; descripcion?: string }) =>
+      request<{ id: number; ok: boolean }>("/categorias/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Los campos ausentes no se modifican. */
+    actualizar: (
+      id: number,
+      datos: {
+        idEmpresa?: number;
+        nombreCategoria?: string;
+        descripcion?: string;
+        activo?: Estado;
+      },
+    ) =>
+      request<{ ok: boolean }>(`/categorias/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    eliminar: (id: number) =>
+      request<{ ok: boolean }>(`/categorias/eliminar/${id}`, { method: "DELETE" }),
+  },
+
+  articulos: {
+    /**
+     * Artículos de una empresa. `idEmpresa` sale de la empresa activa de la
+     * sesión (`useEmpresa()`), no de un filtro de la pantalla.
+     */
+    listar: (params: { idEmpresa?: number } = {}) => {
+      const q = params.idEmpresa ? `?idEmpresa=${params.idEmpresa}` : "";
+      return request<ListaArticulos>(`/articulos/listar${q}`);
+    },
+
+    /**
+     * `nombreArticulo` y `precioVenta` son obligatorios; el resto no. Las tres
+     * relaciones (categoría, moneda, unidad) pueden omitirse.
+     */
+    crear: (datos: {
+      idEmpresa: number;
+      nombreArticulo: string;
+      precioVenta: number;
+      idCategoria?: number;
+      idMoneda?: number;
+      idUnidadMedida?: number;
+      codigoArticulo?: string;
+      descripcion?: string;
+      precioUltimaCompra?: number;
+      cantidadStock?: number;
+      cantidadMinima?: number;
+    }) =>
+      request<{ id: number; ok: boolean }>("/articulos/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /**
+     * Los campos ausentes no se modifican. Ojo: mandar una relación vacía
+     * significa "no cambiar", no "desvincular" — el backend usa NVL.
+     */
+    actualizar: (
+      id: number,
+      datos: {
+        idEmpresa?: number;
+        idCategoria?: number;
+        idMoneda?: number;
+        idUnidadMedida?: number;
+        codigoArticulo?: string;
+        nombreArticulo?: string;
+        descripcion?: string;
+        precioUltimaCompra?: number;
+        precioVenta?: number;
+        cantidadStock?: number;
+        cantidadMinima?: number;
+        activo?: Estado;
+      },
+    ) =>
+      request<{ ok: boolean }>(`/articulos/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    eliminar: (id: number) =>
+      request<{ ok: boolean }>(`/articulos/eliminar/${id}`, { method: "DELETE" }),
+
+    /**
+     * Sube la imagen del artículo. El archivo va como cuerpo crudo del PUT y su
+     * tipo en el Content-Type — no es multipart. Mismo mecanismo que
+     * `empresas.subirLogo`.
+     */
+    subirImagen: (id: number, archivo: File) =>
+      request<{ ok: boolean }>(`/articulos/imagen/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": archivo.type },
+        body: archivo,
+      }),
   },
 };

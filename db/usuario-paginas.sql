@@ -6,7 +6,7 @@
 -- la fila se identifica por las dos claves juntas, no por un ID propio:
 --
 --   1. LISTAR   GET    /usuario-paginas/listar?idUsuario=
---   2. ASIGNAR  POST   /usuario-paginas/asignar        { idUsuario, idPagina }
+--   2. ASIGNAR  POST   /usuario-paginas/asignar  { idUsuario, idPagina, idEmpresa? }
 --   3. QUITAR   DELETE /usuario-paginas/quitar/:idUsuario/:idPagina
 --
 -- Se ejecuta una sola vez en la hoja de trabajo SQL de APEX, conectado con el
@@ -16,9 +16,37 @@
 -- Base de los endpoints: https://oracleapex.com/ords/ctell/usuario-paginas/
 --
 -- Tabla (no la crea ni la altera; el DDL se administra aparte):
---   USUARIO_PAGINAS  ID_USUARIO, ID_PAGINA, FECHA_ALTA
+--   USUARIO_PAGINAS  ID_USUARIO, ID_PAGINA, FECHA_ALTA, ID_EMPRESA
 --   PK compuesta (ID_USUARIO, ID_PAGINA): un mismo permiso no se puede
 --   duplicar — el segundo INSERT da ORA-00001, que se traduce a 409.
+--
+-- ID_EMPRESA DEFINE DONDE VALE EL PERMISO. El menú solo muestra las páginas
+-- cuyo permiso corresponde a la empresa con la que el usuario inició sesión
+-- (ver src/hooks/use-menu-usuario.ts). Sin permisos en esa empresa, el menú
+-- queda vacío.
+--
+-- HAY UNA LIMITACION IMPORTANTE EN EL DDL, y conviene tenerla presente:
+--
+--   * ID_EMPRESA **no está en la PK**, que sigue siendo (ID_USUARIO,
+--     ID_PAGINA). Por eso un usuario NO puede tener la misma página habilitada
+--     en DOS empresas a la vez: el segundo INSERT choca con la PK y da 409,
+--     aunque cambie el idEmpresa. Cada página se asigna a una sola empresa por
+--     usuario.
+--
+--     Para levantar ese límite hay que cambiar el DDL: PK en (ID_USUARIO,
+--     ID_PAGINA, ID_EMPRESA) y la columna NOT NULL.
+--
+--   * Es NULLABLE. Las filas anteriores a esta columna quedan en NULL y el
+--     menú NO las muestra en ninguna empresa: hay que reasignarlas desde el ABM
+--     de permisos, que ahora registra la empresa activa. Es el precio de
+--     filtrar — tratarlas como "válidas en todas" haría que el menú siguiera
+--     mostrando páginas que nadie habilitó para esa empresa.
+--
+--     La última consulta de verificación cuenta cuántos permisos quedaron sin
+--     empresa, para saber qué hay que reasignar.
+--
+-- La FK contra EMPRESAS sí se respeta: mandar un idEmpresa inexistente da
+-- ORA-02291, que se traduce a 400 en vez de 500.
 --
 -- OJO CON LAS FK: la tabla tiene FK contra USUARIOS pero NO contra PAGINAS
 -- (el DDL solo crea un índice sobre ID_PAGINA). Por eso ASIGNAR verifica a
@@ -61,11 +89,17 @@ CREATE OR REPLACE PACKAGE PKG_USUARIO_PAGINAS AS
     p_resultado     OUT CLOB
   );
 
-  -- Da permiso a un usuario sobre una página. Si ya lo tenía, 409.
+  -- Da permiso a un usuario sobre una página. Si ya lo tenía, 409 — incluso
+  -- con otra empresa: ID_EMPRESA no integra la PK.
+  --
+  -- p_id_empresa define en qué empresa vale el permiso. Es técnicamente
+  -- opcional (la columna es nullable), pero un permiso sin empresa no aparece
+  -- en ningún menú. Ver la explicación completa en el encabezado del archivo.
   PROCEDURE ASIGNAR (
     p_authorization IN  VARCHAR2,
     p_id_usuario    IN  VARCHAR2,
     p_id_pagina     IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   );
@@ -178,6 +212,10 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIO_PAGINAS AS
                'idModulo'   VALUE m.ID_MODULO,
                'modulo'     VALUE m.NOMBRE,
                'moduloIcono' VALUE m.ICONO,
+               -- Empresa en la que vale el permiso. El frontend filtra por
+               -- esto: solo muestra en el menú las páginas cuya empresa
+               -- coincide con la de la sesión. Null = no aparece en ninguna.
+               'idEmpresa'  VALUE up.ID_EMPRESA,
                'fechaAlta'  VALUE TO_CHAR(up.FECHA_ALTA, 'YYYY-MM-DD"T"HH24:MI:SS')
                RETURNING CLOB
              )
@@ -216,12 +254,14 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIO_PAGINAS AS
     p_authorization IN  VARCHAR2,
     p_id_usuario    IN  VARCHAR2,
     p_id_pagina     IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
     l_sesion     NUMBER;
     l_id_usuario NUMBER;
     l_id_pagina  NUMBER;
+    l_id_empresa NUMBER;
     l_existe     PLS_INTEGER;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
@@ -233,6 +273,10 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIO_PAGINAS AS
 
     l_id_usuario := TO_NUMBER(NULLIF(p_id_usuario, ''));
     l_id_pagina  := TO_NUMBER(NULLIF(p_id_pagina, ''));
+    -- La empresa no entra en la validación de obligatorios porque la columna es
+    -- nullable, pero OJO: un permiso que quede en NULL no lo muestra ningún
+    -- menú. El frontend siempre manda la empresa activa.
+    l_id_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
 
     IF l_id_usuario IS NULL OR l_id_pagina IS NULL THEN
       p_status_code := 400;
@@ -254,8 +298,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIO_PAGINAS AS
       RETURN;
     END IF;
 
-    INSERT INTO USUARIO_PAGINAS (ID_USUARIO, ID_PAGINA, FECHA_ALTA)
-    VALUES (l_id_usuario, l_id_pagina, SYSTIMESTAMP);
+    INSERT INTO USUARIO_PAGINAS (ID_USUARIO, ID_PAGINA, FECHA_ALTA, ID_EMPRESA)
+    VALUES (l_id_usuario, l_id_pagina, SYSTIMESTAMP, l_id_empresa);
 
     COMMIT;
     p_status_code := 201;
@@ -269,10 +313,17 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIO_PAGINAS AS
       p_resultado := '{"error":"El usuario ya tiene acceso a esa pagina"}';
     WHEN OTHERS THEN
       ROLLBACK;
-      -- ORA-02291: la FK contra USUARIOS no encontró el padre.
+      -- ORA-02291: alguna FK no encontró el padre. Ahora hay DOS (USUARIOS y
+      -- EMPRESAS), así que el mensaje mira el texto del error para nombrar la
+      -- correcta: decir "el usuario no existe" cuando lo que falla es la
+      -- empresa manda a revisar el dato equivocado.
       IF SQLCODE = -2291 THEN
         p_status_code := 400;
-        p_resultado := '{"error":"El usuario indicado no existe"}';
+        IF INSTR(UPPER(SQLERRM), 'FK_EMPRESAS') > 0 THEN
+          p_resultado := '{"error":"La empresa indicada no existe"}';
+        ELSE
+          p_resultado := '{"error":"El usuario indicado no existe"}';
+        END IF;
       ELSE
         p_status_code := 500;
         APEX_DEBUG.ERROR('PKG_USUARIO_PAGINAS.ASIGNAR: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
@@ -391,7 +442,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIO_PAGINAS AS
       p_pattern     => 'asignar',
       p_method      => 'POST',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_USUARIO_PAGINAS.ASIGNAR(:authorization, :idUsuario, :idPagina, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_USUARIO_PAGINAS.ASIGNAR(:authorization, :idUsuario, :idPagina, :idEmpresa, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
@@ -489,9 +540,36 @@ SELECT t.URI_TEMPLATE, h.METHOD
  WHERE m.NAME = 'usuario-paginas'
  ORDER BY t.URI_TEMPLATE, h.METHOD;
 
-SELECT u.USUARIO, m.NOMBRE AS MODULO, p.NOMBRE AS PAGINA, up.FECHA_ALTA
+-- LEFT JOIN contra EMPRESAS, no interno: ID_EMPRESA es nullable y los permisos
+-- anteriores a esa columna la tienen en NULL. Con un JOIN interno esas filas
+-- desaparecerían de esta verificación justo cuando uno quiere verlas.
+SELECT u.USUARIO, m.NOMBRE AS MODULO, p.NOMBRE AS PAGINA,
+       up.ID_EMPRESA, e.NOMBRE_EMPRESA, up.FECHA_ALTA
   FROM USUARIO_PAGINAS up
   JOIN USUARIOS u ON u.ID_USUARIO = up.ID_USUARIO
   JOIN PAGINAS  p ON p.ID_PAGINA  = up.ID_PAGINA
   JOIN MODULOS  m ON m.ID_MODULO  = p.ID_MODULO
+  LEFT JOIN EMPRESAS e ON e.ID_EMPRESA = up.ID_EMPRESA
  ORDER BY u.USUARIO, m.ORDEN, p.ORDEN;
+
+-- ATENCION: permisos sin empresa, los cargados antes de que existiera la
+-- columna. NO aparecen en el menú de ninguna empresa, porque el frontend filtra
+-- por ID_EMPRESA. Hay que reasignarlos desde el ABM de permisos entrando con la
+-- empresa que corresponda.
+--
+-- Si el listado de abajo devuelve filas y alguien reporta "me quedé sin menú",
+-- la causa es esta.
+SELECT u.USUARIO, m.NOMBRE AS MODULO, p.NOMBRE AS PAGINA
+  FROM USUARIO_PAGINAS up
+  JOIN USUARIOS u ON u.ID_USUARIO = up.ID_USUARIO
+  JOIN PAGINAS  p ON p.ID_PAGINA  = up.ID_PAGINA
+  JOIN MODULOS  m ON m.ID_MODULO  = p.ID_MODULO
+ WHERE up.ID_EMPRESA IS NULL
+ ORDER BY u.USUARIO, m.ORDEN, p.ORDEN;
+
+-- Atajo para reasignarlos todos a una empresa, si el sistema venía usándose con
+-- una sola. Revisar el id antes de ejecutar: dejar el permiso en la empresa
+-- equivocada da acceso donde no corresponde.
+--
+--   UPDATE USUARIO_PAGINAS SET ID_EMPRESA = <ID> WHERE ID_EMPRESA IS NULL;
+--   COMMIT;

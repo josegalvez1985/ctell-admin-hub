@@ -1,48 +1,54 @@
 --------------------------------------------------------------------------------
--- CTELL · CIUDADES
+-- CTELL · UNIDADES DE MEDIDA
 --
--- Un paquete (PKG_CIUDADES) con los 4 procedimientos — LISTAR, INSERTAR,
+-- Un paquete (PKG_UNIDADES_MEDIDA) con los 4 procedimientos — LISTAR, INSERTAR,
 -- ACTUALIZAR, ELIMINAR — y la publicación de los endpoints ORDS. Todo vive
 -- dentro del paquete: no hay procedimientos sueltos ni PL/SQL embebido como
 -- texto dentro de los handlers.
 --
---   1. LISTAR      GET    /ciudades/listar        (?idDepartamento= opcional)
---   2. INSERTAR    POST   /ciudades/crear
---   3. ACTUALIZAR  PUT    /ciudades/actualizar/:id
---   4. ELIMINAR    DELETE /ciudades/eliminar/:id
+--   1. LISTAR      GET    /unidades-medida/listar        (?idEmpresa= opcional)
+--   2. INSERTAR    POST   /unidades-medida/crear
+--   3. ACTUALIZAR  PUT    /unidades-medida/actualizar/:id
+--   4. ELIMINAR    DELETE /unidades-medida/eliminar/:id
 --
 -- Se ejecuta una sola vez en la hoja de trabajo SQL de APEX, conectado con el
 -- esquema del workspace. REQUIERE db/auth.sql EJECUTADO ANTES: usa PKG_AUTH
 -- para validar el token.
 --
--- Base de los endpoints: https://oracleapex.com/ords/ctell/ciudades/
+-- Base de los endpoints: https://oracleapex.com/ords/ctell/unidades-medida/
 --
 -- Tabla (no la crea ni la altera; el DDL se administra aparte):
---   CIUDADES  ID_CIUDAD, ID_DEPARTAMENTO, NOMBRE_CIUDAD, ACTIVO
+--   UNIDADES_MEDIDA  ID_UNIDAD_MEDIDA, ID_EMPRESA, NOMBRE_UNIDAD, ABREVIATURA,
+--                    ACTIVO, FECHA_CREACION, FECHA_ACTUALIZACION
 --
--- FK_CIUDAD_DEPARTAMENTO obliga a que el departamento exista: mandar un
--- idDepartamento inexistente da ORA-02291 en el INSERT/UPDATE, que se traduce a
--- 400 en vez de 500 — el dato es inválido, no falló el servidor.
+-- LA UNIDAD ES POR EMPRESA. Cada empresa tiene su propio juego de unidades: el
+-- idEmpresa sale de la empresa que se eligió al iniciar sesión, no de un
+-- combobox del formulario. Por eso el listado se filtra por ?idEmpresa= y el
+-- alta lo recibe como dato obligatorio. Es el mismo criterio que db/monedas.sql.
 --
--- SOLO DEPARTAMENTOS, NADA DE PAISES: el listado hace un único JOIN contra
--- DEPARTAMENTOS y no devuelve país. Se podría llegar a PAISES por
--- DEPARTAMENTOS.ID_PAIS, pero el país es información del departamento, no de la
--- ciudad, y ese segundo salto solo servía para mostrar un nombre entre
--- paréntesis. El JSON ya no trae `idPais` ni `pais`.
+-- SIN JOIN CONTRA EMPRESAS: el listado no devuelve el nombre de la empresa.
+-- Viene filtrado por una sola —la de la sesión—, así que ese nombre sería la
+-- misma constante repetida en cada fila, y el frontend ya lo tiene en la
+-- empresa activa. Mismo criterio aplicado en db/ciudades.sql y db/monedas.sql.
 --
--- UQ_CIUDAD_DEPTO impide dos ciudades con el mismo nombre dentro del mismo
--- departamento, pero sí permite repetir el nombre entre departamentos distintos
--- (hay una Villa Elisa en Central y otra en Alto Paraná). El DUP_VAL_ON_INDEX
--- se traduce a 409 con ese matiz en el mensaje.
+-- La FK contra EMPRESAS obliga a que la empresa exista: mandar un idEmpresa
+-- inexistente da ORA-02291 en el INSERT/UPDATE, que se traduce a 400 en vez de
+-- 500 — el dato es inválido, no falló el servidor.
+--
+-- EL UNIQUE ES (ID_EMPRESA, ABREVIATURA), NO EL NOMBRE. Ojo con esto: dos
+-- unidades de la misma empresa PUEDEN llamarse igual, pero NO pueden compartir
+-- abreviatura. Es al revés que en MONEDAS, donde lo único es el nombre. Por eso
+-- el mensaje del 409 habla de la abreviatura y no del nombre: decir "ya existe
+-- una unidad con ese nombre" mandaría a cambiar el campo equivocado.
+--
+-- ABREVIATURA es NOT NULL en el DDL, así que el alta la exige igual que el
+-- nombre. En MONEDAS el símbolo es opcional; acá no.
 --
 -- ESTADO: ACTIVO es VARCHAR2(1) con 'A' (activo) / 'I' (inactivo). Ese mismo
--- código viaja en el JSON y lo consume el frontend, sin traducirse a 1/0.
---
--- OJO con el DEFAULT de la columna: el DDL declara `ACTIVO VARCHAR2(1)
--- DEFAULT 1`, que guarda el literal '1' y no 'A'. Por eso el INSERT de acá
--- escribe 'A' explícitamente en vez de dejar que actúe el default, y el
--- listado normaliza cualquier valor viejo a 'A'/'I' antes de devolverlo. Es el
--- mismo caso que DEPARTAMENTOS, no el de SUCURSALES (que ya trae DEFAULT 'A').
+-- código viaja en el JSON y lo consume el frontend, sin traducirse a 1/0. Acá
+-- el DDL ya declara DEFAULT 'A' (a diferencia de ciudades o departamentos, que
+-- traen DEFAULT 1 y guardan el literal '1'), pero el INSERT lo escribe
+-- explícito igual, como en el resto del proyecto.
 --
 -- CORS: ORIGINS_ALLOWED es POR MODULO, no a nivel de workspace. Se declara en
 -- PUBLICAR_ENDPOINTS. Ver la explicación completa en db/auth.sql.
@@ -52,48 +58,50 @@ SET DEFINE OFF
 SET SERVEROUTPUT ON
 
 --------------------------------------------------------------------------------
--- 1. PKG_CIUDADES
+-- 1. PKG_UNIDADES_MEDIDA
 --
 -- Probar un procedimiento solo, sin pasar por ORDS:
 --   DECLARE
 --     l_status NUMBER;
 --     l_result CLOB;
 --   BEGIN
---     PKG_CIUDADES.LISTAR('Bearer TU_TOKEN', NULL, l_status, l_result);
+--     PKG_UNIDADES_MEDIDA.LISTAR('Bearer TU_TOKEN', NULL, l_status, l_result);
 --     DBMS_OUTPUT.PUT_LINE('status: ' || l_status);
 --     DBMS_OUTPUT.PUT_LINE('resultado: ' || l_result);
 --   END;
 --   /
 --------------------------------------------------------------------------------
 
-CREATE OR REPLACE PACKAGE PKG_CIUDADES AS
+CREATE OR REPLACE PACKAGE PKG_UNIDADES_MEDIDA AS
 
-  -- p_id_departamento NULL o vacío devuelve las ciudades de todos los
-  -- departamentos.
+  -- p_id_empresa NULL o vacío devuelve las unidades de todas las empresas. En
+  -- la app siempre viaja con la empresa de la sesión.
   PROCEDURE LISTAR (
-    p_authorization   IN  VARCHAR2,
-    p_id_departamento IN  VARCHAR2,
-    p_status_code     OUT NUMBER,
-    p_resultado       OUT CLOB
+    p_authorization IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
   );
 
   PROCEDURE INSERTAR (
-    p_authorization   IN  VARCHAR2,
-    p_id_departamento IN  VARCHAR2,
-    p_nombre_ciudad   IN  VARCHAR2,
-    p_status_code     OUT NUMBER,
-    p_resultado       OUT CLOB
+    p_authorization IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
+    p_nombre_unidad IN  VARCHAR2,
+    p_abreviatura   IN  VARCHAR2,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
   );
 
   -- Los parámetros ausentes (NULL) no modifican la columna correspondiente.
   PROCEDURE ACTUALIZAR (
-    p_authorization   IN  VARCHAR2,
-    p_id              IN  VARCHAR2,
-    p_id_departamento IN  VARCHAR2,
-    p_nombre_ciudad   IN  VARCHAR2,
-    p_activo          IN  VARCHAR2,
-    p_status_code     OUT NUMBER,
-    p_resultado       OUT CLOB
+    p_authorization IN  VARCHAR2,
+    p_id            IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
+    p_nombre_unidad IN  VARCHAR2,
+    p_abreviatura   IN  VARCHAR2,
+    p_activo        IN  VARCHAR2,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
   );
 
   PROCEDURE ELIMINAR (
@@ -103,14 +111,14 @@ CREATE OR REPLACE PACKAGE PKG_CIUDADES AS
     p_resultado     OUT CLOB
   );
 
-  -- Borra y republica el módulo ORDS /ciudades/ con sus 4 endpoints.
+  -- Borra y republica el módulo ORDS /unidades-medida/ con sus 4 endpoints.
   -- Se llama una sola vez, al final de este archivo.
   PROCEDURE PUBLICAR_ENDPOINTS;
 
-END PKG_CIUDADES;
+END PKG_UNIDADES_MEDIDA;
 /
 
-CREATE OR REPLACE PACKAGE BODY PKG_CIUDADES AS
+CREATE OR REPLACE PACKAGE BODY PKG_UNIDADES_MEDIDA AS
 
   ------------------------------------------------------------------------------
   -- Privado: borra el módulo ORDS si existe, reintentando ante un interbloqueo.
@@ -130,13 +138,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_CIUDADES AS
         SELECT COUNT(*)
           INTO l_existe
           FROM USER_ORDS_MODULES
-         WHERE NAME = 'ciudades';
+         WHERE NAME = 'unidades-medida';
 
         IF l_existe = 0 THEN
           RETURN;  -- No existía: nada que borrar.
         END IF;
 
-        ORDS.DELETE_MODULE(p_module_name => 'ciudades');
+        ORDS.DELETE_MODULE(p_module_name => 'unidades-medida');
         COMMIT;  -- Libera los locks antes de que DEFINE_MODULE los vuelva a pedir.
         RETURN;
 
@@ -155,15 +163,15 @@ CREATE OR REPLACE PACKAGE BODY PKG_CIUDADES AS
   END BORRAR_MODULO;
 
   PROCEDURE LISTAR (
-    p_authorization   IN  VARCHAR2,
-    p_id_departamento IN  VARCHAR2,
-    p_status_code     OUT NUMBER,
-    p_resultado       OUT CLOB
+    p_authorization IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
   ) IS
-    l_sesion          NUMBER;
-    l_id_departamento NUMBER;
-    l_total           NUMBER;
-    l_items           CLOB;
+    l_sesion     NUMBER;
+    l_id_empresa NUMBER;
+    l_total      NUMBER;
+    l_items      CLOB;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -176,47 +184,39 @@ CREATE OR REPLACE PACKAGE BODY PKG_CIUDADES AS
     -- antes de que exista el EXCEPTION y el error escaparía del procedimiento.
     -- NULLIF convierte la cadena vacía del parámetro ausente en NULL antes de
     -- que TO_NUMBER la toque (si no, ORA-01722).
-    l_id_departamento := TO_NUMBER(NULLIF(p_id_departamento, ''));
+    l_id_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
 
     SELECT COUNT(*)
       INTO l_total
-      FROM CIUDADES
-     WHERE l_id_departamento IS NULL OR ID_DEPARTAMENTO = l_id_departamento;
+      FROM UNIDADES_MEDIDA
+     WHERE l_id_empresa IS NULL OR ID_EMPRESA = l_id_empresa;
 
-    -- Un solo JOIN, contra DEPARTAMENTOS. NO se encadena hasta PAISES aunque se
-    -- pueda llegar (DEPARTAMENTOS.ID_PAIS): una ciudad se identifica por su
-    -- departamento, y el país es información del departamento, no de la ciudad.
-    -- Sumar ese segundo salto solo para mostrar un nombre entre paréntesis hacía
-    -- el listado más frágil sin aportar nada que no se vea en la página de
-    -- Departamentos.
+    -- Sin JOIN: la consulta sale de UNIDADES_MEDIDA y nada más. El nombre de la
+    -- empresa no se devuelve porque el listado ya viene filtrado por una sola
+    -- —la de la sesión— y sería la misma constante en todas las filas.
     --
-    -- ACTIVO se normaliza a 'A'/'I': el DEFAULT del DDL es 1, así que puede
-    -- haber filas viejas con '1'. Cualquier valor que no sea 'I' se considera
-    -- activo, que es lo que ese default quería decir.
     -- El JSON_OBJECT se arma en una subconsulta y el JSON_ARRAYAGG agrega esa
     -- columna, que ya viene tipada como CLOB. Anidado, el resultado intermedio
     -- del agregado se materializa como VARCHAR2 y revienta al pasar los 4000
     -- bytes: el listado anda con pocas filas y devuelve 500 cuando crece.
-    SELECT JSON_ARRAYAGG(fila ORDER BY nombre_departamento, nombre_ciudad RETURNING CLOB)
+    SELECT JSON_ARRAYAGG(fila ORDER BY nombre_unidad RETURNING CLOB)
       INTO l_items
       FROM (
         SELECT JSON_OBJECT(
-                 'id'             VALUE c.ID_CIUDAD,
-                 'idDepartamento' VALUE c.ID_DEPARTAMENTO,
-                 'departamento'   VALUE d.NOMBRE_DEPARTAMENTO,
-                 'nombreCiudad'   VALUE c.NOMBRE_CIUDAD,
-                 'activo'         VALUE CASE UPPER(TRIM(c.ACTIVO))
-                                          WHEN 'I' THEN 'I'
-                                          WHEN '0' THEN 'I'
-                                          ELSE 'A'
-                                        END
+                 'id'            VALUE u.ID_UNIDAD_MEDIDA,
+                 'idEmpresa'     VALUE u.ID_EMPRESA,
+                 'nombreUnidad'  VALUE u.NOMBRE_UNIDAD,
+                 'abreviatura'   VALUE u.ABREVIATURA,
+                 'activo'        VALUE CASE UPPER(TRIM(u.ACTIVO))
+                                         WHEN 'I' THEN 'I'
+                                         WHEN '0' THEN 'I'
+                                         ELSE 'A'
+                                       END
                  RETURNING CLOB
                ) AS fila,
-               d.NOMBRE_DEPARTAMENTO AS nombre_departamento,
-               c.NOMBRE_CIUDAD       AS nombre_ciudad
-          FROM CIUDADES      c
-          JOIN DEPARTAMENTOS d ON d.ID_DEPARTAMENTO = c.ID_DEPARTAMENTO
-         WHERE l_id_departamento IS NULL OR c.ID_DEPARTAMENTO = l_id_departamento
+               u.NOMBRE_UNIDAD AS nombre_unidad
+          FROM UNIDADES_MEDIDA u
+         WHERE l_id_empresa IS NULL OR u.ID_EMPRESA = l_id_empresa
       );
 
     p_status_code := 200;
@@ -235,21 +235,22 @@ CREATE OR REPLACE PACKAGE BODY PKG_CIUDADES AS
   EXCEPTION
     WHEN OTHERS THEN
       p_status_code := 500;
-      APEX_DEBUG.ERROR('PKG_CIUDADES.LISTAR: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
+      APEX_DEBUG.ERROR('PKG_UNIDADES_MEDIDA.LISTAR: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
                        DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
-      p_resultado := '{"error":"Error al listar las ciudades"}';
+      p_resultado := '{"error":"Error al listar las unidades de medida"}';
   END LISTAR;
 
   PROCEDURE INSERTAR (
-    p_authorization   IN  VARCHAR2,
-    p_id_departamento IN  VARCHAR2,
-    p_nombre_ciudad   IN  VARCHAR2,
-    p_status_code     OUT NUMBER,
-    p_resultado       OUT CLOB
+    p_authorization IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
+    p_nombre_unidad IN  VARCHAR2,
+    p_abreviatura   IN  VARCHAR2,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
   ) IS
-    l_sesion          NUMBER;
-    l_id_departamento NUMBER;
-    l_id              NUMBER;
+    l_sesion     NUMBER;
+    l_id_empresa NUMBER;
+    l_id         NUMBER;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -258,23 +259,33 @@ CREATE OR REPLACE PACKAGE BODY PKG_CIUDADES AS
       RETURN;
     END IF;
 
-    l_id_departamento := TO_NUMBER(NULLIF(p_id_departamento, ''));
+    l_id_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
 
-    IF l_id_departamento IS NULL OR TRIM(p_nombre_ciudad) IS NULL THEN
+    -- La abreviatura entra en la validación porque es NOT NULL en el DDL: sin
+    -- este chequeo el INSERT fallaría con ORA-01400, que se traduciría a un 500
+    -- genérico en vez de decir qué campo falta.
+    IF l_id_empresa IS NULL
+       OR TRIM(p_nombre_unidad) IS NULL
+       OR TRIM(p_abreviatura) IS NULL THEN
       p_status_code := 400;
-      p_resultado := '{"error":"idDepartamento y nombreCiudad son obligatorios"}';
+      p_resultado := '{"error":"idEmpresa, nombreUnidad y abreviatura son obligatorios"}';
       RETURN;
     END IF;
 
-    -- 'A' explícito: el DEFAULT de la columna es 1, que guardaría el literal
-    -- '1' y rompería la comparación contra 'A'/'I' de todo el resto.
-    INSERT INTO CIUDADES (ID_DEPARTAMENTO, NOMBRE_CIUDAD, ACTIVO)
-    VALUES (
-      l_id_departamento,
-      TRIM(p_nombre_ciudad),
-      'A'
+    -- 'A' explícito aunque el DEFAULT ya sea 'A': es el criterio del proyecto,
+    -- para no depender de un default que puede cambiar en el DDL.
+    INSERT INTO UNIDADES_MEDIDA (
+      ID_EMPRESA, NOMBRE_UNIDAD, ABREVIATURA,
+      ACTIVO, FECHA_CREACION, FECHA_ACTUALIZACION
+    ) VALUES (
+      l_id_empresa,
+      TRIM(p_nombre_unidad),
+      TRIM(p_abreviatura),
+      'A',
+      SYSTIMESTAMP,
+      SYSTIMESTAMP
     )
-    RETURNING ID_CIUDAD INTO l_id;
+    RETURNING ID_UNIDAD_MEDIDA INTO l_id;
 
     COMMIT;
     p_status_code := 201;
@@ -282,39 +293,41 @@ CREATE OR REPLACE PACKAGE BODY PKG_CIUDADES AS
   EXCEPTION
     WHEN DUP_VAL_ON_INDEX THEN
       ROLLBACK;
-      -- UQ_CIUDAD_DEPTO es (ID_DEPARTAMENTO, NOMBRE_CIUDAD): el choque es
-      -- dentro del mismo departamento, no global. El mensaje lo dice para que
-      -- no parezca que el nombre está tomado en todos lados.
+      -- El UNIQUE es (ID_EMPRESA, ABREVIATURA), no el nombre: el mensaje nombra
+      -- la ABREVIATURA para no mandar a cambiar el campo equivocado. Dos
+      -- unidades de la misma empresa pueden llamarse igual; lo que no pueden es
+      -- compartir abreviatura.
       p_status_code := 409;
-      p_resultado := '{"error":"Ese departamento ya tiene una ciudad con ese nombre"}';
+      p_resultado := '{"error":"Esta empresa ya tiene una unidad con esa abreviatura"}';
     WHEN OTHERS THEN
       ROLLBACK;
-      -- ORA-02291: la FK contra DEPARTAMENTOS no encontró el padre. Es un dato
+      -- ORA-02291: la FK contra EMPRESAS no encontró el padre. Es un dato
       -- inválido del cliente (400), no un fallo del servidor.
       IF SQLCODE = -2291 THEN
         p_status_code := 400;
-        p_resultado := '{"error":"El departamento indicado no existe"}';
+        p_resultado := '{"error":"La empresa indicada no existe"}';
       ELSE
         p_status_code := 500;
-        APEX_DEBUG.ERROR('PKG_CIUDADES.INSERTAR: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
+        APEX_DEBUG.ERROR('PKG_UNIDADES_MEDIDA.INSERTAR: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
                          DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
-        p_resultado := '{"error":"Error al crear la ciudad"}';
+        p_resultado := '{"error":"Error al crear la unidad de medida"}';
       END IF;
   END INSERTAR;
 
   PROCEDURE ACTUALIZAR (
-    p_authorization   IN  VARCHAR2,
-    p_id              IN  VARCHAR2,
-    p_id_departamento IN  VARCHAR2,
-    p_nombre_ciudad   IN  VARCHAR2,
-    p_activo          IN  VARCHAR2,
-    p_status_code     OUT NUMBER,
-    p_resultado       OUT CLOB
+    p_authorization IN  VARCHAR2,
+    p_id            IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
+    p_nombre_unidad IN  VARCHAR2,
+    p_abreviatura   IN  VARCHAR2,
+    p_activo        IN  VARCHAR2,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
   ) IS
-    l_sesion          NUMBER;
-    l_id              NUMBER;
-    l_id_departamento NUMBER;
-    l_estado          VARCHAR2(1);
+    l_sesion     NUMBER;
+    l_id         NUMBER;
+    l_id_empresa NUMBER;
+    l_estado     VARCHAR2(1);
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -323,8 +336,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_CIUDADES AS
       RETURN;
     END IF;
 
-    l_id              := TO_NUMBER(NULLIF(p_id, ''));
-    l_id_departamento := TO_NUMBER(NULLIF(p_id_departamento, ''));
+    l_id         := TO_NUMBER(NULLIF(p_id, ''));
+    l_id_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
 
     -- Un valor inválido se ignora en vez de escribirse: es preferible
     -- conservar el estado actual a dejar basura en la columna.
@@ -334,15 +347,19 @@ CREATE OR REPLACE PACKAGE BODY PKG_CIUDADES AS
                   ELSE NULL
                 END;
 
-    UPDATE CIUDADES
-       SET ID_DEPARTAMENTO = NVL(l_id_departamento, ID_DEPARTAMENTO),
-           NOMBRE_CIUDAD   = NVL(TRIM(p_nombre_ciudad), NOMBRE_CIUDAD),
-           ACTIVO          = NVL(l_estado, ACTIVO)
-     WHERE ID_CIUDAD = l_id;
+    -- El NVL sobre ABREVIATURA es lo que protege el NOT NULL: mandar el campo
+    -- vacío conserva el valor actual en vez de intentar escribir NULL.
+    UPDATE UNIDADES_MEDIDA
+       SET ID_EMPRESA          = NVL(l_id_empresa, ID_EMPRESA),
+           NOMBRE_UNIDAD       = NVL(TRIM(p_nombre_unidad), NOMBRE_UNIDAD),
+           ABREVIATURA         = NVL(TRIM(p_abreviatura), ABREVIATURA),
+           ACTIVO              = NVL(l_estado, ACTIVO),
+           FECHA_ACTUALIZACION = SYSTIMESTAMP
+     WHERE ID_UNIDAD_MEDIDA = l_id;
 
     IF SQL%ROWCOUNT = 0 THEN
       p_status_code := 404;
-      p_resultado := '{"error":"La ciudad no existe"}';
+      p_resultado := '{"error":"La unidad de medida no existe"}';
       RETURN;
     END IF;
 
@@ -353,17 +370,17 @@ CREATE OR REPLACE PACKAGE BODY PKG_CIUDADES AS
     WHEN DUP_VAL_ON_INDEX THEN
       ROLLBACK;
       p_status_code := 409;
-      p_resultado := '{"error":"Ese departamento ya tiene una ciudad con ese nombre"}';
+      p_resultado := '{"error":"Esta empresa ya tiene una unidad con esa abreviatura"}';
     WHEN OTHERS THEN
       ROLLBACK;
       IF SQLCODE = -2291 THEN
         p_status_code := 400;
-        p_resultado := '{"error":"El departamento indicado no existe"}';
+        p_resultado := '{"error":"La empresa indicada no existe"}';
       ELSE
         p_status_code := 500;
-        APEX_DEBUG.ERROR('PKG_CIUDADES.ACTUALIZAR: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
+        APEX_DEBUG.ERROR('PKG_UNIDADES_MEDIDA.ACTUALIZAR: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
                          DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
-        p_resultado := '{"error":"Error al actualizar la ciudad"}';
+        p_resultado := '{"error":"Error al actualizar la unidad de medida"}';
       END IF;
   END ACTUALIZAR;
 
@@ -385,12 +402,12 @@ CREATE OR REPLACE PACKAGE BODY PKG_CIUDADES AS
 
     l_id := TO_NUMBER(NULLIF(p_id, ''));
 
-    DELETE FROM CIUDADES WHERE ID_CIUDAD = l_id;
+    DELETE FROM UNIDADES_MEDIDA WHERE ID_UNIDAD_MEDIDA = l_id;
 
     IF SQL%ROWCOUNT = 0 THEN
       ROLLBACK;
       p_status_code := 404;
-      p_resultado := '{"error":"La ciudad no existe"}';
+      p_resultado := '{"error":"La unidad de medida no existe"}';
       RETURN;
     END IF;
 
@@ -400,169 +417,170 @@ CREATE OR REPLACE PACKAGE BODY PKG_CIUDADES AS
   EXCEPTION
     WHEN OTHERS THEN
       ROLLBACK;
-      -- ORA-02292: hay hijos (empresas, y lo que cuelgue de la ciudad más
-      -- adelante) apuntando a esta fila. Es un conflicto de estado (409), no un
-      -- error del servidor: el dato que mandaron era válido.
+      -- ORA-02292: hay hijos (productos, movimientos de stock, lo que cuelgue
+      -- de la unidad) apuntando a esta fila. Es un conflicto de estado (409),
+      -- no un error del servidor: el dato que mandaron era válido.
       IF SQLCODE = -2292 THEN
         p_status_code := 409;
-        p_resultado := '{"error":"No se puede eliminar: hay registros que dependen de esta ciudad"}';
+        p_resultado := '{"error":"No se puede eliminar: hay registros que dependen de esta unidad"}';
       ELSE
         p_status_code := 500;
-        APEX_DEBUG.ERROR('PKG_CIUDADES.ELIMINAR: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
+        APEX_DEBUG.ERROR('PKG_UNIDADES_MEDIDA.ELIMINAR: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
                          DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
-        p_resultado := '{"error":"Error al eliminar la ciudad"}';
+        p_resultado := '{"error":"Error al eliminar la unidad de medida"}';
       END IF;
   END ELIMINAR;
 
   ------------------------------------------------------------------------------
-  -- Publica el módulo ORDS /ciudades/ con sus 4 endpoints.
+  -- Publica el módulo ORDS /unidades-medida/ con sus 4 endpoints.
   --
   -- Cada handler es una sola línea: invoca al procedimiento del paquete
   -- pasando los binds de ORDS como argumentos. Nada de PL/SQL embebido.
   --
   -- ORIGINS_ALLOWED es POR MODULO, no a nivel de workspace, y NO es un
   -- parámetro de DEFINE_MODULE (falla con PLS-00306 si se le pasa ahí). Sin
-  -- esto, toda petición cross-origin a /ciudades/* la rechaza ORDS antes de
-  -- llegar a cualquiera de los 4 handlers. Ver la explicación en db/auth.sql.
+  -- esto, toda petición cross-origin a /unidades-medida/* la rechaza ORDS antes
+  -- de llegar a cualquiera de los 4 handlers. Ver la explicación en db/auth.sql.
   ------------------------------------------------------------------------------
   PROCEDURE PUBLICAR_ENDPOINTS IS
   BEGIN
     BORRAR_MODULO;
 
     ORDS.DEFINE_MODULE(
-      p_module_name    => 'ciudades',
-      p_base_path      => '/ciudades/',
+      p_module_name    => 'unidades-medida',
+      p_base_path      => '/unidades-medida/',
       p_items_per_page => 0,
       p_status         => 'PUBLISHED',
-      p_comments       => 'ABM de ciudades'
+      p_comments       => 'ABM de unidades de medida por empresa'
     );
 
     ORDS.SET_MODULE_ORIGINS_ALLOWED(
-      p_module_name     => 'ciudades',
+      p_module_name     => 'unidades-medida',
       p_origins_allowed => 'https://www.ctell.online,http://localhost:8080'
     );
 
     ----------------------------------------------------------------------------
-    -- GET /ciudades/listar?idDepartamento=
+    -- GET /unidades-medida/listar?idEmpresa=
     --
-    -- idDepartamento no se declara con DEFINE_PARAMETER: los query params se
+    -- idEmpresa no se declara con DEFINE_PARAMETER: los query params se
     -- vinculan solos al bind del mismo nombre.
     ----------------------------------------------------------------------------
-    ORDS.DEFINE_TEMPLATE(p_module_name => 'ciudades', p_pattern => 'listar');
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'unidades-medida', p_pattern => 'listar');
 
     ORDS.DEFINE_HANDLER(
-      p_module_name => 'ciudades',
+      p_module_name => 'unidades-medida',
       p_pattern     => 'listar',
       p_method      => 'GET',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_CIUDADES.LISTAR(:authorization, :idDepartamento, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_UNIDADES_MEDIDA.LISTAR(:authorization, :idEmpresa, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'ciudades', p_pattern => 'listar', p_method => 'GET',
+      p_module_name => 'unidades-medida', p_pattern => 'listar', p_method => 'GET',
       p_name => 'authorization', p_bind_variable_name => 'authorization',
       p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'ciudades', p_pattern => 'listar', p_method => 'GET',
+      p_module_name => 'unidades-medida', p_pattern => 'listar', p_method => 'GET',
       p_name => 'resultado', p_bind_variable_name => 'resultado',
       p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'ciudades', p_pattern => 'listar', p_method => 'GET',
+      p_module_name => 'unidades-medida', p_pattern => 'listar', p_method => 'GET',
       p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
     ----------------------------------------------------------------------------
-    -- POST /ciudades/crear
-    -- Body: { idDepartamento, nombreCiudad }
+    -- POST /unidades-medida/crear
+    -- Body: { idEmpresa, nombreUnidad, abreviatura }
     ----------------------------------------------------------------------------
-    ORDS.DEFINE_TEMPLATE(p_module_name => 'ciudades', p_pattern => 'crear');
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'unidades-medida', p_pattern => 'crear');
 
     ORDS.DEFINE_HANDLER(
-      p_module_name => 'ciudades',
+      p_module_name => 'unidades-medida',
       p_pattern     => 'crear',
       p_method      => 'POST',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_CIUDADES.INSERTAR(:authorization, :idDepartamento, :nombreCiudad, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_UNIDADES_MEDIDA.INSERTAR(:authorization, :idEmpresa, :nombreUnidad, :abreviatura, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'ciudades', p_pattern => 'crear', p_method => 'POST',
+      p_module_name => 'unidades-medida', p_pattern => 'crear', p_method => 'POST',
       p_name => 'authorization', p_bind_variable_name => 'authorization',
       p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'ciudades', p_pattern => 'crear', p_method => 'POST',
+      p_module_name => 'unidades-medida', p_pattern => 'crear', p_method => 'POST',
       p_name => 'resultado', p_bind_variable_name => 'resultado',
       p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'ciudades', p_pattern => 'crear', p_method => 'POST',
+      p_module_name => 'unidades-medida', p_pattern => 'crear', p_method => 'POST',
       p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
     ----------------------------------------------------------------------------
-    -- PUT /ciudades/actualizar/:id
-    -- Body: { idDepartamento?, nombreCiudad?, activo? }  (ausentes = no cambia)
+    -- PUT /unidades-medida/actualizar/:id
+    -- Body: { idEmpresa?, nombreUnidad?, abreviatura?, activo? }
+    --       (ausentes = no cambia)
     ----------------------------------------------------------------------------
-    ORDS.DEFINE_TEMPLATE(p_module_name => 'ciudades', p_pattern => 'actualizar/:id');
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'unidades-medida', p_pattern => 'actualizar/:id');
 
     ORDS.DEFINE_HANDLER(
-      p_module_name => 'ciudades',
+      p_module_name => 'unidades-medida',
       p_pattern     => 'actualizar/:id',
       p_method      => 'PUT',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_CIUDADES.ACTUALIZAR(:authorization, :id, :idDepartamento, :nombreCiudad, :activo, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_UNIDADES_MEDIDA.ACTUALIZAR(:authorization, :id, :idEmpresa, :nombreUnidad, :abreviatura, :activo, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'ciudades', p_pattern => 'actualizar/:id', p_method => 'PUT',
+      p_module_name => 'unidades-medida', p_pattern => 'actualizar/:id', p_method => 'PUT',
       p_name => 'authorization', p_bind_variable_name => 'authorization',
       p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'ciudades', p_pattern => 'actualizar/:id', p_method => 'PUT',
+      p_module_name => 'unidades-medida', p_pattern => 'actualizar/:id', p_method => 'PUT',
       p_name => 'resultado', p_bind_variable_name => 'resultado',
       p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'ciudades', p_pattern => 'actualizar/:id', p_method => 'PUT',
+      p_module_name => 'unidades-medida', p_pattern => 'actualizar/:id', p_method => 'PUT',
       p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
     ----------------------------------------------------------------------------
-    -- DELETE /ciudades/eliminar/:id
+    -- DELETE /unidades-medida/eliminar/:id
     ----------------------------------------------------------------------------
-    ORDS.DEFINE_TEMPLATE(p_module_name => 'ciudades', p_pattern => 'eliminar/:id');
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'unidades-medida', p_pattern => 'eliminar/:id');
 
     ORDS.DEFINE_HANDLER(
-      p_module_name => 'ciudades',
+      p_module_name => 'unidades-medida',
       p_pattern     => 'eliminar/:id',
       p_method      => 'DELETE',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_CIUDADES.ELIMINAR(:authorization, :id, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_UNIDADES_MEDIDA.ELIMINAR(:authorization, :id, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'ciudades', p_pattern => 'eliminar/:id', p_method => 'DELETE',
+      p_module_name => 'unidades-medida', p_pattern => 'eliminar/:id', p_method => 'DELETE',
       p_name => 'authorization', p_bind_variable_name => 'authorization',
       p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'ciudades', p_pattern => 'eliminar/:id', p_method => 'DELETE',
+      p_module_name => 'unidades-medida', p_pattern => 'eliminar/:id', p_method => 'DELETE',
       p_name => 'resultado', p_bind_variable_name => 'resultado',
       p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'ciudades', p_pattern => 'eliminar/:id', p_method => 'DELETE',
+      p_module_name => 'unidades-medida', p_pattern => 'eliminar/:id', p_method => 'DELETE',
       p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
     COMMIT;
   END PUBLICAR_ENDPOINTS;
 
-END PKG_CIUDADES;
+END PKG_UNIDADES_MEDIDA;
 /
 
 --------------------------------------------------------------------------------
@@ -572,65 +590,41 @@ END PKG_CIUDADES;
 --------------------------------------------------------------------------------
 
 BEGIN
-  PKG_CIUDADES.PUBLICAR_ENDPOINTS;
+  PKG_UNIDADES_MEDIDA.PUBLICAR_ENDPOINTS;
 END;
 /
 
 --------------------------------------------------------------------------------
--- 3. Normalización del estado
+-- 3. Verificación
 --
--- El DDL declara ACTIVO con DEFAULT 1, así que las filas cargadas a mano antes
--- de este paquete pueden tener '1' en vez de 'A'. El listado ya lo normaliza al
--- devolverlo, pero conviene dejar la columna consistente con el resto de las
--- tablas para que los filtros por 'A'/'I' funcionen directo contra la base.
---------------------------------------------------------------------------------
-
-UPDATE CIUDADES
-   SET ACTIVO = CASE UPPER(TRIM(ACTIVO))
-                  WHEN 'I' THEN 'I'
-                  WHEN '0' THEN 'I'
-                  ELSE 'A'
-                END
- WHERE ACTIVO IS NULL
-    OR UPPER(TRIM(ACTIVO)) NOT IN ('A', 'I');
-
-COMMIT;
-
---------------------------------------------------------------------------------
--- 4. Verificación
+-- No hace falta normalizar ACTIVO como en ciudades o departamentos: acá el DDL
+-- declara DEFAULT 'A', así que no hay filas con el literal '1'.
 --------------------------------------------------------------------------------
 
 SELECT OBJECT_NAME, OBJECT_TYPE, STATUS
   FROM USER_OBJECTS
- WHERE OBJECT_NAME = 'PKG_CIUDADES'
+ WHERE OBJECT_NAME = 'PKG_UNIDADES_MEDIDA'
  ORDER BY OBJECT_TYPE;
 
 -- Si algo salió INVALID arriba, acá está el motivo.
 SELECT NAME, LINE, POSITION, TEXT
   FROM USER_ERRORS
- WHERE NAME = 'PKG_CIUDADES'
+ WHERE NAME = 'PKG_UNIDADES_MEDIDA'
  ORDER BY SEQUENCE;
 
 SELECT NAME, STATUS, ORIGINS_ALLOWED
   FROM USER_ORDS_MODULES
- WHERE NAME = 'ciudades';
+ WHERE NAME = 'unidades-medida';
 
 SELECT t.URI_TEMPLATE, h.METHOD
   FROM USER_ORDS_TEMPLATES t
   JOIN USER_ORDS_HANDLERS  h ON h.TEMPLATE_ID = t.ID
   JOIN USER_ORDS_MODULES   m ON m.ID = t.MODULE_ID
- WHERE m.NAME = 'ciudades'
+ WHERE m.NAME = 'unidades-medida'
  ORDER BY t.URI_TEMPLATE, h.METHOD;
 
-SELECT c.ID_CIUDAD, c.ID_DEPARTAMENTO, d.NOMBRE_DEPARTAMENTO,
-       c.NOMBRE_CIUDAD, c.ACTIVO
-  FROM CIUDADES      c
-  JOIN DEPARTAMENTOS d ON d.ID_DEPARTAMENTO = c.ID_DEPARTAMENTO
- ORDER BY d.NOMBRE_DEPARTAMENTO, c.NOMBRE_CIUDAD;
-
--- Ciudades cuyo departamento no existe. Con el JOIN interno del listado estas
--- filas no se devuelven: si una ciudad "desaparece" de la app, mirá acá.
-SELECT c.ID_CIUDAD, c.NOMBRE_CIUDAD, c.ID_DEPARTAMENTO
-  FROM CIUDADES c
-  LEFT JOIN DEPARTAMENTOS d ON d.ID_DEPARTAMENTO = c.ID_DEPARTAMENTO
- WHERE d.ID_DEPARTAMENTO IS NULL;
+SELECT u.ID_UNIDAD_MEDIDA, u.ID_EMPRESA, e.NOMBRE_EMPRESA,
+       u.NOMBRE_UNIDAD, u.ABREVIATURA, u.ACTIVO
+  FROM UNIDADES_MEDIDA u
+  JOIN EMPRESAS        e ON e.ID_EMPRESA = u.ID_EMPRESA
+ ORDER BY e.NOMBRE_EMPRESA, u.NOMBRE_UNIDAD;

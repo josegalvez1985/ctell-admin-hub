@@ -79,6 +79,10 @@ const RUTAS_DISPONIBLES = [
   { valor: "/ciudades", label: "Ciudades" },
   { valor: "/empresas", label: "Empresas" },
   { valor: "/sucursales", label: "Sucursales" },
+  { valor: "/monedas", label: "Monedas" },
+  { valor: "/unidades-medida", label: "Unidades de medida" },
+  { valor: "/categorias", label: "Categorías" },
+  { valor: "/articulos", label: "Artículos" },
 ];
 
 const MENSAJE_ERROR = (error: unknown, fallback: string) =>
