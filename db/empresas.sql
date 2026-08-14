@@ -877,8 +877,12 @@ CREATE OR REPLACE PACKAGE BODY PKG_EMPRESAS AS
     -- Devuelve la imagen cruda, no un JSON. Dos diferencias con el resto de los
     -- endpoints, y las dos importan:
     --
-    --   p_source_type => 'RESPONSE' con p_param_type => 'BLOB' hace que ORDS
-    --   escriba el binario como cuerpo de la respuesta en vez de serializarlo.
+    --   p_source_type => 'RESPONSE' con p_param_type => 'RESOURCE' hace que
+    --   ORDS escriba el binario como cuerpo de la respuesta en vez de
+    --   serializarlo. OJO: el tipo NO es 'BLOB' —aunque el parámetro PL/SQL sí
+    --   lo sea—, porque REST_PARAMS_PARAM_TYPE_CK solo admite un conjunto
+    --   cerrado de valores y 'BLOB' no está entre ellos: la publicación entera
+    --   revienta con ORA-02290 antes de crear ningún endpoint.
     --
     --   X-ORDS-STATUS-CODE, no X-APEX-STATUS-CODE: el segundo es el que usa el
     --   motor de APEX para respuestas JSON. En un handler que devuelve un BLOB
@@ -901,7 +905,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_EMPRESAS AS
     ORDS.DEFINE_PARAMETER(
       p_module_name => 'empresas', p_pattern => 'logo/:id', p_method => 'GET',
       p_name => 'logo', p_bind_variable_name => 'logo',
-      p_source_type => 'RESPONSE', p_param_type => 'BLOB', p_access_method => 'OUT');
+      p_source_type => 'RESPONSE', p_param_type => 'RESOURCE', p_access_method => 'OUT');
 
     ORDS.DEFINE_PARAMETER(
       p_module_name => 'empresas', p_pattern => 'logo/:id', p_method => 'GET',
@@ -1060,6 +1064,17 @@ END;
 --------------------------------------------------------------------------------
 -- 3. Verificación
 --------------------------------------------------------------------------------
+
+-- Valores que REST_PARAMS_PARAM_TYPE_CK acepta en p_param_type.
+--
+-- Si la publicación falla con ORA-02290 nombrando esa restricción, es porque
+-- algún DEFINE_PARAMETER usa un tipo que no está en esta lista — pasó con
+-- 'BLOB', que parece natural para el logo pero no es un valor válido (el
+-- correcto es 'RESOURCE'). El error corta PUBLICAR_ENDPOINTS a la mitad y deja
+-- el módulo sin ningún endpoint, no solo sin el que falló.
+SELECT SEARCH_CONDITION
+  FROM ALL_CONSTRAINTS
+ WHERE CONSTRAINT_NAME = 'REST_PARAMS_PARAM_TYPE_CK';
 
 SELECT OBJECT_NAME, OBJECT_TYPE, STATUS
   FROM USER_OBJECTS
