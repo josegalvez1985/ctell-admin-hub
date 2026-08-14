@@ -1,14 +1,15 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Pencil, Plus, Search, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { ImageUp, Loader2, Pencil, Plus, Search, Trash2 } from "lucide-react";
+import { useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
 import { Combobox } from "@/components/ctell/Combobox";
+import { LogoEmpresa } from "@/components/ctell/LogoEmpresa";
 import { SIN_FILTRO, TableHeadFiltrable } from "@/components/ctell/TableHeadFiltrable";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
 import { useTablaListado } from "@/hooks/use-tabla-listado";
@@ -408,6 +409,103 @@ function EmpresasPage() {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Logo                                                                        */
+/* -------------------------------------------------------------------------- */
+
+/** Tamaño máximo del logo. Un logo no necesita más, y el BLOB viaja entero. */
+const LOGO_MAX_BYTES = 1024 * 1024;
+
+/**
+ * Carga del logo de una empresa.
+ *
+ * Va por su propio endpoint (`PUT /empresas/logo/:id`) y no por el formulario:
+ * el binario no entra en el JSON del CRUD. Por eso se sube al elegir el archivo
+ * en vez de esperar al submit — son dos peticiones distintas, y encadenarlas
+ * haría que un error al guardar la empresa perdiera también el logo.
+ *
+ * Solo aparece en edición: sin id todavía no hay a qué empresa asociarlo.
+ */
+function CargarLogo({ empresa }: { empresa: Empresa }) {
+  const queryClient = useQueryClient();
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Fuerza al <img> a repetir la petición tras subir: la URL es la misma, así
+  // que sin un query param que cambie el navegador sirve la imagen cacheada y
+  // parecería que la subida no hizo nada.
+  const [version, setVersion] = useState(0);
+
+  const subir = useMutation({
+    mutationFn: (archivo: File) => api.empresas.subirLogo(empresa.id, archivo),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["empresas"] });
+      // El selector del login lee la lista pública, que también cambia.
+      queryClient.invalidateQueries({ queryKey: ["empresas-publicas"] });
+      setVersion((v) => v + 1);
+      toast.success("Logo actualizado");
+    },
+    onError: (e) => toast.error(MENSAJE_ERROR(e, "No se pudo subir el logo")),
+  });
+
+  function alElegir(event: React.ChangeEvent<HTMLInputElement>) {
+    const archivo = event.target.files?.[0];
+    // Se limpia siempre: sin esto, elegir el mismo archivo dos veces seguidas
+    // (tras corregirlo) no dispara el change y parece que se ignoró.
+    event.target.value = "";
+    if (!archivo) return;
+
+    if (!archivo.type.startsWith("image/")) {
+      toast.error("El archivo tiene que ser una imagen.");
+      return;
+    }
+    if (archivo.size > LOGO_MAX_BYTES) {
+      toast.error("La imagen no puede pesar más de 1 MB.");
+      return;
+    }
+
+    subir.mutate(archivo);
+  }
+
+  return (
+    <div className="flex items-center gap-3 rounded-lg border border-border p-3">
+      <LogoEmpresa
+        key={version}
+        id={empresa.id}
+        nombre={empresa.nombreEmpresa}
+        tieneLogo={empresa.tieneLogo || version > 0}
+        className="size-14"
+      />
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-medium text-foreground">Logo</p>
+        <p className="text-xs text-muted-foreground">
+          Se muestra en el selector de empresa del login. PNG o JPG, hasta 1 MB.
+        </p>
+      </div>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml"
+        className="hidden"
+        onChange={alElegir}
+      />
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled={subir.isPending}
+        onClick={() => inputRef.current?.click()}
+      >
+        {subir.isPending ? (
+          <Loader2 className="size-4 animate-spin" />
+        ) : (
+          <ImageUp className="size-4" />
+        )}
+        {empresa.tieneLogo || version > 0 ? "Cambiar" : "Subir"}
+      </Button>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
 /* Alta / Edición                                                              */
 /* -------------------------------------------------------------------------- */
 
@@ -534,6 +632,10 @@ function EmpresaFormDialog({
 
         <Form {...form}>
           <form onSubmit={form.handleSubmit((v) => guardar.mutate(v))} className="space-y-4">
+            {/* Solo en edición: el logo se sube contra el id de la empresa, que
+                en el alta todavía no existe. */}
+            {esEdicion && <CargarLogo empresa={empresa} />}
+
             <FormField
               control={form.control}
               name="nombreEmpresa"

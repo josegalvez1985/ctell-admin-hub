@@ -1,10 +1,20 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Eye, EyeOff, Loader2, Lock, User } from "lucide-react";
 
 import loginBg from "@/assets/login-bg.jpg";
+import { useEmpresa } from "@/components/ctell/empresa-provider";
 import { Logo } from "@/components/ctell/Logo";
-import { api, ApiError, getCredencialesRecordadas, setCredencialesRecordadas } from "@/lib/api";
+import { LogoEmpresa } from "@/components/ctell/LogoEmpresa";
+import {
+  api,
+  ApiError,
+  getCredencialesRecordadas,
+  getEmpresaSeleccionada,
+  setCredencialesRecordadas,
+} from "@/lib/api";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -39,6 +49,31 @@ function LoginPage() {
   const [recordar, setRecordar] = useState(false);
   const passwordRef = useRef<HTMLInputElement>(null);
 
+  // El combobox trabaja con strings; el id se convierte a número al guardar.
+  const [idEmpresa, setIdEmpresa] = useState("");
+  const { setEmpresa } = useEmpresa();
+
+  // Endpoint público: es la única llamada del proyecto que no lleva token,
+  // porque acá todavía no hay sesión. Devuelve solo id y nombre de las
+  // empresas activas.
+  const {
+    data: empresas,
+    isPending: cargandoEmpresas,
+    isError: errorEmpresas,
+  } = useQuery({
+    queryKey: ["empresas-publicas"],
+    queryFn: () => api.empresas.publicas(),
+  });
+
+  // La empresa preseleccionada puede haber sido inactivada desde la última
+  // sesión: entonces ya no está en la lista y no hay ningún botón marcado.
+  // Sin esto el submit quedaría habilitado apuntando a una empresa que el
+  // usuario no ve elegida, y el error recién aparecería al enviar.
+  const empresaElegida = (empresas?.items ?? []).find((e) => String(e.id) === idEmpresa);
+  if (idEmpresa !== "" && empresas && !empresaElegida) {
+    setIdEmpresa("");
+  }
+
   // A propósito NO se redirige al panel cuando ya hay un token guardado.
   //
   // Tenerlo no prueba que sirva: puede estar vencido, revocado o ser de una
@@ -52,6 +87,12 @@ function LoginPage() {
   // localStorage no existe en el servidor: leerlo durante el render rompe la
   // hidratación. Por eso la precarga ocurre después de montar.
   useEffect(() => {
+    // La empresa de la última sesión queda preseleccionada. Sobrevive al cierre
+    // de la pestaña, pero no al logout: ahí se borra a propósito, para que el
+    // siguiente que entre en esta PC tenga que elegirla.
+    const ultimaEmpresa = getEmpresaSeleccionada();
+    if (ultimaEmpresa) setIdEmpresa(String(ultimaEmpresa.id));
+
     const recordado = getCredencialesRecordadas();
     if (!recordado) return;
 
@@ -84,14 +125,25 @@ function LoginPage() {
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
+    // El botón ya está deshabilitado sin empresa, pero un Enter en un input
+    // puede enviar el formulario igual. Sin esto se entraría sin empresa y el
+    // resto de la app tendría que tolerar el null.
+    if (!empresaElegida) {
+      setError("Elegí la empresa a la que querés conectarte.");
+      return;
+    }
+
     setError(null);
     setLoading(true);
 
     try {
       await api.login(usuario, password);
       // Se guarda recién con el login exitoso: recordar credenciales que no
-      // sirven solo serviría para volver a fallar igual.
+      // sirven solo serviría para volver a fallar igual. Misma lógica para la
+      // empresa — si las credenciales fallan, no hay sesión a la que asociarla.
       setCredencialesRecordadas(recordar ? { usuario, password } : null);
+      setEmpresa(empresaElegida);
       await navigate({ to: "/home" });
       // `navigate` es asíncrono: sin el await, el botón quedaba en
       // "Verificando…" mientras la ruta todavía se estaba resolviendo, y si la
@@ -180,6 +232,84 @@ function LoginPage() {
           </div>
 
           <form onSubmit={handleSubmit} className="mt-8 space-y-5">
+            {/* Primero la empresa: define a qué se está entrando, y es lo que
+                el resto de la app va a dar por elegido.
+
+                Botones con el logo en vez de una lista desplegable: son pocas y
+                se reconocen de un vistazo por la marca, sin tener que abrir
+                nada ni leer nombres parecidos entre sí. */}
+            <div className="space-y-2">
+              <span id="empresa-label" className="text-sm font-medium">
+                Empresa
+              </span>
+
+              {cargandoEmpresas && (
+                <div className="grid grid-cols-2 gap-2">
+                  {[0, 1].map((i) => (
+                    <div key={i} className="h-[5.5rem] animate-pulse rounded-xl bg-muted" />
+                  ))}
+                </div>
+              )}
+
+              {errorEmpresas && (
+                <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  No se pudo cargar la lista de empresas. Recargá la página e intentá de nuevo.
+                </p>
+              )}
+
+              {!cargandoEmpresas && !errorEmpresas && empresas?.items.length === 0 && (
+                <p className="rounded-lg border border-border px-3 py-2 text-xs text-muted-foreground">
+                  No hay empresas activas para conectarse. Consultá con un administrador.
+                </p>
+              )}
+
+              {/* role="radiogroup": son opciones excluyentes, y sin esto un
+                  lector de pantalla las anuncia como botones sueltos sin decir
+                  cuál está elegida. */}
+              {!cargandoEmpresas && (empresas?.items.length ?? 0) > 0 && (
+                <div
+                  role="radiogroup"
+                  aria-labelledby="empresa-label"
+                  className="grid grid-cols-2 gap-2"
+                >
+                  {empresas?.items.map((empresaOpcion) => {
+                    const elegida = String(empresaOpcion.id) === idEmpresa;
+
+                    return (
+                      <button
+                        key={empresaOpcion.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={elegida}
+                        onClick={() => setIdEmpresa(String(empresaOpcion.id))}
+                        className={cn(
+                          "flex flex-col items-center gap-2 rounded-xl border p-3 text-center transition-colors",
+                          "hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                          elegida
+                            ? "border-primary bg-primary/5 ring-1 ring-primary"
+                            : "border-border",
+                        )}
+                      >
+                        <LogoEmpresa
+                          id={empresaOpcion.id}
+                          nombre={empresaOpcion.nombreEmpresa}
+                          tieneLogo={empresaOpcion.tieneLogo}
+                        />
+                        <span
+                          className={cn(
+                            "line-clamp-2 text-xs font-medium",
+                            elegida ? "text-primary" : "text-foreground",
+                          )}
+                        >
+                          {empresaOpcion.nombreEmpresa}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
             <div className="space-y-2">
               <Label htmlFor="usuario">Usuario</Label>
               <div className="relative">
@@ -261,7 +391,13 @@ function LoginPage() {
               </p>
             )}
 
-            <Button type="submit" disabled={loading} className="h-12 w-full text-base">
+            {/* Sin empresa no se entra: el resto de la app da por hecho que
+                hay una elegida. */}
+            <Button
+              type="submit"
+              disabled={loading || idEmpresa === ""}
+              className="h-12 w-full text-base"
+            >
               {loading ? <Loader2 className="size-4 animate-spin" /> : null}
               {loading ? "Verificando…" : "Ingresar"}
             </Button>

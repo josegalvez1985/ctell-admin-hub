@@ -19,24 +19,23 @@
 --
 -- Tabla (no la crea ni la altera; el DDL se administra aparte):
 --   SUCURSALES  ID_SUCURSAL, ID_EMPRESA, NOMBRE_SUCURSAL,
---               DIRECCION, TELEFONO, ACTIVO,
+--               DIRECCION, ACTIVO,
 --               FECHA_CREACION, FECHA_ACTUALIZACION
 --
 -- La FK contra EMPRESAS obliga a que la empresa exista: mandar un idEmpresa
 -- inexistente da ORA-02291 en el INSERT/UPDATE, que se traduce a 400 en vez de
 -- 500 — el dato es inválido, no falló el servidor.
 --
--- La tabla NO tiene UNIQUE: dos sucursales de la misma empresa pueden llamarse
--- igual. Si algún día se agrega uno, el DUP_VAL_ON_INDEX ya está contemplado en
--- INSERTAR y ACTUALIZAR, que lo traducen a 409.
+-- El UNIQUE (ID_EMPRESA, NOMBRE_SUCURSAL) impide dos sucursales con el mismo
+-- nombre dentro de la misma empresa, pero sí permite repetir el nombre entre
+-- empresas distintas. El DUP_VAL_ON_INDEX se traduce a 409 con ese matiz en el
+-- mensaje.
 --
 -- ESTADO: ACTIVO es VARCHAR2(1) con 'A' (activo) / 'I' (inactivo). Ese mismo
--- código viaja en el JSON y lo consume el frontend, sin traducirse a 1/0.
---
--- OJO con el DEFAULT de la columna: el DDL declara `ACTIVO VARCHAR2(1)
--- DEFAULT 1`, que guarda el literal '1' y no 'A'. Por eso el INSERT de acá
--- escribe 'A' explícitamente en vez de dejar que actúe el default, y el
--- listado normaliza cualquier valor viejo a 'A'/'I' antes de devolverlo.
+-- código viaja en el JSON y lo consume el frontend, sin traducirse a 1/0. Acá
+-- el DDL ya declara DEFAULT 'A' (a diferencia de ciudades o departamentos, que
+-- traen DEFAULT 1 y guardan el literal '1'), pero el INSERT lo escribe
+-- explícito igual, como en el resto del proyecto.
 --
 -- CORS: ORIGINS_ALLOWED es POR MODULO, no a nivel de workspace. Se declara en
 -- PUBLICAR_ENDPOINTS. Ver la explicación completa en db/auth.sql.
@@ -75,7 +74,6 @@ CREATE OR REPLACE PACKAGE PKG_SUCURSALES AS
     p_id_empresa       IN  VARCHAR2,
     p_nombre_sucursal  IN  VARCHAR2,
     p_direccion        IN  VARCHAR2,
-    p_telefono         IN  VARCHAR2,
     p_status_code      OUT NUMBER,
     p_resultado        OUT CLOB
   );
@@ -87,7 +85,6 @@ CREATE OR REPLACE PACKAGE PKG_SUCURSALES AS
     p_id_empresa       IN  VARCHAR2,
     p_nombre_sucursal  IN  VARCHAR2,
     p_direccion        IN  VARCHAR2,
-    p_telefono         IN  VARCHAR2,
     p_activo           IN  VARCHAR2,
     p_status_code      OUT NUMBER,
     p_resultado        OUT CLOB
@@ -199,7 +196,6 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
                  'empresa'         VALUE e.NOMBRE_EMPRESA,
                  'nombreSucursal'  VALUE s.NOMBRE_SUCURSAL,
                  'direccion'       VALUE s.DIRECCION,
-                 'telefono'        VALUE s.TELEFONO,
                  'activo'          VALUE CASE UPPER(TRIM(s.ACTIVO))
                                            WHEN 'I' THEN 'I'
                                            WHEN '0' THEN 'I'
@@ -240,7 +236,6 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
     p_id_empresa       IN  VARCHAR2,
     p_nombre_sucursal  IN  VARCHAR2,
     p_direccion        IN  VARCHAR2,
-    p_telefono         IN  VARCHAR2,
     p_status_code      OUT NUMBER,
     p_resultado        OUT CLOB
   ) IS
@@ -266,13 +261,12 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
     -- 'A' explícito: el DEFAULT de la columna es 1, que guardaría el literal
     -- '1' y rompería la comparación contra 'A'/'I' de todo el resto.
     INSERT INTO SUCURSALES (
-      ID_EMPRESA, NOMBRE_SUCURSAL, DIRECCION, TELEFONO,
+      ID_EMPRESA, NOMBRE_SUCURSAL, DIRECCION,
       ACTIVO, FECHA_CREACION, FECHA_ACTUALIZACION
     ) VALUES (
       l_id_empresa,
       TRIM(p_nombre_sucursal),
       TRIM(p_direccion),
-      TRIM(p_telefono),
       'A',
       SYSTIMESTAMP,
       SYSTIMESTAMP
@@ -285,8 +279,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
   EXCEPTION
     WHEN DUP_VAL_ON_INDEX THEN
       ROLLBACK;
-      -- Hoy la tabla no tiene UNIQUE, así que esto no deberia dispararse. Se
-      -- deja contemplado por si se agrega uno mas adelante.
+      -- El UNIQUE es (ID_EMPRESA, NOMBRE_SUCURSAL): el choque es dentro de la
+      -- misma empresa, no global. El mensaje lo dice para que no parezca que el
+      -- nombre está tomado en todos lados.
       p_status_code := 409;
       p_resultado := '{"error":"Esa empresa ya tiene una sucursal con ese nombre"}';
     WHEN OTHERS THEN
@@ -310,7 +305,6 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
     p_id_empresa       IN  VARCHAR2,
     p_nombre_sucursal  IN  VARCHAR2,
     p_direccion        IN  VARCHAR2,
-    p_telefono         IN  VARCHAR2,
     p_activo           IN  VARCHAR2,
     p_status_code      OUT NUMBER,
     p_resultado        OUT CLOB
@@ -342,7 +336,6 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
        SET ID_EMPRESA          = NVL(l_id_empresa, ID_EMPRESA),
            NOMBRE_SUCURSAL     = NVL(TRIM(p_nombre_sucursal), NOMBRE_SUCURSAL),
            DIRECCION           = NVL(TRIM(p_direccion), DIRECCION),
-           TELEFONO            = NVL(TRIM(p_telefono), TELEFONO),
            ACTIVO              = NVL(l_estado, ACTIVO),
            FECHA_ACTUALIZACION = SYSTIMESTAMP
      WHERE ID_SUCURSAL = l_id;
@@ -482,7 +475,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
 
     ----------------------------------------------------------------------------
     -- POST /sucursales/crear
-    -- Body: { idEmpresa, nombreSucursal, direccion?, telefono? }
+    -- Body: { idEmpresa, nombreSucursal, direccion? }
     ----------------------------------------------------------------------------
     ORDS.DEFINE_TEMPLATE(p_module_name => 'sucursales', p_pattern => 'crear');
 
@@ -491,7 +484,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
       p_pattern     => 'crear',
       p_method      => 'POST',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_SUCURSALES.INSERTAR(:authorization, :idEmpresa, :nombreSucursal, :direccion, :telefono, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_SUCURSALES.INSERTAR(:authorization, :idEmpresa, :nombreSucursal, :direccion, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
@@ -511,7 +504,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
 
     ----------------------------------------------------------------------------
     -- PUT /sucursales/actualizar/:id
-    -- Body: { idEmpresa?, nombreSucursal?, direccion?, telefono?, activo? }
+    -- Body: { idEmpresa?, nombreSucursal?, direccion?, activo? }
     --       (ausentes = no cambia)
     ----------------------------------------------------------------------------
     ORDS.DEFINE_TEMPLATE(p_module_name => 'sucursales', p_pattern => 'actualizar/:id');
@@ -521,7 +514,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
       p_pattern     => 'actualizar/:id',
       p_method      => 'PUT',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_SUCURSALES.ACTUALIZAR(:authorization, :id, :idEmpresa, :nombreSucursal, :direccion, :telefono, :activo, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_SUCURSALES.ACTUALIZAR(:authorization, :id, :idEmpresa, :nombreSucursal, :direccion, :activo, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
@@ -585,27 +578,10 @@ END;
 /
 
 --------------------------------------------------------------------------------
--- 3. Normalización del estado
+-- 3. Verificación
 --
--- El DDL declara ACTIVO con DEFAULT 1, así que las filas cargadas a mano antes
--- de este paquete pueden tener '1' en vez de 'A'. El listado ya lo normaliza al
--- devolverlo, pero conviene dejar la columna consistente con el resto de las
--- tablas para que los filtros por 'A'/'I' funcionen directo contra la base.
---------------------------------------------------------------------------------
-
-UPDATE SUCURSALES
-   SET ACTIVO = CASE UPPER(TRIM(ACTIVO))
-                  WHEN 'I' THEN 'I'
-                  WHEN '0' THEN 'I'
-                  ELSE 'A'
-                END
- WHERE ACTIVO IS NULL
-    OR UPPER(TRIM(ACTIVO)) NOT IN ('A', 'I');
-
-COMMIT;
-
---------------------------------------------------------------------------------
--- 4. Verificación
+-- No hace falta normalizar ACTIVO como en ciudades o departamentos: acá el DDL
+-- declara DEFAULT 'A', así que no hay filas con el literal '1'.
 --------------------------------------------------------------------------------
 
 SELECT OBJECT_NAME, OBJECT_TYPE, STATUS

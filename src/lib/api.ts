@@ -23,6 +23,7 @@ const BASE_URL = import.meta.env.DEV ? "/ords/ctell" : "https://oracleapex.com/o
 const TOKEN_KEY = "ctell-token";
 const USUARIO_KEY = "ctell-usuario";
 const USUARIO_RECORDADO_KEY = "ctell-usuario-recordado";
+const EMPRESA_KEY = "ctell-empresa";
 
 /**
  * Estado de un registro, tal como lo guarda la base: "A" activo, "I" inactivo.
@@ -165,6 +166,11 @@ export type Empresa = {
   /** Código ISO de 3 letras. 'PYG' por defecto. */
   monedaDefecto: string | null;
   representanteLegal: string | null;
+  /**
+   * Si tiene logo cargado. El binario no viaja en este JSON: se pide aparte
+   * con `urlLogoEmpresa(id)` y se sube con `api.empresas.subirLogo`.
+   */
+  tieneLogo: boolean;
   activo: Estado;
 };
 
@@ -180,7 +186,6 @@ export type Sucursal = {
   empresa: string;
   nombreSucursal: string;
   direccion: string | null;
-  telefono: string | null;
   activo: Estado;
 };
 
@@ -326,6 +331,84 @@ export function setUsuarioSesion(usuario: UsuarioSesion | null) {
   }
 }
 
+/**
+ * Empresa mínima que devuelve el endpoint público del login.
+ *
+ * Solo id y nombre: es lo único que `/empresas/publicas` expone sin token. Para
+ * los datos completos está el tipo `Empresa`, que requiere sesión.
+ */
+export type EmpresaPublica = {
+  id: number;
+  nombreEmpresa: string;
+  /**
+   * Si tiene un logo cargado. El binario no viaja en el JSON: se pide aparte
+   * con `urlLogoEmpresa(id)`. Con `false` el frontend dibuja las iniciales sin
+   * intentar la petición.
+   */
+  tieneLogo: boolean;
+};
+
+export type ListaEmpresasPublicas = {
+  items: EmpresaPublica[];
+  total: number;
+};
+
+/**
+ * URL de la imagen del logo, para usar directo en `<img src>`.
+ *
+ * No pasa por `request()` a propósito: quien descarga la imagen es el navegador
+ * con su propia petición, y ahí no hay forma de mandar el header Authorization.
+ * Por eso el endpoint es público, igual que `/empresas/publicas`.
+ *
+ * Devuelve 404 si la empresa no tiene logo cargado. Quien la use debería
+ * manejar el `onError` del `<img>` para caer a las iniciales.
+ */
+export function urlLogoEmpresa(id: number): string {
+  return `${BASE_URL}/empresas/logo/${id}`;
+}
+
+/**
+ * Empresa a la que el usuario eligió conectarse en el login.
+ *
+ * Vive en localStorage —no en sessionStorage— para que el login la deje
+ * preseleccionada la próxima vez, como ya hace "Recordarme" con el usuario.
+ * Pero se borra en el logout (ver `api.logout`) y ante un 401: elegir empresa
+ * es parte de iniciar sesión, así que no debe sobrevivir a cerrarla.
+ *
+ * Se guarda el objeto entero y no solo el id porque el nombre se muestra en el
+ * layout: con el id suelto haría falta pedir la lista de nuevo solo para
+ * escribir un título.
+ */
+export function getEmpresaSeleccionada(): EmpresaPublica | null {
+  if (typeof window === "undefined") return null;
+
+  const crudo = localStorage.getItem(EMPRESA_KEY);
+  if (!crudo) return null;
+
+  try {
+    const datos = JSON.parse(crudo) as Partial<EmpresaPublica>;
+    // Sin id no sirve para nada: se descarta en vez de devolver a medias.
+    if (typeof datos.id !== "number") return null;
+    return {
+      id: datos.id,
+      nombreEmpresa: datos.nombreEmpresa ?? "",
+      tieneLogo: datos.tieneLogo === true,
+    };
+  } catch {
+    localStorage.removeItem(EMPRESA_KEY);
+    return null;
+  }
+}
+
+export function setEmpresaSeleccionada(empresa: EmpresaPublica | null) {
+  if (typeof window === "undefined") return;
+  if (empresa) {
+    localStorage.setItem(EMPRESA_KEY, JSON.stringify(empresa));
+  } else {
+    localStorage.removeItem(EMPRESA_KEY);
+  }
+}
+
 /** Credenciales que "Recordarme" deja precargadas en el login. */
 export type CredencialesRecordadas = {
   usuario: string;
@@ -461,6 +544,9 @@ async function request<T>(
       // credenciales que ya no sirven.
       setToken(null);
       setUsuarioSesion(null);
+      // La empresa se elige al iniciar sesión: si la sesión se cayó, la
+      // elección caducó con ella y hay que volver a hacerla en el login.
+      setEmpresaSeleccionada(null);
       // …y hay que sacarlo de la pantalla protegida donde quedó. Limpiar el
       // token no alcanza: sin esto seguiría viendo el panel, con un toast de
       // error y sin entender que lo que pasó fue que se le venció la sesión.
@@ -524,6 +610,11 @@ export const api = {
       // el nombre del anterior.
       setToken(null);
       setUsuarioSesion(null);
+      // La empresa muere con la sesión: aunque viva en localStorage para que el
+      // login la deje preseleccionada, dejarla activa tras cerrar sesión haría
+      // que el siguiente que entre en esta PC arranque conectado a la empresa
+      // del anterior.
+      setEmpresaSeleccionada(null);
     }
   },
 
@@ -772,6 +863,31 @@ export const api = {
       return request<ListaEmpresas>(`/empresas/listar${q}`);
     },
 
+    /**
+     * Empresas activas para el selector del login. `auth: false` porque en esa
+     * pantalla todavía no hay token — es el único endpoint del proyecto que no
+     * lo pide.
+     *
+     * Devuelve solo id y nombre: el backend no expone nada más acá, que es
+     * justamente lo que hace aceptable dejarlo abierto.
+     */
+    publicas: () => request<ListaEmpresasPublicas>("/empresas/publicas", { auth: false }),
+
+    /**
+     * Sube el logo de una empresa. El archivo va como cuerpo crudo del PUT y su
+     * tipo en el Content-Type — no es multipart: el endpoint recibe una sola
+     * imagen, y envolverla en un form-data solo agregaría parseo de más.
+     *
+     * El Content-Type se pisa con el del archivo; `request` respeta el header
+     * que ya venga puesto en vez de forzar application/json.
+     */
+    subirLogo: (id: number, archivo: File) =>
+      request<{ ok: boolean }>(`/empresas/logo/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": archivo.type },
+        body: archivo,
+      }),
+
     crear: (datos: {
       nombreEmpresa: string;
       ruc?: string;
@@ -823,12 +939,7 @@ export const api = {
       return request<ListaSucursales>(`/sucursales/listar${q}`);
     },
 
-    crear: (datos: {
-      idEmpresa: number;
-      nombreSucursal: string;
-      direccion?: string;
-      telefono?: string;
-    }) =>
+    crear: (datos: { idEmpresa: number; nombreSucursal: string; direccion?: string }) =>
       request<{ id: number; ok: boolean }>("/sucursales/crear", {
         method: "POST",
         body: JSON.stringify(datos),
@@ -841,7 +952,6 @@ export const api = {
         idEmpresa?: number;
         nombreSucursal?: string;
         direccion?: string;
-        telefono?: string;
         activo?: Estado;
       },
     ) =>

@@ -64,17 +64,16 @@ const schema = z.object({
 
 type FormValues = z.infer<typeof schema>;
 
+const MENSAJE_ERROR = (error: unknown, fallback: string) =>
+  error instanceof ApiError ? error.message : fallback;
+
 /**
  * Cuántas filas se muestran de entrada, y cuántas suma cada "Mostrar más".
  *
- * El endpoint devuelve todas las ciudades de una vez —son pocas para la red,
- * pero muchas para el DOM: sin este corte, "todos los departamentos" pinta
- * miles de filas y la página se traba al abrirla.
+ * El endpoint devuelve todo de una vez —poco para la red, mucho para el DOM—,
+ * así que la tabla corta acá.
  */
 const POR_PAGINA = 20;
-
-const MENSAJE_ERROR = (error: unknown, fallback: string) =>
-  error instanceof ApiError ? error.message : fallback;
 
 function CiudadesPage() {
   const queryClient = useQueryClient();
@@ -85,7 +84,8 @@ function CiudadesPage() {
 
   // El endpoint trae todas las ciudades y el filtro se aplica acá abajo, sobre
   // la columna Departamento. Cambiar de departamento no dispara un viaje a la
-  // red, y el corte de POR_PAGINA evita que "todos" cargue el DOM de golpe.
+  // red. La queryKey con null es la misma que usa Empresas para su filtro por
+  // ciudad, así TanStack Query comparte la respuesta.
   const { data, isPending, isError, error } = useQuery({
     queryKey: ["ciudades", null],
     queryFn: () => api.ciudades.listar(),
@@ -96,8 +96,7 @@ function CiudadesPage() {
   );
 
   // Los departamentos alimentan el filtro y el formulario. Se piden una vez acá
-  // y TanStack Query los comparte con el dialog por la misma queryKey — la
-  // misma que usa la página de Departamentos cuando lista sin filtrar.
+  // y TanStack Query los comparte con el dialog por la misma queryKey.
   const { data: departamentos } = useQuery({
     queryKey: ["departamentos", null],
     queryFn: () => api.departamentos.listar(),
@@ -130,13 +129,12 @@ function CiudadesPage() {
   }));
 
   // Cuántas filas se están mostrando. Se resetea al cambiar el filtro o la
-  // búsqueda: seguir en "80 de 90" después de filtrar a 12 resultados mostraría
-  // todo de golpe y perdería el sentido del corte.
+  // búsqueda: seguir en "80 de 90" tras filtrar a 12 perdería el sentido.
   const [visibles, setVisibles] = useState(POR_PAGINA);
   const claveVista = `${filtroDepartamento}|${termino}`;
   const [claveAnterior, setClaveAnterior] = useState(claveVista);
   if (claveVista !== claveAnterior) {
-    // Ajuste de estado en render, no useEffect: React lo re-renderiza antes de
+    // Ajuste de estado en render, no useEffect: React re-renderiza antes de
     // pintar, así que la lista nunca se ve con el valor viejo.
     setClaveAnterior(claveVista);
     setVisibles(POR_PAGINA);
@@ -344,8 +342,6 @@ function CiudadesPage() {
           <p className="text-center text-xs text-muted-foreground">
             Mostrando {mostrados.length} de {resultado.length} ciudad
             {resultado.length === 1 ? "" : "es"}
-            {/* El total sin recortar sólo se aclara si algo está filtrando; si
-                no, repetiría el mismo número dos veces. */}
             {termino || filtroDepartamento !== SIN_FILTRO ? ` (${data.items.length} en total)` : ""}
           </p>
         )}
@@ -416,6 +412,8 @@ function CiudadFormDialog({
     queryFn: () => api.departamentos.listar(),
   });
 
+  // El país va como descripción: dos departamentos de países distintos pueden
+  // llamarse igual, y sin eso el combobox mostraría dos opciones idénticas.
   const departamentosOpciones = (departamentos?.items ?? []).map((d) => ({
     valor: String(d.id),
     etiqueta: d.nombreDepartamento,

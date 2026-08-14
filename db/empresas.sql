@@ -6,14 +6,28 @@
 -- dentro del paquete: no hay procedimientos sueltos ni PL/SQL embebido como
 -- texto dentro de los handlers.
 --
---   1. LISTAR      GET    /empresas/listar        (?idCiudad= opcional)
---   2. INSERTAR    POST   /empresas/crear
---   3. ACTUALIZAR  PUT    /empresas/actualizar/:id
---   4. ELIMINAR    DELETE /empresas/eliminar/:id
+--   1. LISTAR          GET    /empresas/listar        (?idCiudad= opcional)
+--   2. INSERTAR        POST   /empresas/crear
+--   3. ACTUALIZAR      PUT    /empresas/actualizar/:id
+--   4. ELIMINAR        DELETE /empresas/eliminar/:id
+--   5. LISTAR_PUBLICAS GET    /empresas/publicas      (SIN TOKEN)
+--   6. SERVIR_LOGO     GET    /empresas/logo/:id      (SIN TOKEN)
+--   7. GUARDAR_LOGO    PUT    /empresas/logo/:id      (con token)
 --
 -- Se ejecuta una sola vez en la hoja de trabajo SQL de APEX, conectado con el
 -- esquema del workspace. REQUIERE db/auth.sql EJECUTADO ANTES: usa PKG_AUTH
 -- para validar el token.
+--
+-- ENDPOINT PÚBLICO — /empresas/publicas es el ÚNICO de todo el proyecto que no
+-- valida token, porque lo consume la pantalla de login: quien elige la empresa
+-- todavía no inició sesión, así que exigirle credenciales sería un círculo.
+--
+-- Por eso NO reutiliza LISTAR ni comparte su consulta. Devuelve únicamente
+-- { id, nombreEmpresa } de las empresas ACTIVAS, y nada más: RUC, correo,
+-- teléfono, dirección y representante legal son datos de negocio que quedarían
+-- expuestos a cualquiera que pegue a la URL sin credenciales. Si algún día hace
+-- falta un campo más en el selector del login, agregarlo acá es una decisión
+-- deliberada de publicarlo en internet, no un detalle de implementación.
 --
 -- Base de los endpoints: https://oracleapex.com/ords/ctell/empresas/
 --
@@ -24,9 +38,24 @@
 --             MONEDA_DEFECTO, LOGO, REPRESENTANTE_LEGAL,
 --             FECHA_CREACION, FECHA_ACTUALIZACION, ACTIVO
 --
--- LOGO (BLOB) queda FUERA de este CRUD a propósito: subir y servir un binario
--- por ORDS necesita endpoints aparte (multipart y un handler que devuelva el
--- contenido con su content-type). Se agrega después sin tocar nada de esto.
+-- LOGO (BLOB) NO viaja en el JSON del CRUD —un binario no entra en un
+-- JSON_OBJECT— sino por dos endpoints propios:
+--
+--   GET /empresas/logo/:id  devuelve la imagen cruda con su content-type, para
+--     usarla directo como src de un <img>. Es PÚBLICO, igual que /publicas: lo
+--     consume el selector de empresa del login, donde todavía no hay sesión. Un
+--     logo es material de marca, lo mismo que ya expone el nombre.
+--
+--   PUT /empresas/logo/:id  recibe el binario en el body y lo guarda. Este SÍ
+--     pide token: escribir nunca es público.
+--
+-- El listado devuelve `tieneLogo` (true/false) en vez del binario, así el
+-- frontend sabe si pedir la imagen o dibujar las iniciales, sin traerse los
+-- BLOB de todas las empresas para averiguarlo.
+--
+-- CONTENT-TYPE: se guarda junto al BLOB en LOGO_MIME. Sin eso habría que
+-- adivinar el formato al servirlo, y un PNG servido como image/jpeg no lo
+-- renderiza ningún navegador. Ver el ALTER TABLE del paso 0 más abajo.
 --
 -- UBICACIÓN: la tabla guarda ID_PAIS, ID_DEPARTAMENTO e ID_CIUDAD, que son
 -- redundantes entre sí (la ciudad ya implica departamento y país). Se guardan
@@ -50,6 +79,34 @@ SET DEFINE OFF
 SET SERVEROUTPUT ON
 
 --------------------------------------------------------------------------------
+-- 0. Columna LOGO_MIME
+--
+-- ÚNICA excepción a la regla de que estos archivos no tocan el DDL. Es una
+-- columna nueva y opcional que el paquete necesita para servir el logo con el
+-- content-type correcto, así que se agrega acá en vez de dejar el archivo sin
+-- poder ejecutarse hasta que alguien la cree a mano.
+--
+-- El bloque consulta USER_TAB_COLUMNS antes de agregarla: sin eso, la segunda
+-- ejecución del archivo fallaría con ORA-01430 (la columna ya existe) y todo
+-- lo que viene después no llegaría a ejecutarse.
+--------------------------------------------------------------------------------
+
+DECLARE
+  l_existe PLS_INTEGER;
+BEGIN
+  SELECT COUNT(*)
+    INTO l_existe
+    FROM USER_TAB_COLUMNS
+   WHERE TABLE_NAME = 'EMPRESAS'
+     AND COLUMN_NAME = 'LOGO_MIME';
+
+  IF l_existe = 0 THEN
+    EXECUTE IMMEDIATE 'ALTER TABLE EMPRESAS ADD (LOGO_MIME VARCHAR2(100))';
+  END IF;
+END;
+/
+
+--------------------------------------------------------------------------------
 -- 1. PKG_EMPRESAS
 --
 -- Probar un procedimiento solo, sin pasar por ORDS:
@@ -70,6 +127,35 @@ CREATE OR REPLACE PACKAGE PKG_EMPRESAS AS
   PROCEDURE LISTAR (
     p_authorization IN  VARCHAR2,
     p_id_ciudad     IN  VARCHAR2,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
+  );
+
+  -- SIN TOKEN: alimenta el selector de empresa de la pantalla de login.
+  -- Devuelve solo id y nombre de las empresas activas. No recibe
+  -- p_authorization justamente porque no hay sesión todavía.
+  PROCEDURE LISTAR_PUBLICAS (
+    p_status_code OUT NUMBER,
+    p_resultado   OUT CLOB
+  );
+
+  -- SIN TOKEN: devuelve el logo como binario crudo para usarlo de <img src>.
+  -- Sale por p_logo/p_mime, no por un JSON: ORDS los mapea al cuerpo y al
+  -- Content-Type de la respuesta. Sin logo cargado devuelve 404.
+  PROCEDURE SERVIR_LOGO (
+    p_id          IN  VARCHAR2,
+    p_status_code OUT NUMBER,
+    p_mime        OUT VARCHAR2,
+    p_logo        OUT BLOB
+  );
+
+  -- Guarda el logo. CON token: escribir nunca es público.
+  -- p_logo llega como el cuerpo crudo del PUT; p_content_type, del header.
+  PROCEDURE GUARDAR_LOGO (
+    p_authorization IN  VARCHAR2,
+    p_id            IN  VARCHAR2,
+    p_logo          IN  BLOB,
+    p_content_type  IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   );
@@ -226,6 +312,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_EMPRESAS AS
                  'pais'                VALUE p.NOMBRE_PAIS,
                  'monedaDefecto'       VALUE e.MONEDA_DEFECTO,
                  'representanteLegal'  VALUE e.REPRESENTANTE_LEGAL,
+                 -- Igual que en LISTAR_PUBLICAS: el binario va por su propio
+                 -- endpoint, acá solo viaja si existe o no.
+                 'tieneLogo'           VALUE CASE
+                                               WHEN e.LOGO IS NOT NULL
+                                                AND DBMS_LOB.GETLENGTH(e.LOGO) > 0
+                                               THEN 'true' ELSE 'false'
+                                             END FORMAT JSON,
                  'activo'              VALUE CASE UPPER(TRIM(e.ACTIVO))
                                                WHEN 'I' THEN 'I'
                                                WHEN '0' THEN 'I'
@@ -261,6 +354,196 @@ CREATE OR REPLACE PACKAGE BODY PKG_EMPRESAS AS
                        DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
       p_resultado := '{"error":"Error al listar las empresas"}';
   END LISTAR;
+
+  ------------------------------------------------------------------------------
+  -- Listado público para el selector de empresa del login.
+  --
+  -- No valida token a propósito: quien está en la pantalla de login todavía no
+  -- tiene sesión. Es el único procedimiento del proyecto sin VALIDAR_TOKEN.
+  --
+  -- Solo ID_EMPRESA y NOMBRE_EMPRESA, y solo las ACTIVAS. Deliberadamente NO
+  -- reutiliza la consulta de LISTAR: si mañana alguien agrega una columna allá,
+  -- no quiero que aparezca sola en un endpoint abierto a internet. Una empresa
+  -- inactiva tampoco se ofrece — nadie debería poder conectarse a ella.
+  ------------------------------------------------------------------------------
+  PROCEDURE LISTAR_PUBLICAS (
+    p_status_code OUT NUMBER,
+    p_resultado   OUT CLOB
+  ) IS
+    l_total NUMBER;
+    l_items CLOB;
+  BEGIN
+    SELECT COUNT(*)
+      INTO l_total
+      FROM EMPRESAS
+     WHERE UPPER(TRIM(ACTIVO)) NOT IN ('I', '0')
+        OR ACTIVO IS NULL;
+
+    -- Mismo patrón que el resto de los listados: el JSON_OBJECT se arma en una
+    -- subconsulta y el JSON_ARRAYAGG agrega esa columna ya tipada como CLOB.
+    SELECT JSON_ARRAYAGG(fila ORDER BY nombre_empresa RETURNING CLOB)
+      INTO l_items
+      FROM (
+        SELECT JSON_OBJECT(
+                 'id'            VALUE e.ID_EMPRESA,
+                 'nombreEmpresa' VALUE e.NOMBRE_EMPRESA,
+                 -- El BLOB no entra en el JSON, pero el frontend necesita saber
+                 -- si pedir /empresas/logo/:id o dibujar las iniciales. Un
+                 -- booleano evita traerse todos los binarios para averiguarlo.
+                 -- DBMS_LOB.GETLENGTH > 0 y no "IS NOT NULL": una fila puede
+                 -- tener un BLOB vacío, que no sirve como imagen.
+                 'tieneLogo'     VALUE CASE
+                                         WHEN e.LOGO IS NOT NULL
+                                          AND DBMS_LOB.GETLENGTH(e.LOGO) > 0
+                                         THEN 'true' ELSE 'false'
+                                       END FORMAT JSON
+                 RETURNING CLOB
+               ) AS fila,
+               e.NOMBRE_EMPRESA AS nombre_empresa
+          FROM EMPRESAS e
+         WHERE UPPER(TRIM(e.ACTIVO)) NOT IN ('I', '0')
+            OR e.ACTIVO IS NULL
+      );
+
+    p_status_code := 200;
+    SELECT JSON_OBJECT(
+             'items' VALUE NVL(l_items, TO_CLOB('[]')) FORMAT JSON,
+             'total' VALUE l_total
+             RETURNING CLOB
+           )
+      INTO p_resultado
+      FROM DUAL;
+  EXCEPTION
+    WHEN OTHERS THEN
+      p_status_code := 500;
+      APEX_DEBUG.ERROR('PKG_EMPRESAS.LISTAR_PUBLICAS: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
+                       DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
+      p_resultado := '{"error":"Error al listar las empresas"}';
+  END LISTAR_PUBLICAS;
+
+  ------------------------------------------------------------------------------
+  -- Sirve el logo como binario, para usarlo directo en <img src="...">.
+  --
+  -- No valida token: lo consume el selector del login, donde no hay sesión. Un
+  -- logo es material de marca —lo mismo que ya expone el nombre en /publicas—,
+  -- no un dato de negocio.
+  --
+  -- La salida NO es JSON: p_logo va al cuerpo de la respuesta y p_mime al
+  -- header Content-Type, mapeados en PUBLICAR_ENDPOINTS. Por eso este
+  -- procedimiento no tiene p_resultado: mezclar un JSON de error con un cuerpo
+  -- binario no tendría cómo representarse.
+  ------------------------------------------------------------------------------
+  PROCEDURE SERVIR_LOGO (
+    p_id          IN  VARCHAR2,
+    p_status_code OUT NUMBER,
+    p_mime        OUT VARCHAR2,
+    p_logo        OUT BLOB
+  ) IS
+    l_id NUMBER;
+  BEGIN
+    l_id := TO_NUMBER(NULLIF(p_id, ''));
+
+    SELECT LOGO,
+           -- Las filas cargadas antes de que existiera LOGO_MIME no lo tienen.
+           -- image/png es la apuesta más segura para un logo; el navegador
+           -- igual detecta el formato real en la mayoría de los casos.
+           NVL(LOGO_MIME, 'image/png')
+      INTO p_logo, p_mime
+      FROM EMPRESAS
+     WHERE ID_EMPRESA = l_id;
+
+    -- La empresa existe pero nunca se le cargó un logo: 404 para que el
+    -- frontend caiga a las iniciales sin tratarlo como un fallo.
+    IF p_logo IS NULL OR DBMS_LOB.GETLENGTH(p_logo) = 0 THEN
+      p_status_code := 404;
+      p_mime := NULL;
+      p_logo := NULL;
+      RETURN;
+    END IF;
+
+    p_status_code := 200;
+  EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+      p_status_code := 404;
+      p_mime := NULL;
+      p_logo := NULL;
+    WHEN OTHERS THEN
+      p_status_code := 500;
+      p_mime := NULL;
+      p_logo := NULL;
+      APEX_DEBUG.ERROR('PKG_EMPRESAS.SERVIR_LOGO: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
+                       DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
+  END SERVIR_LOGO;
+
+  ------------------------------------------------------------------------------
+  -- Guarda el logo de una empresa. CON token: escribir nunca es público.
+  --
+  -- El binario llega como el cuerpo crudo del PUT (ORDS lo mapea a un BLOB) y
+  -- el formato, del header Content-Type. Se acepta solo image/*: sin ese
+  -- control, cualquier archivo quedaría guardado y después se serviría de
+  -- vuelta con su content-type a quien abra el login.
+  ------------------------------------------------------------------------------
+  PROCEDURE GUARDAR_LOGO (
+    p_authorization IN  VARCHAR2,
+    p_id            IN  VARCHAR2,
+    p_logo          IN  BLOB,
+    p_content_type  IN  VARCHAR2,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
+  ) IS
+    l_sesion NUMBER;
+    l_id     NUMBER;
+    l_mime   VARCHAR2(100);
+  BEGIN
+    l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
+    IF l_sesion IS NULL THEN
+      p_status_code := 401;
+      p_resultado := '{"error":"Sesion invalida o vencida"}';
+      RETURN;
+    END IF;
+
+    l_id := TO_NUMBER(NULLIF(p_id, ''));
+
+    IF p_logo IS NULL OR DBMS_LOB.GETLENGTH(p_logo) = 0 THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"No se recibio ninguna imagen"}';
+      RETURN;
+    END IF;
+
+    -- El header puede venir con parámetros ("image/png; charset=..."), así que
+    -- se corta en el punto y coma antes de guardarlo.
+    l_mime := LOWER(TRIM(REGEXP_SUBSTR(p_content_type, '^[^;]+')));
+
+    IF l_mime IS NULL OR l_mime NOT LIKE 'image/%' THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"El archivo debe ser una imagen"}';
+      RETURN;
+    END IF;
+
+    UPDATE EMPRESAS
+       SET LOGO                = p_logo,
+           LOGO_MIME           = l_mime,
+           FECHA_ACTUALIZACION = SYSTIMESTAMP
+     WHERE ID_EMPRESA = l_id;
+
+    IF SQL%ROWCOUNT = 0 THEN
+      ROLLBACK;
+      p_status_code := 404;
+      p_resultado := '{"error":"La empresa no existe"}';
+      RETURN;
+    END IF;
+
+    COMMIT;
+    p_status_code := 200;
+    p_resultado := '{"ok":true}';
+  EXCEPTION
+    WHEN OTHERS THEN
+      ROLLBACK;
+      p_status_code := 500;
+      APEX_DEBUG.ERROR('PKG_EMPRESAS.GUARDAR_LOGO: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
+                       DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
+      p_resultado := '{"error":"Error al guardar el logo"}';
+  END GUARDAR_LOGO;
 
   PROCEDURE INSERTAR (
     p_authorization       IN  VARCHAR2,
@@ -556,6 +839,114 @@ CREATE OR REPLACE PACKAGE BODY PKG_EMPRESAS AS
       p_name => 'resultado', p_bind_variable_name => 'resultado',
       p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
 
+    ----------------------------------------------------------------------------
+    -- GET /empresas/publicas — SIN TOKEN
+    --
+    -- Alimenta el selector de empresa del login. No declara el parámetro
+    -- 'authorization' porque el procedimiento no lo recibe: es público de
+    -- verdad, no "público pero mira el header por las dudas".
+    --
+    -- ORIGINS_ALLOWED del módulo aplica igual que a los demás endpoints: el
+    -- navegador solo lo consume desde www.ctell.online o localhost:8080. Eso NO
+    -- es un control de acceso —un curl lo lee sin problema— y por eso el
+    -- procedimiento devuelve únicamente id y nombre.
+    ----------------------------------------------------------------------------
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'empresas', p_pattern => 'publicas');
+
+    ORDS.DEFINE_HANDLER(
+      p_module_name => 'empresas',
+      p_pattern     => 'publicas',
+      p_method      => 'GET',
+      p_source_type => ORDS.source_type_plsql,
+      p_source      => 'BEGIN PKG_EMPRESAS.LISTAR_PUBLICAS(:status_code, :resultado); END;'
+    );
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'empresas', p_pattern => 'publicas', p_method => 'GET',
+      p_name => 'resultado', p_bind_variable_name => 'resultado',
+      p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'empresas', p_pattern => 'publicas', p_method => 'GET',
+      p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
+      p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
+
+    ----------------------------------------------------------------------------
+    -- GET /empresas/logo/:id — SIN TOKEN
+    --
+    -- Devuelve la imagen cruda, no un JSON. Dos diferencias con el resto de los
+    -- endpoints, y las dos importan:
+    --
+    --   p_source_type => 'RESPONSE' con p_param_type => 'BLOB' hace que ORDS
+    --   escriba el binario como cuerpo de la respuesta en vez de serializarlo.
+    --
+    --   X-ORDS-STATUS-CODE, no X-APEX-STATUS-CODE: el segundo es el que usa el
+    --   motor de APEX para respuestas JSON. En un handler que devuelve un BLOB
+    --   hay que usar el de ORDS o el 404 del logo faltante se pierde y llega
+    --   como 200 con el cuerpo vacío — el <img> quedaría roto en vez de caer a
+    --   las iniciales.
+    --
+    -- El mismo template lleva también el PUT que guarda el logo, más abajo.
+    ----------------------------------------------------------------------------
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'empresas', p_pattern => 'logo/:id');
+
+    ORDS.DEFINE_HANDLER(
+      p_module_name => 'empresas',
+      p_pattern     => 'logo/:id',
+      p_method      => 'GET',
+      p_source_type => ORDS.source_type_plsql,
+      p_source      => 'BEGIN PKG_EMPRESAS.SERVIR_LOGO(:id, :status_code, :content_type, :logo); END;'
+    );
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'empresas', p_pattern => 'logo/:id', p_method => 'GET',
+      p_name => 'logo', p_bind_variable_name => 'logo',
+      p_source_type => 'RESPONSE', p_param_type => 'BLOB', p_access_method => 'OUT');
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'empresas', p_pattern => 'logo/:id', p_method => 'GET',
+      p_name => 'Content-Type', p_bind_variable_name => 'content_type',
+      p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'OUT');
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'empresas', p_pattern => 'logo/:id', p_method => 'GET',
+      p_name => 'X-ORDS-STATUS-CODE', p_bind_variable_name => 'status_code',
+      p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
+
+    ----------------------------------------------------------------------------
+    -- PUT /empresas/logo/:id — con token
+    -- Body: la imagen cruda. Content-Type: image/png, image/jpeg, etc.
+    ----------------------------------------------------------------------------
+    ORDS.DEFINE_HANDLER(
+      p_module_name => 'empresas',
+      p_pattern     => 'logo/:id',
+      p_method      => 'PUT',
+      p_source_type => ORDS.source_type_plsql,
+      p_mimes_allowed => 'image/png,image/jpeg,image/gif,image/webp,image/svg+xml',
+      p_source      => 'BEGIN PKG_EMPRESAS.GUARDAR_LOGO(:authorization, :id, :body, :content_type, :status_code, :resultado); END;'
+    );
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'empresas', p_pattern => 'logo/:id', p_method => 'PUT',
+      p_name => 'authorization', p_bind_variable_name => 'authorization',
+      p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
+
+    -- El Content-Type de entrada: de ahí sale el formato que se guarda.
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'empresas', p_pattern => 'logo/:id', p_method => 'PUT',
+      p_name => 'Content-Type', p_bind_variable_name => 'content_type',
+      p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'empresas', p_pattern => 'logo/:id', p_method => 'PUT',
+      p_name => 'resultado', p_bind_variable_name => 'resultado',
+      p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'empresas', p_pattern => 'logo/:id', p_method => 'PUT',
+      p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
+      p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
+
     ORDS.DEFINE_PARAMETER(
       p_module_name => 'empresas', p_pattern => 'listar', p_method => 'GET',
       p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
@@ -699,3 +1090,14 @@ SELECT e.ID_EMPRESA, e.NOMBRE_EMPRESA, e.RUC,
   LEFT JOIN DEPARTAMENTOS d ON d.ID_DEPARTAMENTO = e.ID_DEPARTAMENTO
   LEFT JOIN PAISES        p ON p.ID_PAIS         = e.ID_PAIS
  ORDER BY e.NOMBRE_EMPRESA;
+
+-- Qué empresas tienen logo cargado. Las que digan 'NO' se ven en el login con
+-- sus iniciales, que es el comportamiento esperado, no un error.
+SELECT ID_EMPRESA,
+       NOMBRE_EMPRESA,
+       CASE WHEN LOGO IS NOT NULL AND DBMS_LOB.GETLENGTH(LOGO) > 0
+            THEN 'SI' ELSE 'NO' END AS TIENE_LOGO,
+       LOGO_MIME,
+       DBMS_LOB.GETLENGTH(LOGO) AS BYTES
+  FROM EMPRESAS
+ ORDER BY NOMBRE_EMPRESA;

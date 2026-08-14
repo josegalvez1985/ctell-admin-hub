@@ -58,9 +58,8 @@ const schema = z.object({
   // El combobox devuelve strings: el id se valida como texto no vacío y se
   // convierte a número recién al enviar.
   idEmpresa: z.string().min(1, "Elegí una empresa"),
-  nombreSucursal: z.string().trim().min(1, "Obligatorio").max(150, "Máximo 150 caracteres"),
-  direccion: z.string().trim().max(255, "Máximo 255 caracteres"),
-  telefono: z.string().trim().max(20, "Máximo 20 caracteres"),
+  nombreSucursal: z.string().trim().min(1, "Obligatorio").max(200, "Máximo 200 caracteres"),
+  direccion: z.string().trim().max(500, "Máximo 500 caracteres"),
   activo: z.boolean(),
 });
 
@@ -421,7 +420,6 @@ function SucursalFormDialog({
       idEmpresa: String(sucursal?.idEmpresa ?? idEmpresaPorDefecto ?? ""),
       nombreSucursal: sucursal?.nombreSucursal ?? "",
       direccion: sucursal?.direccion ?? "",
-      telefono: sucursal?.telefono ?? "",
       activo: sucursal ? esActivo(sucursal.activo) : true,
     },
   });
@@ -433,7 +431,6 @@ function SucursalFormDialog({
       // significa "no cambiar", que es justo lo que corresponde.
       const opcionales = {
         ...(v.direccion ? { direccion: v.direccion } : {}),
-        ...(v.telefono ? { telefono: v.telefono } : {}),
       };
 
       return esEdicion
@@ -505,6 +502,7 @@ function SucursalFormDialog({
                   <FormControl>
                     <Input {...field} placeholder="Casa Central" autoComplete="off" />
                   </FormControl>
+                  <FormDescription>No puede repetirse dentro de la misma empresa.</FormDescription>
                   <FormMessage />
                 </FormItem>
               )}
@@ -518,20 +516,6 @@ function SucursalFormDialog({
                   <FormLabel>Dirección (opcional)</FormLabel>
                   <FormControl>
                     <Input {...field} placeholder="Avda. España 123" autoComplete="off" />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name="telefono"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Teléfono (opcional)</FormLabel>
-                  <FormControl>
-                    <Input {...field} placeholder="021 123 456" autoComplete="off" />
                   </FormControl>
                   <FormMessage />
                 </FormItem>

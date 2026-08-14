@@ -65,6 +65,7 @@ export function Combobox({
   vacioTexto = "Sin resultados.",
   cargando = false,
   disabled = false,
+  className,
 }: {
   opciones: ComboboxOpcion[];
   value: string;
@@ -74,6 +75,8 @@ export function Combobox({
   vacioTexto?: string;
   cargando?: boolean;
   disabled?: boolean;
+  /** Clases para el botón que abre el popover — el login lo necesita en h-12. */
+  className?: string;
 }) {
   const [open, setOpen] = useState(false);
   const seleccionada = opciones.find((o) => o.valor === value);
@@ -87,7 +90,7 @@ export function Combobox({
           role="combobox"
           aria-expanded={open}
           disabled={disabled || cargando}
-          className="w-full justify-between font-normal"
+          className={cn("w-full justify-between font-normal", className)}
         >
           <span className={cn("truncate", !seleccionada && "text-muted-foreground")}>
             {cargando ? "Cargando…" : (seleccionada?.etiqueta ?? placeholder)}

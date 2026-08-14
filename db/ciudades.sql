@@ -20,13 +20,14 @@
 -- Tabla (no la crea ni la altera; el DDL se administra aparte):
 --   CIUDADES  ID_CIUDAD, ID_DEPARTAMENTO, NOMBRE_CIUDAD, ACTIVO
 --
--- La FK contra DEPARTAMENTOS obliga a que el departamento exista: mandar un
--- idDepartamento inexistente da ORA-02291 en el INSERT/UPDATE, que se traduce
--- a 400 en vez de 500 — el dato es inválido, no falló el servidor.
+-- FK_CIUDAD_DEPARTAMENTO obliga a que el departamento exista: mandar un
+-- idDepartamento inexistente da ORA-02291 en el INSERT/UPDATE, que se traduce a
+-- 400 en vez de 500 — el dato es inválido, no falló el servidor.
 --
 -- UQ_CIUDAD_DEPTO impide dos ciudades con el mismo nombre dentro del mismo
--- departamento, pero sí permite repetir el nombre entre departamentos
--- distintos. El DUP_VAL_ON_INDEX se traduce a 409 con ese matiz en el mensaje.
+-- departamento, pero sí permite repetir el nombre entre departamentos distintos
+-- (hay una Villa Elisa en Central y otra en Alto Paraná). El DUP_VAL_ON_INDEX
+-- se traduce a 409 con ese matiz en el mensaje.
 --
 -- ESTADO: ACTIVO es VARCHAR2(1) con 'A' (activo) / 'I' (inactivo). Ese mismo
 -- código viaja en el JSON y lo consume el frontend, sin traducirse a 1/0.
@@ -34,7 +35,8 @@
 -- OJO con el DEFAULT de la columna: el DDL declara `ACTIVO VARCHAR2(1)
 -- DEFAULT 1`, que guarda el literal '1' y no 'A'. Por eso el INSERT de acá
 -- escribe 'A' explícitamente en vez de dejar que actúe el default, y el
--- listado normaliza cualquier valor viejo a 'A'/'I' antes de devolverlo.
+-- listado normaliza cualquier valor viejo a 'A'/'I' antes de devolverlo. Es el
+-- mismo caso que DEPARTAMENTOS, no el de SUCURSALES (que ya trae DEFAULT 'A').
 --
 -- CORS: ORIGINS_ALLOWED es POR MODULO, no a nivel de workspace. Se declara en
 -- PUBLICAR_ENDPOINTS. Ver la explicación completa en db/auth.sql.
@@ -63,29 +65,29 @@ CREATE OR REPLACE PACKAGE PKG_CIUDADES AS
   -- p_id_departamento NULL o vacío devuelve las ciudades de todos los
   -- departamentos.
   PROCEDURE LISTAR (
-    p_authorization    IN  VARCHAR2,
-    p_id_departamento  IN  VARCHAR2,
-    p_status_code      OUT NUMBER,
-    p_resultado        OUT CLOB
+    p_authorization   IN  VARCHAR2,
+    p_id_departamento IN  VARCHAR2,
+    p_status_code     OUT NUMBER,
+    p_resultado       OUT CLOB
   );
 
   PROCEDURE INSERTAR (
-    p_authorization    IN  VARCHAR2,
-    p_id_departamento  IN  VARCHAR2,
-    p_nombre_ciudad    IN  VARCHAR2,
-    p_status_code      OUT NUMBER,
-    p_resultado        OUT CLOB
+    p_authorization   IN  VARCHAR2,
+    p_id_departamento IN  VARCHAR2,
+    p_nombre_ciudad   IN  VARCHAR2,
+    p_status_code     OUT NUMBER,
+    p_resultado       OUT CLOB
   );
 
   -- Los parámetros ausentes (NULL) no modifican la columna correspondiente.
   PROCEDURE ACTUALIZAR (
-    p_authorization    IN  VARCHAR2,
-    p_id               IN  VARCHAR2,
-    p_id_departamento  IN  VARCHAR2,
-    p_nombre_ciudad    IN  VARCHAR2,
-    p_activo           IN  VARCHAR2,
-    p_status_code      OUT NUMBER,
-    p_resultado        OUT CLOB
+    p_authorization   IN  VARCHAR2,
+    p_id              IN  VARCHAR2,
+    p_id_departamento IN  VARCHAR2,
+    p_nombre_ciudad   IN  VARCHAR2,
+    p_activo          IN  VARCHAR2,
+    p_status_code     OUT NUMBER,
+    p_resultado       OUT CLOB
   );
 
   PROCEDURE ELIMINAR (
@@ -147,10 +149,10 @@ CREATE OR REPLACE PACKAGE BODY PKG_CIUDADES AS
   END BORRAR_MODULO;
 
   PROCEDURE LISTAR (
-    p_authorization    IN  VARCHAR2,
-    p_id_departamento  IN  VARCHAR2,
-    p_status_code      OUT NUMBER,
-    p_resultado        OUT CLOB
+    p_authorization   IN  VARCHAR2,
+    p_id_departamento IN  VARCHAR2,
+    p_status_code     OUT NUMBER,
+    p_resultado       OUT CLOB
   ) IS
     l_sesion          NUMBER;
     l_id_departamento NUMBER;
@@ -175,43 +177,39 @@ CREATE OR REPLACE PACKAGE BODY PKG_CIUDADES AS
       FROM CIUDADES
      WHERE l_id_departamento IS NULL OR ID_DEPARTAMENTO = l_id_departamento;
 
-    -- El JOIN trae nombre de departamento y país: el frontend los muestra en
-    -- la lista y no tendría cómo resolverlos sin otra petición.
+    -- El JOIN encadenado trae el departamento y, a través suyo, el país: el
+    -- frontend los muestra en la lista y no tendría cómo resolverlos sin otra
+    -- petición. CIUDADES no guarda ID_PAIS — sale de DEPARTAMENTOS.
     --
     -- ACTIVO se normaliza a 'A'/'I': el DEFAULT del DDL es 1, así que puede
     -- haber filas viejas con '1'. Cualquier valor que no sea 'I' se considera
     -- activo, que es lo que ese default quería decir.
     -- El JSON_OBJECT se arma en una subconsulta y el JSON_ARRAYAGG agrega esa
-    -- columna, que ya viene tipada como CLOB.
-    --
-    -- POR QUÉ ASÍ, y no anidado como en departamentos: anidado, el resultado
-    -- intermedio del agregado se materializa como VARCHAR2 y revienta al pasar
-    -- los 4000 bytes. Con UN departamento el JSON entra y el endpoint responde
-    -- 200; sin filtro, con todas las ciudades, se pasa y devuelve 500. Ese "con
-    -- uno anda, con todos no" es la firma de este bug — y por eso departamentos
-    -- nunca lo mostró: su listado es mucho más corto.
+    -- columna, que ya viene tipada como CLOB. Anidado, el resultado intermedio
+    -- del agregado se materializa como VARCHAR2 y revienta al pasar los 4000
+    -- bytes: el listado anda con pocas filas y devuelve 500 cuando crece.
     SELECT JSON_ARRAYAGG(fila ORDER BY nombre_departamento, nombre_ciudad RETURNING CLOB)
       INTO l_items
       FROM (
         SELECT JSON_OBJECT(
-                 'id'                 VALUE c.ID_CIUDAD,
-                 'idDepartamento'     VALUE c.ID_DEPARTAMENTO,
-                 'departamento'       VALUE d.NOMBRE_DEPARTAMENTO,
-                 'idPais'             VALUE d.ID_PAIS,
-                 'pais'               VALUE p.NOMBRE_PAIS,
-                 'nombreCiudad'       VALUE c.NOMBRE_CIUDAD,
-                 'activo'             VALUE CASE UPPER(TRIM(c.ACTIVO))
-                                              WHEN 'I' THEN 'I'
-                                              WHEN '0' THEN 'I'
-                                              ELSE 'A'
-                                            END
+                 'id'             VALUE c.ID_CIUDAD,
+                 'idDepartamento' VALUE c.ID_DEPARTAMENTO,
+                 'departamento'   VALUE d.NOMBRE_DEPARTAMENTO,
+                 'idPais'         VALUE d.ID_PAIS,
+                 'pais'           VALUE p.NOMBRE_PAIS,
+                 'nombreCiudad'   VALUE c.NOMBRE_CIUDAD,
+                 'activo'         VALUE CASE UPPER(TRIM(c.ACTIVO))
+                                          WHEN 'I' THEN 'I'
+                                          WHEN '0' THEN 'I'
+                                          ELSE 'A'
+                                        END
                  RETURNING CLOB
                ) AS fila,
                d.NOMBRE_DEPARTAMENTO AS nombre_departamento,
                c.NOMBRE_CIUDAD       AS nombre_ciudad
-          FROM CIUDADES c
+          FROM CIUDADES      c
           JOIN DEPARTAMENTOS d ON d.ID_DEPARTAMENTO = c.ID_DEPARTAMENTO
-          JOIN PAISES p ON p.ID_PAIS = d.ID_PAIS
+          JOIN PAISES        p ON p.ID_PAIS         = d.ID_PAIS
          WHERE l_id_departamento IS NULL OR c.ID_DEPARTAMENTO = l_id_departamento
       );
 
@@ -237,11 +235,11 @@ CREATE OR REPLACE PACKAGE BODY PKG_CIUDADES AS
   END LISTAR;
 
   PROCEDURE INSERTAR (
-    p_authorization    IN  VARCHAR2,
-    p_id_departamento  IN  VARCHAR2,
-    p_nombre_ciudad    IN  VARCHAR2,
-    p_status_code      OUT NUMBER,
-    p_resultado        OUT CLOB
+    p_authorization   IN  VARCHAR2,
+    p_id_departamento IN  VARCHAR2,
+    p_nombre_ciudad   IN  VARCHAR2,
+    p_status_code     OUT NUMBER,
+    p_resultado       OUT CLOB
   ) IS
     l_sesion          NUMBER;
     l_id_departamento NUMBER;
@@ -285,8 +283,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_CIUDADES AS
       p_resultado := '{"error":"Ese departamento ya tiene una ciudad con ese nombre"}';
     WHEN OTHERS THEN
       ROLLBACK;
-      -- ORA-02291: la FK contra DEPARTAMENTOS no encontró el padre. Es un
-      -- dato inválido del cliente (400), no un fallo del servidor.
+      -- ORA-02291: la FK contra DEPARTAMENTOS no encontró el padre. Es un dato
+      -- inválido del cliente (400), no un fallo del servidor.
       IF SQLCODE = -2291 THEN
         p_status_code := 400;
         p_resultado := '{"error":"El departamento indicado no existe"}';
@@ -299,13 +297,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_CIUDADES AS
   END INSERTAR;
 
   PROCEDURE ACTUALIZAR (
-    p_authorization    IN  VARCHAR2,
-    p_id               IN  VARCHAR2,
-    p_id_departamento  IN  VARCHAR2,
-    p_nombre_ciudad    IN  VARCHAR2,
-    p_activo           IN  VARCHAR2,
-    p_status_code      OUT NUMBER,
-    p_resultado        OUT CLOB
+    p_authorization   IN  VARCHAR2,
+    p_id              IN  VARCHAR2,
+    p_id_departamento IN  VARCHAR2,
+    p_nombre_ciudad   IN  VARCHAR2,
+    p_activo          IN  VARCHAR2,
+    p_status_code     OUT NUMBER,
+    p_resultado       OUT CLOB
   ) IS
     l_sesion          NUMBER;
     l_id              NUMBER;
@@ -396,8 +394,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_CIUDADES AS
   EXCEPTION
     WHEN OTHERS THEN
       ROLLBACK;
-      -- ORA-02292: hay hijos (direcciones, sucursales, lo que cuelgue de la
-      -- ciudad) apuntando a esta fila. Es un conflicto de estado (409), no un
+      -- ORA-02292: hay hijos (empresas, y lo que cuelgue de la ciudad más
+      -- adelante) apuntando a esta fila. Es un conflicto de estado (409), no un
       -- error del servidor: el dato que mandaron era válido.
       IF SQLCODE = -2292 THEN
         p_status_code := 409;
@@ -618,7 +616,9 @@ SELECT t.URI_TEMPLATE, h.METHOD
  WHERE m.NAME = 'ciudades'
  ORDER BY t.URI_TEMPLATE, h.METHOD;
 
-SELECT c.ID_CIUDAD, c.ID_DEPARTAMENTO, d.NOMBRE_DEPARTAMENTO, c.NOMBRE_CIUDAD, c.ACTIVO
-  FROM CIUDADES c
+SELECT c.ID_CIUDAD, c.ID_DEPARTAMENTO, d.NOMBRE_DEPARTAMENTO, p.NOMBRE_PAIS,
+       c.NOMBRE_CIUDAD, c.ACTIVO
+  FROM CIUDADES      c
   JOIN DEPARTAMENTOS d ON d.ID_DEPARTAMENTO = c.ID_DEPARTAMENTO
- ORDER BY d.NOMBRE_DEPARTAMENTO, c.NOMBRE_CIUDAD;
+  JOIN PAISES        p ON p.ID_PAIS         = d.ID_PAIS
+ ORDER BY p.NOMBRE_PAIS, d.NOMBRE_DEPARTAMENTO, c.NOMBRE_CIUDAD;
