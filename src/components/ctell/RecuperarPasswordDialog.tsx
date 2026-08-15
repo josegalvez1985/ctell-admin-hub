@@ -136,7 +136,14 @@ export function RecuperarPasswordDialog({
                         {...field}
                         onChange={(e) => field.onChange(e.target.value.toLowerCase().trim())}
                         placeholder="joseg"
-                        autoComplete="username"
+                        // El usuario NO es el correo. Con autoComplete="username"
+                        // el navegador ofrece acá la dirección guardada (y el
+                        // usuario en el campo de correo), porque trata a ambos
+                        // como la misma identidad. "off" corta ese cruce.
+                        autoComplete="off"
+                        autoCorrect="off"
+                        autoCapitalize="none"
+                        spellCheck={false}
                       />
                     </FormControl>
                     <FormMessage />
@@ -155,7 +162,12 @@ export function RecuperarPasswordDialog({
                         {...field}
                         type="email"
                         placeholder="joseg@ctell.com"
-                        autoComplete="email"
+                        // Ídem el campo de usuario: sin esto el navegador
+                        // autocompleta con el nombre de usuario guardado.
+                        autoComplete="off"
+                        autoCorrect="off"
+                        autoCapitalize="none"
+                        spellCheck={false}
                       />
                     </FormControl>
                     <FormDescription>

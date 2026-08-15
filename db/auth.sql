@@ -18,8 +18,15 @@
 -- CORREO: el alta de usuarios y la recuperación de clave mandan la contraseña
 -- por mail con APEX_MAIL. Un handler de ORDS no tiene sesión de APEX, así que
 -- ENVIAR_PASSWORD_INICIAL la crea con APEX_SESSION.CREATE_SESSION antes de
--- llamar a SEND — sin eso, ORA-20987. Revisar C_APP_ID_MAIL y
--- C_CORREO_REMITENTE abajo: dependen del workspace y no se pueden adivinar.
+-- llamar a SEND — sin eso, ORA-20987. Revisar C_APP_ID_MAIL abajo: depende del
+-- workspace y no se puede adivinar.
+--
+-- REMITENTE: se pasa p_from => NULL y lo resuelve APEX con el parámetro de
+-- instancia EMAIL_FROM. Si el correo no sale, ese parámetro es lo primero a
+-- revisar (Administración de Instancia → Configuración de Correo Electrónico).
+-- Para diagnosticar fallas:
+--   SELECT PKG_AUTH.PROBAR_CORREO('destino@ejemplo.com') FROM DUAL;
+-- devuelve el error de Oracle en texto, en vez de tragárselo como producción.
 --
 -- Tablas que usa (no las crea ni las altera; el DDL se administra aparte):
 --   USUARIOS  ID_USUARIO, USUARIO, NOMBRE_APELLIDO, CORREO, CONTRASENA_HASH,
@@ -106,17 +113,39 @@ CREATE OR REPLACE PACKAGE PKG_AUTH AS
 
   -- Remitente de los correos del sistema.
   --
-  -- Tiene que ser una dirección que APEX acepte como origen: en el workspace
-  -- se configura en Administración del Workspace → Configuración de correo
-  -- electrónico. Si no coincide, APEX_MAIL.SEND encola igual pero el envío
-  -- falla después, en el PUSH_QUEUE.
-  C_CORREO_REMITENTE CONSTANT VARCHAR2(200) := 'no-reply@ctell.online';
+  -- YA NO SE USA en los envíos: ENVIAR_PASSWORD_INICIAL y PROBAR_CORREO pasan
+  -- p_from => NULL y dejan que APEX resuelva el origen con su parámetro de
+  -- instancia EMAIL_FROM. Se conserva como referencia de cuál es la casilla
+  -- de la cuenta de Oracle APEX.
+  --
+  -- Contexto de por qué el remitente importa: en el APEX gratuito no se
+  -- configura SMTP propio ni hay "approved senders". Oracle manda con su
+  -- propio servidor y sólo acepta como origen el correo de la cuenta. Una
+  -- dirección ajena —como no-reply@ctell.online, un dominio nuestro sin
+  -- relación con el workspace— se rechaza y el mensaje ni siquiera se encola:
+  -- por eso APEX_MAIL_QUEUE y APEX_MAIL_LOG aparecían vacíos.
+  --
+  -- El correo es NO RESPONDIBLE en la práctica: llega desde una casilla
+  -- personal que nadie atiende como soporte. El cuerpo lo aclara.
+  C_CORREO_REMITENTE CONSTANT VARCHAR2(200) := 'jose.jgalvez@gmail.com';
 
   -- APEX_MAIL exige una sesión de APEX, y crearla exige una aplicación.
   -- Es sólo el contexto bajo el que corre el envío: no hay ninguna app APEX
   -- real detrás de este sistema (el frontend es React). Se usa el ID de una
   -- aplicación cualquiera del workspace.
   C_APP_ID_MAIL CONSTANT NUMBER := 100;
+
+  -- Devuelve C_CORREO_REMITENTE. Ningún envío la llama: se pasa p_from => NULL
+  -- y APEX resuelve el origen. Queda publicada por si hace falta mostrar desde
+  -- qué casilla se supone que salen los correos.
+  FUNCTION EMAIL_FROM_WORKSPACE RETURN VARCHAR2;
+
+  -- Diagnóstico: corre el mismo camino de envío que ENVIAR_PASSWORD_INICIAL
+  -- pero DEVUELVE el error de Oracle en vez de tragárselo. Existe porque el
+  -- WHEN OTHERS de producción manda todo a APEX_DEBUG, que no está activo por
+  -- defecto: cuando el correo no llega, no queda rastro de por qué.
+  -- Uso: SELECT PKG_AUTH.PROBAR_CORREO('destino@ejemplo.com') FROM DUAL;
+  FUNCTION PROBAR_CORREO (p_correo IN VARCHAR2) RETURN VARCHAR2;
 
   FUNCTION GENERAR_SALT RETURN VARCHAR2;
 
@@ -311,6 +340,48 @@ CREATE OR REPLACE PACKAGE BODY PKG_AUTH AS
     RETURN l_password;
   END GENERAR_PASSWORD;
 
+  FUNCTION EMAIL_FROM_WORKSPACE RETURN VARCHAR2 IS
+  BEGIN
+    -- Devuelve la constante y nada más. No se consulta ninguna vista —el
+    -- intento anterior con APEX_WORKSPACES.PRIMARY_CONTACT_EMAIL rompió la
+    -- compilación del paquete (ORA-00904: esa columna no existe) y dejó
+    -- PKG_AUTH inválido, tumbando el login entero además del correo.
+    RETURN C_CORREO_REMITENTE;
+  END EMAIL_FROM_WORKSPACE;
+
+  FUNCTION PROBAR_CORREO (p_correo IN VARCHAR2) RETURN VARCHAR2 IS
+  BEGIN
+    APEX_SESSION.CREATE_SESSION(
+      p_app_id   => C_APP_ID_MAIL,
+      p_page_id  => 1,
+      p_username => 'DIAGNOSTICO'
+    );
+
+    APEX_MAIL.SEND(
+      p_to   => p_correo,
+      p_from => NULL,
+      p_body => 'Si recibis este mensaje, el envio funciona.' || UTL_TCP.CRLF,
+      p_subj => 'Prueba de correo - CTELL Admin Hub'
+    );
+
+    APEX_MAIL.PUSH_QUEUE;
+    COMMIT;
+    APEX_SESSION.DELETE_SESSION;
+
+    RETURN 'OK. Remitente resuelto por APEX (p_from NULL). ' ||
+           'Revisa la bandeja (y spam) de ' || p_correo || '.';
+  EXCEPTION
+    WHEN OTHERS THEN
+      BEGIN
+        APEX_SESSION.DELETE_SESSION;
+      EXCEPTION
+        WHEN OTHERS THEN NULL;
+      END;
+      -- Acá está la diferencia con producción: el error se devuelve, no se pierde.
+      RETURN 'ERROR (remitente resuelto por APEX, p_from NULL)' ||
+             ' -> [' || SQLCODE || '] ' || SQLERRM;
+  END PROBAR_CORREO;
+
   PROCEDURE ENVIAR_PASSWORD_INICIAL (
     p_correo          IN  VARCHAR2,
     p_usuario         IN  VARCHAR2,
@@ -345,7 +416,10 @@ CREATE OR REPLACE PACKAGE BODY PKG_AUTH AS
       'Contrasena: ' || p_password || UTL_TCP.CRLF || UTL_TCP.CRLF ||
       'Ingresa en https://www.ctell.online y cambiala desde Configuracion ' ||
       'apenas entres.' || UTL_TCP.CRLF || UTL_TCP.CRLF ||
-      'Si no esperabas este correo, avisa al administrador del sistema.';
+      'Si no esperabas este correo, avisa al administrador del sistema.' ||
+      UTL_TCP.CRLF || UTL_TCP.CRLF ||
+      '--' || UTL_TCP.CRLF ||
+      'Mensaje automatico: no respondas a esta direccion, nadie la lee.';
 
     -- APEX_MAIL necesita una sesión de APEX y un handler de ORDS no la tiene:
     -- sin esto, ORA-20987 ("no se ha establecido el espacio de trabajo").
@@ -357,17 +431,25 @@ CREATE OR REPLACE PACKAGE BODY PKG_AUTH AS
       p_username => p_usuario
     );
 
+    -- p_from en NULL: APEX resuelve el remitente por su cuenta (parámetro de
+    -- instancia EMAIL_FROM). Se dejó de pasar una dirección explícita porque
+    -- el free tier sólo acepta como origen la del dueño del workspace, y
+    -- hardcodearla obligaba a tocar el paquete cada vez que cambiaba.
     APEX_MAIL.SEND(
       p_to   => p_correo,
-      p_from => C_CORREO_REMITENTE,
-      p_subj => l_asunto,
-      p_body => l_cuerpo
+      p_from => NULL,
+      p_body => l_cuerpo,
+      p_subj => l_asunto
     );
 
     -- Sin PUSH_QUEUE el mensaje queda encolado hasta el próximo barrido
     -- automático, que en este workspace puede tardar minutos. La clave inicial
     -- se espera al instante, así que se fuerza la salida acá.
     APEX_MAIL.PUSH_QUEUE;
+
+    -- APEX_MAIL escribe en APEX_MAIL_QUEUE: sin COMMIT el mensaje se pierde si
+    -- la transacción del handler termina en rollback.
+    COMMIT;
 
     APEX_SESSION.DELETE_SESSION;
 

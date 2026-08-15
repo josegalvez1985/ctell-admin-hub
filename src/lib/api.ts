@@ -814,16 +814,15 @@ export const api = {
      * Alta de usuario. La contraseña inicial viaja por correo, no por pantalla.
      *
      * `correo` es **obligatorio**: es el único canal por el que sale la clave.
-     * `password` es **opcional** — omitirlo hace que el backend genere una al
-     * azar, que es el camino normal: quien da el alta no necesita elegirla ni
-     * verla.
+     *
+     * No se manda contraseña: la genera siempre el backend. Quien da el alta no
+     * la elige ni la ve, así la credencial inicial la conoce sólo el dueño de
+     * la cuenta.
      */
     crear: (datos: {
       usuario: string;
       nombreApellido: string;
       correo: string;
-      /** Si se omite, el backend genera una y la manda por correo. */
-      password?: string;
       /** Omitido equivale a "N": el default seguro es no ser administrador. */
       esAdmin?: Rol;
     }) =>
@@ -834,9 +833,8 @@ export const api = {
         /** `false` si APEX no pudo mandar el mail: el usuario igual se creó. */
         correoEnviado: boolean;
         /**
-         * Sólo viene cuando `correoEnviado` es `false` y la generó el sistema.
-         * Es el respaldo para no dejar una cuenta cuya clave nadie conoce; la
-         * UI la muestra una vez para copiarla.
+         * Sólo viene cuando `correoEnviado` es `false`. Es el único respaldo
+         * —nadie más conoce la clave—; la UI la muestra una vez para copiarla.
          */
         passwordInicial?: string;
       }>("/usuarios/crear", {

@@ -58,13 +58,7 @@ const schemaAlta = z.object({
     .trim()
     .min(1, "Obligatorio: ahí se envía la contraseña")
     .email("Correo inválido"),
-  // Opcional. Vacío = el backend genera una al azar y la manda por correo, que
-  // es el camino normal. Si se escribe algo, valen las mismas reglas que aplica
-  // PKG_USUARIOS: si acá pasa, allá también.
-  password: z
-    .string()
-    .max(128, "Máximo 128 caracteres")
-    .refine((v) => v === "" || v.length >= 8, "Mínimo 8 caracteres"),
+  // No hay campo de contraseña: la genera el backend y la manda por correo.
   // Booleano en el formulario porque un switch lo es; se traduce a "S"/"N" al
   // enviarlo. La traducción vive sólo acá, en el borde con el control de UI.
   esAdmin: z.boolean(),
@@ -364,7 +358,6 @@ function PanelAlta({ onVolver }: { onVolver: () => void }) {
       usuario: "",
       nombreApellido: "",
       correo: "",
-      password: "",
       // El default seguro es no ser administrador.
       esAdmin: false,
     },
@@ -377,9 +370,6 @@ function PanelAlta({ onVolver }: { onVolver: () => void }) {
         nombreApellido: v.nombreApellido,
         correo: v.correo,
         esAdmin: v.esAdmin ? "S" : "N",
-        // Vacío = que la genere el backend. Mandar "" daría 400 por el mínimo
-        // de 8, así que la clave directamente no se incluye.
-        ...(v.password ? { password: v.password } : {}),
       }),
     onSuccess: (data, v) => {
       queryClient.invalidateQueries({ queryKey: ["usuarios"] });
@@ -412,7 +402,7 @@ function PanelAlta({ onVolver }: { onVolver: () => void }) {
             No se pudo enviar el mensaje a <strong>{respaldo.correo}</strong>.{" "}
             {respaldo.password
               ? "Pasale estos datos por otro medio: no se vuelven a mostrar."
-              : "Usá la contraseña que escribiste al crear la cuenta."}
+              : "Pedile que use “Olvidé mi contraseña” desde el login para recibir una nueva."}
           </p>
         </div>
 
@@ -483,30 +473,7 @@ function PanelAlta({ onVolver }: { onVolver: () => void }) {
                 <Input {...field} type="email" placeholder="joseg@ctell.com" autoComplete="off" />
               </FormControl>
               <FormDescription>
-                Ahí se envía la contraseña para entrar por primera vez.
-              </FormDescription>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        <FormField
-          control={form.control}
-          name="password"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Contraseña (opcional)</FormLabel>
-              <FormControl>
-                <Input
-                  {...field}
-                  type="password"
-                  placeholder="Se genera automáticamente"
-                  autoComplete="new-password"
-                />
-              </FormControl>
-              <FormDescription>
-                Dejala vacía y el sistema genera una y se la envía por correo. Si preferís elegirla,
-                mínimo 8 caracteres.
+                Obligatorio: el sistema genera la contraseña y la envía a esta dirección.
               </FormDescription>
               <FormMessage />
             </FormItem>

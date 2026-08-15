@@ -28,6 +28,10 @@
 -- NUNCA SE DEVUELVEN CONTRASENA_HASH NI SALT. Ningún SELECT de este archivo
 -- los incluye en una respuesta.
 --
+-- ALTA: el correo es OBLIGATORIO y la contraseña NO se recibe — la genera
+-- PKG_AUTH.GENERAR_PASSWORD y sale por correo. La respuesta sólo trae la clave
+-- en claro si el envío falló, como respaldo para no dejar la cuenta muerta.
+--
 -- CORS: ORIGINS_ALLOWED es POR MODULO, no a nivel de workspace. Se declara en
 -- PUBLICAR_ENDPOINTS. Ver la explicación completa en db/auth.sql.
 --------------------------------------------------------------------------------
@@ -59,15 +63,17 @@ CREATE OR REPLACE PACKAGE PKG_USUARIOS AS
   );
 
   -- El correo es OBLIGATORIO: es a donde va la contraseña inicial.
-  -- p_password es opcional — si no viene, se genera una al azar. En los dos
-  -- casos la clave se manda por correo y no se devuelve en la respuesta,
-  -- salvo que el envío falle (ver el cuerpo).
+  --
+  -- El alta NO recibe contraseña. La genera siempre el sistema y la manda por
+  -- correo: quien da de alta no la elige ni la ve. Así la clave inicial la
+  -- conoce únicamente el dueño de la cuenta, y no queda una credencial elegida
+  -- por un tercero que el usuario nunca cambió. Sólo se devuelve en la
+  -- respuesta si el correo no salió (ver el cuerpo), como respaldo.
   PROCEDURE INSERTAR (
     p_authorization   IN  VARCHAR2,
     p_usuario         IN  VARCHAR2,
     p_nombre_apellido IN  VARCHAR2,
     p_correo          IN  VARCHAR2,
-    p_password        IN  VARCHAR2,
     p_es_admin        IN  VARCHAR2,
     p_status_code     OUT NUMBER,
     p_resultado       OUT CLOB
@@ -207,7 +213,6 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
     p_usuario         IN  VARCHAR2,
     p_nombre_apellido IN  VARCHAR2,
     p_correo          IN  VARCHAR2,
-    p_password        IN  VARCHAR2,
     p_es_admin        IN  VARCHAR2,
     p_status_code     OUT NUMBER,
     p_resultado       OUT CLOB
@@ -216,7 +221,6 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
     l_usuario  VARCHAR2(50);
     l_correo   VARCHAR2(200);
     l_password VARCHAR2(128);
-    l_generada VARCHAR2(1);
     l_enviado  VARCHAR2(1);
     l_salt     VARCHAR2(32);
     l_hash     VARCHAR2(256);
@@ -258,21 +262,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
       RETURN;
     END IF;
 
-    -- La contraseña es opcional. Si no viene, se genera una al azar y el
-    -- usuario la recibe por correo; quien da el alta no la elige ni la ve.
-    IF p_password IS NULL THEN
-      l_password := PKG_AUTH.GENERAR_PASSWORD();
-      l_generada := 'S';
-    ELSE
-      l_password := p_password;
-      l_generada := 'N';
-
-      IF LENGTH(l_password) < 8 THEN
-        p_status_code := 400;
-        p_resultado := '{"error":"La contrasena debe tener al menos 8 caracteres"}';
-        RETURN;
-      END IF;
-    END IF;
+    -- La contraseña la genera SIEMPRE el sistema: el alta no la recibe. El
+    -- usuario la recibe por correo y quien da el alta nunca la conoce.
+    l_password := PKG_AUTH.GENERAR_PASSWORD();
 
     -- El hash se delega en PKG_AUTH a propósito: es el mismo algoritmo con el
     -- que el login va a verificar después. Duplicarlo acá sería garantizar que
@@ -312,15 +304,16 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
 
     p_status_code := 201;
 
-    -- La contraseña se devuelve SOLO si el correo no salió, y sólo cuando la
-    -- generó el sistema: si la eligió quien dio el alta, ya la conoce y
-    -- repetirla en la respuesta sería exponerla sin ninguna ganancia.
+    -- La contraseña se devuelve SOLO si el correo no salió. Es el único
+    -- respaldo: nadie más la conoce, así que sin esto la cuenta quedaría
+    -- creada y sin forma de entrar. Si el correo salió, no viaja en la
+    -- respuesta — exponerla ahí sería regalar la credencial sin ganancia.
     SELECT JSON_OBJECT(
              'id'               VALUE l_id,
              'ok'               VALUE 'true' FORMAT JSON,
              'correoEnviado'    VALUE CASE WHEN l_enviado = 'A' THEN 'true'
                                            ELSE 'false' END FORMAT JSON,
-             'passwordInicial'  VALUE CASE WHEN l_enviado != 'A' AND l_generada = 'S'
+             'passwordInicial'  VALUE CASE WHEN l_enviado != 'A'
                                            THEN l_password END
              RETURNING CLOB
            )
@@ -533,7 +526,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
 
     ----------------------------------------------------------------------------
     -- POST /usuarios/crear
-    -- Body: { usuario, nombreApellido, correo?, password, esAdmin? }
+    -- Body: { usuario, nombreApellido, correo, esAdmin? }
+    -- Sin password: la genera el sistema y la manda al correo.
     ----------------------------------------------------------------------------
     ORDS.DEFINE_TEMPLATE(p_module_name => 'usuarios', p_pattern => 'crear');
 
@@ -542,7 +536,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
       p_pattern     => 'crear',
       p_method      => 'POST',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_USUARIOS.INSERTAR(:authorization, :usuario, :nombreApellido, :correo, :password, :esAdmin, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_USUARIOS.INSERTAR(:authorization, :usuario, :nombreApellido, :correo, :esAdmin, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(

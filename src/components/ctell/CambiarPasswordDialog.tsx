@@ -1,8 +1,8 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { Loader2 } from "lucide-react";
-import { useEffect } from "react";
+import { Eye, EyeOff, Loader2 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
@@ -48,6 +48,36 @@ const schema = z
   });
 
 type FormValues = z.infer<typeof schema>;
+
+/**
+ * Input de contraseña con ojo para revelarla. Cada campo maneja su propio
+ * estado: mostrar la actual no tiene por qué destapar la nueva.
+ */
+function PasswordInput({
+  autoComplete,
+  ...props
+}: React.ComponentProps<typeof Input> & { autoComplete: string }) {
+  const [visible, setVisible] = useState(false);
+
+  return (
+    <div className="relative">
+      <Input
+        {...props}
+        type={visible ? "text" : "password"}
+        autoComplete={autoComplete}
+        className="pr-11"
+      />
+      <button
+        type="button"
+        onClick={() => setVisible((v) => !v)}
+        aria-label={visible ? "Ocultar contraseña" : "Mostrar contraseña"}
+        className="absolute right-2 top-1/2 flex size-8 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      >
+        {visible ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+      </button>
+    </div>
+  );
+}
 
 /**
  * Cambio de contraseña del usuario logueado.
@@ -116,7 +146,7 @@ export function CambiarPasswordDialog({
                 <FormItem>
                   <FormLabel>Contraseña actual</FormLabel>
                   <FormControl>
-                    <Input {...field} type="password" autoComplete="current-password" />
+                    <PasswordInput {...field} autoComplete="current-password" />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -130,7 +160,7 @@ export function CambiarPasswordDialog({
                 <FormItem>
                   <FormLabel>Contraseña nueva</FormLabel>
                   <FormControl>
-                    <Input {...field} type="password" autoComplete="new-password" />
+                    <PasswordInput {...field} autoComplete="new-password" />
                   </FormControl>
                   <FormDescription>Mínimo 8 caracteres.</FormDescription>
                   <FormMessage />
@@ -145,7 +175,7 @@ export function CambiarPasswordDialog({
                 <FormItem>
                   <FormLabel>Repetir la nueva</FormLabel>
                   <FormControl>
-                    <Input {...field} type="password" autoComplete="new-password" />
+                    <PasswordInput {...field} autoComplete="new-password" />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
