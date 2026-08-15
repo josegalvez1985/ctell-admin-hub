@@ -7,11 +7,19 @@
 -- Alcance: SOLO autenticación. Acá no hay ABM de usuarios — el alta, la baja y
 -- la modificación viven en db/usuarios.sql. Este archivo se limita a:
 --
---   POST /auth/login    { usuario, password }        -> token + datos de sesion
---   POST /auth/logout   Authorization: Bearer <tok>  -> revoca el token
---   GET  /auth/me       Authorization: Bearer <tok>  -> usuario de la sesion
+--   POST /auth/login             { usuario, password }       -> token + sesion
+--   POST /auth/logout            Authorization: Bearer <tok> -> revoca el token
+--   GET  /auth/me                Authorization: Bearer <tok> -> usuario actual
+--   POST /auth/recuperar         { usuario, correo }         -> clave provisoria
+--   POST /auth/cambiar-password  Bearer + { passwordActual, passwordNueva }
 --
 -- Base de los endpoints: https://oracleapex.com/ords/ctell/auth/
+--
+-- CORREO: el alta de usuarios y la recuperación de clave mandan la contraseña
+-- por mail con APEX_MAIL. Un handler de ORDS no tiene sesión de APEX, así que
+-- ENVIAR_PASSWORD_INICIAL la crea con APEX_SESSION.CREATE_SESSION antes de
+-- llamar a SEND — sin eso, ORA-20987. Revisar C_APP_ID_MAIL y
+-- C_CORREO_REMITENTE abajo: dependen del workspace y no se pueden adivinar.
 --
 -- Tablas que usa (no las crea ni las altera; el DDL se administra aparte):
 --   USUARIOS  ID_USUARIO, USUARIO, NOMBRE_APELLIDO, CORREO, CONTRASENA_HASH,
@@ -96,6 +104,20 @@ CREATE OR REPLACE PACKAGE PKG_AUTH AS
   -- Largo exacto de TOKENS.TOKEN. Se valida antes de ir a la base.
   C_LARGO_TOKEN CONSTANT PLS_INTEGER := 64;
 
+  -- Remitente de los correos del sistema.
+  --
+  -- Tiene que ser una dirección que APEX acepte como origen: en el workspace
+  -- se configura en Administración del Workspace → Configuración de correo
+  -- electrónico. Si no coincide, APEX_MAIL.SEND encola igual pero el envío
+  -- falla después, en el PUSH_QUEUE.
+  C_CORREO_REMITENTE CONSTANT VARCHAR2(200) := 'no-reply@ctell.online';
+
+  -- APEX_MAIL exige una sesión de APEX, y crearla exige una aplicación.
+  -- Es sólo el contexto bajo el que corre el envío: no hay ninguna app APEX
+  -- real detrás de este sistema (el frontend es React). Se usa el ID de una
+  -- aplicación cualquiera del workspace.
+  C_APP_ID_MAIL CONSTANT NUMBER := 100;
+
   FUNCTION GENERAR_SALT RETURN VARCHAR2;
 
   -- Expuesta porque el alta de usuarios (db/usuarios.sql) necesita generar el
@@ -105,6 +127,62 @@ CREATE OR REPLACE PACKAGE PKG_AUTH AS
     p_password IN VARCHAR2,
     p_salt     IN VARCHAR2
   ) RETURN VARCHAR2;
+
+  -- Contraseña inicial aleatoria para un alta sin clave explícita.
+  -- Vive acá y no en PKG_USUARIOS por la misma razón que HASH_PASSWORD: todo
+  -- lo que tenga que ver con credenciales se decide en un solo lugar.
+  FUNCTION GENERAR_PASSWORD RETURN VARCHAR2;
+
+  -- Manda la contraseña inicial al correo del usuario recién creado.
+  --
+  -- p_enviado sale en 'S' sólo si APEX_MAIL aceptó el mensaje. NUNCA lanza
+  -- excepción hacia afuera: el alta ya está confirmada cuando esto corre, y
+  -- un fallo de correo no debe deshacer un usuario que ya existe. Quien la
+  -- llama decide qué hacer con el 'N' (ver PKG_USUARIOS.INSERTAR).
+  -- p_es_recuperacion cambia el texto: 'N' (default) anuncia una cuenta nueva,
+  -- 'S' avisa que la clave anterior dejó de servir.
+  PROCEDURE ENVIAR_PASSWORD_INICIAL (
+    p_correo          IN  VARCHAR2,
+    p_usuario         IN  VARCHAR2,
+    p_nombre_apellido IN  VARCHAR2,
+    p_password        IN  VARCHAR2,
+    p_enviado         OUT VARCHAR2,
+    p_es_recuperacion IN  VARCHAR2 DEFAULT 'N'
+  );
+
+  ------------------------------------------------------------------------------
+  -- POST /auth/recuperar  — "olvidé mi contraseña"
+  --
+  -- Pide usuario + correo, y si coinciden manda una contraseña provisoria.
+  --
+  -- SIEMPRE responde 200 con el mismo mensaje, coincida o no. Distinguir
+  -- "ese usuario no existe" de "el correo no es el suyo" convertiría este
+  -- endpoint en un enumerador de cuentas y de las direcciones asociadas —
+  -- justamente lo que /auth/login evita con su mensaje único.
+  ------------------------------------------------------------------------------
+  PROCEDURE RECUPERAR_PASSWORD (
+    p_usuario     IN  VARCHAR2,
+    p_correo      IN  VARCHAR2,
+    p_status_code OUT NUMBER,
+    p_resultado   OUT CLOB
+  );
+
+  ------------------------------------------------------------------------------
+  -- POST /auth/cambiar-password  — el usuario logueado cambia su propia clave
+  --
+  -- Exige la contraseña actual: sin eso, una sesión robada o una pantalla
+  -- desatendida alcanzaría para quedarse con la cuenta para siempre.
+  --
+  -- Revoca TODAS las sesiones, incluida la que hizo el cambio. Es lo esperado
+  -- si se cambia por sospecha de robo — el frontend vuelve al login.
+  ------------------------------------------------------------------------------
+  PROCEDURE CAMBIAR_PASSWORD (
+    p_authorization  IN  VARCHAR2,
+    p_password_actual IN VARCHAR2,
+    p_password_nueva IN  VARCHAR2,
+    p_status_code    OUT NUMBER,
+    p_resultado      OUT CLOB
+  );
 
   -- Devuelve el ID si las credenciales son correctas, NULL si no.
   -- No distingue "no existe" de "clave incorrecta": informarlo permitiría
@@ -213,6 +291,101 @@ CREATE OR REPLACE PACKAGE BODY PKG_AUTH AS
 
     RETURN l_hash;
   END HASH_PASSWORD;
+
+  FUNCTION GENERAR_PASSWORD RETURN VARCHAR2 IS
+    -- Sin I/l/1/O/0: la clave se lee de un correo y se tipea a mano, y esos
+    -- cuatro pares se confunden entre sí en casi cualquier tipografía.
+    C_ALFABETO CONSTANT VARCHAR2(58) :=
+      'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+    C_LARGO    CONSTANT PLS_INTEGER := 12;
+    l_password VARCHAR2(32);
+    l_indice   PLS_INTEGER;
+  BEGIN
+    -- DBMS_RANDOM.VALUE y no SYS_GUID: el GUID es hexadecimal, así que sólo
+    -- daría 16 símbolos distintos por carácter en vez de 56.
+    FOR i IN 1 .. C_LARGO LOOP
+      l_indice := TRUNC(DBMS_RANDOM.VALUE(1, LENGTH(C_ALFABETO) + 1));
+      l_password := l_password || SUBSTR(C_ALFABETO, l_indice, 1);
+    END LOOP;
+
+    RETURN l_password;
+  END GENERAR_PASSWORD;
+
+  PROCEDURE ENVIAR_PASSWORD_INICIAL (
+    p_correo          IN  VARCHAR2,
+    p_usuario         IN  VARCHAR2,
+    p_nombre_apellido IN  VARCHAR2,
+    p_password        IN  VARCHAR2,
+    p_enviado         OUT VARCHAR2,
+    p_es_recuperacion IN  VARCHAR2 DEFAULT 'N'
+  ) IS
+    l_cuerpo  VARCHAR2(4000);
+    l_asunto  VARCHAR2(200);
+    l_motivo  VARCHAR2(200);
+  BEGIN
+    p_enviado := C_ESTADO_INACTIVO;  -- 'I' hasta que se confirme lo contrario.
+
+    IF p_correo IS NULL OR p_password IS NULL THEN
+      RETURN;
+    END IF;
+
+    IF UPPER(TRIM(p_es_recuperacion)) = 'S' THEN
+      l_asunto := 'Contrasena provisoria de CTELL Admin Hub';
+      l_motivo := 'Pediste recuperar el acceso a tu cuenta. Tu contrasena ' ||
+                  'anterior ya no sirve.';
+    ELSE
+      l_asunto := 'Tu acceso a CTELL Admin Hub';
+      l_motivo := 'Se creo tu cuenta en CTELL Admin Hub.';
+    END IF;
+
+    l_cuerpo :=
+      'Hola ' || p_nombre_apellido || ',' || UTL_TCP.CRLF || UTL_TCP.CRLF ||
+      l_motivo || UTL_TCP.CRLF || UTL_TCP.CRLF ||
+      'Usuario: ' || p_usuario || UTL_TCP.CRLF ||
+      'Contrasena: ' || p_password || UTL_TCP.CRLF || UTL_TCP.CRLF ||
+      'Ingresa en https://www.ctell.online y cambiala desde Configuracion ' ||
+      'apenas entres.' || UTL_TCP.CRLF || UTL_TCP.CRLF ||
+      'Si no esperabas este correo, avisa al administrador del sistema.';
+
+    -- APEX_MAIL necesita una sesión de APEX y un handler de ORDS no la tiene:
+    -- sin esto, ORA-20987 ("no se ha establecido el espacio de trabajo").
+    -- El ID de workspace se resuelve por nombre para no hardcodear un número
+    -- que cambia si el workspace se recrea.
+    APEX_SESSION.CREATE_SESSION(
+      p_app_id   => C_APP_ID_MAIL,
+      p_page_id  => 1,
+      p_username => p_usuario
+    );
+
+    APEX_MAIL.SEND(
+      p_to   => p_correo,
+      p_from => C_CORREO_REMITENTE,
+      p_subj => l_asunto,
+      p_body => l_cuerpo
+    );
+
+    -- Sin PUSH_QUEUE el mensaje queda encolado hasta el próximo barrido
+    -- automático, que en este workspace puede tardar minutos. La clave inicial
+    -- se espera al instante, así que se fuerza la salida acá.
+    APEX_MAIL.PUSH_QUEUE;
+
+    APEX_SESSION.DELETE_SESSION;
+
+    p_enviado := C_ESTADO_ACTIVO;
+  EXCEPTION
+    WHEN OTHERS THEN
+      -- Se traga el error a propósito: el usuario ya está creado y confirmado.
+      -- Quien llama se entera por p_enviado = 'N' y muestra la clave en
+      -- pantalla, que es el respaldo. El detalle queda en el log.
+      APEX_DEBUG.ERROR('PKG_AUTH.ENVIAR_PASSWORD_INICIAL: [' || SQLCODE || '] ' ||
+                       SQLERRM || ' | ' || DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
+      BEGIN
+        APEX_SESSION.DELETE_SESSION;
+      EXCEPTION
+        WHEN OTHERS THEN NULL;  -- Puede no haber llegado a crearse.
+      END;
+      p_enviado := C_ESTADO_INACTIVO;
+  END ENVIAR_PASSWORD_INICIAL;
 
   FUNCTION VERIFICAR_CREDENCIALES (
     p_usuario  IN VARCHAR2,
@@ -361,6 +534,150 @@ CREATE OR REPLACE PACKAGE BODY PKG_AUTH AS
     p_afectados := SQL%ROWCOUNT;
     COMMIT;
   END LIMPIAR_TOKENS_VENCIDOS;
+
+  PROCEDURE RECUPERAR_PASSWORD (
+    p_usuario     IN  VARCHAR2,
+    p_correo      IN  VARCHAR2,
+    p_status_code OUT NUMBER,
+    p_resultado   OUT CLOB
+  ) IS
+    -- El mismo texto para todos los desenlaces. Es deliberado: ver la nota de
+    -- la especificación sobre enumeración de cuentas.
+    C_RESPUESTA CONSTANT VARCHAR2(200) :=
+      '{"ok":true,"mensaje":"Si los datos son correctos, vas a recibir un correo con una contrasena provisoria."}';
+
+    l_id       NUMBER;
+    l_nombre   VARCHAR2(200);
+    l_password VARCHAR2(128);
+    l_salt     VARCHAR2(32);
+    l_hash     VARCHAR2(256);
+    l_enviado  VARCHAR2(1);
+  BEGIN
+    p_status_code := 200;
+    p_resultado   := C_RESPUESTA;
+
+    IF TRIM(p_usuario) IS NULL OR TRIM(p_correo) IS NULL THEN
+      RETURN;
+    END IF;
+
+    -- Usuario Y correo tienen que coincidir en la misma fila, y la cuenta
+    -- tiene que estar activa: una cuenta inactiva no recupera acceso por acá.
+    BEGIN
+      SELECT ID_USUARIO, NOMBRE_APELLIDO
+        INTO l_id, l_nombre
+        FROM USUARIOS
+       WHERE USUARIO = LOWER(TRIM(p_usuario))
+         AND LOWER(TRIM(CORREO)) = LOWER(TRIM(p_correo))
+         AND UPPER(TRIM(ACTIVO)) = C_ESTADO_ACTIVO;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        RETURN;  -- Silencio: la respuesta ya es la misma de siempre.
+    END;
+
+    l_password := GENERAR_PASSWORD();
+    l_salt     := GENERAR_SALT();
+    l_hash     := HASH_PASSWORD(l_password, l_salt);
+
+    UPDATE USUARIOS
+       SET CONTRASENA_HASH     = l_hash,
+           SALT                = l_salt,
+           FECHA_ACTUALIZACION = SYSTIMESTAMP
+     WHERE ID_USUARIO = l_id;
+
+    -- Quien pidió recuperar la clave perdió el control de la anterior: dejar
+    -- sesiones abiertas con la vieja credencial contradice el propósito.
+    REVOCAR_TOKENS_USUARIO(l_id);
+
+    COMMIT;
+
+    ENVIAR_PASSWORD_INICIAL(
+      p_correo          => LOWER(TRIM(p_correo)),
+      p_usuario         => LOWER(TRIM(p_usuario)),
+      p_nombre_apellido => l_nombre,
+      p_password        => l_password,
+      p_enviado         => l_enviado,
+      p_es_recuperacion => 'S'
+    );
+
+    -- Aun si el envío falló la respuesta no cambia: decir "no se pudo enviar"
+    -- confirmaría que el usuario y el correo existen. Queda en el log.
+    IF l_enviado != C_ESTADO_ACTIVO THEN
+      APEX_DEBUG.ERROR('PKG_AUTH.RECUPERAR_PASSWORD: la clave se reseteo pero el ' ||
+                       'correo no salio. ID_USUARIO=' || l_id);
+    END IF;
+  EXCEPTION
+    WHEN OTHERS THEN
+      ROLLBACK;
+      APEX_DEBUG.ERROR('PKG_AUTH.RECUPERAR_PASSWORD: [' || SQLCODE || '] ' || SQLERRM ||
+                       ' | ' || DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
+      -- Incluso ante un error interno se responde igual, por lo mismo de arriba.
+      p_status_code := 200;
+      p_resultado   := C_RESPUESTA;
+  END RECUPERAR_PASSWORD;
+
+  PROCEDURE CAMBIAR_PASSWORD (
+    p_authorization  IN  VARCHAR2,
+    p_password_actual IN VARCHAR2,
+    p_password_nueva IN  VARCHAR2,
+    p_status_code    OUT NUMBER,
+    p_resultado      OUT CLOB
+  ) IS
+    l_id_sesion NUMBER;
+    l_usuario   VARCHAR2(50);
+    l_id_verif  NUMBER;
+    l_salt      VARCHAR2(32);
+    l_hash      VARCHAR2(256);
+  BEGIN
+    l_id_sesion := VALIDAR_TOKEN(TOKEN_DE_HEADER(p_authorization));
+    IF l_id_sesion IS NULL THEN
+      p_status_code := 401;
+      p_resultado := '{"error":"Sesion invalida o vencida"}';
+      RETURN;
+    END IF;
+
+    IF p_password_nueva IS NULL OR LENGTH(p_password_nueva) < 8 THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"La contrasena nueva debe tener al menos 8 caracteres"}';
+      RETURN;
+    END IF;
+
+    SELECT USUARIO INTO l_usuario FROM USUARIOS WHERE ID_USUARIO = l_id_sesion;
+
+    -- Se reusa VERIFICAR_CREDENCIALES en vez de comparar hashes a mano: es la
+    -- misma comprobación que hace el login, con su comparación en tiempo
+    -- constante incluida.
+    l_id_verif := VERIFICAR_CREDENCIALES(l_usuario, p_password_actual);
+
+    IF l_id_verif IS NULL OR l_id_verif != l_id_sesion THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"La contrasena actual no es correcta"}';
+      RETURN;
+    END IF;
+
+    l_salt := GENERAR_SALT();
+    l_hash := HASH_PASSWORD(p_password_nueva, l_salt);
+
+    UPDATE USUARIOS
+       SET CONTRASENA_HASH     = l_hash,
+           SALT                = l_salt,
+           FECHA_ACTUALIZACION = SYSTIMESTAMP
+     WHERE ID_USUARIO = l_id_sesion;
+
+    -- Incluye la sesión que hizo el cambio: si se cambia por sospecha de robo,
+    -- dejar viva cualquier sesión anterior anularía el motivo del cambio.
+    REVOCAR_TOKENS_USUARIO(l_id_sesion);
+
+    COMMIT;
+    p_status_code := 200;
+    p_resultado := '{"ok":true}';
+  EXCEPTION
+    WHEN OTHERS THEN
+      ROLLBACK;
+      p_status_code := 500;
+      APEX_DEBUG.ERROR('PKG_AUTH.CAMBIAR_PASSWORD: [' || SQLCODE || '] ' || SQLERRM ||
+                       ' | ' || DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
+      p_resultado := '{"error":"Error al cambiar la contrasena"}';
+  END CAMBIAR_PASSWORD;
 
 END PKG_AUTH;
 /
@@ -674,6 +991,71 @@ END;
     p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
     p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
+  ------------------------------------------------------------------------------
+  -- POST /auth/recuperar
+  --
+  -- Body: { "usuario": "...", "correo": "..." }
+  -- 200 -> siempre, coincidan o no los datos. La respuesta es identica en los
+  --        dos casos a proposito: distinguirlos permitiria averiguar que
+  --        usuarios existen y con que correo, que es justo lo que /auth/login
+  --        evita con su mensaje unico.
+  --
+  -- Publico (sin token): quien lo usa es alguien que no puede entrar.
+  ------------------------------------------------------------------------------
+  ORDS.DEFINE_TEMPLATE(p_module_name => 'auth', p_pattern => 'recuperar');
+
+  ORDS.DEFINE_HANDLER(
+    p_module_name => 'auth',
+    p_pattern     => 'recuperar',
+    p_method      => 'POST',
+    p_source_type => ORDS.source_type_plsql,
+    p_source      => 'BEGIN PKG_AUTH.RECUPERAR_PASSWORD(:usuario, :correo, :status_code, :resultado); END;'
+  );
+
+  ORDS.DEFINE_PARAMETER(
+    p_module_name => 'auth', p_pattern => 'recuperar', p_method => 'POST',
+    p_name => 'resultado', p_bind_variable_name => 'resultado',
+    p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
+
+  ORDS.DEFINE_PARAMETER(
+    p_module_name => 'auth', p_pattern => 'recuperar', p_method => 'POST',
+    p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
+    p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
+
+  ------------------------------------------------------------------------------
+  -- POST /auth/cambiar-password
+  --
+  -- Body: { "passwordActual": "...", "passwordNueva": "..." }
+  -- 200 -> cambiada. TODAS las sesiones quedan revocadas, incluida esta: el
+  --        frontend tiene que volver al login despues de un 200.
+  -- 400 -> la contrasena actual no coincide, o la nueva tiene menos de 8.
+  -- 401 -> token ausente, invalido o vencido.
+  ------------------------------------------------------------------------------
+  ORDS.DEFINE_TEMPLATE(p_module_name => 'auth', p_pattern => 'cambiar-password');
+
+  ORDS.DEFINE_HANDLER(
+    p_module_name => 'auth',
+    p_pattern     => 'cambiar-password',
+    p_method      => 'POST',
+    p_source_type => ORDS.source_type_plsql,
+    p_source      => 'BEGIN PKG_AUTH.CAMBIAR_PASSWORD(:authorization, :passwordActual, :passwordNueva, :status_code, :resultado); END;'
+  );
+
+  ORDS.DEFINE_PARAMETER(
+    p_module_name => 'auth', p_pattern => 'cambiar-password', p_method => 'POST',
+    p_name => 'authorization', p_bind_variable_name => 'authorization',
+    p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
+
+  ORDS.DEFINE_PARAMETER(
+    p_module_name => 'auth', p_pattern => 'cambiar-password', p_method => 'POST',
+    p_name => 'resultado', p_bind_variable_name => 'resultado',
+    p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
+
+  ORDS.DEFINE_PARAMETER(
+    p_module_name => 'auth', p_pattern => 'cambiar-password', p_method => 'POST',
+    p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
+    p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
+
   COMMIT;
 END;
 /
@@ -696,7 +1078,8 @@ SELECT NAME, LINE, POSITION, TEXT
  WHERE NAME IN ('PKG_AUTH', 'BORRAR_MODULO_ORDS')
  ORDER BY NAME, SEQUENCE;
 
--- Rutas publicadas: deben aparecer login (POST), logout (POST) y me (GET).
+-- Rutas publicadas: login (POST), logout (POST), me (GET), recuperar (POST) y
+-- cambiar-password (POST).
 SELECT t.URI_TEMPLATE, h.METHOD
   FROM USER_ORDS_TEMPLATES t
   JOIN USER_ORDS_HANDLERS  h ON h.TEMPLATE_ID = t.ID

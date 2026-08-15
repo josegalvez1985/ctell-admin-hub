@@ -7,6 +7,7 @@ import loginBg from "@/assets/login-bg.jpg";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
 import { Logo } from "@/components/ctell/Logo";
 import { LogoEmpresa } from "@/components/ctell/LogoEmpresa";
+import { RecuperarPasswordDialog } from "@/components/ctell/RecuperarPasswordDialog";
 import {
   api,
   ApiError,
@@ -47,6 +48,7 @@ function LoginPage() {
   const [usuario, setUsuario] = useState("");
   const [password, setPassword] = useState("");
   const [recordar, setRecordar] = useState(false);
+  const [recuperando, setRecuperando] = useState(false);
   const passwordRef = useRef<HTMLInputElement>(null);
 
   // El combobox trabaja con strings; el id se convierte a número al guardar.
@@ -376,6 +378,7 @@ function LoginPage() {
               </Label>
               <button
                 type="button"
+                onClick={() => setRecuperando(true)}
                 className="text-sm font-medium text-primary transition-opacity hover:opacity-80"
               >
                 ¿Olvidaste tu clave?
@@ -408,6 +411,12 @@ function LoginPage() {
           </p>
         </div>
       </section>
+
+      <RecuperarPasswordDialog
+        open={recuperando}
+        onOpenChange={setRecuperando}
+        usuarioInicial={usuario}
+      />
     </main>
   );
 }

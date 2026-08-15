@@ -41,9 +41,6 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 
-/** Reglas alineadas con las que valida PKG_USUARIOS: si acá pasa, allá también. */
-const PASSWORD = z.string().min(8, "Mínimo 8 caracteres").max(128, "Máximo 128 caracteres");
-
 const schemaAlta = z.object({
   usuario: z
     .string()
@@ -54,8 +51,20 @@ const schemaAlta = z.object({
     // crear "Jose" y que la lista muestre "jose".
     .regex(/^[a-z0-9._-]+$/, "Solo minúsculas, números, punto, guion y guion bajo"),
   nombreApellido: z.string().trim().min(1, "Obligatorio").max(200, "Máximo 200 caracteres"),
-  correo: z.union([z.string().trim().email("Correo inválido"), z.literal("")]),
-  password: PASSWORD,
+  // Obligatorio en el alta: es a donde va la contraseña inicial. En edición
+  // sigue siendo opcional (ver schemaEdicion) — ahí no hay clave que mandar.
+  correo: z
+    .string()
+    .trim()
+    .min(1, "Obligatorio: ahí se envía la contraseña")
+    .email("Correo inválido"),
+  // Opcional. Vacío = el backend genera una al azar y la manda por correo, que
+  // es el camino normal. Si se escribe algo, valen las mismas reglas que aplica
+  // PKG_USUARIOS: si acá pasa, allá también.
+  password: z
+    .string()
+    .max(128, "Máximo 128 caracteres")
+    .refine((v) => v === "" || v.length >= 8, "Mínimo 8 caracteres"),
   // Booleano en el formulario porque un switch lo es; se traduce a "S"/"N" al
   // enviarlo. La traducción vive sólo acá, en el borde con el control de UI.
   esAdmin: z.boolean(),
@@ -343,6 +352,11 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
 function PanelAlta({ onVolver }: { onVolver: () => void }) {
   const queryClient = useQueryClient();
 
+  // Sólo se llena si el correo no salió: es el respaldo para que la cuenta no
+  // quede con una clave que nadie conoce. Mientras haya algo acá el panel
+  // muestra la clave en vez de volver a la lista.
+  const [respaldo, setRespaldo] = useState<{ correo: string; password?: string } | null>(null);
+
   const form = useForm<FormAlta>({
     resolver: zodResolver(schemaAlta),
     // Sin defaults React avisa por inputs no controlados.
@@ -361,19 +375,62 @@ function PanelAlta({ onVolver }: { onVolver: () => void }) {
       api.usuarios.crear({
         usuario: v.usuario,
         nombreApellido: v.nombreApellido,
-        password: v.password,
+        correo: v.correo,
         esAdmin: v.esAdmin ? "S" : "N",
-        // El backend valida el formato si el correo viene: mandar "" daría 400,
-        // así que cuando está vacío la clave directamente no se incluye.
-        ...(v.correo ? { correo: v.correo } : {}),
+        // Vacío = que la genere el backend. Mandar "" daría 400 por el mínimo
+        // de 8, así que la clave directamente no se incluye.
+        ...(v.password ? { password: v.password } : {}),
       }),
-    onSuccess: () => {
+    onSuccess: (data, v) => {
       queryClient.invalidateQueries({ queryKey: ["usuarios"] });
-      toast.success("Usuario creado");
-      onVolver();
+
+      if (data.correoEnviado) {
+        toast.success(`Usuario creado. La contraseña se envió a ${v.correo}`);
+        onVolver();
+        return;
+      }
+
+      // El usuario existe pero el correo no salió: no se vuelve a la lista sin
+      // mostrar cómo entrar, o la cuenta queda inaccesible.
+      toast.warning("Usuario creado, pero el correo no se pudo enviar");
+      setRespaldo({
+        correo: v.correo,
+        ...(data.passwordInicial ? { password: data.passwordInicial } : {}),
+      });
     },
     onError: (e) => toast.error(MENSAJE_ERROR(e, "No se pudo crear el usuario")),
   });
+
+  if (respaldo) {
+    return (
+      <div className="space-y-4">
+        <div className="rounded-lg border border-warning/30 bg-warning/10 px-4 py-3">
+          <p className="text-sm font-semibold text-foreground">
+            La cuenta se creó, pero el correo no salió
+          </p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            No se pudo enviar el mensaje a <strong>{respaldo.correo}</strong>.{" "}
+            {respaldo.password
+              ? "Pasale estos datos por otro medio: no se vuelven a mostrar."
+              : "Usá la contraseña que escribiste al crear la cuenta."}
+          </p>
+        </div>
+
+        {respaldo.password && (
+          <div className="space-y-1 rounded-lg bg-muted px-3 py-3">
+            <p className="text-xs text-muted-foreground">Contraseña inicial</p>
+            <p className="select-all break-all font-mono text-base font-semibold text-foreground">
+              {respaldo.password}
+            </p>
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button onClick={onVolver}>Entendido</Button>
+        </DialogFooter>
+      </div>
+    );
+  }
 
   return (
     <Form {...form}>
@@ -421,10 +478,13 @@ function PanelAlta({ onVolver }: { onVolver: () => void }) {
           name="correo"
           render={({ field }) => (
             <FormItem>
-              <FormLabel>Correo (opcional)</FormLabel>
+              <FormLabel>Correo</FormLabel>
               <FormControl>
                 <Input {...field} type="email" placeholder="joseg@ctell.com" autoComplete="off" />
               </FormControl>
+              <FormDescription>
+                Ahí se envía la contraseña para entrar por primera vez.
+              </FormDescription>
               <FormMessage />
             </FormItem>
           )}
@@ -435,11 +495,19 @@ function PanelAlta({ onVolver }: { onVolver: () => void }) {
           name="password"
           render={({ field }) => (
             <FormItem>
-              <FormLabel>Contraseña</FormLabel>
+              <FormLabel>Contraseña (opcional)</FormLabel>
               <FormControl>
-                <Input {...field} type="password" autoComplete="new-password" />
+                <Input
+                  {...field}
+                  type="password"
+                  placeholder="Se genera automáticamente"
+                  autoComplete="new-password"
+                />
               </FormControl>
-              <FormDescription>Mínimo 8 caracteres.</FormDescription>
+              <FormDescription>
+                Dejala vacía y el sistema genera una y se la envía por correo. Si preferís elegirla,
+                mínimo 8 caracteres.
+              </FormDescription>
               <FormMessage />
             </FormItem>
           )}

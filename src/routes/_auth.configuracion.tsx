@@ -1,8 +1,19 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Check, FileText, LayoutGrid, Monitor, Moon, ShieldCheck, Sun, Users } from "lucide-react";
+import {
+  Check,
+  FileText,
+  KeyRound,
+  LayoutGrid,
+  Monitor,
+  Moon,
+  ShieldCheck,
+  Sun,
+  Users,
+} from "lucide-react";
 import { useState } from "react";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
+import { CambiarPasswordDialog } from "@/components/ctell/CambiarPasswordDialog";
 import { COLOR_THEMES } from "@/components/ctell/color-themes";
 import { ModulosDialog } from "@/components/ctell/ModulosDialog";
 import { PaginasDialog } from "@/components/ctell/PaginasDialog";
@@ -47,6 +58,7 @@ function ConfiguracionPage() {
   const [modulosAbierto, setModulosAbierto] = useState(false);
   const [paginasAbierto, setPaginasAbierto] = useState(false);
   const [permisosAbierto, setPermisosAbierto] = useState(false);
+  const [passwordAbierto, setPasswordAbierto] = useState(false);
 
   return (
     <AppLayout active="Configuración" title="Configuración" showSearch={false}>
@@ -57,6 +69,38 @@ function ConfiguracionPage() {
             Preferencias de tu cuenta y del sistema.
           </p>
         </div>
+
+        {/* Va antes de Administración a propósito: esto lo usa cualquier
+            usuario, mientras que las tarjetas de abajo son de gestión. */}
+        <Card className="surface-card">
+          <CardHeader>
+            <CardTitle>Tu cuenta</CardTitle>
+            <CardDescription>Datos de acceso al sistema.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <button
+              onClick={() => setPasswordAbierto(true)}
+              className="flex w-full items-center gap-4 rounded-xl border border-border p-4 text-left transition-colors hover:border-primary/40 hover:bg-accent/30"
+            >
+              <span className="gradient-primary flex size-10 shrink-0 items-center justify-center rounded-xl text-primary-foreground">
+                <KeyRound className="size-5" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-semibold text-foreground">
+                  Cambiar contraseña
+                </span>
+                <span className="mt-0.5 block text-xs text-muted-foreground">
+                  Se cierran todas tus sesiones y tenés que volver a entrar.
+                </span>
+              </span>
+              <Button asChild variant="outline" size="sm" className="pointer-events-none shrink-0">
+                <span>Cambiar</span>
+              </Button>
+            </button>
+          </CardContent>
+        </Card>
+
+        <CambiarPasswordDialog open={passwordAbierto} onOpenChange={setPasswordAbierto} />
 
         <Card className="surface-card">
           <CardHeader>

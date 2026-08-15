@@ -747,6 +747,49 @@ export const api = {
     }
   },
 
+  /**
+   * "Olvidé mi contraseña": manda una clave provisoria al correo del usuario.
+   *
+   * No lleva token —quien la usa es justamente alguien que no puede entrar— y
+   * **siempre responde 200**, coincidan o no los datos. El backend no distingue
+   * "ese usuario no existe" de "ese no es su correo" a propósito: hacerlo
+   * permitiría averiguar qué cuentas existen. La UI muestra el mismo mensaje
+   * en los dos casos.
+   */
+  recuperarPassword: (datos: { usuario: string; correo: string }) =>
+    request<{ ok: boolean; mensaje: string }>("/auth/recuperar", {
+      method: "POST",
+      auth: false,
+      body: JSON.stringify(datos),
+    }),
+
+  /**
+   * Cambia la contraseña del usuario logueado.
+   *
+   * Exige la actual: sin eso, una pantalla desatendida alcanzaría para quedarse
+   * con la cuenta. **Un 200 revoca todas las sesiones, incluida la propia**, así
+   * que después de esto hay que volver al login — por eso limpia el estado
+   * local igual que `logout`.
+   */
+  async cambiarPassword(datos: {
+    passwordActual: string;
+    passwordNueva: string;
+  }): Promise<{ ok: boolean }> {
+    const data = await request<{ ok: boolean }>("/auth/cambiar-password", {
+      method: "POST",
+      body: JSON.stringify(datos),
+    });
+
+    // El token que se usó para llamar acá ya está revocado en el servidor:
+    // conservarlo daría 401 en la siguiente petición, que es peor que salir
+    // limpio. Mismo criterio que logout.
+    setToken(null);
+    setUsuarioSesion(null);
+    setEmpresaSeleccionada(null);
+
+    return data;
+  },
+
   async me(): Promise<Usuario> {
     const raw = await request<{ resultado?: string } | Usuario>("/auth/me");
     if (!raw) return raw as Usuario;
@@ -767,16 +810,36 @@ export const api = {
   usuarios: {
     listar: () => request<ListaUsuarios>("/usuarios/listar"),
 
+    /**
+     * Alta de usuario. La contraseña inicial viaja por correo, no por pantalla.
+     *
+     * `correo` es **obligatorio**: es el único canal por el que sale la clave.
+     * `password` es **opcional** — omitirlo hace que el backend genere una al
+     * azar, que es el camino normal: quien da el alta no necesita elegirla ni
+     * verla.
+     */
     crear: (datos: {
       usuario: string;
       nombreApellido: string;
-      correo?: string;
-      password: string;
+      correo: string;
+      /** Si se omite, el backend genera una y la manda por correo. */
+      password?: string;
       /** Omitido equivale a "N": el default seguro es no ser administrador. */
       esAdmin?: Rol;
     }) =>
       // Responde 201, no 200. `request` solo mira `res.ok`, así que da igual.
-      request<{ id: number; ok: boolean }>("/usuarios/crear", {
+      request<{
+        id: number;
+        ok: boolean;
+        /** `false` si APEX no pudo mandar el mail: el usuario igual se creó. */
+        correoEnviado: boolean;
+        /**
+         * Sólo viene cuando `correoEnviado` es `false` y la generó el sistema.
+         * Es el respaldo para no dejar una cuenta cuya clave nadie conoce; la
+         * UI la muestra una vez para copiarla.
+         */
+        passwordInicial?: string;
+      }>("/usuarios/crear", {
         method: "POST",
         body: JSON.stringify(datos),
       }),

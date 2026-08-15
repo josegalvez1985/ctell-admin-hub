@@ -58,6 +58,10 @@ CREATE OR REPLACE PACKAGE PKG_USUARIOS AS
     p_resultado     OUT CLOB
   );
 
+  -- El correo es OBLIGATORIO: es a donde va la contraseña inicial.
+  -- p_password es opcional — si no viene, se genera una al azar. En los dos
+  -- casos la clave se manda por correo y no se devuelve en la respuesta,
+  -- salvo que el envío falle (ver el cuerpo).
   PROCEDURE INSERTAR (
     p_authorization   IN  VARCHAR2,
     p_usuario         IN  VARCHAR2,
@@ -208,11 +212,15 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
     p_status_code     OUT NUMBER,
     p_resultado       OUT CLOB
   ) IS
-    l_sesion  NUMBER;
-    l_usuario VARCHAR2(50);
-    l_salt    VARCHAR2(32);
-    l_hash    VARCHAR2(256);
-    l_id      NUMBER;
+    l_sesion   NUMBER;
+    l_usuario  VARCHAR2(50);
+    l_correo   VARCHAR2(200);
+    l_password VARCHAR2(128);
+    l_generada VARCHAR2(1);
+    l_enviado  VARCHAR2(1);
+    l_salt     VARCHAR2(32);
+    l_hash     VARCHAR2(256);
+    l_id       NUMBER;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -225,6 +233,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
     -- LOWER(), así que uno guardado con mayúsculas no podría entrar nunca — y
     -- el 401 resultante es indistinguible de una clave mal puesta.
     l_usuario := LOWER(TRIM(p_usuario));
+    l_correo  := LOWER(TRIM(p_correo));
 
     IF l_usuario IS NULL OR TRIM(p_nombre_apellido) IS NULL THEN
       p_status_code := 400;
@@ -232,17 +241,44 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
       RETURN;
     END IF;
 
-    IF p_password IS NULL OR LENGTH(p_password) < 8 THEN
+    -- El correo pasó a ser obligatorio: es el único canal por el que sale la
+    -- contraseña inicial. Sin él, la cuenta nacería inaccesible.
+    IF l_correo IS NULL THEN
       p_status_code := 400;
-      p_resultado := '{"error":"La contrasena debe tener al menos 8 caracteres"}';
+      p_resultado := '{"error":"El correo es obligatorio: ahi se envia la contrasena inicial"}';
       RETURN;
+    END IF;
+
+    -- Validación mínima de formato. No pretende cubrir el RFC entero: alcanza
+    -- con descartar lo que seguro no es una dirección, porque un correo mal
+    -- escrito acá deja al usuario sin poder entrar.
+    IF NOT REGEXP_LIKE(l_correo, '^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$') THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"El correo no tiene un formato valido"}';
+      RETURN;
+    END IF;
+
+    -- La contraseña es opcional. Si no viene, se genera una al azar y el
+    -- usuario la recibe por correo; quien da el alta no la elige ni la ve.
+    IF p_password IS NULL THEN
+      l_password := PKG_AUTH.GENERAR_PASSWORD();
+      l_generada := 'S';
+    ELSE
+      l_password := p_password;
+      l_generada := 'N';
+
+      IF LENGTH(l_password) < 8 THEN
+        p_status_code := 400;
+        p_resultado := '{"error":"La contrasena debe tener al menos 8 caracteres"}';
+        RETURN;
+      END IF;
     END IF;
 
     -- El hash se delega en PKG_AUTH a propósito: es el mismo algoritmo con el
     -- que el login va a verificar después. Duplicarlo acá sería garantizar que
     -- algún día se desincronicen.
     l_salt := PKG_AUTH.GENERAR_SALT();
-    l_hash := PKG_AUTH.HASH_PASSWORD(p_password, l_salt);
+    l_hash := PKG_AUTH.HASH_PASSWORD(l_password, l_salt);
 
     INSERT INTO USUARIOS (
       USUARIO, NOMBRE_APELLIDO, CORREO, CONTRASENA_HASH, SALT,
@@ -250,7 +286,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
     ) VALUES (
       l_usuario,
       TRIM(p_nombre_apellido),
-      LOWER(TRIM(p_correo)),
+      l_correo,
       l_hash,
       l_salt,
       'A',
@@ -261,9 +297,35 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
     )
     RETURNING ID_USUARIO INTO l_id;
 
+    -- El COMMIT va ANTES del correo, no después: el usuario ya es válido y no
+    -- queremos que un SMTP lento mantenga la transacción abierta. Si el envío
+    -- falla, la cuenta igual queda creada y la clave se devuelve como respaldo.
     COMMIT;
+
+    PKG_AUTH.ENVIAR_PASSWORD_INICIAL(
+      p_correo          => l_correo,
+      p_usuario         => l_usuario,
+      p_nombre_apellido => TRIM(p_nombre_apellido),
+      p_password        => l_password,
+      p_enviado         => l_enviado
+    );
+
     p_status_code := 201;
-    p_resultado := JSON_OBJECT('id' VALUE l_id, 'ok' VALUE 'true' FORMAT JSON);
+
+    -- La contraseña se devuelve SOLO si el correo no salió, y sólo cuando la
+    -- generó el sistema: si la eligió quien dio el alta, ya la conoce y
+    -- repetirla en la respuesta sería exponerla sin ninguna ganancia.
+    SELECT JSON_OBJECT(
+             'id'               VALUE l_id,
+             'ok'               VALUE 'true' FORMAT JSON,
+             'correoEnviado'    VALUE CASE WHEN l_enviado = 'A' THEN 'true'
+                                           ELSE 'false' END FORMAT JSON,
+             'passwordInicial'  VALUE CASE WHEN l_enviado != 'A' AND l_generada = 'S'
+                                           THEN l_password END
+             RETURNING CLOB
+           )
+      INTO p_resultado
+      FROM DUAL;
   EXCEPTION
     WHEN DUP_VAL_ON_INDEX THEN
       ROLLBACK;
