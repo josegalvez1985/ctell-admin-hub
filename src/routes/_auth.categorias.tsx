@@ -99,7 +99,8 @@ function CategoriasPage() {
   });
 
   const eliminar = useMutation({
-    mutationFn: (categoria: Categoria) => api.categorias.eliminar(categoria.id),
+    mutationFn: (categoria: Categoria) =>
+      api.categorias.eliminar(categoria.id, categoria.idEmpresa),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["categorias"] });
       toast.success("Categoría eliminada");

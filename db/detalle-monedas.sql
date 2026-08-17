@@ -9,7 +9,7 @@
 --   1. LISTAR      GET    /detalle-monedas/listar        (?idMoneda= opcional)
 --   2. INSERTAR    POST   /detalle-monedas/crear
 --   3. ACTUALIZAR  PUT    /detalle-monedas/actualizar/:id
---   4. ELIMINAR    DELETE /detalle-monedas/eliminar/:id
+--   4. ELIMINAR    DELETE /detalle-monedas/eliminar/:id/:idEmpresa
 --   5. FOTO        GET    /detalle-monedas/foto/:id      (publico)
 --                  PUT    /detalle-monedas/foto/:id      (con token)
 --
@@ -157,10 +157,15 @@ CREATE OR REPLACE PACKAGE PKG_DETALLE_MONEDAS AS
   );
 
   -- Los parametros ausentes (NULL) no modifican la columna correspondiente.
+  --
+  -- p_id_empresa es OBLIGATORIO aunque la tabla no tenga esa columna: acota la
+  -- operacion a las denominaciones de las monedas de esa empresa. Ver
+  -- ES_DE_EMPRESA en el body.
   PROCEDURE ACTUALIZAR (
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
     p_id_moneda     IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_denominacion  IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
@@ -169,6 +174,7 @@ CREATE OR REPLACE PACKAGE PKG_DETALLE_MONEDAS AS
   PROCEDURE ELIMINAR (
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   );
@@ -238,6 +244,36 @@ CREATE OR REPLACE PACKAGE BODY PKG_DETALLE_MONEDAS AS
       END;
     END LOOP;
   END BORRAR_MODULO;
+
+  ------------------------------------------------------------------------------
+  -- Privado: esa denominacion pertenece a una moneda de esa empresa.
+  --
+  -- DETALLE_MONEDAS **no tiene columna ID_EMPRESA**: cuelga de MONEDAS, y es la
+  -- moneda la que sabe de que empresa es. El aislamiento se resuelve entonces
+  -- con un JOIN contra el padre, no con una condicion sobre la fila.
+  --
+  -- Sin esto, un PUT o un DELETE con el id de una denominacion de otra empresa
+  -- la modificaba o la borraba igual: el endpoint solo miraba el id.
+  ------------------------------------------------------------------------------
+  FUNCTION ES_DE_EMPRESA (
+    p_id_detalle IN NUMBER,
+    p_id_empresa IN NUMBER
+  ) RETURN BOOLEAN IS
+    l_existe PLS_INTEGER;
+  BEGIN
+    IF p_id_detalle IS NULL OR p_id_empresa IS NULL THEN
+      RETURN FALSE;
+    END IF;
+
+    SELECT COUNT(*)
+      INTO l_existe
+      FROM DETALLE_MONEDAS d
+      JOIN MONEDAS         m ON m.ID_MONEDA = d.ID_MONEDA
+     WHERE d.ID_DETALLE_MONEDA = p_id_detalle
+       AND m.ID_EMPRESA        = p_id_empresa;
+
+    RETURN l_existe > 0;
+  END ES_DE_EMPRESA;
 
   PROCEDURE LISTAR (
     p_authorization IN  VARCHAR2,
@@ -401,13 +437,15 @@ CREATE OR REPLACE PACKAGE BODY PKG_DETALLE_MONEDAS AS
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
     p_id_moneda     IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_denominacion  IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
-    l_sesion    NUMBER;
-    l_id        NUMBER;
-    l_id_moneda NUMBER;
+    l_sesion     NUMBER;
+    l_id         NUMBER;
+    l_id_moneda  NUMBER;
+    l_id_empresa NUMBER;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -416,8 +454,44 @@ CREATE OR REPLACE PACKAGE BODY PKG_DETALLE_MONEDAS AS
       RETURN;
     END IF;
 
-    l_id        := TO_NUMBER(NULLIF(p_id, ''));
-    l_id_moneda := TO_NUMBER(NULLIF(p_id_moneda, ''));
+    l_id         := TO_NUMBER(NULLIF(p_id, ''));
+    l_id_moneda  := TO_NUMBER(NULLIF(p_id_moneda, ''));
+    l_id_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
+
+    IF l_id_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
+      RETURN;
+    END IF;
+
+    -- AISLAMIENTO POR EMPRESA, via la moneda padre. 404 y no 403: responder
+    -- "existe pero no es tuya" confirmaria que el id existe.
+    IF NOT ES_DE_EMPRESA(l_id, l_id_empresa) THEN
+      p_status_code := 404;
+      p_resultado := '{"error":"La denominacion no existe"}';
+      RETURN;
+    END IF;
+
+    -- La moneda DESTINO tambien tiene que ser de la misma empresa: sin este
+    -- control se podria mover una denominacion a una moneda ajena, que es la
+    -- puerta de atras al mismo problema que el chequeo de arriba cierra.
+    IF l_id_moneda IS NOT NULL THEN
+      DECLARE
+        l_ok PLS_INTEGER;
+      BEGIN
+        SELECT COUNT(*)
+          INTO l_ok
+          FROM MONEDAS
+         WHERE ID_MONEDA  = l_id_moneda
+           AND ID_EMPRESA = l_id_empresa;
+
+        IF l_ok = 0 THEN
+          p_status_code := 400;
+          p_resultado := '{"error":"La moneda indicada no pertenece a esta empresa"}';
+          RETURN;
+        END IF;
+      END;
+    END IF;
 
     -- La FOTO no se toca aca: tiene su propio PUT. Un UPDATE que la pusiera en
     -- NULL borraria la imagen cada vez que se corrige el nombre.
@@ -457,11 +531,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_DETALLE_MONEDAS AS
   PROCEDURE ELIMINAR (
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
-    l_sesion NUMBER;
-    l_id     NUMBER;
+    l_sesion     NUMBER;
+    l_id         NUMBER;
+    l_id_empresa NUMBER;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -470,7 +546,22 @@ CREATE OR REPLACE PACKAGE BODY PKG_DETALLE_MONEDAS AS
       RETURN;
     END IF;
 
-    l_id := TO_NUMBER(NULLIF(p_id, ''));
+    l_id         := TO_NUMBER(NULLIF(p_id, ''));
+    l_id_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
+
+    IF l_id_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
+      RETURN;
+    END IF;
+
+    -- AISLAMIENTO POR EMPRESA, via la moneda padre: sin esto, un DELETE con el
+    -- id de una denominacion ajena la borraba.
+    IF NOT ES_DE_EMPRESA(l_id, l_id_empresa) THEN
+      p_status_code := 404;
+      p_resultado := '{"error":"La denominacion no existe"}';
+      RETURN;
+    END IF;
 
     -- Baja FISICA: la tabla no tiene columna ACTIVO. La foto se va con la fila
     -- (el BLOB vive en la misma), no hace falta borrarla aparte.
@@ -665,7 +756,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_DETALLE_MONEDAS AS
       p_pattern     => 'actualizar/:id',
       p_method      => 'PUT',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_DETALLE_MONEDAS.ACTUALIZAR(:authorization, :id, :idMoneda, :denominacion, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_DETALLE_MONEDAS.ACTUALIZAR(:authorization, :id, :idMoneda, :idEmpresa, :denominacion, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
@@ -684,30 +775,30 @@ CREATE OR REPLACE PACKAGE BODY PKG_DETALLE_MONEDAS AS
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
     ----------------------------------------------------------------------------
-    -- DELETE /detalle-monedas/eliminar/:id
+    -- DELETE /detalle-monedas/eliminar/:id/:idEmpresa
     ----------------------------------------------------------------------------
-    ORDS.DEFINE_TEMPLATE(p_module_name => 'detalle-monedas', p_pattern => 'eliminar/:id');
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'detalle-monedas', p_pattern => 'eliminar/:id/:idEmpresa');
 
     ORDS.DEFINE_HANDLER(
       p_module_name => 'detalle-monedas',
-      p_pattern     => 'eliminar/:id',
+      p_pattern     => 'eliminar/:id/:idEmpresa',
       p_method      => 'DELETE',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_DETALLE_MONEDAS.ELIMINAR(:authorization, :id, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_DETALLE_MONEDAS.ELIMINAR(:authorization, :id, :idEmpresa, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'detalle-monedas', p_pattern => 'eliminar/:id', p_method => 'DELETE',
+      p_module_name => 'detalle-monedas', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE',
       p_name => 'authorization', p_bind_variable_name => 'authorization',
       p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'detalle-monedas', p_pattern => 'eliminar/:id', p_method => 'DELETE',
+      p_module_name => 'detalle-monedas', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE',
       p_name => 'resultado', p_bind_variable_name => 'resultado',
       p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'detalle-monedas', p_pattern => 'eliminar/:id', p_method => 'DELETE',
+      p_module_name => 'detalle-monedas', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE',
       p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 

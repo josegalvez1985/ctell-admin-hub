@@ -1111,6 +1111,95 @@ que sean públicas por definición. Los datos que sí requieren generarse al
 azar (como una contraseña inicial) se imprimen por `DBMS_OUTPUT` en el
 momento, nunca hardcodeados en el script.
 
+### Aislamiento por empresa: filtrar el listado no alcanza
+
+> **Regla: en una tabla por empresa, `ACTUALIZAR` y `ELIMINAR` exigen
+> `idEmpresa` y lo llevan en el `WHERE`. Es una condición sobre QUÉ fila se
+> toca, no un campo más a modificar.**
+
+El listado ya se filtra con `?idEmpresa=`, y es fácil suponer que con eso
+alcanza. No alcanza: eso decide lo que **se muestra**, no lo que se **puede
+tocar**.
+
+```sql
+-- ❌ Cualquiera con sesión modifica el artículo 57, sea de la empresa que sea.
+UPDATE ARTICULOS
+   SET NOMBRE_ARTICULO = NVL(TRIM(p_nombre_articulo), NOMBRE_ARTICULO), …
+ WHERE ID_ARTICULO = l_id;
+
+-- ✅ El idEmpresa acota la fila.
+UPDATE ARTICULOS
+   SET NOMBRE_ARTICULO = NVL(TRIM(p_nombre_articulo), NOMBRE_ARTICULO), …
+ WHERE ID_ARTICULO = l_id
+   AND ID_EMPRESA  = l_id_empresa;
+```
+
+La pantalla no permite llegar ahí —sólo lista lo de tu empresa— pero el
+endpoint es público para cualquiera con sesión. **El guard del cliente evita el
+acceso accidental; sólo el del backend evita el deliberado.**
+
+**Tres cosas que cierran la puerta de atrás:**
+
+**1. `ID_EMPRESA` no va en el `SET`.** Si se puede modificar, se puede **mover
+una fila a otra empresa**, que es lo mismo que el `WHERE` estaba impidiendo. En
+`SUCURSALES` era lo más grave: arrastraría con ella todas sus ubicaciones y
+lotes.
+
+**2. La respuesta es 404, no 403.** Decir "existe pero no es tuya" confirma que
+el id existe — información que quien pregunta no debería obtener:
+
+```sql
+IF SQL%ROWCOUNT = 0 THEN
+  p_status_code := 404;              -- vale para "no existe" Y "es de otra"
+  p_resultado := '{"error":"El articulo no existe"}';
+  RETURN;
+END IF;
+```
+
+**3. Las FK de destino también se validan.** Reasignar una denominación a una
+moneda ajena, o un lote a un artículo de otra empresa, es la misma fuga por
+otro camino.
+
+#### Si la tabla no tiene `ID_EMPRESA`
+
+Las de detalle y las de cruce heredan la empresa del padre. Ahí se valida con
+una función privada **antes** de escribir:
+
+```sql
+FUNCTION ES_DE_EMPRESA (p_id_detalle IN NUMBER, p_id_empresa IN NUMBER)
+  RETURN BOOLEAN IS
+  l_existe PLS_INTEGER;
+BEGIN
+  SELECT COUNT(*) INTO l_existe
+    FROM DETALLE_MONEDAS d
+    JOIN MONEDAS         m ON m.ID_MONEDA = d.ID_MONEDA
+   WHERE d.ID_DETALLE_MONEDA = p_id_detalle
+     AND m.ID_EMPRESA        = p_id_empresa;
+  RETURN l_existe > 0;
+END ES_DE_EMPRESA;
+```
+
+Es el mismo patrón de `SUCURSAL_ES_DE_EMPRESA` en `db/ubicaciones.sql`.
+
+#### La ruta del borrado cambia
+
+El `idEmpresa` va en la URL, porque un `DELETE` no lleva body:
+
+```
+DELETE /<tabla>/eliminar/:id/:idEmpresa
+```
+
+Y el cliente lo pasa desde la entidad, que ya lo trae — es más preciso que la
+empresa activa:
+
+```ts
+mutationFn: (articulo: Articulo) => api.articulos.eliminar(articulo.id, articulo.idEmpresa),
+```
+
+> **Los catálogos globales quedan afuera**: `PAISES`, `DEPARTAMENTOS`,
+> `CIUDADES`, `MODULOS`, `PAGINAS` y `USUARIOS` no cuelgan de ninguna empresa.
+> `EMPRESAS` tampoco — ahí `ID_EMPRESA` es la PK, no una FK.
+
 **CORS en producción se habilita en APEX, no con un proxy — y es POR MÓDULO.**
 ORDS no manda `Access-Control-Allow-Origin` por defecto, y `src/lib/api.ts`
 pega directo a `oracleapex.com` cuando `import.meta.env.DEV` es falso. Los
@@ -1256,6 +1345,13 @@ Backend (`db/<tabla>.sql`):
       403**, no 401 (un 401 desloguea a quien tiene la sesión sana). Si el
       endpoint sirve a dos consumidores con distinto privilegio, el control va
       sobre el parámetro — ver [6. Seguridad](#6-seguridad)
+- [ ] **Si la tabla es por empresa: `ACTUALIZAR` y `ELIMINAR` exigen
+      `idEmpresa` y lo llevan en el `WHERE`**, `ID_EMPRESA` NO está en el `SET`,
+      y la respuesta es 404 (no 403) cuando la fila es de otra empresa
+- [ ] **Si no tiene columna `ID_EMPRESA`** (detalle o cruce): se valida contra
+      el padre con un `JOIN` antes de escribir
+- [ ] La ruta del borrado es `/eliminar/:id/:idEmpresa` en las tablas por
+      empresa
 - [ ] Los `UPDATE`/`DELETE` verifican `SQL%ROWCOUNT` (si no, un ID inexistente
       devuelve 200)
 - [ ] Consultas de verificación al final (con `OBJECT_NAME`)
@@ -1343,7 +1439,10 @@ Para que la página sea alcanzable (el backend listo no alcanza):
 | **`ORA-20987` al mandar correo (identificador de grupo de seguridad no válido)**  | El handler no fijó el workspace antes de `APEX_MAIL.SEND`. Llamá a `PKG_AUTH.ESTABLECER_WORKSPACE_MAIL`. **No uses `APEX_SESSION.CREATE_SESSION`**: exige una app APEX y este workspace no tiene ninguna — ver [6.1](#61-enviar-correo-desde-un-handler)                                              |
 | **El correo no llega y no hay ningún error en ningún lado**                       | Los envíos se tragan la excepción a propósito (`p_enviado = 'I'`) y la mandan a `APEX_DEBUG`, que no está activo. Diagnosticá con `SELECT PKG_AUTH.PROBAR_CORREO('vos@ejemplo.com') FROM DUAL;`, que sí devuelve el error                                                                             |
 | **La página existe pero el ítem del menú no navega a ningún lado**                | `PAGINAS.RUTA` está vacía o no coincide con ningún archivo de `src/routes/`. Editá la página en Administración → Páginas y elegí la ruta del desplegable (que hoy se deriva del router, así que las lista todas)                                                                                      |
-| **La página no aparece en el menú, aunque esté creada**                           | Falta el permiso, o se cargó **sin empresa**: `USUARIO_PAGINAS` con `ID_EMPRESA` en null no se muestra en ningún menú. Reasignalo desde Permisos eligiendo la empresa                                                                                                                                 |
+| **La página no aparece en el menú, aunque esté creada**                           | Falta el permiso **en esa empresa**: la PK de `USUARIO_PAGINAS` es `(ID_EMPRESA, ID_USUARIO, ID_PAGINA)`, así que los accesos se asignan por empresa. Entrá con la empresa que corresponda y asignalo desde Permisos                                                                                  |
+| **Se puede editar/borrar un registro de OTRA empresa llamando al endpoint**       | El `UPDATE`/`DELETE` filtra sólo por el id. Va `AND ID_EMPRESA = l_id_empresa` en el `WHERE`, y `ID_EMPRESA` **fuera del `SET`** — ver [Aislamiento por empresa](#aislamiento-por-empresa-filtrar-el-listado-no-alcanza)                                                                              |
+| **Quitar un permiso se lo saca al usuario en todas las empresas**                 | El `DELETE` no lleva `ID_EMPRESA`, que integra la PK. Las tres claves van en la URL: `/quitar/:idUsuario/:idPagina/:idEmpresa`                                                                                                                                                                        |
+| **404 al eliminar desde la app, y el registro existe**                            | La ruta cambió a `/eliminar/:id/:idEmpresa` y ese `.sql` todavía no se reejecutó en APEX: ORDS no conoce la URL nueva                                                                                                                                                                                 |
 | **El ítem del menú no queda resaltado al entrar a la página**                     | `<AppLayout active="…">` recibe el nombre en vez de la ruta. Va la ruta: `active="/ubicaciones"`, y el nombre visible va en `title`                                                                                                                                                                   |
 | **Una fila guarda la sucursal de otra empresa**                                   | Las dos FK se validan por separado y ninguna comprueba la relación entre sí. Hay que verificarlo en el paquete antes de escribir — ver [3.1.1](#311-tablas-por-empresa-y-sucursal)                                                                                                                    |
 | **`ORA-01722` al ordenar un listado que antes funcionaba**                        | El `ORDER BY` convierte a número una columna `VARCHAR2` y alguien cargó una fila con texto. Usá `TO_NUMBER(… DEFAULT NULL ON CONVERSION ERROR)` con `NULLS LAST`                                                                                                                                      |

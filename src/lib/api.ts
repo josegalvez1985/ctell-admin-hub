@@ -404,10 +404,19 @@ export type Articulo = {
   codigoArticulo: string | null;
   nombreArticulo: string;
   descripcion: string | null;
-  precioUltimaCompra: number | null;
-  /** Obligatorio: la columna es NOT NULL. */
-  precioVenta: number;
+  /**
+   * Stock actual: la **suma de las cantidades de sus lotes**, calculada por el
+   * backend en cada listado. Ya no es una columna de ARTICULOS.
+   *
+   * Es de sólo lectura y no aparece en `crear` ni en `actualizar`: se mueve
+   * cargando o consumiendo lotes, no editando la ficha del artículo.
+   */
   cantidadStock: number;
+  /**
+   * A partir de cuánto avisar que falta. **Sí** se edita: es una política del
+   * negocio, no una medición — por eso sobrevivió a la eliminación de
+   * `cantidadStock` de la tabla.
+   */
   cantidadMinima: number;
   /**
    * Si tiene imagen cargada. El binario no viaja en el JSON: se pide aparte
@@ -1146,13 +1155,11 @@ export const api = {
     },
 
     /**
-     * Responde 409 si el usuario ya tenía acceso a esa página — incluso con
-     * otro `idEmpresa`: la PK es (idUsuario, idPagina) y la empresa no la
-     * integra, así que una página se asigna a UNA sola empresa por usuario.
+     * Responde 409 si el usuario ya tenía acceso a esa página **en esa
+     * empresa**. La PK es (idEmpresa, idUsuario, idPagina), así que la misma
+     * página sí se puede asignar en varias empresas: son filas distintas.
      *
-     * `idEmpresa` es obligatorio acá aunque la columna sea nullable: define en
-     * qué empresa vale el permiso, y el menú solo muestra las páginas de la
-     * empresa activa. Un permiso sin empresa no aparecería en ningún lado.
+     * Los tres ids son obligatorios — la empresa integra la PK.
      */
     asignar: (idUsuario: number, idPagina: number, idEmpresa: number) =>
       request<{ ok: boolean }>("/usuario-paginas/asignar", {
@@ -1160,9 +1167,15 @@ export const api = {
         body: JSON.stringify({ idUsuario, idPagina, idEmpresa }),
       }),
 
-    /** Las dos claves van en la URL: la PK de la tabla es compuesta. */
-    quitar: (idUsuario: number, idPagina: number) =>
-      request<{ ok: boolean }>(`/usuario-paginas/quitar/${idUsuario}/${idPagina}`, {
+    /**
+     * Quita el permiso **en una empresa**. Las tres claves van en la URL porque
+     * la PK las incluye a las tres.
+     *
+     * `idEmpresa` no es opcional y no debe serlo: sin ella el backend borraría
+     * la fila en todas las empresas, revocando accesos que nadie pidió tocar.
+     */
+    quitar: (idUsuario: number, idPagina: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/usuario-paginas/quitar/${idUsuario}/${idPagina}/${idEmpresa}`, {
         method: "DELETE",
       }),
   },
@@ -1360,8 +1373,8 @@ export const api = {
         body: JSON.stringify(datos),
       }),
 
-    eliminar: (id: number) =>
-      request<{ ok: boolean }>(`/sucursales/eliminar/${id}`, { method: "DELETE" }),
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/sucursales/eliminar/${id}/${idEmpresa}`, { method: "DELETE" }),
   },
 
   /**
@@ -1410,8 +1423,8 @@ export const api = {
         body: JSON.stringify(datos),
       }),
 
-    eliminar: (id: number) =>
-      request<{ ok: boolean }>(`/ubicaciones/eliminar/${id}`, { method: "DELETE" }),
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/ubicaciones/eliminar/${id}/${idEmpresa}`, { method: "DELETE" }),
   },
 
   /**
@@ -1475,8 +1488,8 @@ export const api = {
         body: JSON.stringify(datos),
       }),
 
-    eliminar: (id: number) =>
-      request<{ ok: boolean }>(`/lotes/eliminar/${id}`, { method: "DELETE" }),
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/lotes/eliminar/${id}/${idEmpresa}`, { method: "DELETE" }),
   },
 
   /**
@@ -1515,9 +1528,17 @@ export const api = {
         body: JSON.stringify(datos),
       }),
 
-    /** El id es el de la ASIGNACIÓN (`ArticuloUbicacion.id`). */
-    quitar: (id: number) =>
-      request<{ ok: boolean }>(`/articulos-ubicaciones/eliminar/${id}`, { method: "DELETE" }),
+    /**
+     * El id es el de la ASIGNACIÓN (`ArticuloUbicacion.id`).
+     *
+     * `idEmpresa` acota el borrado a las asignaciones de artículos de esa
+     * empresa. La tabla no tiene esa columna —es un cruce— así que el backend
+     * lo verifica contra el artículo padre.
+     */
+    quitar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/articulos-ubicaciones/eliminar/${id}/${idEmpresa}`, {
+        method: "DELETE",
+      }),
   },
 
   monedas: {
@@ -1554,8 +1575,8 @@ export const api = {
         body: JSON.stringify(datos),
       }),
 
-    eliminar: (id: number) =>
-      request<{ ok: boolean }>(`/monedas/eliminar/${id}`, { method: "DELETE" }),
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/monedas/eliminar/${id}/${idEmpresa}`, { method: "DELETE" }),
   },
 
   /**
@@ -1588,8 +1609,10 @@ export const api = {
         body: JSON.stringify(datos),
       }),
 
-    eliminar: (id: number) =>
-      request<{ ok: boolean }>(`/detalle-monedas/eliminar/${id}`, { method: "DELETE" }),
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/detalle-monedas/eliminar/${id}/${idEmpresa}`, {
+        method: "DELETE",
+      }),
 
     /**
      * Sube la foto de una denominación. Igual que `empresas.subirLogo`: el
@@ -1638,8 +1661,10 @@ export const api = {
         body: JSON.stringify(datos),
       }),
 
-    eliminar: (id: number) =>
-      request<{ ok: boolean }>(`/unidades-medida/eliminar/${id}`, { method: "DELETE" }),
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/unidades-medida/eliminar/${id}/${idEmpresa}`, {
+        method: "DELETE",
+      }),
   },
 
   categorias: {
@@ -1676,8 +1701,8 @@ export const api = {
         body: JSON.stringify(datos),
       }),
 
-    eliminar: (id: number) =>
-      request<{ ok: boolean }>(`/categorias/eliminar/${id}`, { method: "DELETE" }),
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/categorias/eliminar/${id}/${idEmpresa}`, { method: "DELETE" }),
   },
 
   articulos: {
@@ -1691,20 +1716,20 @@ export const api = {
     },
 
     /**
-     * `nombreArticulo` y `precioVenta` son obligatorios; el resto no. Las tres
-     * relaciones (categoría, moneda, unidad) pueden omitirse.
+     * Sólo `idEmpresa` y `nombreArticulo` son obligatorios; el resto no. Las
+     * tres relaciones (categoría, moneda, unidad) pueden omitirse.
+     *
+     * **No hay precios ni stock**: se eliminaron de la tabla. El costo vive en
+     * cada lote (`api.lotes`) y el stock es la suma de sus cantidades.
      */
     crear: (datos: {
       idEmpresa: number;
       nombreArticulo: string;
-      precioVenta: number;
       idCategoria?: number;
       idMoneda?: number;
       idUnidadMedida?: number;
       codigoArticulo?: string;
       descripcion?: string;
-      precioUltimaCompra?: number;
-      cantidadStock?: number;
       cantidadMinima?: number;
     }) =>
       request<{ id: number; ok: boolean }>("/articulos/crear", {
@@ -1726,9 +1751,6 @@ export const api = {
         codigoArticulo?: string;
         nombreArticulo?: string;
         descripcion?: string;
-        precioUltimaCompra?: number;
-        precioVenta?: number;
-        cantidadStock?: number;
         cantidadMinima?: number;
         activo?: Estado;
       },
@@ -1738,8 +1760,8 @@ export const api = {
         body: JSON.stringify(datos),
       }),
 
-    eliminar: (id: number) =>
-      request<{ ok: boolean }>(`/articulos/eliminar/${id}`, { method: "DELETE" }),
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/articulos/eliminar/${id}/${idEmpresa}`, { method: "DELETE" }),
 
     /**
      * Sube la imagen del artículo. El archivo va como cuerpo crudo del PUT y su

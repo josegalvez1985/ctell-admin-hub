@@ -9,7 +9,7 @@
 --   1. LISTAR      GET    /ubicaciones/listar        (?idEmpresa= &idSucursal=)
 --   2. INSERTAR    POST   /ubicaciones/crear
 --   3. ACTUALIZAR  PUT    /ubicaciones/actualizar/:id
---   4. ELIMINAR    DELETE /ubicaciones/eliminar/:id
+--   4. ELIMINAR    DELETE /ubicaciones/eliminar/:id/:idEmpresa
 --
 -- Se ejecuta una sola vez en la hoja de trabajo SQL de APEX, conectado con el
 -- esquema del workspace. REQUIERE db/auth.sql EJECUTADO ANTES: usa PKG_AUTH
@@ -117,9 +117,11 @@ CREATE OR REPLACE PACKAGE PKG_UBICACIONES AS
     p_resultado     OUT CLOB
   );
 
+  -- p_id_empresa es OBLIGATORIO: acota el borrado a la empresa de la sesion.
   PROCEDURE ELIMINAR (
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   );
@@ -424,14 +426,29 @@ CREATE OR REPLACE PACKAGE BODY PKG_UBICACIONES AS
       RETURN;
     END IF;
 
-    -- Que empresa y sucursal van a quedar despues del UPDATE. Se resuelve
-    -- ANTES de escribir porque cambiar solo la sucursal —dejando la empresa
-    -- como estaba— tambien puede romper la coherencia.
+    -- AISLAMIENTO POR EMPRESA: el idEmpresa acota A CUAL fila se le aplica el
+    -- cambio, no es solo un campo mas a modificar. Sin el, un PUT con el id de
+    -- una ubicacion de OTRA empresa la modificaba igual — la pantalla no lo
+    -- permite, pero el endpoint es publico para cualquiera con sesion.
+    --
+    -- Va ANTES del SELECT de abajo porque ese SELECT tambien se acota con el.
+    IF l_id_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
+      RETURN;
+    END IF;
+
+    -- Que sucursal va a quedar despues del UPDATE. Se resuelve ANTES de
+    -- escribir porque cambiar solo la sucursal puede romper la coherencia.
+    --
+    -- El SELECT lleva el AND ID_EMPRESA: si la fila es de otra empresa, cae en
+    -- NO_DATA_FOUND y responde 404 sin llegar a tocar nada.
     BEGIN
-      SELECT NVL(l_id_empresa, ID_EMPRESA), NVL(l_id_sucursal, ID_SUCURSAL)
+      SELECT l_id_empresa, NVL(l_id_sucursal, ID_SUCURSAL)
         INTO l_emp_final, l_suc_final
         FROM UBICACIONES
-       WHERE ID_UBICACION = l_id;
+       WHERE ID_UBICACION = l_id
+         AND ID_EMPRESA   = l_id_empresa;
     EXCEPTION
       WHEN NO_DATA_FOUND THEN
         p_status_code := 404;
@@ -445,15 +462,17 @@ CREATE OR REPLACE PACKAGE BODY PKG_UBICACIONES AS
       RETURN;
     END IF;
 
+    -- ID_EMPRESA fuera del SET a proposito: mover una fila de empresa es lo que
+    -- este control busca impedir.
     UPDATE UBICACIONES
-       SET ID_EMPRESA          = NVL(l_id_empresa, ID_EMPRESA),
-           ID_SUCURSAL         = NVL(l_id_sucursal, ID_SUCURSAL),
+       SET ID_SUCURSAL         = NVL(l_id_sucursal, ID_SUCURSAL),
            ZONA                = NVL(l_zona, ZONA),
            ESTANTE             = NVL(l_estante, ESTANTE),
            NIVEL               = NVL(l_nivel, NIVEL),
            DESCRIPCION         = NVL(TRIM(p_descripcion), DESCRIPCION),
            FECHA_ACTUALIZACION = SYSTIMESTAMP
-     WHERE ID_UBICACION = l_id;
+     WHERE ID_UBICACION = l_id
+       AND ID_EMPRESA   = l_id_empresa;
 
     IF SQL%ROWCOUNT = 0 THEN
       p_status_code := 404;
@@ -485,11 +504,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_UBICACIONES AS
   PROCEDURE ELIMINAR (
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
-    l_sesion NUMBER;
-    l_id     NUMBER;
+    l_sesion     NUMBER;
+    l_id         NUMBER;
+    l_id_empresa NUMBER;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -498,10 +519,22 @@ CREATE OR REPLACE PACKAGE BODY PKG_UBICACIONES AS
       RETURN;
     END IF;
 
-    l_id := TO_NUMBER(NULLIF(p_id, ''));
+    l_id         := TO_NUMBER(NULLIF(p_id, ''));
+    l_id_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
+
+    -- Obligatorio: sin empresa el DELETE alcanzaria filas de cualquiera.
+    IF l_id_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
+      RETURN;
+    END IF;
 
     -- Baja FISICA: la tabla no tiene columna ACTIVO.
-    DELETE FROM UBICACIONES WHERE ID_UBICACION = l_id;
+    -- AISLAMIENTO POR EMPRESA: las dos condiciones. Con solo el id, un DELETE
+    -- con el id de una fila de otra empresa la borraba.
+    DELETE FROM UBICACIONES
+     WHERE ID_UBICACION = l_id
+       AND ID_EMPRESA = l_id_empresa;
 
     IF SQL%ROWCOUNT = 0 THEN
       ROLLBACK;
@@ -649,30 +682,30 @@ CREATE OR REPLACE PACKAGE BODY PKG_UBICACIONES AS
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
     ----------------------------------------------------------------------------
-    -- DELETE /ubicaciones/eliminar/:id
+    -- DELETE /ubicaciones/eliminar/:id/:idEmpresa
     ----------------------------------------------------------------------------
-    ORDS.DEFINE_TEMPLATE(p_module_name => 'ubicaciones', p_pattern => 'eliminar/:id');
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'ubicaciones', p_pattern => 'eliminar/:id/:idEmpresa');
 
     ORDS.DEFINE_HANDLER(
       p_module_name => 'ubicaciones',
-      p_pattern     => 'eliminar/:id',
+      p_pattern     => 'eliminar/:id/:idEmpresa',
       p_method      => 'DELETE',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_UBICACIONES.ELIMINAR(:authorization, :id, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_UBICACIONES.ELIMINAR(:authorization, :id, :idEmpresa, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'ubicaciones', p_pattern => 'eliminar/:id', p_method => 'DELETE',
+      p_module_name => 'ubicaciones', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE',
       p_name => 'authorization', p_bind_variable_name => 'authorization',
       p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'ubicaciones', p_pattern => 'eliminar/:id', p_method => 'DELETE',
+      p_module_name => 'ubicaciones', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE',
       p_name => 'resultado', p_bind_variable_name => 'resultado',
       p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'ubicaciones', p_pattern => 'eliminar/:id', p_method => 'DELETE',
+      p_module_name => 'ubicaciones', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE',
       p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 

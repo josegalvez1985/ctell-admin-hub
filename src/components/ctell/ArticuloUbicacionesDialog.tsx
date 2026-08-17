@@ -107,7 +107,7 @@ export function ArticuloUbicacionesDialog({
   });
 
   const quitar = useMutation({
-    mutationFn: (id: number) => api.articulosUbicaciones.quitar(id),
+    mutationFn: (id: number) => api.articulosUbicaciones.quitar(id, empresa!.id),
     onSuccess: () => {
       toast.success("Ubicación quitada");
       setAQuitar(null);

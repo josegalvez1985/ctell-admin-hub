@@ -100,7 +100,7 @@ function UnidadesMedidaPage() {
   });
 
   const eliminar = useMutation({
-    mutationFn: (unidad: UnidadMedida) => api.unidadesMedida.eliminar(unidad.id),
+    mutationFn: (unidad: UnidadMedida) => api.unidadesMedida.eliminar(unidad.id, unidad.idEmpresa),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["unidades-medida"] });
       toast.success("Unidad eliminada");

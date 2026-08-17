@@ -83,10 +83,9 @@ const schema = z.object({
   idCategoria: z.string(),
   idMoneda: z.string(),
   idUnidadMedida: z.string(),
-  // El único importe obligatorio: la columna es NOT NULL.
-  precioVenta: decimal("El precio de venta").refine((v) => v !== "", "Obligatorio"),
-  precioUltimaCompra: decimal("El precio de compra"),
-  cantidadStock: decimal("El stock"),
+  // Lo único numérico que se carga acá. Los precios y el stock salieron de la
+  // tabla: el costo va en cada lote y el stock es la suma de sus cantidades.
+  // La mínima queda porque es una política del negocio, no una medición.
   cantidadMinima: decimal("La cantidad mínima"),
   activo: z.boolean(),
 });
@@ -106,13 +105,6 @@ const IMAGEN_MAX_BYTES = 1024 * 1024;
  * así que la tabla corta acá.
  */
 const POR_PAGINA = 20;
-
-/** Importe con separador de miles. Sin decimales fijos: 1500 no es "1.500,00". */
-function formatearImporte(valor: number | null, simbolo: string | null): string {
-  if (valor === null) return "—";
-  const numero = new Intl.NumberFormat("es-PY", { maximumFractionDigits: 2 }).format(valor);
-  return simbolo ? `${simbolo} ${numero}` : numero;
-}
 
 /**
  * Fecha del último inventario, sólo el día: la hora exacta de un conteo físico
@@ -170,7 +162,7 @@ function ArticulosPage() {
   );
 
   const eliminar = useMutation({
-    mutationFn: (articulo: Articulo) => api.articulos.eliminar(articulo.id),
+    mutationFn: (articulo: Articulo) => api.articulos.eliminar(articulo.id, articulo.idEmpresa),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["articulos"] });
       toast.success("Artículo eliminado");
@@ -307,9 +299,6 @@ function ArticulosPage() {
                         {articulo.codigoArticulo ? `${articulo.codigoArticulo} · ` : ""}
                         {articulo.categoria ?? "Sin categoría"}
                       </p>
-                      <p className="mt-1 text-sm font-medium text-foreground">
-                        {formatearImporte(articulo.precioVenta, articulo.simboloMoneda)}
-                      </p>
                     </div>
                     <Badge variant={activo ? "secondary" : "outline"} className="shrink-0">
                       {activo ? "Activo" : "Inactivo"}
@@ -388,12 +377,9 @@ function ArticulosPage() {
                   >
                     Categoría
                   </TableHeadFiltrable>
-                  <TableHeadOrdenable
-                    direccion={orden?.campo === "precioVenta" ? orden.direccion : null}
-                    onClick={() => alternarOrden("precioVenta")}
-                  >
-                    Precio
-                  </TableHeadOrdenable>
+                  {/* Sin columna de precio: los precios salieron de ARTICULOS y
+                      viven en cada lote. El stock sigue, pero ahora es la suma
+                      de los lotes que calcula el backend. */}
                   <TableHeadOrdenable
                     direccion={orden?.campo === "cantidadStock" ? orden.direccion : null}
                     onClick={() => alternarOrden("cantidadStock")}
@@ -431,9 +417,6 @@ function ArticulosPage() {
                       </TableCell>
                       <TableCell className="text-muted-foreground">
                         {articulo.categoria ?? "—"}
-                      </TableCell>
-                      <TableCell className="text-foreground">
-                        {formatearImporte(articulo.precioVenta, articulo.simboloMoneda)}
                       </TableCell>
                       <TableCell>
                         <span className={bajoMinimo ? "font-semibold text-destructive" : ""}>
@@ -707,10 +690,6 @@ function ArticuloFormDialog({
       idCategoria: articulo?.idCategoria ? String(articulo.idCategoria) : "",
       idMoneda: articulo?.idMoneda ? String(articulo.idMoneda) : "",
       idUnidadMedida: articulo?.idUnidadMedida ? String(articulo.idUnidadMedida) : "",
-      precioVenta: articulo ? String(articulo.precioVenta) : "",
-      precioUltimaCompra:
-        articulo?.precioUltimaCompra != null ? String(articulo.precioUltimaCompra) : "",
-      cantidadStock: articulo ? String(articulo.cantidadStock) : "0",
       cantidadMinima: articulo ? String(articulo.cantidadMinima) : "0",
       activo: articulo ? esActivo(articulo.activo) : true,
     },
@@ -721,8 +700,8 @@ function ArticuloFormDialog({
       const activo: Estado = v.activo ? "A" : "I";
 
       // Los campos vacíos se omiten en vez de mandarse como "" o 0: el backend
-      // trata lo ausente como "no cambiar", y un 0 explícito en precioCompra
-      // pisaría el valor real con un dato que nadie ingresó.
+      // trata lo ausente como "no cambiar", y un 0 explícito pisaría el valor
+      // real con un dato que nadie ingresó.
       const opcionales = {
         ...(v.codigoArticulo ? { codigoArticulo: v.codigoArticulo } : {}),
         ...(v.descripcion ? { descripcion: v.descripcion } : {}),
@@ -732,12 +711,10 @@ function ArticuloFormDialog({
         ...(v.cantidadMinima ? { cantidadMinima: Number(v.cantidadMinima) } : {}),
       };
 
-      // En edición, precios y stock NO viajan: están bloqueados en el
-      // formulario, así que el estado del form solo tiene el valor con el que
-      // se abrió el diálogo. Mandarlo pisaría con ese dato viejo cualquier
-      // cambio que un proceso de compra o de stock haya hecho mientras tanto.
-      // El backend interpreta lo ausente como "no cambiar", que es justo lo
-      // que se busca.
+      // Alta y edición mandan lo mismo: ya no hay campos que sólo existan en el
+      // alta. Los precios y el stock salieron de la tabla —el costo va en cada
+      // lote y el stock se calcula sumándolos—, así que el formulario quedó
+      // siendo sólo la ficha del artículo.
       return esEdicion
         ? api.articulos.actualizar(articulo.id, {
             nombreArticulo: v.nombreArticulo,
@@ -747,10 +724,7 @@ function ArticuloFormDialog({
         : api.articulos.crear({
             idEmpresa,
             nombreArticulo: v.nombreArticulo,
-            precioVenta: Number(v.precioVenta),
             ...opcionales,
-            ...(v.precioUltimaCompra ? { precioUltimaCompra: Number(v.precioUltimaCompra) } : {}),
-            ...(v.cantidadStock ? { cantidadStock: Number(v.cantidadStock) } : {}),
           });
     },
     onSuccess: () => {
@@ -824,11 +798,11 @@ function ArticuloFormDialog({
                     name="codigoArticulo"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Código</FormLabel>
+                        <FormLabel>Código/Cod. OEM</FormLabel>
                         <FormControl>
                           <Input {...field} placeholder="ART-001" autoComplete="off" />
                         </FormControl>
-                        <FormDescription>Opcional. Interno o de barras.</FormDescription>
+                        <FormDescription>Opcional. Interno, de barras u OEM.</FormDescription>
                         <FormMessage />
                       </FormItem>
                     )}
@@ -858,133 +832,21 @@ function ArticuloFormDialog({
               </div>
             </section>
 
-            {/* PRECIOS Y STOCK — bloqueado en edición.
+            {/* STOCK Y MEDIDA.
 
-                Los tres valores del fieldset los gobiernan procesos, no una
-                carga manual: el precio de última compra sale de una compra, el
-                stock de los movimientos, y el precio de venta se fija con
-                criterio comercial. Editarlos a mano desde el ABM los dejaría
-                desalineados con esos procesos sin dejar rastro del cambio.
+                Ya NO hay campos de precio: PRECIO_VENTA, PRECIO_ULTIMA_COMPRA y
+                CANTIDAD_STOCK se eliminaron de la tabla. El costo es de cada
+                PARTIDA —dos lotes del mismo artículo entran a precios
+                distintos— así que vive en Lotes, y el stock es la suma de sus
+                cantidades.
 
-                En el ALTA sí se editan: son los valores iniciales, y
-                PRECIO_VENTA es NOT NULL — bloquearlo también acá haría
-                imposible crear un artículo.
-
-                `fieldset disabled` deshabilita todo lo que contiene de una vez,
-                sin repetir la condición en cada Input.
-
-                Moneda y unidad de medida acompañan al bloque porque es donde
-                se leen —dan sentido a los importes y a las cantidades— pero
-                quedan FUERA del fieldset: corregirlas no altera ningún valor.
-                Antes estaban sueltas más abajo, lejos de los números que
-                describen. */}
+                Queda la cantidad mínima, que no es una medición sino una
+                política: a partir de cuánto avisar que falta. Y la moneda y la
+                unidad, que dan sentido a esos números aunque no los produzcan. */}
             <section className="space-y-3">
-              <h3 className="text-sm font-semibold text-foreground">Precios y stock</h3>
+              <h3 className="text-sm font-semibold text-foreground">Stock y medida</h3>
 
-              {esEdicion && (
-                <p className="text-xs text-muted-foreground">
-                  Los precios y el stock se actualizan desde las compras y los movimientos, no desde
-                  acá.
-                </p>
-              )}
-
-              {/* `disabled` va en cada Input y no en un <fieldset> que los
-                  envuelva: para que los campos participen de esta grilla el
-                  fieldset necesitaría `display:contents`, que varios navegadores
-                  soportan de forma irregular. Si eso falla, el bloqueo de
-                  precios en edición se pierde EN SILENCIO — y ese bloqueo es
-                  justamente lo que evita pisar valores que gobiernan las
-                  compras y los movimientos de stock. */}
               <div className="grid gap-4 sm:grid-cols-3">
-                <FormField
-                  control={form.control}
-                  name="precioVenta"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Precio de venta</FormLabel>
-                      <FormControl>
-                        {/* inputMode decimal abre el teclado numérico en móvil
-                            sin las flechas de un type="number". */}
-                        <Input
-                          {...field}
-                          inputMode="decimal"
-                          placeholder="0"
-                          autoComplete="off"
-                          disabled={esEdicion}
-                          className="tabular-nums"
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="precioUltimaCompra"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Precio última compra</FormLabel>
-                      <FormControl>
-                        <Input
-                          {...field}
-                          inputMode="decimal"
-                          placeholder="0"
-                          autoComplete="off"
-                          disabled={esEdicion}
-                          className="tabular-nums"
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="idMoneda"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Moneda</FormLabel>
-                      <FormControl>
-                        <Combobox
-                          opciones={monedasOpciones}
-                          value={field.value}
-                          onChange={field.onChange}
-                          placeholder="Sin moneda"
-                          buscarPlaceholder="Buscar moneda…"
-                          cargando={cargandoMonedas}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="cantidadStock"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Stock actual</FormLabel>
-                      <FormControl>
-                        <Input
-                          {...field}
-                          inputMode="decimal"
-                          placeholder="0"
-                          autoComplete="off"
-                          disabled={esEdicion}
-                          className="tabular-nums"
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                {/* La cantidad mínima queda FUERA del bloque bloqueado: es una
-                    política del negocio —cuándo avisar que falta stock— y no un
-                    valor que calcule ningún proceso, así que se edita siempre. */}
                 <FormField
                   control={form.control}
                   name="cantidadMinima"
@@ -992,6 +854,8 @@ function ArticuloFormDialog({
                     <FormItem>
                       <FormLabel>Cantidad mínima</FormLabel>
                       <FormControl>
+                        {/* inputMode decimal abre el teclado numérico en móvil
+                            sin las flechas de un type="number". */}
                         <Input
                           {...field}
                           inputMode="decimal"
@@ -1026,7 +890,55 @@ function ArticuloFormDialog({
                     </FormItem>
                   )}
                 />
+
+                <FormField
+                  control={form.control}
+                  name="idMoneda"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Moneda</FormLabel>
+                      <FormControl>
+                        <Combobox
+                          opciones={monedasOpciones}
+                          value={field.value}
+                          onChange={field.onChange}
+                          placeholder="Sin moneda"
+                          buscarPlaceholder="Buscar moneda…"
+                          cargando={cargandoMonedas}
+                        />
+                      </FormControl>
+                      <FormDescription>En la que se expresan sus costos.</FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
               </div>
+
+              {/* Stock actual: SÓLO LECTURA y sólo en edición. No es un campo
+                  del formulario —no está en el schema ni viaja en el submit—:
+                  lo calcula el backend sumando los lotes. Se muestra porque es
+                  el dato que alguien viene a mirar acá, aunque se modifique
+                  cargando lotes y no editando esta ficha. */}
+              {esEdicion && (
+                <div className="flex items-center justify-between gap-3 rounded-lg border border-dashed border-border px-3 py-2">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Stock actual</p>
+                    <p className="text-xs text-muted-foreground">
+                      Suma de sus lotes. Se modifica en Lotes, no acá.
+                    </p>
+                  </div>
+                  <span
+                    className={
+                      articulo.cantidadStock < articulo.cantidadMinima
+                        ? "text-sm font-semibold tabular-nums text-destructive"
+                        : "text-sm tabular-nums text-foreground"
+                    }
+                  >
+                    {articulo.cantidadStock}
+                    {articulo.abreviaturaUnidad ? ` ${articulo.abreviaturaUnidad}` : ""}
+                  </span>
+                </div>
+              )}
 
               {/* Último inventario: SÓLO LECTURA, y sólo en edición —un alta no
                   tiene conteo previo. No es un campo del formulario (no está en

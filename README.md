@@ -46,23 +46,25 @@ Vite imprime la URL local al arrancar (normalmente `http://localhost:5173`).
 
 ```
 db/                      Backend: un archivo SQL por tabla
+│                        (el orden de la lista es el ORDEN DE EJECUCIÓN)
 ├── auth.sql             PKG_AUTH + módulo ORDS /auth/  (ejecutar PRIMERO)
-├── usuarios.sql         ABM de usuarios
-├── modulos.sql          Módulos del menú
-├── paginas.sql          Páginas del menú
-├── usuario-paginas.sql  Permisos: qué página ve cada usuario, por empresa
+├── usuarios.sql         ABM de usuarios          ─┐
+├── modulos.sql          Módulos del menú          │ Sólo administradores
+├── paginas.sql          Páginas del menú          │ (ES_ADMIN = 'S')
+├── usuario-paginas.sql  Permisos por empresa     ─┘
 ├── paises.sql           ─┐
-├── departamentos.sql     │ Jerarquía geográfica
+├── departamentos.sql     │ Jerarquía geográfica (catálogos globales)
 ├── ciudades.sql         ─┘
 ├── empresas.sql         Empresas + logo (BLOB) + listado público del login
 ├── sucursales.sql       Sucursales de cada empresa
 ├── monedas.sql          ─┐
+├── detalle-monedas.sql   │ Denominaciones de cada moneda + foto (BLOB)
 ├── unidades-medida.sql   │ Definiciones POR EMPRESA
 ├── categorias.sql       ─┘
-├── detalle-monedas.sql  Denominaciones de cada moneda + foto (BLOB)
 ├── ubicaciones.sql      Zona/estante/nivel del depósito, POR EMPRESA Y SUCURSAL
+├── lotes.sql            Partidas: cantidad, costo y vencimiento  ← ANTES que articulos
+├── articulos.sql        Artículos + imagen (BLOB). Su stock SUMA los lotes
 └── articulos-ubicaciones.sql  Cruce: en qué ubicaciones está cada artículo
-└── articulos.sql        Artículos + imagen (BLOB)
 
 src/
 ├── routes/              Rutas (el archivo define la URL)
@@ -103,12 +105,17 @@ Cada archivo define `PKG_<TABLA>` con sus 4 procedimientos —`LISTAR`,
 `INSERTAR`, `ACTUALIZAR`, `ELIMINAR`— y publica su módulo ORDS. Los endpoints
 siguen siempre la misma forma:
 
-| Método   | Ruta                      |
-| -------- | ------------------------- |
-| `GET`    | `/<tabla>/listar`         |
-| `POST`   | `/<tabla>/crear`          |
-| `PUT`    | `/<tabla>/actualizar/:id` |
-| `DELETE` | `/<tabla>/eliminar/:id`   |
+| Método   | Ruta                                 |
+| -------- | ------------------------------------ |
+| `GET`    | `/<tabla>/listar`                    |
+| `POST`   | `/<tabla>/crear`                     |
+| `PUT`    | `/<tabla>/actualizar/:id`            |
+| `DELETE` | `/<tabla>/eliminar/:id/:idEmpresa`\* |
+
+\* En las tablas por empresa el borrado lleva **también el `idEmpresa`** — ver
+[Aislamiento por empresa](#aislamiento-por-empresa). En los catálogos globales
+(países, departamentos, ciudades, módulos, páginas) sigue siendo
+`/eliminar/:id`.
 
 `auth.sql` es la única excepción a la regla: no corresponde a una tabla sino a
 una responsabilidad —verificar credenciales y manejar sesiones— que cruza
@@ -116,14 +123,61 @@ una responsabilidad —verificar credenciales y manejar sesiones— que cruza
 
 ### Tablas por empresa
 
-`MONEDAS`, `UNIDADES_MEDIDA`, `CATEGORIAS` y `ARTICULOS` **cuelgan de
-`EMPRESAS`**: cada empresa tiene su propio juego. El `idEmpresa` no sale de un
-combobox del formulario sino de la **empresa activa de la sesión**, que se elige
-al iniciar sesión (ver [Empresa activa](#empresa-activa)).
+`SUCURSALES`, `MONEDAS`, `UNIDADES_MEDIDA`, `CATEGORIAS`, `ARTICULOS`,
+`UBICACIONES` y `LOTES` **cuelgan de `EMPRESAS`**: cada empresa tiene su propio
+juego. El `idEmpresa` no sale de un combobox del formulario sino de la **empresa
+activa de la sesión**, que se elige al iniciar sesión (ver
+[Empresa activa](#empresa-activa)).
 
 Consecuencia en el listado: **no hacen JOIN contra `EMPRESAS`**. Como ya vienen
 filtradas por una sola empresa, su nombre sería la misma constante repetida en
 cada fila, y el frontend ya lo tiene.
+
+### Aislamiento por empresa
+
+> **Regla: ninguna operación puede tocar una fila de otra empresa. Filtrar el
+> listado no alcanza — eso es la pantalla, no el endpoint.**
+
+Cada `ACTUALIZAR` y cada `ELIMINAR` de una tabla por empresa **exige
+`idEmpresa`** y lo lleva en el `WHERE`, no sólo en los campos a modificar:
+
+```sql
+UPDATE MONEDAS
+   SET NOMBRE_MONEDA = NVL(TRIM(p_nombre_moneda), NOMBRE_MONEDA), …
+ WHERE ID_MONEDA  = l_id
+   AND ID_EMPRESA = l_id_empresa;   -- ← esto es el aislamiento
+```
+
+Sin ese `AND`, un `PUT /articulos/actualizar/57` modificaba el artículo 57
+**aunque fuera de otra empresa**. No pasa usando la interfaz —la pantalla sólo
+muestra los de tu empresa— pero sí llamando al endpoint directamente. El guard
+del cliente evita el acceso accidental; sólo el del backend evita el
+deliberado.
+
+Tres detalles que hacen que el control no tenga puerta trasera:
+
+- **`ID_EMPRESA` NO es modificable.** Salió del `SET` de todos los `UPDATE`:
+  poder cambiarla permitiría **mover una fila a otra empresa**, que es
+  exactamente lo que el `WHERE` impide. En `SUCURSALES` era lo más grave —
+  arrastraría con ella sus ubicaciones y lotes.
+- **La respuesta es 404, no 403.** Decir "existe pero no es tuya" confirma que
+  el id existe, que es justamente lo que no debería poder averiguarse.
+- **Las FK de destino también se validan.** Reasignar una denominación a una
+  moneda ajena, o un lote a un artículo de otra empresa, es la misma fuga por
+  otro camino.
+
+Las tablas **sin** columna `ID_EMPRESA` heredan la empresa de su padre y se
+validan con un `JOIN` antes de escribir:
+
+| Tabla                   | Se valida contra         |
+| ----------------------- | ------------------------ |
+| `DETALLE_MONEDAS`       | su `MONEDA`              |
+| `ARTICULOS_UBICACIONES` | su `ARTICULO`            |
+| `USUARIO_PAGINAS`       | la empresa está en la PK |
+
+> Los catálogos globales —`PAISES`, `DEPARTAMENTOS`, `CIUDADES`, `MODULOS`,
+> `PAGINAS`, `USUARIOS`— **no** llevan este control: no cuelgan de ninguna
+> empresa. `EMPRESAS` tampoco, porque ahí `ID_EMPRESA` es la PK.
 
 `UBICACIONES` va un paso más: cuelga de la empresa **y** de la sucursal, y los dos
 ids salen de los providers globales (ver
@@ -208,10 +262,41 @@ El content-type se guarda junto al binario en `LOGO_MIME` / `IMAGEN_MIME` /
 DDL: los archivos las agregan en un paso 0 idempotente, que consulta
 `USER_TAB_COLUMNS` antes del `ALTER`.
 
-**El orden importa: `auth.sql` primero.** `PKG_USUARIOS` llama a `PKG_AUTH`
-para hashear contraseñas y revocar sesiones, y además reutiliza el
-procedimiento `BORRAR_MODULO_ORDS` que ese archivo define. Al revés no
-compila.
+### Orden de ejecución
+
+Hay **dos dependencias reales**; el resto del orden es indistinto.
+
+1. **`auth.sql` primero, sin excepción.** Todos los demás llaman a
+   `PKG_AUTH` —`VALIDAR_TOKEN`, `VALIDAR_TOKEN_ADMIN`, el hasheo de
+   contraseñas—, así que sin él ninguno compila. Si sale `INVALID`, frená ahí.
+2. **`lotes.sql` antes que `articulos.sql`.** El listado de artículos hace un
+   `SUM()` sobre `LOTES` para calcular el stock: si la tabla no existe,
+   `PKG_ARTICULOS` queda `INVALID`.
+
+```
+1.  db/auth.sql                  9.  db/detalle-monedas.sql
+2.  db/usuarios.sql              10. db/categorias.sql
+3.  db/modulos.sql               11. db/unidades-medida.sql
+4.  db/paginas.sql               12. db/ubicaciones.sql
+5.  db/usuario-paginas.sql       13. db/lotes.sql
+6.  db/empresas.sql              14. db/articulos.sql
+7.  db/sucursales.sql            15. db/articulos-ubicaciones.sql
+8.  db/monedas.sql
+```
+
+Después de cada uno: el paquete tiene que quedar `VALID` y la consulta de
+`USER_ERRORS` sin filas. Al terminar, conviene verificar las dos cosas que
+dejan el sistema inutilizable si salieron mal:
+
+```sql
+-- Ningún paquete inválido.
+SELECT OBJECT_NAME, STATUS FROM USER_OBJECTS
+ WHERE OBJECT_NAME LIKE 'PKG%' AND STATUS != 'VALID';
+
+-- Al menos un administrador activo, o nadie entra a Administración.
+SELECT ID_USUARIO, USUARIO FROM USUARIOS
+ WHERE ES_ADMIN = 'S' AND ACTIVO = 'A';
+```
 
 Cada archivo se ejecuta **de una sola vez y por separado** en la hoja de trabajo
 SQL de APEX, y contiene el paquete PL/SQL, el módulo ORDS con sus endpoints y
@@ -222,13 +307,13 @@ tablas**: el DDL se administra aparte.
 
 ### Endpoints publicados
 
-| Método | Ruta                      | Auth  | Devuelve                                                         |
-| ------ | ------------------------- | ----- | ---------------------------------------------------------------- |
-| `POST` | `/auth/login`             | —     | `token`, `expira`, `usuario`                                     |
-| `POST` | `/auth/logout`            | token | `{ ok: true }`                                                   |
-| `GET`  | `/auth/me`                | token | `id`, `usuario`, `nombreApellido`, `correo`, `activo`, `esAdmin` |
-| `POST` | `/auth/recuperar`         | —     | mensaje neutro (siempre 200) + clave provisoria por mail         |
-| `POST` | `/auth/cambiar-password`  | token | `{ ok: true }` + revoca **todas** las sesiones                   |
+| Método | Ruta                     | Auth  | Devuelve                                                         |
+| ------ | ------------------------ | ----- | ---------------------------------------------------------------- |
+| `POST` | `/auth/login`            | —     | `token`, `expira`, `usuario`                                     |
+| `POST` | `/auth/logout`           | token | `{ ok: true }`                                                   |
+| `GET`  | `/auth/me`               | token | `id`, `usuario`, `nombreApellido`, `correo`, `activo`, `esAdmin` |
+| `POST` | `/auth/recuperar`        | —     | mensaje neutro (siempre 200) + clave provisoria por mail         |
+| `POST` | `/auth/cambiar-password` | token | `{ ok: true }` + revoca **todas** las sesiones                   |
 
 El token se envía como `Authorization: Bearer <token>` y vence a las 8 horas.
 El header se parsea con `PKG_AUTH.TOKEN_DE_HEADER`, que acepta el prefijo en
@@ -241,6 +326,28 @@ cuenta está inactiva. Distinguir los casos permitiría enumerar cuentas válida
 Validar un token comprueba tres cosas, no una: que el token esté vigente, que
 no haya vencido, y que **la cuenta siga activa**. Por eso inactivar un usuario
 le corta el acceso al instante, aunque su token todavía no hubiera expirado.
+
+#### Autenticar no es autorizar
+
+`VALIDAR_TOKEN` responde "¿quién sos?", no "¿podés hacer esto?". Para lo
+segundo está **`PKG_AUTH.VALIDAR_TOKEN_ADMIN`**, que además exige
+`ES_ADMIN = 'S'` y responde **403** — no 401, que el cliente interpreta como
+sesión vencida y deslogueaba a alguien con la sesión sana.
+
+Lo usan los cuatro módulos administrativos: `usuarios`, `modulos`, `paginas` y
+`usuario-paginas` (en este último, `ASIGNAR` y `QUITAR`).
+
+> **Esconder la pantalla no es seguridad.** La página de Administración ya
+> redirigía a `/home` a quien no fuera admin, y aun así cualquier usuario con
+> sesión podía hacer `GET /usuarios/listar` con su propio token y recibir la
+> lista completa de cuentas —nombres, correos y quién es administrador—. Peor:
+> `POST /usuario-paginas/asignar` le permitía **darse a sí mismo cualquier
+> página, incluida Administración**, escalando privilegios con una petición.
+
+**El caso mixto:** `usuario-paginas/listar` alimenta el menú de _todos_ los
+usuarios —cada uno pidiendo los suyos— y también el ABM de permisos.
+Restringirlo a admins dejaría sin menú a todo el mundo, así que el control va
+sobre el parámetro: **cada uno ve los suyos, y sólo un admin ve los de otro**.
 
 #### ABM de usuarios — `db/usuarios.sql`
 
@@ -413,22 +520,28 @@ ve una tabla vacía que parece un depósito sin cargar.
 
 ### Permisos y menú
 
-`USUARIO_PAGINAS` define qué páginas ve cada usuario, y desde esta versión
-**también en qué empresa**: el menú solo muestra las páginas cuyo permiso
-corresponde a la empresa activa. Sin permisos en esa empresa, el menú queda
-vacío.
+`USUARIO_PAGINAS` define qué páginas ve cada usuario **en cada empresa**: el
+menú solo muestra las páginas cuyo permiso corresponde a la empresa activa. Sin
+permisos en esa empresa, el menú queda vacío, y eso es lo esperado.
 
-Dos límites que vienen del DDL y conviene tener presentes:
+**La PK es `(ID_EMPRESA, ID_USUARIO, ID_PAGINA)`.** Los permisos son por empresa
+de verdad: el mismo usuario puede ser vendedor en la empresa A y sólo consultar
+en la B. La contrapartida es que hay que asignarle las páginas **en cada
+empresa**, entrando con esa empresa.
 
-- **`ID_EMPRESA` no está en la PK**, que sigue siendo `(ID_USUARIO, ID_PAGINA)`.
-  Por eso una página se asigna a **una sola empresa por usuario**: dársela en
-  dos da 409. Para levantar ese límite hay que llevar la PK a
-  `(ID_USUARIO, ID_PAGINA, ID_EMPRESA)`.
-- **La columna es nullable**, y los permisos cargados antes de que existiera
-  **no aparecen en ningún menú**. Hay que reasignarlos desde el ABM de permisos.
-  `db/usuario-paginas.sql` trae al final una consulta que los lista y, comentado,
-  el `UPDATE` para migrarlos de una si el sistema venía usándose con una sola
-  empresa.
+> **Las tres claves viajan en todas las operaciones**, y es el error más fácil
+> de cometer acá: `quitar` filtrando sólo por `(idUsuario, idPagina)` borraría
+> el permiso **en todas las empresas**, no sólo en la que se está editando. Por
+> eso la ruta es `DELETE /usuario-paginas/quitar/:idUsuario/:idPagina/:idEmpresa`.
+
+El ABM de permisos (Configuración → Permisos, sólo administradores) trae dos
+atajos para no tildar de a una:
+
+- **Checkbox por módulo**: marca o desmarca todas sus páginas de una vez, con
+  estado intermedio cuando hay algunas. Sólo pide las que cambian.
+- **Copiar permisos**: replica los accesos de un usuario a otro dentro de la
+  empresa activa. **Agrega, no reemplaza** — nadie pierde accesos por un clic.
+  El desplegable de destino excluye a quienes ya tienen todo.
 
 #### Una página nueva no aparece sola: dos pasos
 

@@ -103,7 +103,7 @@ function SucursalesPage() {
   });
 
   const eliminar = useMutation({
-    mutationFn: (sucursal: Sucursal) => api.sucursales.eliminar(sucursal.id),
+    mutationFn: (sucursal: Sucursal) => api.sucursales.eliminar(sucursal.id, sucursal.idEmpresa),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["sucursales"] });
       toast.success("Sucursal eliminada");

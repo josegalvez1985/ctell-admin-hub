@@ -119,7 +119,7 @@ function ArticulosUbicacionesPage() {
   }, [resultado, orden, visibles]);
 
   const quitar = useMutation({
-    mutationFn: (item: ArticuloUbicacion) => api.articulosUbicaciones.quitar(item.id),
+    mutationFn: (item: ArticuloUbicacion) => api.articulosUbicaciones.quitar(item.id, empresa!.id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["articulos-ubicaciones"] });
       toast.success("Asignación quitada");

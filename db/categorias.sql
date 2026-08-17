@@ -9,7 +9,7 @@
 --   1. LISTAR      GET    /categorias/listar        (?idEmpresa= opcional)
 --   2. INSERTAR    POST   /categorias/crear
 --   3. ACTUALIZAR  PUT    /categorias/actualizar/:id
---   4. ELIMINAR    DELETE /categorias/eliminar/:id
+--   4. ELIMINAR    DELETE /categorias/eliminar/:id/:idEmpresa
 --
 -- Se ejecuta una sola vez en la hoja de trabajo SQL de APEX, conectado con el
 -- esquema del workspace. REQUIERE db/auth.sql EJECUTADO ANTES: usa PKG_AUTH
@@ -106,9 +106,11 @@ CREATE OR REPLACE PACKAGE PKG_CATEGORIAS AS
     p_resultado        OUT CLOB
   );
 
+  -- p_id_empresa es OBLIGATORIO: acota el borrado a la empresa de la sesion.
   PROCEDURE ELIMINAR (
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   );
@@ -354,13 +356,26 @@ CREATE OR REPLACE PACKAGE BODY PKG_CATEGORIAS AS
     -- "borrar". Es el mismo criterio que el resto del proyecto (ver la
     -- ubicación en db/empresas.sql); si algún día hace falta vaciarla, necesita
     -- un centinela explícito.
+    -- AISLAMIENTO POR EMPRESA: el idEmpresa acota A CUAL fila se le aplica el
+    -- cambio, no es solo un campo mas a modificar. Sin el WHERE, un PUT con el
+    -- id de una fila de OTRA empresa la modificaba igual — la pantalla no lo
+    -- permite, pero el endpoint es publico para cualquiera con sesion.
+    --
+    -- ID_EMPRESA sale del SET a proposito: mover una fila de empresa es lo que
+    -- este control busca impedir.
+    IF l_id_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
+      RETURN;
+    END IF;
+
     UPDATE CATEGORIAS
-       SET ID_EMPRESA          = NVL(l_id_empresa, ID_EMPRESA),
-           NOMBRE_CATEGORIA    = NVL(TRIM(p_nombre_categoria), NOMBRE_CATEGORIA),
+       SET NOMBRE_CATEGORIA    = NVL(TRIM(p_nombre_categoria), NOMBRE_CATEGORIA),
            DESCRIPCION         = NVL(TRIM(p_descripcion), DESCRIPCION),
            ACTIVO              = NVL(l_estado, ACTIVO),
            FECHA_ACTUALIZACION = SYSTIMESTAMP
-     WHERE ID_CATEGORIA = l_id;
+     WHERE ID_CATEGORIA = l_id
+       AND ID_EMPRESA = l_id_empresa;
 
     IF SQL%ROWCOUNT = 0 THEN
       p_status_code := 404;
@@ -392,11 +407,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_CATEGORIAS AS
   PROCEDURE ELIMINAR (
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
-    l_sesion NUMBER;
-    l_id     NUMBER;
+    l_sesion     NUMBER;
+    l_id         NUMBER;
+    l_id_empresa NUMBER;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -405,9 +422,21 @@ CREATE OR REPLACE PACKAGE BODY PKG_CATEGORIAS AS
       RETURN;
     END IF;
 
-    l_id := TO_NUMBER(NULLIF(p_id, ''));
+    l_id         := TO_NUMBER(NULLIF(p_id, ''));
+    l_id_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
 
-    DELETE FROM CATEGORIAS WHERE ID_CATEGORIA = l_id;
+    -- Obligatorio: sin empresa el DELETE alcanzaria filas de cualquiera.
+    IF l_id_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
+      RETURN;
+    END IF;
+
+    -- AISLAMIENTO POR EMPRESA: las dos condiciones. Con solo el id, un DELETE
+    -- con el id de una fila de otra empresa la borraba.
+    DELETE FROM CATEGORIAS
+     WHERE ID_CATEGORIA = l_id
+       AND ID_EMPRESA = l_id_empresa;
 
     IF SQL%ROWCOUNT = 0 THEN
       ROLLBACK;
@@ -555,30 +584,30 @@ CREATE OR REPLACE PACKAGE BODY PKG_CATEGORIAS AS
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
     ----------------------------------------------------------------------------
-    -- DELETE /categorias/eliminar/:id
+    -- DELETE /categorias/eliminar/:id/:idEmpresa
     ----------------------------------------------------------------------------
-    ORDS.DEFINE_TEMPLATE(p_module_name => 'categorias', p_pattern => 'eliminar/:id');
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'categorias', p_pattern => 'eliminar/:id/:idEmpresa');
 
     ORDS.DEFINE_HANDLER(
       p_module_name => 'categorias',
-      p_pattern     => 'eliminar/:id',
+      p_pattern     => 'eliminar/:id/:idEmpresa',
       p_method      => 'DELETE',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_CATEGORIAS.ELIMINAR(:authorization, :id, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_CATEGORIAS.ELIMINAR(:authorization, :id, :idEmpresa, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'categorias', p_pattern => 'eliminar/:id', p_method => 'DELETE',
+      p_module_name => 'categorias', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE',
       p_name => 'authorization', p_bind_variable_name => 'authorization',
       p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'categorias', p_pattern => 'eliminar/:id', p_method => 'DELETE',
+      p_module_name => 'categorias', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE',
       p_name => 'resultado', p_bind_variable_name => 'resultado',
       p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'categorias', p_pattern => 'eliminar/:id', p_method => 'DELETE',
+      p_module_name => 'categorias', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE',
       p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 

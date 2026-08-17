@@ -102,7 +102,7 @@ function MonedasPage() {
   });
 
   const eliminar = useMutation({
-    mutationFn: (moneda: Moneda) => api.monedas.eliminar(moneda.id),
+    mutationFn: (moneda: Moneda) => api.monedas.eliminar(moneda.id, moneda.idEmpresa),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["monedas"] });
       toast.success("Moneda eliminada");

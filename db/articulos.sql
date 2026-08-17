@@ -9,7 +9,7 @@
 --   1. LISTAR      GET    /articulos/listar        (?idEmpresa= opcional)
 --   2. INSERTAR    POST   /articulos/crear
 --   3. ACTUALIZAR  PUT    /articulos/actualizar/:id
---   4. ELIMINAR    DELETE /articulos/eliminar/:id
+--   4. ELIMINAR    DELETE /articulos/eliminar/:id/:idEmpresa
 --   5. (sin PL/SQL) GET   /articulos/imagen/:id    (SIN TOKEN, media)
 --   6. GUARDAR_IMAGEN PUT /articulos/imagen/:id    (con token)
 --
@@ -22,10 +22,25 @@
 -- Tabla (no la crea ni la altera; el DDL se administra aparte):
 --   ARTICULOS  ID_ARTICULO, ID_EMPRESA, ID_CATEGORIA, ID_MONEDA,
 --              ID_UNIDAD_MEDIDA, CODIGO_ARTICULO, NOMBRE_ARTICULO,
---              DESCRIPCION, PRECIO_ULTIMA_COMPRA, PRECIO_VENTA,
---              CANTIDAD_STOCK, CANTIDAD_MINIMA, ACTIVO,
+--              DESCRIPCION, CANTIDAD_MINIMA, ACTIVO,
 --              FECHA_CREACION, FECHA_ACTUALIZACION, IMAGEN,
---              FEC_ULTIMO_INVENTARIO
+--              IMAGEN_MIME, FEC_ULTIMO_INVENTARIO
+--
+-- EL ARTICULO YA NO GUARDA PRECIOS NI STOCK. Se eliminaron del DDL
+-- PRECIO_ULTIMA_COMPRA, PRECIO_VENTA y CANTIDAD_STOCK: esos datos viven ahora
+-- en LOTES, donde cada partida trae su COSTO y su CANTIDAD.
+--
+-- Es lo correcto: el precio de compra y la cantidad son de la PARTIDA, no del
+-- articulo. Dos lotes del mismo articulo entran a costos distintos, y guardar
+-- un solo numero en la cabecera obligaba a elegir cual — el ultimo, en general,
+-- que es el que menos sirve para valorizar lo que queda en deposito.
+--
+-- CONSECUENCIA: el stock de un articulo es la SUMA de sus lotes, no una columna.
+-- Ver la consulta de stock por articulo al final de este archivo.
+--
+-- CANTIDAD_MINIMA SI se conserva, y no es una inconsistencia: es una POLITICA
+-- (a partir de cuanto avisar que falta), no una medicion. No la calcula ningun
+-- proceso ni sale de ninguna partida.
 --
 -- FEC_ULTIMO_INVENTARIO ES DE SOLO LECTURA. El listado la devuelve como
 -- `fechaUltimoInventario` (ISO) y NINGUN endpoint la escribe: ni INSERTAR ni
@@ -165,9 +180,6 @@ CREATE OR REPLACE PACKAGE PKG_ARTICULOS AS
     p_codigo_articulo      IN  VARCHAR2,
     p_nombre_articulo      IN  VARCHAR2,
     p_descripcion          IN  VARCHAR2,
-    p_precio_ultima_compra IN  VARCHAR2,
-    p_precio_venta         IN  VARCHAR2,
-    p_cantidad_stock       IN  VARCHAR2,
     p_cantidad_minima      IN  VARCHAR2,
     p_status_code          OUT NUMBER,
     p_resultado            OUT CLOB
@@ -184,18 +196,17 @@ CREATE OR REPLACE PACKAGE PKG_ARTICULOS AS
     p_codigo_articulo      IN  VARCHAR2,
     p_nombre_articulo      IN  VARCHAR2,
     p_descripcion          IN  VARCHAR2,
-    p_precio_ultima_compra IN  VARCHAR2,
-    p_precio_venta         IN  VARCHAR2,
-    p_cantidad_stock       IN  VARCHAR2,
     p_cantidad_minima      IN  VARCHAR2,
     p_activo               IN  VARCHAR2,
     p_status_code          OUT NUMBER,
     p_resultado            OUT CLOB
   );
 
+  -- p_id_empresa es OBLIGATORIO: acota el borrado a la empresa de la sesion.
   PROCEDURE ELIMINAR (
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   );
@@ -354,9 +365,21 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
                  'codigoArticulo'       VALUE a.CODIGO_ARTICULO,
                  'nombreArticulo'       VALUE a.NOMBRE_ARTICULO,
                  'descripcion'          VALUE a.DESCRIPCION,
-                 'precioUltimaCompra'   VALUE a.PRECIO_ULTIMA_COMPRA,
-                 'precioVenta'          VALUE a.PRECIO_VENTA,
-                 'cantidadStock'        VALUE a.CANTIDAD_STOCK,
+                 -- STOCK CALCULADO, no una columna: la suma de las cantidades
+                 -- de sus lotes. PRECIO_VENTA, PRECIO_ULTIMA_COMPRA y
+                 -- CANTIDAD_STOCK se eliminaron del DDL (ver la nota de arriba).
+                 --
+                 -- Es una subconsulta y no un JOIN con GROUP BY: agrupar toda la
+                 -- consulta por las ~15 columnas del SELECT para sumar una sola
+                 -- seria mucho mas fragil de leer y de mantener.
+                 --
+                 -- NVL a 0: un articulo SIN lotes no tiene filas que sumar y
+                 -- SUM() devuelve NULL, no cero. Sin esto el frontend recibiria
+                 -- null y la comparacion contra CANTIDAD_MINIMA no marcaria como
+                 -- faltante justo al que no tiene NADA en deposito.
+                 'cantidadStock'        VALUE NVL((SELECT SUM(l.CANTIDAD)
+                                                     FROM LOTES l
+                                                    WHERE l.ID_ARTICULO = a.ID_ARTICULO), 0),
                  'cantidadMinima'       VALUE a.CANTIDAD_MINIMA,
                  -- SÓLO LECTURA: ningún endpoint la escribe. La va a estampar el
                  -- proceso de inventario cuando exista; hasta entonces llega
@@ -423,9 +446,6 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     p_codigo_articulo      IN  VARCHAR2,
     p_nombre_articulo      IN  VARCHAR2,
     p_descripcion          IN  VARCHAR2,
-    p_precio_ultima_compra IN  VARCHAR2,
-    p_precio_venta         IN  VARCHAR2,
-    p_cantidad_stock       IN  VARCHAR2,
     p_cantidad_minima      IN  VARCHAR2,
     p_status_code          OUT NUMBER,
     p_resultado            OUT CLOB
@@ -435,9 +455,6 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     l_id_categoria   NUMBER;
     l_id_moneda      NUMBER;
     l_id_unidad      NUMBER;
-    l_precio_compra  NUMBER;
-    l_precio_venta   NUMBER;
-    l_stock          NUMBER;
     l_minima         NUMBER;
     l_id             NUMBER;
   BEGIN
@@ -454,39 +471,34 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     l_id_categoria  := TO_NUMBER(NULLIF(p_id_categoria, ''));
     l_id_moneda     := TO_NUMBER(NULLIF(p_id_moneda, ''));
     l_id_unidad     := TO_NUMBER(NULLIF(p_id_unidad_medida, ''));
-    l_precio_compra := TO_NUMBER(NULLIF(p_precio_ultima_compra, ''));
-    l_precio_venta  := TO_NUMBER(NULLIF(p_precio_venta, ''));
-    l_stock         := TO_NUMBER(NULLIF(p_cantidad_stock, ''));
     l_minima        := TO_NUMBER(NULLIF(p_cantidad_minima, ''));
 
-    -- PRECIO_VENTA es NOT NULL en el DDL, así que se exige junto al nombre.
-    -- Las tres FK y el resto de los campos son opcionales.
-    IF l_id_empresa IS NULL
-       OR TRIM(p_nombre_articulo) IS NULL
-       OR l_precio_venta IS NULL THEN
+    -- Solo la empresa y el nombre. PRECIO_VENTA ya no existe en el DDL, asi que
+    -- dejo de ser obligatorio: un articulo se da de alta como ficha y sus
+    -- precios llegan despues con cada lote.
+    IF l_id_empresa IS NULL OR TRIM(p_nombre_articulo) IS NULL THEN
       p_status_code := 400;
-      p_resultado := '{"error":"idEmpresa, nombreArticulo y precioVenta son obligatorios"}';
+      p_resultado := '{"error":"idEmpresa y nombreArticulo son obligatorios"}';
       RETURN;
     END IF;
 
-    -- Un precio negativo no es un dato válido: es 400, no un 500 más adelante.
-    IF l_precio_venta < 0 OR NVL(l_precio_compra, 0) < 0 THEN
+    -- Un minimo negativo no es un dato valido: es 400, no un 500 mas adelante.
+    IF NVL(l_minima, 0) < 0 THEN
       p_status_code := 400;
-      p_resultado := '{"error":"Los precios no pueden ser negativos"}';
+      p_resultado := '{"error":"La cantidad minima no puede ser negativa"}';
       RETURN;
     END IF;
 
     -- 'A' explícito aunque el DEFAULT ya sea 'A': es el criterio del proyecto,
     -- para no depender de un default que puede cambiar en el DDL.
     --
-    -- NVL en stock y mínima: el DDL las declara DEFAULT 0, pero mandar NULL
-    -- explícito pisaría ese default y dejaría la columna en NULL, que después
-    -- rompe cualquier suma o comparación de stock.
+    -- NVL en la mínima: el DDL la declara DEFAULT 0, pero mandar NULL explícito
+    -- pisaría ese default y dejaría la columna en NULL, que después rompe
+    -- cualquier comparación contra el stock.
     INSERT INTO ARTICULOS (
       ID_EMPRESA, ID_CATEGORIA, ID_MONEDA, ID_UNIDAD_MEDIDA,
       CODIGO_ARTICULO, NOMBRE_ARTICULO, DESCRIPCION,
-      PRECIO_ULTIMA_COMPRA, PRECIO_VENTA,
-      CANTIDAD_STOCK, CANTIDAD_MINIMA,
+      CANTIDAD_MINIMA,
       ACTIVO, FECHA_CREACION, FECHA_ACTUALIZACION
     ) VALUES (
       l_id_empresa,
@@ -496,9 +508,6 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
       TRIM(p_codigo_articulo),
       TRIM(p_nombre_articulo),
       TRIM(p_descripcion),
-      l_precio_compra,
-      l_precio_venta,
-      NVL(l_stock, 0),
       NVL(l_minima, 0),
       'A',
       SYSTIMESTAMP,
@@ -525,7 +534,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
       ELSIF SQLCODE = -1722 THEN
         -- Un precio o cantidad que no era número.
         p_status_code := 400;
-        p_resultado := '{"error":"Los precios y cantidades deben ser numericos"}';
+        p_resultado := '{"error":"La cantidad minima debe ser numerica"}';
       ELSE
         p_status_code := 500;
         APEX_DEBUG.ERROR('PKG_ARTICULOS.INSERTAR: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
@@ -544,9 +553,6 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     p_codigo_articulo      IN  VARCHAR2,
     p_nombre_articulo      IN  VARCHAR2,
     p_descripcion          IN  VARCHAR2,
-    p_precio_ultima_compra IN  VARCHAR2,
-    p_precio_venta         IN  VARCHAR2,
-    p_cantidad_stock       IN  VARCHAR2,
     p_cantidad_minima      IN  VARCHAR2,
     p_activo               IN  VARCHAR2,
     p_status_code          OUT NUMBER,
@@ -558,9 +564,6 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     l_id_categoria   NUMBER;
     l_id_moneda      NUMBER;
     l_id_unidad      NUMBER;
-    l_precio_compra  NUMBER;
-    l_precio_venta   NUMBER;
-    l_stock          NUMBER;
     l_minima         NUMBER;
     l_estado         VARCHAR2(1);
   BEGIN
@@ -576,14 +579,11 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     l_id_categoria  := TO_NUMBER(NULLIF(p_id_categoria, ''));
     l_id_moneda     := TO_NUMBER(NULLIF(p_id_moneda, ''));
     l_id_unidad     := TO_NUMBER(NULLIF(p_id_unidad_medida, ''));
-    l_precio_compra := TO_NUMBER(NULLIF(p_precio_ultima_compra, ''));
-    l_precio_venta  := TO_NUMBER(NULLIF(p_precio_venta, ''));
-    l_stock         := TO_NUMBER(NULLIF(p_cantidad_stock, ''));
     l_minima        := TO_NUMBER(NULLIF(p_cantidad_minima, ''));
 
-    IF NVL(l_precio_venta, 0) < 0 OR NVL(l_precio_compra, 0) < 0 THEN
+    IF l_minima IS NOT NULL AND l_minima < 0 THEN
       p_status_code := 400;
-      p_resultado := '{"error":"Los precios no pueden ser negativos"}';
+      p_resultado := '{"error":"La cantidad minima no puede ser negativa"}';
       RETURN;
     END IF;
 
@@ -601,21 +601,31 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     -- "desvincular". Es el mismo criterio que la ubicación en db/empresas.sql;
     -- para poder quitarle la categoría a un artículo haría falta un centinela
     -- explícito (un 0, por ejemplo) que hoy no existe.
+    -- AISLAMIENTO POR EMPRESA: el idEmpresa acota A CUAL fila se le aplica el
+    -- cambio, no es solo un campo mas a modificar. Sin el WHERE, un PUT con el
+    -- id de una fila de OTRA empresa la modificaba igual — la pantalla no lo
+    -- permite, pero el endpoint es publico para cualquiera con sesion.
+    --
+    -- ID_EMPRESA sale del SET a proposito: mover una fila de empresa es lo que
+    -- este control busca impedir.
+    IF l_id_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
+      RETURN;
+    END IF;
+
     UPDATE ARTICULOS
-       SET ID_EMPRESA           = NVL(l_id_empresa, ID_EMPRESA),
-           ID_CATEGORIA         = NVL(l_id_categoria, ID_CATEGORIA),
+       SET ID_CATEGORIA         = NVL(l_id_categoria, ID_CATEGORIA),
            ID_MONEDA            = NVL(l_id_moneda, ID_MONEDA),
            ID_UNIDAD_MEDIDA     = NVL(l_id_unidad, ID_UNIDAD_MEDIDA),
            CODIGO_ARTICULO      = NVL(TRIM(p_codigo_articulo), CODIGO_ARTICULO),
            NOMBRE_ARTICULO      = NVL(TRIM(p_nombre_articulo), NOMBRE_ARTICULO),
            DESCRIPCION          = NVL(TRIM(p_descripcion), DESCRIPCION),
-           PRECIO_ULTIMA_COMPRA = NVL(l_precio_compra, PRECIO_ULTIMA_COMPRA),
-           PRECIO_VENTA         = NVL(l_precio_venta, PRECIO_VENTA),
-           CANTIDAD_STOCK       = NVL(l_stock, CANTIDAD_STOCK),
            CANTIDAD_MINIMA      = NVL(l_minima, CANTIDAD_MINIMA),
            ACTIVO               = NVL(l_estado, ACTIVO),
            FECHA_ACTUALIZACION  = SYSTIMESTAMP
-     WHERE ID_ARTICULO = l_id;
+     WHERE ID_ARTICULO = l_id
+       AND ID_EMPRESA = l_id_empresa;
 
     IF SQL%ROWCOUNT = 0 THEN
       p_status_code := 404;
@@ -638,7 +648,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
         p_resultado := MENSAJE_FK;
       ELSIF SQLCODE = -1722 THEN
         p_status_code := 400;
-        p_resultado := '{"error":"Los precios y cantidades deben ser numericos"}';
+        p_resultado := '{"error":"La cantidad minima debe ser numerica"}';
       ELSE
         p_status_code := 500;
         APEX_DEBUG.ERROR('PKG_ARTICULOS.ACTUALIZAR: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
@@ -650,11 +660,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
   PROCEDURE ELIMINAR (
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
-    l_sesion NUMBER;
-    l_id     NUMBER;
+    l_sesion     NUMBER;
+    l_id         NUMBER;
+    l_id_empresa NUMBER;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -663,9 +675,21 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
       RETURN;
     END IF;
 
-    l_id := TO_NUMBER(NULLIF(p_id, ''));
+    l_id         := TO_NUMBER(NULLIF(p_id, ''));
+    l_id_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
 
-    DELETE FROM ARTICULOS WHERE ID_ARTICULO = l_id;
+    -- Obligatorio: sin empresa el DELETE alcanzaria filas de cualquiera.
+    IF l_id_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
+      RETURN;
+    END IF;
+
+    -- AISLAMIENTO POR EMPRESA: las dos condiciones. Con solo el id, un DELETE
+    -- con el id de una fila de otra empresa la borraba.
+    DELETE FROM ARTICULOS
+     WHERE ID_ARTICULO = l_id
+       AND ID_EMPRESA = l_id_empresa;
 
     IF SQL%ROWCOUNT = 0 THEN
       ROLLBACK;
@@ -826,10 +850,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
 
     ----------------------------------------------------------------------------
     -- POST /articulos/crear
-    -- Body: { idEmpresa, nombreArticulo, precioVenta,
+    -- Body: { idEmpresa, nombreArticulo,
     --         idCategoria?, idMoneda?, idUnidadMedida?, codigoArticulo?,
-    --         descripcion?, precioUltimaCompra?, cantidadStock?,
-    --         cantidadMinima? }
+    --         descripcion?, cantidadMinima? }
     ----------------------------------------------------------------------------
     ORDS.DEFINE_TEMPLATE(p_module_name => 'articulos', p_pattern => 'crear');
 
@@ -838,7 +861,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
       p_pattern     => 'crear',
       p_method      => 'POST',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_ARTICULOS.INSERTAR(:authorization, :idEmpresa, :idCategoria, :idMoneda, :idUnidadMedida, :codigoArticulo, :nombreArticulo, :descripcion, :precioUltimaCompra, :precioVenta, :cantidadStock, :cantidadMinima, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_ARTICULOS.INSERTAR(:authorization, :idEmpresa, :idCategoria, :idMoneda, :idUnidadMedida, :codigoArticulo, :nombreArticulo, :descripcion, :cantidadMinima, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
@@ -868,7 +891,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
       p_pattern     => 'actualizar/:id',
       p_method      => 'PUT',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_ARTICULOS.ACTUALIZAR(:authorization, :id, :idEmpresa, :idCategoria, :idMoneda, :idUnidadMedida, :codigoArticulo, :nombreArticulo, :descripcion, :precioUltimaCompra, :precioVenta, :cantidadStock, :cantidadMinima, :activo, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_ARTICULOS.ACTUALIZAR(:authorization, :id, :idEmpresa, :idCategoria, :idMoneda, :idUnidadMedida, :codigoArticulo, :nombreArticulo, :descripcion, :cantidadMinima, :activo, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
@@ -887,30 +910,30 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
     ----------------------------------------------------------------------------
-    -- DELETE /articulos/eliminar/:id
+    -- DELETE /articulos/eliminar/:id/:idEmpresa
     ----------------------------------------------------------------------------
-    ORDS.DEFINE_TEMPLATE(p_module_name => 'articulos', p_pattern => 'eliminar/:id');
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'articulos', p_pattern => 'eliminar/:id/:idEmpresa');
 
     ORDS.DEFINE_HANDLER(
       p_module_name => 'articulos',
-      p_pattern     => 'eliminar/:id',
+      p_pattern     => 'eliminar/:id/:idEmpresa',
       p_method      => 'DELETE',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_ARTICULOS.ELIMINAR(:authorization, :id, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_ARTICULOS.ELIMINAR(:authorization, :id, :idEmpresa, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'articulos', p_pattern => 'eliminar/:id', p_method => 'DELETE',
+      p_module_name => 'articulos', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE',
       p_name => 'authorization', p_bind_variable_name => 'authorization',
       p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'articulos', p_pattern => 'eliminar/:id', p_method => 'DELETE',
+      p_module_name => 'articulos', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE',
       p_name => 'resultado', p_bind_variable_name => 'resultado',
       p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'articulos', p_pattern => 'eliminar/:id', p_method => 'DELETE',
+      p_module_name => 'articulos', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE',
       p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
@@ -1039,7 +1062,7 @@ SELECT t.URI_TEMPLATE, h.METHOD
 -- desaparecería de esta verificación con un JOIN interno.
 SELECT a.ID_ARTICULO, a.CODIGO_ARTICULO, a.NOMBRE_ARTICULO,
        e.NOMBRE_EMPRESA, c.NOMBRE_CATEGORIA, m.NOMBRE_MONEDA, u.ABREVIATURA,
-       a.PRECIO_VENTA, a.CANTIDAD_STOCK, a.ACTIVO
+       a.CANTIDAD_MINIMA, a.ACTIVO
   FROM ARTICULOS a
   JOIN EMPRESAS          e ON e.ID_EMPRESA       = a.ID_EMPRESA
   LEFT JOIN CATEGORIAS      c ON c.ID_CATEGORIA     = a.ID_CATEGORIA
@@ -1058,10 +1081,30 @@ SELECT ID_ARTICULO,
   FROM ARTICULOS
  ORDER BY NOMBRE_ARTICULO;
 
--- Artículos con stock por debajo del mínimo. No es parte del ABM, pero es la
--- consulta que uno quiere correr apenas la tabla tiene datos.
-SELECT ID_ARTICULO, NOMBRE_ARTICULO, CANTIDAD_STOCK, CANTIDAD_MINIMA
-  FROM ARTICULOS
- WHERE CANTIDAD_STOCK < CANTIDAD_MINIMA
-   AND UPPER(TRIM(ACTIVO)) != 'I'
- ORDER BY NOMBRE_ARTICULO;
+-- Stock por articulo: la SUMA de sus lotes, ya no una columna.
+--
+-- NVL a 0 en las dos: un articulo sin ningun lote no tiene filas que sumar y
+-- SUM() devuelve NULL. Sin el NVL, la comparacion contra CANTIDAD_MINIMA seria
+-- NULL —ni verdadera ni falsa— y el articulo que no tiene NADA en deposito
+-- quedaria justamente afuera del listado de faltantes.
+SELECT a.ID_ARTICULO,
+       a.NOMBRE_ARTICULO,
+       NVL(SUM(l.CANTIDAD), 0) AS STOCK,
+       NVL(a.CANTIDAD_MINIMA, 0) AS MINIMA
+  FROM ARTICULOS a
+  LEFT JOIN LOTES l ON l.ID_ARTICULO = a.ID_ARTICULO
+ WHERE UPPER(TRIM(a.ACTIVO)) != 'I'
+ GROUP BY a.ID_ARTICULO, a.NOMBRE_ARTICULO, a.CANTIDAD_MINIMA
+ ORDER BY a.NOMBRE_ARTICULO;
+
+-- Solo los que estan por debajo del minimo: lo que hay que reponer.
+SELECT a.ID_ARTICULO,
+       a.NOMBRE_ARTICULO,
+       NVL(SUM(l.CANTIDAD), 0) AS STOCK,
+       NVL(a.CANTIDAD_MINIMA, 0) AS MINIMA
+  FROM ARTICULOS a
+  LEFT JOIN LOTES l ON l.ID_ARTICULO = a.ID_ARTICULO
+ WHERE UPPER(TRIM(a.ACTIVO)) != 'I'
+ GROUP BY a.ID_ARTICULO, a.NOMBRE_ARTICULO, a.CANTIDAD_MINIMA
+HAVING NVL(SUM(l.CANTIDAD), 0) < NVL(a.CANTIDAD_MINIMA, 0)
+ ORDER BY a.NOMBRE_ARTICULO;

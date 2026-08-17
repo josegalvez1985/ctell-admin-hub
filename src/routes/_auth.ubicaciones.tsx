@@ -150,7 +150,7 @@ function UbicacionesPage() {
   }, [resultado, orden, visibles]);
 
   const eliminar = useMutation({
-    mutationFn: (u: Ubicacion) => api.ubicaciones.eliminar(u.id),
+    mutationFn: (u: Ubicacion) => api.ubicaciones.eliminar(u.id, u.idEmpresa),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ubicaciones"] });
       toast.success("Ubicación eliminada");

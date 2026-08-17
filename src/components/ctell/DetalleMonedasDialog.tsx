@@ -148,7 +148,7 @@ export function DetalleMonedasDialog({
   }
 
   const eliminar = useMutation({
-    mutationFn: (id: number) => api.detalleMonedas.eliminar(id),
+    mutationFn: (id: number) => api.detalleMonedas.eliminar(id, moneda!.idEmpresa),
     onSuccess: () => {
       toast.success("Denominación eliminada");
       setAEliminar(null);

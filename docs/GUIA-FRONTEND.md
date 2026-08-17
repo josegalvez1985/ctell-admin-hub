@@ -888,17 +888,17 @@ const permisos = (data?.items ?? []).filter((p) => empresa !== null && p.idEmpre
 El recorte se hace acá y no en la consulta para no repetir el pedido cada vez
 que se cambia de empresa.
 
-Dos consecuencias que explican el 90% de los "me quedé sin menú":
+La consecuencia que explica el 90% de los "me quedé sin menú": **sin permisos en
+esa empresa, el menú queda vacío.** Es lo esperado, no un bug — hay que
+asignarle las páginas entrando con esa empresa.
 
-- **Sin permisos en esa empresa, el menú queda vacío.** Es lo esperado, no un
-  bug.
-- **Los permisos con `idEmpresa` en null no aparecen en ninguna empresa.** Son
-  los cargados antes de que existiera la columna. Hay que reasignarlos desde el
-  ABM de permisos, que ahora registra la empresa activa —
-  `db/usuario-paginas.sql` trae una consulta al final que los lista.
-
-> Ojo con la PK: `(ID_USUARIO, ID_PAGINA)` **no incluye la empresa**, así que una
-> página se asigna a **una sola empresa por usuario**. Dársela en dos da 409.
+> **La PK es `(ID_EMPRESA, ID_USUARIO, ID_PAGINA)`**, así que los permisos son
+> por empresa de verdad: el mismo usuario puede ver un menú en la empresa A y
+> otro distinto en la B. La contrapartida es que las páginas se asignan **en
+> cada empresa**, no una sola vez.
+>
+> Por eso `quitar` lleva las tres claves (`/quitar/:idUsuario/:idPagina/:idEmpresa`):
+> sin la empresa, el borrado le sacaría el acceso en todas.
 
 ### `variant` existe porque el sidebar es oscuro
 
@@ -1086,7 +1086,7 @@ Antes de dar por terminada una pantalla:
       con un ícono que no esté ya usado por otra entrada
 - [ ] Registrada en Administración → Páginas, y asignada en Permisos
 - [ ] Si es una tabla por empresa: `empresa.id` en la `queryKey`, `enabled:
-  empresa !== null`, y el caso `empresa === null` contemplado en el render
+empresa !== null`, y el caso `empresa === null` contemplado en el render
 - [ ] Si además cuelga de una sucursal: **`sucursal.id` también** en la
       `queryKey` y en el `enabled`, y el caso "la empresa no tiene sucursales"
       resuelto en el render — ver [Empresa y sucursal activas](#empresa-y-sucursal-activas)

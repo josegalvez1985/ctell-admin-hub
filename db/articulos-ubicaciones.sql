@@ -7,7 +7,7 @@
 --
 --   1. LISTAR   GET    /articulos-ubicaciones/listar   (?idArticulo= &idUbicacion=)
 --   2. ASIGNAR  POST   /articulos-ubicaciones/crear
---   3. QUITAR   DELETE /articulos-ubicaciones/eliminar/:id
+--   3. QUITAR   DELETE /articulos-ubicaciones/eliminar/:id/:idEmpresa
 --
 -- Se ejecuta una sola vez en la hoja de trabajo SQL de APEX, conectado con el
 -- esquema del workspace. REQUIERE db/auth.sql EJECUTADO ANTES: usa PKG_AUTH
@@ -105,6 +105,7 @@ CREATE OR REPLACE PACKAGE PKG_ARTICULOS_UBICACIONES AS
   PROCEDURE QUITAR (
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   );
@@ -363,11 +364,14 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS_UBICACIONES AS
   PROCEDURE QUITAR (
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
-    l_sesion NUMBER;
-    l_id     NUMBER;
+    l_sesion     NUMBER;
+    l_id         NUMBER;
+    l_id_empresa NUMBER;
+    l_existe     PLS_INTEGER;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -376,7 +380,36 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS_UBICACIONES AS
       RETURN;
     END IF;
 
-    l_id := TO_NUMBER(NULLIF(p_id, ''));
+    l_id         := TO_NUMBER(NULLIF(p_id, ''));
+    l_id_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
+
+    IF l_id_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
+      RETURN;
+    END IF;
+
+    -- AISLAMIENTO POR EMPRESA, via el articulo padre.
+    --
+    -- ARTICULOS_UBICACIONES **no tiene columna ID_EMPRESA**: es una tabla de
+    -- cruce y la empresa se deduce del articulo. Sin este chequeo, un DELETE
+    -- con el id de una asignacion de otra empresa la borraba igual.
+    --
+    -- Se mira contra ARTICULOS y no contra UBICACIONES porque ASIGNAR ya
+    -- garantiza que los dos lados sean de la misma empresa.
+    SELECT COUNT(*)
+      INTO l_existe
+      FROM ARTICULOS_UBICACIONES au
+      JOIN ARTICULOS             a ON a.ID_ARTICULO = au.ID_ARTICULO
+     WHERE au.ID_ARTICULO_UBICACION = l_id
+       AND a.ID_EMPRESA             = l_id_empresa;
+
+    -- 404 y no 403: responder "existe pero no es tuya" confirmaria el id.
+    IF l_existe = 0 THEN
+      p_status_code := 404;
+      p_resultado := '{"error":"La asignacion no existe"}';
+      RETURN;
+    END IF;
 
     -- Baja FISICA: la tabla no tiene columna ACTIVO. Se borra la asignacion, no
     -- el articulo ni la ubicacion.
@@ -490,33 +523,33 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS_UBICACIONES AS
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
     ----------------------------------------------------------------------------
-    -- DELETE /articulos-ubicaciones/eliminar/:id
+    -- DELETE /articulos-ubicaciones/eliminar/:id/:idEmpresa
     --
     -- El :id es el de la ASIGNACION (ID_ARTICULO_UBICACION), no el del articulo
     -- ni el de la ubicacion. El listado lo devuelve como `id`.
     ----------------------------------------------------------------------------
-    ORDS.DEFINE_TEMPLATE(p_module_name => 'articulos-ubicaciones', p_pattern => 'eliminar/:id');
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'articulos-ubicaciones', p_pattern => 'eliminar/:id/:idEmpresa');
 
     ORDS.DEFINE_HANDLER(
       p_module_name => 'articulos-ubicaciones',
-      p_pattern     => 'eliminar/:id',
+      p_pattern     => 'eliminar/:id/:idEmpresa',
       p_method      => 'DELETE',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_ARTICULOS_UBICACIONES.QUITAR(:authorization, :id, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_ARTICULOS_UBICACIONES.QUITAR(:authorization, :id, :idEmpresa, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'articulos-ubicaciones', p_pattern => 'eliminar/:id', p_method => 'DELETE',
+      p_module_name => 'articulos-ubicaciones', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE',
       p_name => 'authorization', p_bind_variable_name => 'authorization',
       p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'articulos-ubicaciones', p_pattern => 'eliminar/:id', p_method => 'DELETE',
+      p_module_name => 'articulos-ubicaciones', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE',
       p_name => 'resultado', p_bind_variable_name => 'resultado',
       p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'articulos-ubicaciones', p_pattern => 'eliminar/:id', p_method => 'DELETE',
+      p_module_name => 'articulos-ubicaciones', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE',
       p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 

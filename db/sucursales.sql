@@ -9,7 +9,7 @@
 --   1. LISTAR      GET    /sucursales/listar        (?idEmpresa= opcional)
 --   2. INSERTAR    POST   /sucursales/crear
 --   3. ACTUALIZAR  PUT    /sucursales/actualizar/:id
---   4. ELIMINAR    DELETE /sucursales/eliminar/:id
+--   4. ELIMINAR    DELETE /sucursales/eliminar/:id/:idEmpresa
 --
 -- Se ejecuta una sola vez en la hoja de trabajo SQL de APEX, conectado con el
 -- esquema del workspace. REQUIERE db/auth.sql EJECUTADO ANTES: usa PKG_AUTH
@@ -90,9 +90,11 @@ CREATE OR REPLACE PACKAGE PKG_SUCURSALES AS
     p_resultado        OUT CLOB
   );
 
+  -- p_id_empresa es OBLIGATORIO: acota el borrado a la empresa de la sesion.
   PROCEDURE ELIMINAR (
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   );
@@ -332,14 +334,27 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
                   ELSE NULL
                 END;
 
+    -- AISLAMIENTO POR EMPRESA: el idEmpresa acota A CUAL fila se le aplica el
+    -- cambio, no es solo un campo mas a modificar. Sin el, un PUT con el id de
+    -- una sucursal de OTRA empresa la modificaba igual.
+    IF l_id_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
+      RETURN;
+    END IF;
+
+    -- ID_EMPRESA fuera del SET a proposito: mover una sucursal de empresa es lo
+    -- que este control busca impedir. Ademas arrastraria con ella todas sus
+    -- ubicaciones y lotes, que quedarian colgando de una empresa ajena.
     UPDATE SUCURSALES
-       SET ID_EMPRESA          = NVL(l_id_empresa, ID_EMPRESA),
-           NOMBRE_SUCURSAL     = NVL(TRIM(p_nombre_sucursal), NOMBRE_SUCURSAL),
+       SET NOMBRE_SUCURSAL     = NVL(TRIM(p_nombre_sucursal), NOMBRE_SUCURSAL),
            DIRECCION           = NVL(TRIM(p_direccion), DIRECCION),
            ACTIVO              = NVL(l_estado, ACTIVO),
            FECHA_ACTUALIZACION = SYSTIMESTAMP
-     WHERE ID_SUCURSAL = l_id;
+     WHERE ID_SUCURSAL = l_id
+       AND ID_EMPRESA  = l_id_empresa;
 
+    -- 404 tambien cuando existe pero es de otra empresa: no se confirma el id.
     IF SQL%ROWCOUNT = 0 THEN
       p_status_code := 404;
       p_resultado := '{"error":"La sucursal no existe"}';
@@ -370,11 +385,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
   PROCEDURE ELIMINAR (
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
-    l_sesion NUMBER;
-    l_id     NUMBER;
+    l_sesion     NUMBER;
+    l_id         NUMBER;
+    l_id_empresa NUMBER;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -383,9 +400,20 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
       RETURN;
     END IF;
 
-    l_id := TO_NUMBER(NULLIF(p_id, ''));
+    l_id         := TO_NUMBER(NULLIF(p_id, ''));
+    l_id_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
 
-    DELETE FROM SUCURSALES WHERE ID_SUCURSAL = l_id;
+    -- Obligatorio: sin empresa el DELETE alcanzaria sucursales de cualquiera.
+    IF l_id_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
+      RETURN;
+    END IF;
+
+    -- AISLAMIENTO POR EMPRESA: las dos condiciones.
+    DELETE FROM SUCURSALES
+     WHERE ID_SUCURSAL = l_id
+       AND ID_EMPRESA  = l_id_empresa;
 
     IF SQL%ROWCOUNT = 0 THEN
       ROLLBACK;
@@ -533,30 +561,30 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
     ----------------------------------------------------------------------------
-    -- DELETE /sucursales/eliminar/:id
+    -- DELETE /sucursales/eliminar/:id/:idEmpresa
     ----------------------------------------------------------------------------
-    ORDS.DEFINE_TEMPLATE(p_module_name => 'sucursales', p_pattern => 'eliminar/:id');
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'sucursales', p_pattern => 'eliminar/:id/:idEmpresa');
 
     ORDS.DEFINE_HANDLER(
       p_module_name => 'sucursales',
-      p_pattern     => 'eliminar/:id',
+      p_pattern     => 'eliminar/:id/:idEmpresa',
       p_method      => 'DELETE',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_SUCURSALES.ELIMINAR(:authorization, :id, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_SUCURSALES.ELIMINAR(:authorization, :id, :idEmpresa, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'sucursales', p_pattern => 'eliminar/:id', p_method => 'DELETE',
+      p_module_name => 'sucursales', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE',
       p_name => 'authorization', p_bind_variable_name => 'authorization',
       p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'sucursales', p_pattern => 'eliminar/:id', p_method => 'DELETE',
+      p_module_name => 'sucursales', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE',
       p_name => 'resultado', p_bind_variable_name => 'resultado',
       p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'sucursales', p_pattern => 'eliminar/:id', p_method => 'DELETE',
+      p_module_name => 'sucursales', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE',
       p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 

@@ -17,33 +17,26 @@
 --
 -- Tabla (no la crea ni la altera; el DDL se administra aparte):
 --   USUARIO_PAGINAS  ID_USUARIO, ID_PAGINA, FECHA_ALTA, ID_EMPRESA
---   PK compuesta (ID_USUARIO, ID_PAGINA): un mismo permiso no se puede
---   duplicar — el segundo INSERT da ORA-00001, que se traduce a 409.
+--   PK compuesta (ID_EMPRESA, ID_USUARIO, ID_PAGINA): el mismo permiso no se
+--   puede duplicar dentro de una empresa — el segundo INSERT da ORA-00001, que
+--   se traduce a 409.
 --
--- ID_EMPRESA DEFINE DONDE VALE EL PERMISO. El menú solo muestra las páginas
--- cuyo permiso corresponde a la empresa con la que el usuario inició sesión
--- (ver src/hooks/use-menu-usuario.ts). Sin permisos en esa empresa, el menú
--- queda vacío.
+-- LOS PERMISOS SON POR EMPRESA. La empresa integra la PK, asi que un usuario
+-- puede tener accesos DISTINTOS segun con que empresa entre: vendedor en la
+-- empresa A y solo consulta en la B. El menu muestra unicamente las paginas
+-- cuyo permiso corresponde a la empresa de la sesion (ver
+-- src/hooks/use-menu-usuario.ts). Sin permisos en esa empresa, el menu queda
+-- vacio, y eso es lo esperado.
 --
--- HAY UNA LIMITACION IMPORTANTE EN EL DDL, y conviene tenerla presente:
+-- LAS TRES CLAVES VIAJAN EN TODAS LAS OPERACIONES. Es la consecuencia directa
+-- de la PK y el error mas facil de cometer aca: QUITAR filtrando solo por
+-- (ID_USUARIO, ID_PAGINA) borraria el permiso en TODAS las empresas, no solo en
+-- la que se esta editando. Por eso ELIMINAR recibe tambien el idEmpresa.
 --
---   * ID_EMPRESA **no está en la PK**, que sigue siendo (ID_USUARIO,
---     ID_PAGINA). Por eso un usuario NO puede tener la misma página habilitada
---     en DOS empresas a la vez: el segundo INSERT choca con la PK y da 409,
---     aunque cambie el idEmpresa. Cada página se asigna a una sola empresa por
---     usuario.
---
---     Para levantar ese límite hay que cambiar el DDL: PK en (ID_USUARIO,
---     ID_PAGINA, ID_EMPRESA) y la columna NOT NULL.
---
---   * Es NULLABLE. Las filas anteriores a esta columna quedan en NULL y el
---     menú NO las muestra en ninguna empresa: hay que reasignarlas desde el ABM
---     de permisos, que ahora registra la empresa activa. Es el precio de
---     filtrar — tratarlas como "válidas en todas" haría que el menú siguiera
---     mostrando páginas que nadie habilitó para esa empresa.
---
---     La última consulta de verificación cuenta cuántos permisos quedaron sin
---     empresa, para saber qué hay que reasignar.
+-- ID_EMPRESA SIGUE SIENDO NULLABLE en el DDL aunque integre la PK — Oracle no
+-- lo permite: una columna de la PK es NOT NULL de hecho. Las filas viejas con
+-- NULL ya no pueden existir; si el ALTER TABLE fallo por ellas, hay que
+-- asignarles empresa o borrarlas antes.
 --
 -- La FK contra EMPRESAS sí se respeta: mandar un idEmpresa inexistente da
 -- ORA-02291, que se traduce a 400 en vez de 500.
@@ -104,11 +97,14 @@ CREATE OR REPLACE PACKAGE PKG_USUARIO_PAGINAS AS
     p_resultado     OUT CLOB
   );
 
-  -- Le saca el permiso. Hacen falta las dos claves: la PK es compuesta.
+  -- Le saca el permiso EN UNA EMPRESA. Hacen falta las TRES claves: la PK es
+  -- (ID_EMPRESA, ID_USUARIO, ID_PAGINA), y omitir la empresa borraria el acceso
+  -- en todas a la vez.
   PROCEDURE QUITAR (
     p_authorization IN  VARCHAR2,
     p_id_usuario    IN  VARCHAR2,
     p_id_pagina     IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   );
@@ -301,14 +297,14 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIO_PAGINAS AS
 
     l_id_usuario := TO_NUMBER(NULLIF(p_id_usuario, ''));
     l_id_pagina  := TO_NUMBER(NULLIF(p_id_pagina, ''));
-    -- La empresa no entra en la validación de obligatorios porque la columna es
-    -- nullable, pero OJO: un permiso que quede en NULL no lo muestra ningún
-    -- menú. El frontend siempre manda la empresa activa.
     l_id_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
 
-    IF l_id_usuario IS NULL OR l_id_pagina IS NULL THEN
+    -- LAS TRES SON OBLIGATORIAS: la empresa integra la PK, asi que un NULL ni
+    -- siquiera puede insertarse. Se valida aca para responder un 400 con un
+    -- mensaje claro en vez del ORA-01400 crudo que devolveria el INSERT.
+    IF l_id_usuario IS NULL OR l_id_pagina IS NULL OR l_id_empresa IS NULL THEN
       p_status_code := 400;
-      p_resultado := '{"error":"idUsuario e idPagina son obligatorios"}';
+      p_resultado := '{"error":"idUsuario, idPagina e idEmpresa son obligatorios"}';
       RETURN;
     END IF;
 
@@ -335,10 +331,11 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIO_PAGINAS AS
   EXCEPTION
     WHEN DUP_VAL_ON_INDEX THEN
       ROLLBACK;
-      -- La PK compuesta lo rechaza: el usuario ya tenía ese permiso. Es 409 y
-      -- no 400 — el dato no es inválido, el estado del servidor lo rechaza.
+      -- La PK compuesta lo rechaza: el usuario ya tenía ese permiso EN ESA
+      -- EMPRESA. Es 409 y no 400 — el dato no es inválido, el estado del
+      -- servidor lo rechaza.
       p_status_code := 409;
-      p_resultado := '{"error":"El usuario ya tiene acceso a esa pagina"}';
+      p_resultado := '{"error":"El usuario ya tiene acceso a esa pagina en esta empresa"}';
     WHEN OTHERS THEN
       ROLLBACK;
       -- ORA-02291: alguna FK no encontró el padre. Ahora hay DOS (USUARIOS y
@@ -364,10 +361,12 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIO_PAGINAS AS
     p_authorization IN  VARCHAR2,
     p_id_usuario    IN  VARCHAR2,
     p_id_pagina     IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
-    l_sesion NUMBER;
+    l_sesion     NUMBER;
+    l_id_empresa NUMBER;
   BEGIN
     -- SOLO ADMINISTRADORES, igual que ASIGNAR: quitarle el acceso a alguien es
     -- tan sensible como darselo.
@@ -378,17 +377,29 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIO_PAGINAS AS
       RETURN;
     END IF;
 
-    -- Las dos claves: la PK es compuesta, borrar solo por una dejaría afuera
-    -- la mitad de la identidad de la fila.
+    l_id_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
+
+    -- La empresa es OBLIGATORIA y se exige explicitamente: sin ella el DELETE
+    -- de abajo borraria la fila de todas las empresas. Es preferible un 400 a
+    -- quitarle a alguien accesos que nadie pidio revocar.
+    IF l_id_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio para quitar un permiso"}';
+      RETURN;
+    END IF;
+
+    -- Las TRES claves de la PK. Filtrar solo por usuario y pagina borraria el
+    -- permiso en todas las empresas, no solo en la que se esta editando.
     DELETE FROM USUARIO_PAGINAS
      WHERE ID_USUARIO = TO_NUMBER(NULLIF(p_id_usuario, ''))
-       AND ID_PAGINA  = TO_NUMBER(NULLIF(p_id_pagina, ''));
+       AND ID_PAGINA  = TO_NUMBER(NULLIF(p_id_pagina, ''))
+       AND ID_EMPRESA = l_id_empresa;
 
     -- Sin esto, quitar un permiso inexistente devuelve 200 y quien lo usó cree
     -- que hizo algo.
     IF SQL%ROWCOUNT = 0 THEN
       p_status_code := 404;
-      p_resultado := '{"error":"El usuario no tenia acceso a esa pagina"}';
+      p_resultado := '{"error":"El usuario no tenia acceso a esa pagina en esta empresa"}';
       RETURN;
     END IF;
 
@@ -491,38 +502,38 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIO_PAGINAS AS
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
     ----------------------------------------------------------------------------
-    -- DELETE /usuario-paginas/quitar/:idUsuario/:idPagina
+    -- DELETE /usuario-paginas/quitar/:idUsuario/:idPagina/:idEmpresa
     --
-    -- Las dos claves van en la URL porque la PK es compuesta: no alcanza con
-    -- un solo :id como en las otras tablas.
+    -- Las TRES claves van en la URL porque la PK es (ID_EMPRESA, ID_USUARIO,
+    -- ID_PAGINA): sin la empresa, el DELETE borraria el permiso en todas.
     ----------------------------------------------------------------------------
     ORDS.DEFINE_TEMPLATE(
       p_module_name => 'usuario-paginas',
-      p_pattern     => 'quitar/:idUsuario/:idPagina'
+      p_pattern     => 'quitar/:idUsuario/:idPagina/:idEmpresa'
     );
 
     ORDS.DEFINE_HANDLER(
       p_module_name => 'usuario-paginas',
-      p_pattern     => 'quitar/:idUsuario/:idPagina',
+      p_pattern     => 'quitar/:idUsuario/:idPagina/:idEmpresa',
       p_method      => 'DELETE',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_USUARIO_PAGINAS.QUITAR(:authorization, :idUsuario, :idPagina, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_USUARIO_PAGINAS.QUITAR(:authorization, :idUsuario, :idPagina, :idEmpresa, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'usuario-paginas', p_pattern => 'quitar/:idUsuario/:idPagina',
+      p_module_name => 'usuario-paginas', p_pattern => 'quitar/:idUsuario/:idPagina/:idEmpresa',
       p_method => 'DELETE',
       p_name => 'authorization', p_bind_variable_name => 'authorization',
       p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'usuario-paginas', p_pattern => 'quitar/:idUsuario/:idPagina',
+      p_module_name => 'usuario-paginas', p_pattern => 'quitar/:idUsuario/:idPagina/:idEmpresa',
       p_method => 'DELETE',
       p_name => 'resultado', p_bind_variable_name => 'resultado',
       p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'usuario-paginas', p_pattern => 'quitar/:idUsuario/:idPagina',
+      p_module_name => 'usuario-paginas', p_pattern => 'quitar/:idUsuario/:idPagina/:idEmpresa',
       p_method => 'DELETE',
       p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
@@ -570,36 +581,46 @@ SELECT t.URI_TEMPLATE, h.METHOD
  WHERE m.NAME = 'usuario-paginas'
  ORDER BY t.URI_TEMPLATE, h.METHOD;
 
--- LEFT JOIN contra EMPRESAS, no interno: ID_EMPRESA es nullable y los permisos
--- anteriores a esa columna la tienen en NULL. Con un JOIN interno esas filas
--- desaparecerían de esta verificación justo cuando uno quiere verlas.
-SELECT u.USUARIO, m.NOMBRE AS MODULO, p.NOMBRE AS PAGINA,
-       up.ID_EMPRESA, e.NOMBRE_EMPRESA, up.FECHA_ALTA
+-- El mapa completo: quien tiene que, y en que empresa. JOIN interno contra
+-- EMPRESAS porque ID_EMPRESA integra la PK y ya no puede ser NULL.
+SELECT e.NOMBRE_EMPRESA, u.USUARIO, m.NOMBRE AS MODULO, p.NOMBRE AS PAGINA,
+       up.FECHA_ALTA
   FROM USUARIO_PAGINAS up
   JOIN USUARIOS u ON u.ID_USUARIO = up.ID_USUARIO
   JOIN PAGINAS  p ON p.ID_PAGINA  = up.ID_PAGINA
   JOIN MODULOS  m ON m.ID_MODULO  = p.ID_MODULO
-  LEFT JOIN EMPRESAS e ON e.ID_EMPRESA = up.ID_EMPRESA
- ORDER BY u.USUARIO, m.ORDEN, p.ORDEN;
+  JOIN EMPRESAS e ON e.ID_EMPRESA = up.ID_EMPRESA
+ ORDER BY e.NOMBRE_EMPRESA, u.USUARIO, m.ORDEN, p.ORDEN;
 
--- ATENCION: permisos sin empresa, los cargados antes de que existiera la
--- columna. NO aparecen en el menú de ninguna empresa, porque el frontend filtra
--- por ID_EMPRESA. Hay que reasignarlos desde el ABM de permisos entrando con la
--- empresa que corresponda.
---
--- Si el listado de abajo devuelve filas y alguien reporta "me quedé sin menú",
--- la causa es esta.
-SELECT u.USUARIO, m.NOMBRE AS MODULO, p.NOMBRE AS PAGINA
+-- Cuantas paginas tiene cada usuario en cada empresa. Es la vista que responde
+-- "por que fulano no ve el menu cuando entra con esta empresa": si no aparece
+-- para esa combinacion, no tiene ningun permiso ahi.
+SELECT e.NOMBRE_EMPRESA, u.USUARIO, COUNT(*) AS PAGINAS
   FROM USUARIO_PAGINAS up
   JOIN USUARIOS u ON u.ID_USUARIO = up.ID_USUARIO
-  JOIN PAGINAS  p ON p.ID_PAGINA  = up.ID_PAGINA
-  JOIN MODULOS  m ON m.ID_MODULO  = p.ID_MODULO
- WHERE up.ID_EMPRESA IS NULL
- ORDER BY u.USUARIO, m.ORDEN, p.ORDEN;
+  JOIN EMPRESAS e ON e.ID_EMPRESA = up.ID_EMPRESA
+ GROUP BY e.NOMBRE_EMPRESA, u.USUARIO
+ ORDER BY e.NOMBRE_EMPRESA, u.USUARIO;
 
--- Atajo para reasignarlos todos a una empresa, si el sistema venía usándose con
--- una sola. Revisar el id antes de ejecutar: dejar el permiso en la empresa
--- equivocada da acceso donde no corresponde.
+-- Usuarios ACTIVOS sin ningun permiso en ninguna empresa: entran al sistema y
+-- se encuentran con el menu vacio.
+SELECT u.ID_USUARIO, u.USUARIO, u.NOMBRE_APELLIDO
+  FROM USUARIOS u
+ WHERE UPPER(TRIM(u.ACTIVO)) = 'A'
+   AND NOT EXISTS (SELECT 1 FROM USUARIO_PAGINAS up WHERE up.ID_USUARIO = u.ID_USUARIO)
+ ORDER BY u.USUARIO;
+
+-- Copiar TODOS los permisos de un usuario a otro dentro de la misma empresa
+-- (lo mismo que hace el boton "Copiar permisos" del ABM). El MERGE evita el
+-- ORA-00001 si el destino ya tiene alguna de las paginas.
 --
---   UPDATE USUARIO_PAGINAS SET ID_EMPRESA = <ID> WHERE ID_EMPRESA IS NULL;
+--   MERGE INTO USUARIO_PAGINAS d
+--   USING (SELECT <ID_EMPRESA> AS ID_EMPRESA, <ID_DESTINO> AS ID_USUARIO, ID_PAGINA
+--            FROM USUARIO_PAGINAS
+--           WHERE ID_USUARIO = <ID_ORIGEN> AND ID_EMPRESA = <ID_EMPRESA>) o
+--      ON (d.ID_EMPRESA = o.ID_EMPRESA AND d.ID_USUARIO = o.ID_USUARIO
+--          AND d.ID_PAGINA = o.ID_PAGINA)
+--   WHEN NOT MATCHED THEN
+--     INSERT (ID_EMPRESA, ID_USUARIO, ID_PAGINA, FECHA_ALTA)
+--     VALUES (o.ID_EMPRESA, o.ID_USUARIO, o.ID_PAGINA, SYSTIMESTAMP);
 --   COMMIT;

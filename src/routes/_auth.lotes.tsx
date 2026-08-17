@@ -295,7 +295,7 @@ function LotesPage() {
   }));
 
   const eliminar = useMutation({
-    mutationFn: (lote: Lote) => api.lotes.eliminar(lote.id),
+    mutationFn: (lote: Lote) => api.lotes.eliminar(lote.id, lote.idEmpresa),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["lotes"] });
       toast.success("Lote eliminado");
