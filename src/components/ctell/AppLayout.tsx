@@ -115,11 +115,17 @@ export function AppLayout({
             active={active === "Dashboard"}
             collapsed={collapsed}
           />
-          {!collapsed && (
-            <div className="pt-4">
+          <div className="pt-4">
+            {/* Colapsado no entra el acordeón de tres niveles, pero ocultarlo
+                entero dejaba el sidebar sin forma de llegar a ninguna página:
+                sólo quedaba Dashboard. Los íconos de módulo expanden la barra
+                y despliegan el módulo elegido. */}
+            {collapsed ? (
+              <MenuDinamicoIconos onAbrirModulo={() => setCollapsed(false)} />
+            ) : (
               <MenuDinamico active={active} variant="dark" />
-            </div>
-          )}
+            )}
+          </div>
         </nav>
 
         <div className="space-y-1 border-t border-sidebar-border pt-4">

@@ -45,14 +45,7 @@ function suscribir(oyente: () => void): () => void {
   return () => oyentes.delete(oyente);
 }
 
-/** Despliega o pliega una clave (`m:<id>` para módulo, `e:<id>:<entrada>`). */
-function alternarClave(clave: string) {
-  const next = new Set(abiertosActuales);
-  if (next.has(clave)) {
-    next.delete(clave);
-  } else {
-    next.add(clave);
-  }
+function guardarYNotificar(next: Set<string>) {
   abiertosActuales = next;
 
   try {
@@ -62,6 +55,33 @@ function alternarClave(clave: string) {
   }
 
   for (const oyente of oyentes) oyente();
+}
+
+/** Despliega o pliega una clave (`m:<id>` para módulo, `e:<id>:<entrada>`). */
+function alternarClave(clave: string) {
+  const next = new Set(abiertosActuales);
+  if (next.has(clave)) {
+    next.delete(clave);
+  } else {
+    next.add(clave);
+  }
+  guardarYNotificar(next);
+}
+
+/**
+ * Despliega un módulo sin plegarlo si ya estaba abierto.
+ *
+ * La usa el sidebar colapsado: ahí el click sobre el ícono de un módulo
+ * expande la barra y abre ese módulo, y `alternarClave` serviría para lo
+ * contrario —cerrarlo justo cuando el usuario lo acaba de pedir— si venía
+ * abierto de antes.
+ */
+export function abrirModulo(idModulo: number) {
+  const clave = `m:${idModulo}`;
+  if (abiertosActuales.has(clave)) return;
+  const next = new Set(abiertosActuales);
+  next.add(clave);
+  guardarYNotificar(next);
 }
 
 /**
@@ -124,6 +144,66 @@ export function MenuDinamico({
           variant={variant}
         />
       ))}
+    </div>
+  );
+}
+
+/**
+ * Los módulos del menú como íconos, para el sidebar colapsado.
+ *
+ * En 80px de ancho no entra el acordeón de tres niveles: antes se ocultaba
+ * entero y el sidebar colapsado quedaba con "Dashboard" y nada más — sin forma
+ * de llegar a ninguna página sin expandir a mano.
+ *
+ * Cada ícono expande el sidebar y despliega su módulo, así que el camino a una
+ * página sigue siendo un click. El `title` da el nombre en hover, que es lo
+ * único que se puede mostrar sin texto.
+ */
+export function MenuDinamicoIconos({
+  onAbrirModulo,
+}: {
+  /** Expande el sidebar. Se llama antes de desplegar el módulo. */
+  onAbrirModulo: () => void;
+}) {
+  const { modulos, isPending, isError } = useMenuUsuario();
+
+  if (isPending) {
+    return (
+      <div className="space-y-2">
+        {[0, 1, 2].map((i) => (
+          <Skeleton key={i} className="mx-auto size-10 rounded-lg" />
+        ))}
+      </div>
+    );
+  }
+
+  // Sin módulos no hay nada que mostrar. A diferencia del menú expandido, acá
+  // no va el cartel de "Sin acceso": no entra en el ancho y el usuario ya lo
+  // ve al expandir.
+  if (isError || modulos.length === 0) return null;
+
+  return (
+    <div className="space-y-1">
+      {modulos.map((modulo) => {
+        const IconoModulo = iconoDeModulo(modulo.nombre, modulo.icono);
+        return (
+          <button
+            key={modulo.id}
+            type="button"
+            title={modulo.nombre}
+            aria-label={modulo.nombre}
+            onClick={() => {
+              // El orden importa: primero se expande y después se despliega,
+              // así el módulo ya está abierto cuando aparece el menú completo.
+              onAbrirModulo();
+              abrirModulo(modulo.id);
+            }}
+            className="flex w-full justify-center rounded-lg px-0 py-2.5 text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+          >
+            <IconoModulo className="size-5 shrink-0" />
+          </button>
+        );
+      })}
     </div>
   );
 }

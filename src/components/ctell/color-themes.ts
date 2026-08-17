@@ -39,8 +39,8 @@ const LIGHT_FG = "oklch(0.99 0.005 256.5)";
 export const COLOR_THEMES: [ColorTheme, ...ColorTheme[]] = [
   {
     id: "azul",
-    label: "Azul CTELL",
-    description: "Color institucional del logo.",
+    label: "Azul institucional",
+    description: "Color por defecto del sistema.",
     swatch: "oklch(0.506 0.164 256.5)",
     light: {
       primary: "oklch(0.506 0.164 256.5)",

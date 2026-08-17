@@ -3,11 +3,12 @@ import { AppLayout } from "@/components/ctell/AppLayout";
 import { MenuDinamico } from "@/components/ctell/MenuDinamico";
 import { primerNombre, useUsuarioActual } from "@/hooks/use-usuario-actual";
 import { Skeleton } from "@/components/ui/skeleton";
+import { tituloPagina } from "@/lib/marca";
 
 export const Route = createFileRoute("/_auth/menu")({
   head: () => ({
     meta: [
-      { title: "Menú | CTELL" },
+      { title: tituloPagina("Menú") },
       {
         name: "description",
         content: "Menú de navegación personalizado según permisos del usuario.",

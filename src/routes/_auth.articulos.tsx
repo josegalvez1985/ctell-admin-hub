@@ -56,6 +56,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
+import { tituloPagina } from "@/lib/marca";
 
 /**
  * Los importes y cantidades se validan como texto y se convierten al enviar.
@@ -967,7 +968,7 @@ function ArticuloFormDialog({
 export const Route = createFileRoute("/_auth/articulos")({
   head: () => ({
     meta: [
-      { title: "Artículos | CTELL" },
+      { title: tituloPagina("Artículos") },
       { name: "description", content: "Artículos por empresa del sistema." },
     ],
   }),

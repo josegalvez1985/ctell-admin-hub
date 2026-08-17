@@ -16,10 +16,15 @@
 -- Base de los endpoints: https://oracleapex.com/ords/ctell/auth/
 --
 -- CORREO: el alta de usuarios y la recuperación de clave mandan la contraseña
--- por mail con APEX_MAIL. Un handler de ORDS no tiene sesión de APEX, así que
--- ENVIAR_PASSWORD_INICIAL la crea con APEX_SESSION.CREATE_SESSION antes de
--- llamar a SEND — sin eso, ORA-20987. Revisar C_APP_ID_MAIL abajo: depende del
--- workspace y no se puede adivinar.
+-- por mail con APEX_MAIL. Un handler de ORDS no corre dentro de ningún
+-- workspace, así que hay que establecerlo antes de llamar a SEND — sin eso,
+-- ORA-20987 ("el identificador de grupo de seguridad no es válido").
+--
+-- Se hace con APEX_UTIL.SET_SECURITY_GROUP_ID, resolviendo el id por NOMBRE de
+-- workspace (C_WORKSPACE_MAIL). NO se usa APEX_SESSION.CREATE_SESSION: crear
+-- sesión exige una aplicación APEX y este workspace no tiene ninguna —el
+-- frontend es React—, que fue exactamente la causa de que el correo nunca
+-- saliera.
 --
 -- REMITENTE: se pasa p_from => NULL y lo resuelve APEX con el parámetro de
 -- instancia EMAIL_FROM. Si el correo no sale, ese parámetro es lo primero a
@@ -129,11 +134,20 @@ CREATE OR REPLACE PACKAGE PKG_AUTH AS
   -- personal que nadie atiende como soporte. El cuerpo lo aclara.
   C_CORREO_REMITENTE CONSTANT VARCHAR2(200) := 'jose.jgalvez@gmail.com';
 
-  -- APEX_MAIL exige una sesión de APEX, y crearla exige una aplicación.
-  -- Es sólo el contexto bajo el que corre el envío: no hay ninguna app APEX
-  -- real detrás de este sistema (el frontend es React). Se usa el ID de una
-  -- aplicación cualquiera del workspace.
-  C_APP_ID_MAIL CONSTANT NUMBER := 100;
+  -- Workspace bajo el que corre APEX_MAIL.
+  --
+  -- Antes acá había C_APP_ID_MAIL := 100 y los envíos llamaban a
+  -- APEX_SESSION.CREATE_SESSION con ese ID. Nunca funcionó: este workspace no
+  -- tiene NINGUNA aplicación APEX (el frontend es React), así que la app 100 no
+  -- existe, la sesión no se creaba y todo envío moría con
+  --   ORA-20987: el identificador de grupo de seguridad no es válido.
+  -- El WHEN OTHERS de ENVIAR_PASSWORD_INICIAL se tragaba el error, por eso el
+  -- correo no llegaba nunca y no quedaba rastro de por qué.
+  --
+  -- APEX_MAIL no necesita una sesión ni una aplicación: sólo necesita saber en
+  -- qué workspace está parado. Eso se fija con SET_SECURITY_GROUP_ID, que no
+  -- depende de que exista app alguna. Ver ESTABLECER_WORKSPACE_MAIL.
+  C_WORKSPACE_MAIL CONSTANT VARCHAR2(30) := 'CTELL';
 
   -- Devuelve C_CORREO_REMITENTE. Ningún envío la llama: se pasa p_from => NULL
   -- y APEX resuelve el origen. Queda publicada por si hace falta mostrar desde
@@ -164,7 +178,8 @@ CREATE OR REPLACE PACKAGE PKG_AUTH AS
 
   -- Manda la contraseña inicial al correo del usuario recién creado.
   --
-  -- p_enviado sale en 'S' sólo si APEX_MAIL aceptó el mensaje. NUNCA lanza
+  -- p_enviado sale en 'A' sólo si APEX_MAIL aceptó el mensaje ('I' si no).
+  -- Usa el mismo código de estado que el resto de la base. NUNCA lanza
   -- excepción hacia afuera: el alta ya está confirmada cuando esto corre, y
   -- un fallo de correo no debe deshacer un usuario que ya existe. Quien la
   -- llama decide qué hacer con el 'N' (ver PKG_USUARIOS.INSERTAR).
@@ -340,6 +355,31 @@ CREATE OR REPLACE PACKAGE BODY PKG_AUTH AS
     RETURN l_password;
   END GENERAR_PASSWORD;
 
+  PROCEDURE ESTABLECER_WORKSPACE_MAIL IS
+    l_security_group_id NUMBER;
+  BEGIN
+    -- El workspace se resuelve por NOMBRE y no por un ID hardcodeado: el
+    -- security group id es un número de 20 dígitos que cambia si el workspace
+    -- se recrea, y copiarlo a mano es justamente el tipo de dato adivinado que
+    -- causó el bug anterior.
+    l_security_group_id := APEX_UTIL.FIND_SECURITY_GROUP_ID(
+      p_workspace => C_WORKSPACE_MAIL
+    );
+
+    IF l_security_group_id IS NULL THEN
+      -- Nombre mal escrito o workspace inexistente. Se avisa acá con un mensaje
+      -- entendible en vez de dejar que APEX_MAIL falle más adelante con el
+      -- ORA-20987 genérico, que no dice cuál es el dato equivocado.
+      RAISE_APPLICATION_ERROR(
+        C_ERR_DATOS_INVALIDOS,
+        'No existe el workspace ' || C_WORKSPACE_MAIL ||
+        '. Revisar C_WORKSPACE_MAIL contra: SELECT WORKSPACE FROM APEX_WORKSPACES;'
+      );
+    END IF;
+
+    APEX_UTIL.SET_SECURITY_GROUP_ID(p_security_group_id => l_security_group_id);
+  END ESTABLECER_WORKSPACE_MAIL;
+
   FUNCTION EMAIL_FROM_WORKSPACE RETURN VARCHAR2 IS
   BEGIN
     -- Devuelve la constante y nada más. No se consulta ninguna vista —el
@@ -351,11 +391,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_AUTH AS
 
   FUNCTION PROBAR_CORREO (p_correo IN VARCHAR2) RETURN VARCHAR2 IS
   BEGIN
-    APEX_SESSION.CREATE_SESSION(
-      p_app_id   => C_APP_ID_MAIL,
-      p_page_id  => 1,
-      p_username => 'DIAGNOSTICO'
-    );
+    ESTABLECER_WORKSPACE_MAIL;
 
     APEX_MAIL.SEND(
       p_to   => p_correo,
@@ -366,17 +402,11 @@ CREATE OR REPLACE PACKAGE BODY PKG_AUTH AS
 
     APEX_MAIL.PUSH_QUEUE;
     COMMIT;
-    APEX_SESSION.DELETE_SESSION;
 
     RETURN 'OK. Remitente resuelto por APEX (p_from NULL). ' ||
            'Revisa la bandeja (y spam) de ' || p_correo || '.';
   EXCEPTION
     WHEN OTHERS THEN
-      BEGIN
-        APEX_SESSION.DELETE_SESSION;
-      EXCEPTION
-        WHEN OTHERS THEN NULL;
-      END;
       -- Acá está la diferencia con producción: el error se devuelve, no se pierde.
       RETURN 'ERROR (remitente resuelto por APEX, p_from NULL)' ||
              ' -> [' || SQLCODE || '] ' || SQLERRM;
@@ -421,15 +451,11 @@ CREATE OR REPLACE PACKAGE BODY PKG_AUTH AS
       '--' || UTL_TCP.CRLF ||
       'Mensaje automatico: no respondas a esta direccion, nadie la lee.';
 
-    -- APEX_MAIL necesita una sesión de APEX y un handler de ORDS no la tiene:
-    -- sin esto, ORA-20987 ("no se ha establecido el espacio de trabajo").
-    -- El ID de workspace se resuelve por nombre para no hardcodear un número
-    -- que cambia si el workspace se recrea.
-    APEX_SESSION.CREATE_SESSION(
-      p_app_id   => C_APP_ID_MAIL,
-      p_page_id  => 1,
-      p_username => p_usuario
-    );
+    -- APEX_MAIL necesita saber en qué workspace corre y un handler de ORDS no
+    -- lo establece: sin esto, ORA-20987. Se fija el security group id a partir
+    -- del nombre del workspace, sin crear sesión ni depender de que exista
+    -- ninguna aplicación APEX (este workspace no tiene ninguna).
+    ESTABLECER_WORKSPACE_MAIL;
 
     -- p_from en NULL: APEX resuelve el remitente por su cuenta (parámetro de
     -- instancia EMAIL_FROM). Se dejó de pasar una dirección explícita porque
@@ -451,21 +477,14 @@ CREATE OR REPLACE PACKAGE BODY PKG_AUTH AS
     -- la transacción del handler termina en rollback.
     COMMIT;
 
-    APEX_SESSION.DELETE_SESSION;
-
     p_enviado := C_ESTADO_ACTIVO;
   EXCEPTION
     WHEN OTHERS THEN
       -- Se traga el error a propósito: el usuario ya está creado y confirmado.
-      -- Quien llama se entera por p_enviado = 'N' y muestra la clave en
+      -- Quien llama se entera por p_enviado = 'I' y muestra la clave en
       -- pantalla, que es el respaldo. El detalle queda en el log.
       APEX_DEBUG.ERROR('PKG_AUTH.ENVIAR_PASSWORD_INICIAL: [' || SQLCODE || '] ' ||
                        SQLERRM || ' | ' || DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
-      BEGIN
-        APEX_SESSION.DELETE_SESSION;
-      EXCEPTION
-        WHEN OTHERS THEN NULL;  -- Puede no haber llegado a crearse.
-      END;
       p_enviado := C_ESTADO_INACTIVO;
   END ENVIAR_PASSWORD_INICIAL;
 

@@ -14,6 +14,7 @@ import { reportError } from "../lib/error-reporting";
 import { EmpresaProvider } from "../components/ctell/empresa-provider";
 import { ThemeProvider, themeInitScript } from "../components/ctell/theme-provider";
 import { Toaster } from "../components/ui/sonner";
+import { NOMBRE_SISTEMA } from "../lib/marca";
 
 /** Origen público del sitio. Ver public/CNAME: el dominio se configura ahí. */
 const SITIO = "https://www.ctell.online";
@@ -83,11 +84,11 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "CTELL | Sistema Administrativo" },
+      { title: NOMBRE_SISTEMA },
       {
         name: "description",
         content:
-          "CTELL: sistema administrativo para compras, ventas, stock, tesorería y recursos humanos.",
+          "Sistema administrativo para compras, ventas, stock, tesorería y recursos humanos.",
       },
       { name: "theme-color", content: "#1362c0" },
       // El estándar actual. Es lo que hace que la PWA instalada abra sin la
@@ -98,9 +99,12 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       // standalone. Sacarla haría que en iPhone la app instalada abriera
       // dentro del navegador.
       { name: "apple-mobile-web-app-capable", content: "yes" },
-      { name: "apple-mobile-web-app-title", content: "CTELL" },
+      // Nombre bajo el ícono en iOS. Corto a propósito: la pantalla de inicio
+      // recorta alrededor de los 12 caracteres, y "Sistema Administrativo"
+      // quedaría como "Sistema Admi…".
+      { name: "apple-mobile-web-app-title", content: "Administración" },
       { name: "apple-mobile-web-app-status-bar-style", content: "black-translucent" },
-      { property: "og:title", content: "CTELL | Sistema Administrativo" },
+      { property: "og:title", content: NOMBRE_SISTEMA },
       {
         property: "og:description",
         content: "Compras, ventas, stock, tesorería y RRHH en un solo panel.",
@@ -165,6 +169,26 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
+
+  // Registra el service worker de public/sw.js. Su única función es habilitar
+  // la instalación de la PWA: Chrome no ofrece instalar un sitio que no tenga
+  // uno con handler de fetch. No cachea nada — ver el comentario del archivo.
+  //
+  // En dev no se registra: el SW quedaría activo entre recargas y confunde el
+  // HMR de Vite sin aportar nada, porque instalar se prueba sobre el build.
+  useEffect(() => {
+    if (import.meta.env.DEV) return;
+    if (!("serviceWorker" in navigator)) return;
+
+    // BASE_URL y no "/sw.js": el scope de un SW no puede ser más amplio que su
+    // propia ruta, así que un path fijo rompería si el sitio se sirviera desde
+    // un subdirectorio.
+    const url = `${import.meta.env.BASE_URL}sw.js`;
+    navigator.serviceWorker.register(url, { scope: import.meta.env.BASE_URL }).catch(() => {
+      // Un fallo acá sólo significa que no se va a poder instalar la app. La
+      // web sigue funcionando igual, así que no se molesta al usuario con esto.
+    });
+  }, []);
 
   return (
     <QueryClientProvider client={queryClient}>

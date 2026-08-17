@@ -1,5 +1,6 @@
 import { createFileRoute, Outlet, redirect } from "@tanstack/react-router";
 
+import { InstalarPwaDialog } from "@/components/ctell/InstalarPwaDialog";
 import { useCerrarSesionAlVencer } from "@/hooks/use-cerrar-sesion-al-vencer";
 import { getToken } from "@/lib/api";
 
@@ -35,5 +36,12 @@ function LayoutProtegido() {
   // Un 401 en cualquier petición de las páginas de adentro devuelve al login.
   useCerrarSesionAlVencer();
 
-  return <Outlet />;
+  return (
+    <>
+      <Outlet />
+      {/* Acá y no en __root: instalar se le sugiere a quien ya inició sesión,
+          no a quien está parado en el login. Se descarta solo en escritorio. */}
+      <InstalarPwaDialog />
+    </>
+  );
 }

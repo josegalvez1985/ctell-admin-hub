@@ -44,6 +44,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
+import { tituloPagina } from "@/lib/marca";
 import {
   Table,
   TableBody,
@@ -516,7 +517,7 @@ function UnidadFormDialog({
 export const Route = createFileRoute("/_auth/unidades-medida")({
   head: () => ({
     meta: [
-      { title: "Unidades de medida | CTELL" },
+      { title: tituloPagina("Unidades de medida") },
       { name: "description", content: "Unidades de medida por empresa del sistema." },
     ],
   }),

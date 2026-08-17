@@ -44,6 +44,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
+import { tituloPagina } from "@/lib/marca";
 import {
   Table,
   TableBody,
@@ -521,7 +522,7 @@ function MonedaFormDialog({
 export const Route = createFileRoute("/_auth/monedas")({
   head: () => ({
     meta: [
-      { title: "Monedas | CTELL" },
+      { title: tituloPagina("Monedas") },
       { name: "description", content: "Monedas por empresa del sistema." },
     ],
   }),

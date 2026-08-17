@@ -1,6 +1,6 @@
 {
-  "name": "CTELL Sistema Administrativo",
-  "short_name": "CTELL",
+  "name": "Sistema Administrativo",
+  "short_name": "Administración",
   "description": "Gestión de compras, ventas, stock, tesorería y recursos humanos.",
   "start_url": "./",
   "scope": "./",

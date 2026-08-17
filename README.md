@@ -59,6 +59,7 @@ db/                      Backend: un archivo SQL por tabla
 ├── monedas.sql          ─┐
 ├── unidades-medida.sql   │ Definiciones POR EMPRESA
 ├── categorias.sql       ─┘
+├── detalle-monedas.sql  Denominaciones de cada moneda + foto (BLOB)
 └── articulos.sql        Artículos + imagen (BLOB)
 
 src/
@@ -121,15 +122,18 @@ cada fila, y el frontend ya lo tiene.
 
 ### Imágenes (BLOB)
 
-`EMPRESAS.LOGO` y `ARTICULOS.IMAGEN` son BLOB y **no viajan en el JSON** — un
-binario no entra en un `JSON_OBJECT`. Cada uno tiene dos endpoints propios:
+`EMPRESAS.LOGO`, `ARTICULOS.IMAGEN` y `DETALLE_MONEDAS.FOTO` son BLOB y **no
+viajan en el JSON** — un binario no entra en un `JSON_OBJECT`. Cada uno tiene dos
+endpoints propios:
 
-| Método | Ruta                    | Auth  | Qué hace                   |
-| ------ | ----------------------- | ----- | -------------------------- |
-| `GET`  | `/empresas/logo/:id`    | —     | Devuelve la imagen cruda   |
-| `PUT`  | `/empresas/logo/:id`    | token | Guarda el binario del body |
-| `GET`  | `/articulos/imagen/:id` | —     | Devuelve la imagen cruda   |
-| `PUT`  | `/articulos/imagen/:id` | token | Guarda el binario del body |
+| Método | Ruta                        | Auth  | Qué hace                   |
+| ------ | --------------------------- | ----- | -------------------------- |
+| `GET`  | `/empresas/logo/:id`        | —     | Devuelve la imagen cruda   |
+| `PUT`  | `/empresas/logo/:id`        | token | Guarda el binario del body |
+| `GET`  | `/articulos/imagen/:id`     | —     | Devuelve la imagen cruda   |
+| `PUT`  | `/articulos/imagen/:id`     | token | Guarda el binario del body |
+| `GET`  | `/detalle-monedas/foto/:id` | —     | Devuelve la imagen cruda   |
+| `PUT`  | `/detalle-monedas/foto/:id` | token | Guarda el binario del body |
 
 Los `GET` son **públicos** porque los consume un `<img>`, y el navegador no
 manda el header `Authorization` al descargar una imagen. Los `PUT` sí piden
@@ -151,10 +155,10 @@ la empresa, un ícono en el artículo— sin traerse todos los BLOB.
 > salida. De yapa, el 404 sale gratis: si la consulta no devuelve filas, ORDS
 > responde 404 solo.
 
-El content-type se guarda junto al binario en `LOGO_MIME` / `IMAGEN_MIME`. Esas
-dos columnas son la **única excepción** a la regla de no tocar el DDL: los
-archivos las agregan en un paso 0 idempotente, que consulta `USER_TAB_COLUMNS`
-antes del `ALTER`.
+El content-type se guarda junto al binario en `LOGO_MIME` / `IMAGEN_MIME` /
+`FOTO_MIME`. Esas columnas son la **única excepción** a la regla de no tocar el
+DDL: los archivos las agregan en un paso 0 idempotente, que consulta
+`USER_TAB_COLUMNS` antes del `ALTER`.
 
 **El orden importa: `auth.sql` primero.** `PKG_USUARIOS` llama a `PKG_AUTH`
 para hashear contraseñas y revocar sesiones, y además reutiliza el
@@ -170,11 +174,13 @@ tablas**: el DDL se administra aparte.
 
 ### Endpoints publicados
 
-| Método | Ruta           | Auth  | Devuelve                                                         |
-| ------ | -------------- | ----- | ---------------------------------------------------------------- |
-| `POST` | `/auth/login`  | —     | `token`, `expira`, `usuario`                                     |
-| `POST` | `/auth/logout` | token | `{ ok: true }`                                                   |
-| `GET`  | `/auth/me`     | token | `id`, `usuario`, `nombreApellido`, `correo`, `activo`, `esAdmin` |
+| Método | Ruta                      | Auth  | Devuelve                                                         |
+| ------ | ------------------------- | ----- | ---------------------------------------------------------------- |
+| `POST` | `/auth/login`             | —     | `token`, `expira`, `usuario`                                     |
+| `POST` | `/auth/logout`            | token | `{ ok: true }`                                                   |
+| `GET`  | `/auth/me`                | token | `id`, `usuario`, `nombreApellido`, `correo`, `activo`, `esAdmin` |
+| `POST` | `/auth/recuperar`         | —     | mensaje neutro (siempre 200) + clave provisoria por mail         |
+| `POST` | `/auth/cambiar-password`  | token | `{ ok: true }` + revoca **todas** las sesiones                   |
 
 El token se envía como `Authorization: Bearer <token>` y vence a las 8 horas.
 El header se parsea con `PKG_AUTH.TOKEN_DE_HEADER`, que acepta el prefijo en
@@ -228,6 +234,58 @@ repositorio. Copiala de ahí y cambiala apenas entres.
 > `GRANT EXECUTE ON SYS.DBMS_CRYPTO`, migrá a PBKDF2 — la versión está lista en
 > un comentario dentro de `HASH_PASSWORD`. Migrar invalida los hashes
 > existentes: hay que resetear las contraseñas.
+
+### Correo: contraseñas por mail
+
+El sistema manda la contraseña por correo en dos momentos, los dos vía
+`PKG_AUTH.ENVIAR_PASSWORD_INICIAL` con `APEX_MAIL`:
+
+- **Alta de usuario** (`POST /usuarios/`) — la clave inicial.
+- **Recuperar acceso** (`POST /auth/recuperar`) — una clave provisoria que
+  reemplaza la anterior y revoca todas las sesiones.
+
+`/auth/recuperar` es **público** —quien lo usa es justamente alguien que no puede
+entrar— y **siempre responde 200 con el mismo mensaje**, coincidan o no el
+usuario y el correo. Distinguir los casos convertiría el endpoint en un
+verificador de qué cuentas existen y con qué dirección, que es exactamente lo
+que `/auth/login` evita con su mensaje único.
+
+> **Un handler de ORDS no está parado en ningún workspace**, y `APEX_MAIL`
+> necesita saber en cuál corre. Se fija con `APEX_UTIL.SET_SECURITY_GROUP_ID`
+> resolviendo el id **por nombre** de workspace — encapsulado en
+> `PKG_AUTH.ESTABLECER_WORKSPACE_MAIL`, que todo envío llama primero. Sin eso:
+> `ORA-20987` ("el identificador de grupo de seguridad no es válido").
+>
+> **No sirve `APEX_SESSION.CREATE_SESSION`**: crear sesión exige una aplicación
+> APEX y este workspace **no tiene ninguna** (el frontend es React). El código
+> llamaba a `CREATE_SESSION` con un `p_app_id => 100` inventado, esa app nunca
+> existió, y **ningún correo se envió jamás** — ni en el alta ni en la
+> recuperación.
+
+**Un fallo de correo nunca deshace la operación.** Cuando el envío corre, el
+usuario ya está creado: `ENVIAR_PASSWORD_INICIAL` no propaga excepciones, avisa
+por `p_enviado` (`'A'`/`'I'`). El alta lo aprovecha para devolver
+`passwordInicial` en la respuesta **sólo si el correo no salió** — es el único
+respaldo, porque nadie más conoce esa clave. Si salió, no viaja en el JSON.
+
+> **Cuando el correo no llega, el sistema es mudo.** Los envíos se tragan el
+> error a propósito y lo mandan a `APEX_DEBUG`, que no está activo por defecto:
+> el síntoma es siempre "no llegó nada", sin causa visible. Para ver el error de
+> verdad hay una función de diagnóstico que corre el mismo camino pero **lo
+> devuelve** en texto:
+>
+> ```sql
+> SELECT PKG_AUTH.PROBAR_CORREO('destino@ejemplo.com') FROM DUAL;
+> ```
+>
+> Si devuelve `OK…` y aun así no llega, el problema es de entrega: revisá
+> `APEX_MAIL_QUEUE` (con `MAIL_SEND_ERROR`) y `APEX_MAIL_LOG`.
+
+Dos límites del **APEX free tier** que conviene tener presentes: el remitente lo
+resuelve APEX con su parámetro de instancia `EMAIL_FROM` (se pasa
+`p_from => NULL`) y sólo acepta como origen el correo de la cuenta; y el envío a
+direcciones arbitrarias puede estar restringido. Si mandar claves a correos de
+usuarios nuevos falla por eso, el respaldo es `passwordInicial`.
 
 ## Empresa activa
 

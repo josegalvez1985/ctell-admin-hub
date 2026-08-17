@@ -19,6 +19,7 @@ de plantilla para todo lo demás.
 4. [Consumir la API desde el frontend](#4-consumir-la-api-desde-el-frontend)
 5. [Devolver lo que el consumidor necesita](#5-devolver-lo-que-el-consumidor-necesita)
 6. [Seguridad](#6-seguridad)
+   - [Enviar correo desde un handler](#61-enviar-correo-desde-un-handler)
 7. [Checklist](#7-checklist)
 
 ---
@@ -965,6 +966,108 @@ que costó varias vueltas encontrar.
 
 ---
 
+## 6.1 Enviar correo desde un handler
+
+El sistema manda la contraseña por mail en dos momentos: al crear un usuario
+(`PKG_USUARIOS.INSERTAR`) y al recuperar el acceso (`PKG_AUTH.RECUPERAR_PASSWORD`).
+Los dos pasan por `PKG_AUTH.ENVIAR_PASSWORD_INICIAL`.
+
+### Un handler de ORDS no está parado en ningún workspace
+
+`APEX_MAIL` necesita saber bajo qué workspace corre. Un handler de ORDS no lo
+establece, así que hay que fijarlo **antes** de llamar a `SEND` o el envío muere
+con:
+
+```
+ORA-20987: APEX - El identificador de grupo de seguridad (identidad de espacio
+de trabajo) no es válido.
+```
+
+La forma correcta es fijar el security group id, resolviéndolo **por nombre** de
+workspace:
+
+```sql
+l_security_group_id := APEX_UTIL.FIND_SECURITY_GROUP_ID(p_workspace => 'CTELL');
+APEX_UTIL.SET_SECURITY_GROUP_ID(p_security_group_id => l_security_group_id);
+```
+
+Está encapsulado en `PKG_AUTH.ESTABLECER_WORKSPACE_MAIL`: cualquier procedimiento
+que mande correo lo llama primero y no repite estas dos líneas.
+
+> **No uses `APEX_SESSION.CREATE_SESSION` para esto.** Crear sesión exige una
+> aplicación APEX, y **este workspace no tiene ninguna** — el frontend es React.
+> El código llamaba a `CREATE_SESSION` con un `p_app_id => 100` inventado, esa
+> app no existía, y **ningún correo se envió nunca**. Peor: el `WHEN OTHERS` de
+> `ENVIAR_PASSWORD_INICIAL` se tragaba el `ORA-20987` y devolvía `'I'` en
+> silencio, así que el alta funcionaba y el correo desaparecía sin dejar rastro.
+>
+> Tampoco hardcodees el security group id: es un número de 20 dígitos que cambia
+> si el workspace se recrea. Resolvelo por nombre, que es lo que hace
+> `FIND_SECURITY_GROUP_ID`.
+
+### El resto del envío
+
+```sql
+APEX_MAIL.SEND(p_to => …, p_from => NULL, p_body => …, p_subj => …);
+APEX_MAIL.PUSH_QUEUE;   -- sin esto queda encolado hasta el próximo barrido
+COMMIT;                 -- APEX_MAIL escribe en APEX_MAIL_QUEUE
+```
+
+- **`p_from => NULL`**: lo resuelve APEX con el parámetro de instancia
+  `EMAIL_FROM`. En el free tier Oracle sólo acepta como origen el correo de la
+  cuenta; una dirección ajena se rechaza y el mensaje **ni siquiera se encola**
+  (por eso `APEX_MAIL_QUEUE` y `APEX_MAIL_LOG` aparecen vacías).
+- **`PUSH_QUEUE`** fuerza la salida inmediata. Una clave que se espera al
+  instante no puede quedar esperando el barrido automático.
+- **`COMMIT`** o el mensaje se pierde si la transacción del handler termina en
+  rollback.
+
+### Un fallo de correo nunca deshace la operación
+
+`ENVIAR_PASSWORD_INICIAL` **no propaga excepciones**: cuando corre, el usuario ya
+está creado y confirmado, y un SMTP caído no debe deshacer una cuenta que ya
+existe. Avisa por `p_enviado` (`'A'` envió / `'I'` no), y quien llama decide:
+
+```sql
+-- PKG_USUARIOS.INSERTAR: la clave se devuelve SOLO si el correo no salió.
+'correoEnviado'   VALUE CASE WHEN l_enviado = 'A' THEN 'true' ELSE 'false' END,
+'passwordInicial' VALUE CASE WHEN l_enviado != 'A' THEN l_password END
+```
+
+Ese `passwordInicial` es el **respaldo**: si el correo falla, nadie más conoce la
+clave y la cuenta quedaría inaccesible.
+
+`RECUPERAR_PASSWORD` no puede hacer lo mismo — devolver la clave ahí se la
+regalaría a cualquiera que adivine un usuario. Responde siempre igual y anota el
+fallo en el log.
+
+### Diagnosticar cuando el correo no llega
+
+Los envíos se tragan el error a propósito, así que **el síntoma es siempre el
+mismo: no llega nada**. Para ver la causa real hay una función que corre el mismo
+camino pero **devuelve** el error en vez de tragárselo:
+
+```sql
+SELECT PKG_AUTH.PROBAR_CORREO('destino@ejemplo.com') FROM DUAL;
+```
+
+Si devuelve `OK…` pero el mensaje no aparece, el problema es de entrega y no de
+código — revisá la cola y el log:
+
+```sql
+SELECT MAIL_ID, MAIL_TO, MAIL_SEND_ERROR, LAST_UPDATED_ON
+  FROM APEX_MAIL_QUEUE ORDER BY LAST_UPDATED_ON DESC FETCH FIRST 10 ROWS ONLY;
+
+SELECT MAIL_ID, MAIL_TO, MAIL_SUBJECT, LAST_UPDATED_ON
+  FROM APEX_MAIL_LOG ORDER BY LAST_UPDATED_ON DESC FETCH FIRST 10 ROWS ONLY;
+```
+
+En `QUEUE` con `MAIL_SEND_ERROR` = falló el envío. En `LOG` = APEX lo mandó y el
+problema está del lado del destinatario (spam, o restricción del free tier sobre
+direcciones no verificadas).
+
+---
+
 ## 7. Checklist
 
 Backend (`db/<tabla>.sql`):
@@ -1042,3 +1145,5 @@ Después de ejecutarlo en APEX:
 | **500 y "blocked by CORS policy" juntos en la consola**                           | El problema es el **500**, no el CORS: cuando el handler revienta, ORDS responde con una página de error que no lleva `Access-Control-Allow-Origin`, y el navegador reporta el bloqueo tapando la causa real. Ejecutá el procedimiento a mano en APEX para ver el `SQLERRM`                           |
 | **Una fila existe en la tabla pero no aparece en el listado**                     | `JOIN` interno sobre una FK nullable: la fila que no tiene ese dato se descarta en silencio. Va `LEFT JOIN`                                                                                                                                                                                           |
 | El `<img>` de un logo o imagen no carga                                           | El endpoint todavía no se publicó en APEX, o la fila tiene el BLOB vacío. El componente cae al respaldo por `onError`, así que se ve el ícono o las iniciales — no un ícono de imagen rota                                                                                                            |
+| **`ORA-20987` al mandar correo (identificador de grupo de seguridad no válido)**  | El handler no fijó el workspace antes de `APEX_MAIL.SEND`. Llamá a `PKG_AUTH.ESTABLECER_WORKSPACE_MAIL`. **No uses `APEX_SESSION.CREATE_SESSION`**: exige una app APEX y este workspace no tiene ninguna — ver [6.1](#61-enviar-correo-desde-un-handler)                                              |
+| **El correo no llega y no hay ningún error en ningún lado**                       | Los envíos se tragan la excepción a propósito (`p_enviado = 'I'`) y la mandan a `APEX_DEBUG`, que no está activo. Diagnosticá con `SELECT PKG_AUTH.PROBAR_CORREO('vos@ejemplo.com') FROM DUAL;`, que sí devuelve el error                                                                             |

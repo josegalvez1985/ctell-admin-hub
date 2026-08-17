@@ -43,6 +43,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
+import { tituloPagina } from "@/lib/marca";
 import {
   Table,
   TableBody,
@@ -447,7 +448,7 @@ function PaisFormDialog({
 export const Route = createFileRoute("/_auth/paises")({
   head: () => ({
     meta: [
-      { title: "Países | CTELL" },
+      { title: tituloPagina("Países") },
       { name: "description", content: "Catálogo de países del sistema." },
     ],
   }),

@@ -45,6 +45,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
+import { tituloPagina } from "@/lib/marca";
 import {
   Table,
   TableBody,
@@ -566,7 +567,7 @@ function SucursalFormDialog({
 export const Route = createFileRoute("/_auth/sucursales")({
   head: () => ({
     meta: [
-      { title: "Sucursales | CTELL" },
+      { title: tituloPagina("Sucursales") },
       { name: "description", content: "Sucursales por empresa del sistema." },
     ],
   }),

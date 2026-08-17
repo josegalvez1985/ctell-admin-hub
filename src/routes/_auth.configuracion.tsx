@@ -22,14 +22,15 @@ import { useTheme, type Theme } from "@/components/ctell/theme-provider";
 import { UsuariosDialog } from "@/components/ctell/UsuariosDialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { tituloPagina } from "@/lib/marca";
 
 export const Route = createFileRoute("/_auth/configuracion")({
   head: () => ({
     meta: [
-      { title: "Configuración | CTELL" },
+      { title: tituloPagina("Configuración") },
       {
         name: "description",
-        content: "Preferencias de la cuenta y apariencia del sistema CTELL.",
+        content: "Preferencias de la cuenta y apariencia del sistema.",
       },
     ],
   }),
@@ -191,7 +192,7 @@ function ConfiguracionPage() {
           <CardHeader>
             <CardTitle>Apariencia</CardTitle>
             <CardDescription>
-              Elegí cómo se ve CTELL. La preferencia se guarda en este dispositivo.
+              Elegí cómo se ve el sistema. La preferencia se guarda en este dispositivo.
             </CardDescription>
           </CardHeader>
           <CardContent>

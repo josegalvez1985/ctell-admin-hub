@@ -20,17 +20,18 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { NOMBRE_SISTEMA } from "@/lib/marca";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "CTELL | Acceso al sistema administrativo" },
+      { title: `${NOMBRE_SISTEMA} | Acceso` },
       {
         name: "description",
         content:
-          "Ingresá a CTELL para gestionar compras, ventas, stock, tesorería y recursos humanos desde un solo panel.",
+          "Ingresá para gestionar compras, ventas, stock, tesorería y recursos humanos desde un solo panel.",
       },
-      { property: "og:title", content: "CTELL | Acceso al sistema administrativo" },
+      { property: "og:title", content: `${NOMBRE_SISTEMA} | Acceso` },
       {
         property: "og:description",
         content: "Panel único para compras, ventas, stock, tesorería y recursos humanos.",
@@ -206,7 +207,7 @@ function LoginPage() {
               suppressHydrationWarning evita que React descarte todo el árbol
               por un año que puede no coincidir. */}
           <p className="text-xs text-navy-foreground/50" suppressHydrationWarning>
-            © {new Date().getFullYear()} CTELL S.A. Todos los derechos reservados.
+            © {new Date().getFullYear()} {NOMBRE_SISTEMA}. Todos los derechos reservados.
           </p>
         </div>
       </section>
@@ -219,8 +220,8 @@ function LoginPage() {
 
           <div className="mt-10 lg:mt-0">
             <img
-              src={`${import.meta.env.BASE_URL}icons/ctell-192.png`}
-              alt="CTELL"
+              src={`${import.meta.env.BASE_URL}logo.png`}
+              alt={NOMBRE_SISTEMA}
               width={64}
               height={64}
               className="mb-5 hidden size-16 rounded-2xl object-cover shadow-card lg:block"
@@ -407,7 +408,7 @@ function LoginPage() {
           </form>
 
           <p className="mt-8 text-center text-xs text-muted-foreground">
-            Acceso restringido a personal autorizado de CTELL.
+            Acceso restringido a personal autorizado.
           </p>
         </div>
       </section>

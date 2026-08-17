@@ -53,6 +53,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
+import { tituloPagina } from "@/lib/marca";
 
 const schema = z.object({
   nombreCategoria: z.string().trim().min(1, "Obligatorio").max(100, "Máximo 100 caracteres"),
@@ -537,7 +538,7 @@ function CategoriaFormDialog({
 export const Route = createFileRoute("/_auth/categorias")({
   head: () => ({
     meta: [
-      { title: "Categorías | CTELL" },
+      { title: tituloPagina("Categorías") },
       { name: "description", content: "Categorías por empresa del sistema." },
     ],
   }),

@@ -45,6 +45,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
+import { tituloPagina } from "@/lib/marca";
 import {
   Table,
   TableBody,
@@ -546,7 +547,7 @@ function CiudadFormDialog({
 export const Route = createFileRoute("/_auth/ciudades")({
   head: () => ({
     meta: [
-      { title: "Ciudades | CTELL" },
+      { title: tituloPagina("Ciudades") },
       { name: "description", content: "Ciudades por departamento del sistema." },
     ],
   }),

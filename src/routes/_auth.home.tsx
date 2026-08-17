@@ -1,22 +1,25 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { ArrowDownRight, ArrowUpRight, Banknote } from "lucide-react";
 import { AppLayout } from "@/components/ctell/AppLayout";
+import { LogoEmpresa } from "@/components/ctell/LogoEmpresa";
 import { MenuDinamico } from "@/components/ctell/MenuDinamico";
+import { useEmpresa } from "@/components/ctell/empresa-provider";
 import { primerNombre, useUsuarioActual } from "@/hooks/use-usuario-actual";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
+import { tituloPagina } from "@/lib/marca";
 
 export const Route = createFileRoute("/_auth/home")({
   head: () => ({
     meta: [
-      { title: "Dashboard | CTELL" },
+      { title: tituloPagina("Dashboard") },
       {
         name: "description",
-        content: "Dashboard de CTELL con indicadores y menú personalizado según permisos.",
+        content: "Dashboard con indicadores y menú personalizado según permisos.",
       },
-      { property: "og:title", content: "Dashboard | CTELL" },
+      { property: "og:title", content: tituloPagina("Dashboard") },
       {
         property: "og:description",
         content: "Indicadores de compras, ventas, stock, tesorería y RRHH.",
@@ -80,6 +83,7 @@ const stockCritico = [
 
 function HomePage() {
   const { data: usuario } = useUsuarioActual();
+  const { empresa } = useEmpresa();
   const nombre = primerNombre(usuario?.nombreApellido);
   const esperandoNombre = !usuario;
 
@@ -87,17 +91,35 @@ function HomePage() {
     <AppLayout active="Dashboard">
       <main className="space-y-6 px-4 pb-28 pt-6 sm:px-6 lg:pb-10">
         <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            {esperandoNombre ? (
-              <Skeleton className="h-8 w-56 sm:h-9" />
+          <div className="flex items-center gap-3">
+            {/* El provider hidrata desde localStorage DESPUÉS de montar, así que
+                en el primer render `empresa` es null: sin el placeholder, el
+                saludo saltaría de lugar al aparecer el logo. */}
+            {empresa ? (
+              <LogoEmpresa
+                id={empresa.id}
+                nombre={empresa.nombreEmpresa}
+                tieneLogo={empresa.tieneLogo}
+                className="size-14"
+              />
             ) : (
-              <h1 className="text-2xl font-bold text-foreground sm:text-3xl">
-                {nombre ? `Buen día, ${nombre}` : "Buen día"}
-              </h1>
+              <Skeleton className="size-14 shrink-0 rounded-xl" />
             )}
-            <p className="mt-1 text-sm text-muted-foreground">
-              Resumen operativo de CTELL · Agosto 2026
-            </p>
+
+            <div>
+              {esperandoNombre ? (
+                <Skeleton className="h-8 w-56 sm:h-9" />
+              ) : (
+                <h1 className="text-2xl font-bold text-foreground sm:text-3xl">
+                  {nombre ? `Buen día, ${nombre}` : "Buen día"}
+                </h1>
+              )}
+              <p className="mt-1 text-sm text-muted-foreground">
+                {/* El nombre de la empresa activa en vez de "CTELL" fijo: con
+                    varias empresas, saber en cuál se está parado importa. */}
+                Resumen operativo de {empresa?.nombreEmpresa ?? "…"} · Agosto 2026
+              </p>
+            </div>
           </div>
           <Button className="hidden sm:inline-flex">Nueva operación</Button>
         </div>

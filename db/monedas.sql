@@ -19,17 +19,18 @@
 --
 -- Tabla (no la crea ni la altera; el DDL se administra aparte):
 --   MONEDAS  ID_MONEDA, ID_EMPRESA, NOMBRE_MONEDA, SIMBOLO,
---            FOTO_DENOMINACION, ACTIVO, FECHA_CREACION, FECHA_ACTUALIZACION
+--            ACTIVO, FECHA_CREACION, FECHA_ACTUALIZACION
 --
 -- LA MONEDA ES POR EMPRESA. Cada empresa tiene su propio juego de monedas: el
 -- idEmpresa sale de la empresa que se eligió al iniciar sesión, no de un
 -- combobox del formulario. Por eso el listado se filtra por ?idEmpresa= y el
 -- alta lo recibe como dato obligatorio.
 --
--- FOTO_DENOMINACION (BLOB) queda FUERA de este CRUD a propósito: un binario no
--- entra en el JSON y servirlo necesita endpoints aparte. Se agrega después sin
--- tocar nada de esto — el patrón ya está resuelto en db/empresas.sql, que sirve
--- el logo con ORDS.source_type_media.
+-- La tabla tuvo una columna FOTO_DENOMINACION (BLOB) que se eliminó del DDL.
+-- Este CRUD nunca la tocaba —un binario no entra en el JSON y servirlo necesita
+-- endpoints aparte—, así que quitarla no cambió nada acá. Si alguna vez vuelve,
+-- el patrón está resuelto en db/empresas.sql, que sirve el logo con
+-- ORDS.source_type_media.
 --
 -- SIN JOIN CONTRA EMPRESAS: el listado no devuelve el nombre de la empresa.
 -- Viene filtrado por una sola empresa —la de la sesión—, así que ese nombre
@@ -196,8 +197,6 @@ CREATE OR REPLACE PACKAGE BODY PKG_MONEDAS AS
     -- Sin JOIN: la consulta sale de MONEDAS y nada más. El nombre de la empresa
     -- no se devuelve porque el listado ya viene filtrado por una sola —la de la
     -- sesión— y sería la misma constante en todas las filas.
-    --
-    -- FOTO_DENOMINACION no se selecciona: es un BLOB y no entra en el JSON.
     --
     -- El JSON_OBJECT se arma en una subconsulta y el JSON_ARRAYAGG agrega esa
     -- columna, que ya viene tipada como CLOB. Anidado, el resultado intermedio

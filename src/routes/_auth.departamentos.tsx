@@ -45,6 +45,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
+import { tituloPagina } from "@/lib/marca";
 import {
   Table,
   TableBody,
@@ -545,7 +546,7 @@ function DepartamentoFormDialog({
 export const Route = createFileRoute("/_auth/departamentos")({
   head: () => ({
     meta: [
-      { title: "Departamentos | CTELL" },
+      { title: tituloPagina("Departamentos") },
       { name: "description", content: "Departamentos por país del sistema." },
     ],
   }),

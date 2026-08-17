@@ -68,11 +68,13 @@ ctell-admin-hub/
 
 #### Autenticación — `/auth`
 
-| Método | Ruta           | Auth  | Devuelve                                                   |
-| ------ | -------------- | ----- | ---------------------------------------------------------- |
-| `POST` | `/auth/login`  | —     | `{ token, expira, usuario }`                               |
-| `POST` | `/auth/logout` | token | `{ ok: true }`                                             |
-| `GET`  | `/auth/me`     | token | `{ id, usuario, nombreApellido, correo, activo, esAdmin }` |
+| Método | Ruta                     | Auth  | Devuelve                                                   |
+| ------ | ------------------------ | ----- | ---------------------------------------------------------- |
+| `POST` | `/auth/login`            | —     | `{ token, expira, usuario }`                               |
+| `POST` | `/auth/logout`           | token | `{ ok: true }`                                             |
+| `GET`  | `/auth/me`               | token | `{ id, usuario, nombreApellido, correo, activo, esAdmin }` |
+| `POST` | `/auth/recuperar`        | —     | mensaje neutro (siempre 200) + clave provisoria por mail   |
+| `POST` | `/auth/cambiar-password` | token | `{ ok: true }` + revoca **todas** las sesiones             |
 
 **Detalles de seguridad:**
 
@@ -108,6 +110,23 @@ Todos requieren token autenticado.
 - **`USUARIO` no se modifica.** Es la identidad de login; para cambiarlo hay que crear uno nuevo.
 - **Nadie puede eliminarse ni inactivarse a sí mismo** (400) — evita perder acceso a mitad de la operación.
 - **Cambiar contraseña revoca todas las sesiones**, incluida la propia. Es lo esperado si se cambia por sospecha de robo.
+
+### Correo (APEX_MAIL)
+
+El alta de usuarios y `/auth/recuperar` mandan la contraseña por mail vía
+`PKG_AUTH.ENVIAR_PASSWORD_INICIAL`.
+
+- **Fijar el workspace antes de `SEND`.** Un handler de ORDS no corre dentro de
+  ninguno: llamar a `PKG_AUTH.ESTABLECER_WORKSPACE_MAIL` primero, que usa
+  `APEX_UTIL.SET_SECURITY_GROUP_ID` resolviendo el id por nombre. Sin eso,
+  `ORA-20987`.
+- **Nunca `APEX_SESSION.CREATE_SESSION`:** exige una aplicación APEX y este
+  workspace no tiene ninguna (el frontend es React). Un `p_app_id` inventado fue
+  la causa de que ningún correo se enviara nunca.
+- **Un fallo de correo no deshace la operación:** avisa por `p_enviado`
+  (`'A'`/`'I'`), y el alta devuelve `passwordInicial` sólo si el envío falló.
+- **Diagnóstico:** `SELECT PKG_AUTH.PROBAR_CORREO('x@y.com') FROM DUAL;` —
+  devuelve el error en texto en vez de tragárselo como los envíos de producción.
 
 ### Estado: `'A'` (activo) / `'I'` (inactivo)
 

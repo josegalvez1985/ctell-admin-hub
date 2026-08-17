@@ -8,6 +8,7 @@ import { UsuariosDialog } from "@/components/ctell/UsuariosDialog";
 import { ModulosDialog } from "@/components/ctell/ModulosDialog";
 import { PaginasDialog } from "@/components/ctell/PaginasDialog";
 import { PermisosDialog } from "@/components/ctell/PermisosDialog";
+import { tituloPagina } from "@/lib/marca";
 
 const SECCIONES = [
   {
@@ -116,7 +117,7 @@ function AdministracionPage() {
 export const Route = createFileRoute("/_auth/administracion")({
   head: () => ({
     meta: [
-      { title: "Administración | CTELL" },
+      { title: tituloPagina("Administración") },
       {
         name: "description",
         content: "Administración del sistema: usuarios, menú, páginas y permisos.",

@@ -46,6 +46,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
+import { tituloPagina } from "@/lib/marca";
 import {
   Table,
   TableBody,
@@ -859,7 +860,7 @@ function EmpresaFormDialog({
 export const Route = createFileRoute("/_auth/empresas")({
   head: () => ({
     meta: [
-      { title: "Empresas | CTELL" },
+      { title: tituloPagina("Empresas") },
       { name: "description", content: "Empresas registradas en el sistema." },
     ],
   }),
