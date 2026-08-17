@@ -265,6 +265,47 @@ export type ListaUbicaciones = {
 };
 
 /**
+ * Partida de mercadería que entró al depósito.
+ *
+ * Cuelga de empresa **y** sucursal (las activas de la sesión) y además de un
+ * artículo, que sí se elige en el formulario. El listado trae el nombre y el
+ * código del artículo por JOIN: cada lote es de un artículo distinto, así que
+ * no son una constante repetida como sí lo serían la empresa y la sucursal.
+ *
+ * **Sin `activo`:** el DDL no trae la columna, la baja es física.
+ */
+export type Lote = {
+  id: number;
+  idEmpresa: number;
+  idSucursal: number;
+  idArticulo: number;
+  /** Del artículo (JOIN). */
+  nombreArticulo: string;
+  codigoArticulo: string | null;
+  /**
+   * Identificador de la partida. **Nullable**: entra mercadería sin lote
+   * identificado, y Oracle no considera que dos NULL choquen entre sí, así que
+   * el UNIQUE no impide varios lotes sin número para el mismo artículo.
+   */
+  numeroLote: number | null;
+  cantidad: number;
+  costo: number | null;
+  /**
+   * Fechas en ISO **sólo día** ("2026-04-03"), sin hora: un vencimiento es un
+   * día del calendario. `fechaVencimiento` es null cuando la mercadería no
+   * vence.
+   */
+  fechaVencimiento: string | null;
+  fechaEntrada: string | null;
+  observaciones: string | null;
+};
+
+export type ListaLotes = {
+  items: Lote[];
+  total: number;
+};
+
+/**
  * Asignación de un artículo a una ubicación del depósito.
  *
  * Tabla de cruce pura: la fila **no tiene datos propios**, sólo une los dos ids.
@@ -373,6 +414,15 @@ export type Articulo = {
    * con `urlImagenArticulo(id)`.
    */
   tieneImagen: boolean;
+  /**
+   * Cuándo se contó físicamente el artículo por última vez. ISO
+   * ("2026-08-17T10:30:00") o `null` si nunca se inventarió.
+   *
+   * **Sólo lectura.** No aparece en `crear` ni en `actualizar` a propósito: la
+   * va a estampar el proceso de inventario cuando exista, contra un conteo
+   * real. Hoy llega null en todas las filas.
+   */
+  fechaUltimoInventario: string | null;
   activo: Estado;
 };
 
@@ -1362,6 +1412,71 @@ export const api = {
 
     eliminar: (id: number) =>
       request<{ ok: boolean }>(`/ubicaciones/eliminar/${id}`, { method: "DELETE" }),
+  },
+
+  /**
+   * Lotes de mercadería (partidas con vencimiento y costo).
+   *
+   * Filtran por empresa **y** sucursal —las activas, igual que ubicaciones— y
+   * opcionalmente por artículo, para ver las partidas de uno solo.
+   *
+   * Las fechas van y vuelven como ISO de sólo día ("2026-04-03"). El backend
+   * las convierte con formato explícito: mandar otro formato da 400.
+   */
+  lotes: {
+    listar: (params: { idEmpresa?: number; idSucursal?: number; idArticulo?: number } = {}) => {
+      const q = new URLSearchParams();
+      if (params.idEmpresa) q.set("idEmpresa", String(params.idEmpresa));
+      if (params.idSucursal) q.set("idSucursal", String(params.idSucursal));
+      if (params.idArticulo) q.set("idArticulo", String(params.idArticulo));
+      const query = q.toString();
+      return request<ListaLotes>(`/lotes/listar${query ? `?${query}` : ""}`);
+    },
+
+    crear: (datos: {
+      idEmpresa: number;
+      idSucursal: number;
+      idArticulo: number;
+      numeroLote?: number;
+      cantidad?: number;
+      costo?: number;
+      /** ISO de sólo día: "2026-04-03". */
+      fechaVencimiento?: string;
+      fechaEntrada?: string;
+      observaciones?: string;
+    }) =>
+      request<{ id: number; ok: boolean }>("/lotes/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /**
+     * Los campos ausentes no se modifican.
+     *
+     * Ojo: mandar `fechaVencimiento` vacía significa "no cambiar", **no** quitar
+     * el vencimiento. No hay forma de borrarlo desde este endpoint.
+     */
+    actualizar: (
+      id: number,
+      datos: {
+        idEmpresa?: number;
+        idSucursal?: number;
+        idArticulo?: number;
+        numeroLote?: number;
+        cantidad?: number;
+        costo?: number;
+        fechaVencimiento?: string;
+        fechaEntrada?: string;
+        observaciones?: string;
+      },
+    ) =>
+      request<{ ok: boolean }>(`/lotes/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    eliminar: (id: number) =>
+      request<{ ok: boolean }>(`/lotes/eliminar/${id}`, { method: "DELETE" }),
   },
 
   /**

@@ -140,6 +140,10 @@ const ICONOS_PAGINA: Record<string, LucideIcon> = {
   rubros: Tags,
   deposito: Warehouse,
   depositos: Warehouse,
+  // Boxes (varias cajas) y no Package (una): un lote es una PARTIDA de
+  // mercadería, no la unidad — que ya es "artículos".
+  lotes: Boxes,
+  lote: Boxes,
   // Warehouse y NO MapPin: la ubicación acá es la posición dentro del depósito
   // (zona/estante/nivel), y MapPin ya es "ciudades" — el ícono geográfico haría
   // pensar en una dirección.

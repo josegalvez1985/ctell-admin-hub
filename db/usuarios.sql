@@ -25,6 +25,16 @@
 -- código viaja en el JSON y lo consume el frontend, sin traducirse a 1/0.
 -- ES_ADMIN sigue el mismo criterio con 'S'/'N'.
 --
+-- SOLO ADMINISTRADORES. Los cuatro endpoints exigen ES_ADMIN = 'S' y responden
+-- 403 a cualquier otro usuario, aunque su token sea perfectamente valido.
+--
+-- No alcanzaba con esconder la pantalla de Administracion en el frontend: eso
+-- es cosmetico. Quien conociera la URL podia hacer un GET a /usuarios/listar
+-- con su propio token y recibir la lista completa de cuentas —nombres, correos
+-- y quien es administrador—, que es exactamente el mapa que se necesita para
+-- elegir a quien atacar. La autorizacion vive en PKG_AUTH.VALIDAR_TOKEN_ADMIN,
+-- que es lo unico que el cliente no puede saltear.
+--
 -- NUNCA SE DEVUELVEN CONTRASENA_HASH NI SALT. Ningún SELECT de este archivo
 -- los incluye en una respuesta.
 --
@@ -109,6 +119,19 @@ END PKG_USUARIOS;
 CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
 
   ------------------------------------------------------------------------------
+  -- TODO ESTE ABM ES SOLO PARA ADMINISTRADORES.
+  --
+  -- Los cuatro procedimientos validan con PKG_AUTH.VALIDAR_TOKEN_ADMIN en vez
+  -- de VALIDAR_TOKEN: no alcanza con tener sesión, hay que ser admin.
+  --
+  -- El 403 se responde con UN SOLO mensaje, sin distinguir "token invalido" de
+  -- "no sos admin", igual que el login no distingue usuario inexistente de
+  -- clave incorrecta.
+  ------------------------------------------------------------------------------
+  C_ERROR_NO_AUTORIZADO CONSTANT VARCHAR2(200) :=
+    '{"error":"Se requieren permisos de administrador"}';
+
+  ------------------------------------------------------------------------------
   -- Privado: borra el módulo ORDS si existe, reintentando ante un interbloqueo.
   --
   -- Nunca usar `WHEN OTHERS THEN NULL` acá: se tragaría también un ORA-00060,
@@ -159,10 +182,12 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
     l_total  NUMBER;
     l_items  CLOB;
   BEGIN
-    l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
+    -- VALIDAR_TOKEN_ADMIN y no VALIDAR_TOKEN: este ABM es solo para
+    -- administradores. Ver la nota al inicio del package body.
+    l_sesion := PKG_AUTH.VALIDAR_TOKEN_ADMIN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
-      p_status_code := 401;
-      p_resultado := '{"error":"Sesion invalida o vencida"}';
+      p_status_code := 403;
+      p_resultado := C_ERROR_NO_AUTORIZADO;
       RETURN;
     END IF;
 
@@ -226,10 +251,12 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
     l_hash     VARCHAR2(256);
     l_id       NUMBER;
   BEGIN
-    l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
+    -- VALIDAR_TOKEN_ADMIN y no VALIDAR_TOKEN: este ABM es solo para
+    -- administradores. Ver la nota al inicio del package body.
+    l_sesion := PKG_AUTH.VALIDAR_TOKEN_ADMIN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
-      p_status_code := 401;
-      p_resultado := '{"error":"Sesion invalida o vencida"}';
+      p_status_code := 403;
+      p_resultado := C_ERROR_NO_AUTORIZADO;
       RETURN;
     END IF;
 
@@ -349,10 +376,12 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
     l_estado   VARCHAR2(1);
     l_es_admin VARCHAR2(1);
   BEGIN
-    l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
+    -- VALIDAR_TOKEN_ADMIN y no VALIDAR_TOKEN: este ABM es solo para
+    -- administradores. Ver la nota al inicio del package body.
+    l_sesion := PKG_AUTH.VALIDAR_TOKEN_ADMIN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
-      p_status_code := 401;
-      p_resultado := '{"error":"Sesion invalida o vencida"}';
+      p_status_code := 403;
+      p_resultado := C_ERROR_NO_AUTORIZADO;
       RETURN;
     END IF;
 
@@ -426,10 +455,12 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
     l_sesion NUMBER;
     l_id     NUMBER;
   BEGIN
-    l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
+    -- VALIDAR_TOKEN_ADMIN y no VALIDAR_TOKEN: este ABM es solo para
+    -- administradores. Ver la nota al inicio del package body.
+    l_sesion := PKG_AUTH.VALIDAR_TOKEN_ADMIN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
-      p_status_code := 401;
-      p_resultado := '{"error":"Sesion invalida o vencida"}';
+      p_status_code := 403;
+      p_resultado := C_ERROR_NO_AUTORIZADO;
       RETURN;
     END IF;
 

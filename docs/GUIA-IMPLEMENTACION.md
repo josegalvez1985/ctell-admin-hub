@@ -1031,6 +1031,73 @@ tres casos: usuario inexistente, clave incorrecta y cuenta inactiva.
 `PKG_AUTH.VALIDAR_TOKEN`. Esa función comprueba además que la cuenta siga
 activa, no sólo que el token no haya vencido.
 
+### Autenticar no es autorizar: lo administrativo pide `VALIDAR_TOKEN_ADMIN`
+
+`VALIDAR_TOKEN` responde "¿quién sos?". No responde "¿podés hacer esto?".
+
+> **Regla: si la operación sólo tiene sentido para un administrador, el handler
+> valida con `PKG_AUTH.VALIDAR_TOKEN_ADMIN` y responde 403, no 401.**
+
+```sql
+-- Autenticación: cualquier usuario con sesión.
+l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
+IF l_sesion IS NULL THEN
+  p_status_code := 401;
+  p_resultado := '{"error":"Sesion invalida o vencida"}';
+  RETURN;
+END IF;
+
+-- Autorización: además, que sea admin.
+l_sesion := PKG_AUTH.VALIDAR_TOKEN_ADMIN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
+IF l_sesion IS NULL THEN
+  p_status_code := 403;
+  p_resultado := '{"error":"Se requieren permisos de administrador"}';
+  RETURN;
+END IF;
+```
+
+**401 y 403 no son lo mismo, y el frontend los trata distinto.** Un 401 limpia
+el token y manda al login (la sesión murió); un 403 sólo muestra el mensaje (la
+sesión está viva, lo que falta es el permiso). Devolver 401 por falta de
+permisos desloguearía a alguien que tiene la sesión perfectamente válida.
+
+**Esconder la pantalla en el frontend no es seguridad.** La página de
+Administración ya redirigía a `/home` a quien no fuera admin, y aun así
+cualquier usuario con sesión podía hacer `GET /usuarios/listar` con su propio
+token y recibir la lista completa de cuentas —nombres, correos y quién es
+administrador—, que es justo el mapa que hace falta para elegir a quién atacar.
+Peor todavía: `POST /usuario-paginas/crear` le permitía **asignarse a sí mismo
+cualquier página, incluida Administración**, escalando privilegios con una sola
+petición. El guard del cliente evita el acceso accidental; el del backend evita
+el deliberado.
+
+Hoy validan como administrativos:
+
+| Archivo               | Alcance                                         |
+| --------------------- | ----------------------------------------------- |
+| `usuarios.sql`        | los 4 procedimientos                            |
+| `modulos.sql`         | los 4                                           |
+| `paginas.sql`         | los 4                                           |
+| `usuario-paginas.sql` | `ASIGNAR` y `QUITAR`; `LISTAR` es mixto (abajo) |
+
+**El caso mixto: cada uno ve lo suyo, un admin ve el de cualquiera.**
+`usuario-paginas/listar` alimenta **el menú de todos los usuarios** —cada uno
+pidiendo sus propios permisos— y además el ABM de Permisos. Restringirlo a
+admins dejaría sin menú a todo el mundo. La regla que cubre los dos usos se
+resuelve dentro del procedimiento:
+
+```sql
+-- Pedir los permisos de OTRO usuario (o los de todos) es administrativo.
+IF (l_id_usuario IS NULL OR l_id_usuario != l_sesion)
+   AND NOT PKG_AUTH.ES_ADMINISTRADOR(l_sesion) THEN
+  p_status_code := 403;
+  …
+END IF;
+```
+
+Cuando un endpoint sirve a dos consumidores con distinto nivel de privilegio,
+el control va sobre **el parámetro**, no sobre el endpoint entero.
+
 **Inactivar o eliminar un usuario revoca sus tokens**, con
 `PKG_AUTH.REVOCAR_TOKENS_USUARIO`. Sin eso seguiría navegando con la sesión que
 ya tenía abierta.
@@ -1185,6 +1252,10 @@ Backend (`db/<tabla>.sql`):
 - [ ] No crea ni altera tablas
 - [ ] Sin `ORDS.ENABLE_SCHEMA` ni `DBMS_CRYPTO`
 - [ ] Todos los procedimientos validan el token con `PKG_AUTH.VALIDAR_TOKEN`
+- [ ] **Lo administrativo valida con `PKG_AUTH.VALIDAR_TOKEN_ADMIN` y devuelve
+      403**, no 401 (un 401 desloguea a quien tiene la sesión sana). Si el
+      endpoint sirve a dos consumidores con distinto privilegio, el control va
+      sobre el parámetro — ver [6. Seguridad](#6-seguridad)
 - [ ] Los `UPDATE`/`DELETE` verifican `SQL%ROWCOUNT` (si no, un ID inexistente
       devuelve 200)
 - [ ] Consultas de verificación al final (con `OBJECT_NAME`)
@@ -1271,9 +1342,9 @@ Para que la página sea alcanzable (el backend listo no alcanza):
 | El `<img>` de un logo o imagen no carga                                           | El endpoint todavía no se publicó en APEX, o la fila tiene el BLOB vacío. El componente cae al respaldo por `onError`, así que se ve el ícono o las iniciales — no un ícono de imagen rota                                                                                                            |
 | **`ORA-20987` al mandar correo (identificador de grupo de seguridad no válido)**  | El handler no fijó el workspace antes de `APEX_MAIL.SEND`. Llamá a `PKG_AUTH.ESTABLECER_WORKSPACE_MAIL`. **No uses `APEX_SESSION.CREATE_SESSION`**: exige una app APEX y este workspace no tiene ninguna — ver [6.1](#61-enviar-correo-desde-un-handler)                                              |
 | **El correo no llega y no hay ningún error en ningún lado**                       | Los envíos se tragan la excepción a propósito (`p_enviado = 'I'`) y la mandan a `APEX_DEBUG`, que no está activo. Diagnosticá con `SELECT PKG_AUTH.PROBAR_CORREO('vos@ejemplo.com') FROM DUAL;`, que sí devuelve el error                                                                             |
-| **La página existe pero el ítem del menú no navega a ningún lado**                | `PAGINAS.RUTA` está vacía o no coincide con ningún archivo de `src/routes/`. Editá la página en Administración → Páginas y elegí la ruta del desplegable (que hoy se deriva del router, así que las lista todas)                                                                                        |
+| **La página existe pero el ítem del menú no navega a ningún lado**                | `PAGINAS.RUTA` está vacía o no coincide con ningún archivo de `src/routes/`. Editá la página en Administración → Páginas y elegí la ruta del desplegable (que hoy se deriva del router, así que las lista todas)                                                                                      |
 | **La página no aparece en el menú, aunque esté creada**                           | Falta el permiso, o se cargó **sin empresa**: `USUARIO_PAGINAS` con `ID_EMPRESA` en null no se muestra en ningún menú. Reasignalo desde Permisos eligiendo la empresa                                                                                                                                 |
-| **El ítem del menú no queda resaltado al entrar a la página**                      | `<AppLayout active="…">` recibe el nombre en vez de la ruta. Va la ruta: `active="/ubicaciones"`, y el nombre visible va en `title`                                                                                                                                                                    |
+| **El ítem del menú no queda resaltado al entrar a la página**                     | `<AppLayout active="…">` recibe el nombre en vez de la ruta. Va la ruta: `active="/ubicaciones"`, y el nombre visible va en `title`                                                                                                                                                                   |
 | **Una fila guarda la sucursal de otra empresa**                                   | Las dos FK se validan por separado y ninguna comprueba la relación entre sí. Hay que verificarlo en el paquete antes de escribir — ver [3.1.1](#311-tablas-por-empresa-y-sucursal)                                                                                                                    |
 | **`ORA-01722` al ordenar un listado que antes funcionaba**                        | El `ORDER BY` convierte a número una columna `VARCHAR2` y alguien cargó una fila con texto. Usá `TO_NUMBER(… DEFAULT NULL ON CONVERSION ERROR)` con `NULLS LAST`                                                                                                                                      |
-| **Dos filas que parecen iguales pasan el `UNIQUE`**                                | Una columna de texto sin normalizar: `a1` y `A1` son distintas para el índice. El `UPPER(TRIM(...))` va en el paquete, no en el frontend                                                                                                                                                              |
+| **Dos filas que parecen iguales pasan el `UNIQUE`**                               | Una columna de texto sin normalizar: `a1` y `A1` son distintas para el índice. El `UPPER(TRIM(...))` va en el paquete, no en el frontend                                                                                                                                                              |

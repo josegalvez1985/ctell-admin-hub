@@ -114,6 +114,27 @@ function formatearImporte(valor: number | null, simbolo: string | null): string 
   return simbolo ? `${simbolo} ${numero}` : numero;
 }
 
+/**
+ * Fecha del último inventario, sólo el día: la hora exacta de un conteo físico
+ * no aporta nada al leer la lista.
+ *
+ * Devuelve "Sin inventariar" cuando es null, que hoy es TODAS las filas: la
+ * columna es nueva y ningún endpoint la escribe todavía. Un guión suelto se
+ * leería como "no aplica"; el texto dice que falta hacerlo.
+ *
+ * El backend la manda en ISO sin zona ("2026-08-17T10:30:00"), que `new Date()`
+ * interpreta como hora local — correcto acá, porque el conteo se hizo en la
+ * misma zona que lo mira.
+ */
+function formatearFechaInventario(valor: string | null): string {
+  if (!valor) return "Sin inventariar";
+  const fecha = new Date(valor);
+  // Una fecha inválida (formato inesperado) se muestra cruda en vez de dejar
+  // "Invalid Date" en pantalla.
+  if (Number.isNaN(fecha.getTime())) return valor;
+  return new Intl.DateTimeFormat("es-PY", { dateStyle: "medium" }).format(fecha);
+}
+
 function ArticulosPage() {
   const queryClient = useQueryClient();
   const [editando, setEditando] = useState<Articulo | null>(null);
@@ -170,6 +191,10 @@ function ArticulosPage() {
       a.categoria,
       a.descripcion,
       esActivo(a.activo) ? "Activo" : "Inactivo",
+      // El texto que se ve, no el ISO crudo: en pantalla dice "17 ago 2026", y
+      // buscar "2026-08" no encontraría nada de lo que el usuario está leyendo.
+      // "Sin inventariar" también entra, y sirve para juntar los pendientes.
+      formatearFechaInventario(a.fechaUltimoInventario),
     ],
   );
 
@@ -299,6 +324,9 @@ function ArticulosPage() {
                     </span>
                     {bajoMinimo ? ` (mínimo ${articulo.cantidadMinima})` : ""}
                   </p>
+                  <p className="text-xs text-muted-foreground">
+                    Inventario: {formatearFechaInventario(articulo.fechaUltimoInventario)}
+                  </p>
 
                   <div className="mt-3 space-y-2 border-t border-border pt-3">
                     <Button
@@ -407,9 +435,17 @@ function ArticulosPage() {
                       <TableCell className="text-foreground">
                         {formatearImporte(articulo.precioVenta, articulo.simboloMoneda)}
                       </TableCell>
-                      <TableCell className={bajoMinimo ? "font-semibold text-destructive" : ""}>
-                        {articulo.cantidadStock}
-                        {articulo.abreviaturaUnidad ? ` ${articulo.abreviaturaUnidad}` : ""}
+                      <TableCell>
+                        <span className={bajoMinimo ? "font-semibold text-destructive" : ""}>
+                          {articulo.cantidadStock}
+                          {articulo.abreviaturaUnidad ? ` ${articulo.abreviaturaUnidad}` : ""}
+                        </span>
+                        {/* La fecha del último conteo va debajo del stock y no en
+                            columna propia: es el dato que dice si ESE número es
+                            confiable, y la tabla ya tiene siete columnas. */}
+                        <span className="block text-xs text-muted-foreground">
+                          {formatearFechaInventario(articulo.fechaUltimoInventario)}
+                        </span>
                       </TableCell>
                       <TableCell>
                         <Badge variant={activo ? "secondary" : "outline"}>
@@ -730,9 +766,15 @@ function ArticuloFormDialog({
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      {/* Más alto que los demás: son once campos y sin scroll el footer queda
-          fuera de la pantalla en un portátil. */}
-      <DialogContent className="scrollbar-fino max-h-[90vh] overflow-y-auto sm:max-w-lg">
+      {/* ANCHO DE ERP, NO DE DIÁLOGO. Son once campos: en una columna de
+          `max-w-lg` obligaban a scrollear para llegar al botón de guardar, y
+          cargar un artículo con el formulario a medias visible es justo lo que
+          un sistema de gestión no debe pedir.
+
+          A dos columnas entran todos de una en un portátil (~768px de alto).
+          `max-h-[92vh]` queda como red de seguridad para pantallas muy bajas o
+          zoom alto: sigue existiendo, pero deja de ser el caso normal. */}
+      <DialogContent className="scrollbar-fino max-h-[92vh] overflow-y-auto sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>{esEdicion ? "Editar artículo" : "Nuevo artículo"}</DialogTitle>
           <DialogDescription>
@@ -743,67 +785,85 @@ function ArticuloFormDialog({
         </DialogHeader>
 
         <Form {...form}>
+          {/* space-y-4 y no -6: con tres secciones, el aire de más es lo que
+              empujaba el footer fuera de la pantalla. */}
           <form onSubmit={form.handleSubmit((v) => guardar.mutate(v))} className="space-y-4">
-            {/* Solo en edición: la imagen se sube contra el id del artículo,
-                que en el alta todavía no existe. */}
-            {esEdicion && <CargarImagen articulo={articulo} />}
+            {/* IDENTIFICACIÓN — qué es el artículo.
 
-            <FormField
-              control={form.control}
-              name="nombreArticulo"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Nombre del artículo</FormLabel>
-                  <FormControl>
-                    <Input {...field} placeholder="Cemento Portland 50 kg" autoComplete="off" />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
+                La imagen va a la izquierda y los campos a la derecha: es el
+                bloque que identifica la fila, y la miniatura al lado del nombre
+                se lee de un vistazo. Sólo en edición, porque la imagen se sube
+                contra el id del artículo, que en el alta todavía no existe. */}
+            <section className="space-y-3">
+              <h3 className="text-sm font-semibold text-foreground">Identificación</h3>
 
-            <FormField
-              control={form.control}
-              name="codigoArticulo"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Código</FormLabel>
-                  <FormControl>
-                    <Input {...field} placeholder="ART-001" autoComplete="off" />
-                  </FormControl>
-                  <FormDescription>Opcional. Código interno o de barras.</FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
+              <div className={esEdicion ? "flex gap-4" : undefined}>
+                {esEdicion && <CargarImagen articulo={articulo} />}
 
-            <FormField
-              control={form.control}
-              name="idCategoria"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Categoría</FormLabel>
-                  <FormControl>
-                    <Combobox
-                      opciones={categoriasOpciones}
-                      value={field.value}
-                      onChange={field.onChange}
-                      placeholder="Sin categoría"
-                      buscarPlaceholder="Buscar categoría…"
-                      cargando={cargandoCategorias}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
+                <div className="grid flex-1 gap-4 sm:grid-cols-2">
+                  <FormField
+                    control={form.control}
+                    name="nombreArticulo"
+                    render={({ field }) => (
+                      <FormItem className="sm:col-span-2">
+                        <FormLabel>Nombre del artículo</FormLabel>
+                        <FormControl>
+                          <Input
+                            {...field}
+                            placeholder="Cemento Portland 50 kg"
+                            autoComplete="off"
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
 
-            {/* PRECIOS Y STOCK — bloque aparte, y bloqueado en edición.
+                  <FormField
+                    control={form.control}
+                    name="codigoArticulo"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Código</FormLabel>
+                        <FormControl>
+                          <Input {...field} placeholder="ART-001" autoComplete="off" />
+                        </FormControl>
+                        <FormDescription>Opcional. Interno o de barras.</FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
 
-                Los tres valores de acá los gobiernan procesos, no una carga
-                manual: el precio de última compra sale de una compra, el stock
-                de los movimientos, y el precio de venta se fija con criterio
-                comercial. Editarlos a mano desde el ABM los dejaría
+                  <FormField
+                    control={form.control}
+                    name="idCategoria"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Categoría</FormLabel>
+                        <FormControl>
+                          <Combobox
+                            opciones={categoriasOpciones}
+                            value={field.value}
+                            onChange={field.onChange}
+                            placeholder="Sin categoría"
+                            buscarPlaceholder="Buscar categoría…"
+                            cargando={cargandoCategorias}
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
+              </div>
+            </section>
+
+            {/* PRECIOS Y STOCK — bloqueado en edición.
+
+                Los tres valores del fieldset los gobiernan procesos, no una
+                carga manual: el precio de última compra sale de una compra, el
+                stock de los movimientos, y el precio de venta se fija con
+                criterio comercial. Editarlos a mano desde el ABM los dejaría
                 desalineados con esos procesos sin dejar rastro del cambio.
 
                 En el ALTA sí se editan: son los valores iniciales, y
@@ -811,20 +871,31 @@ function ArticuloFormDialog({
                 imposible crear un artículo.
 
                 `fieldset disabled` deshabilita todo lo que contiene de una vez,
-                sin repetir la condición en cada Input. */}
-            <fieldset
-              disabled={esEdicion}
-              className="space-y-4 rounded-lg border border-border p-3"
-            >
-              <legend className="px-1 text-sm font-medium text-foreground">Precios y stock</legend>
+                sin repetir la condición en cada Input.
+
+                Moneda y unidad de medida acompañan al bloque porque es donde
+                se leen —dan sentido a los importes y a las cantidades— pero
+                quedan FUERA del fieldset: corregirlas no altera ningún valor.
+                Antes estaban sueltas más abajo, lejos de los números que
+                describen. */}
+            <section className="space-y-3">
+              <h3 className="text-sm font-semibold text-foreground">Precios y stock</h3>
 
               {esEdicion && (
                 <p className="text-xs text-muted-foreground">
-                  Se actualizan desde las compras y los movimientos de stock, no desde acá.
+                  Los precios y el stock se actualizan desde las compras y los movimientos, no desde
+                  acá.
                 </p>
               )}
 
-              <div className="grid gap-4 sm:grid-cols-2">
+              {/* `disabled` va en cada Input y no en un <fieldset> que los
+                  envuelva: para que los campos participen de esta grilla el
+                  fieldset necesitaría `display:contents`, que varios navegadores
+                  soportan de forma irregular. Si eso falla, el bloqueo de
+                  precios en edición se pierde EN SILENCIO — y ese bloqueo es
+                  justamente lo que evita pisar valores que gobiernan las
+                  compras y los movimientos de stock. */}
+              <div className="grid gap-4 sm:grid-cols-3">
                 <FormField
                   control={form.control}
                   name="precioVenta"
@@ -834,7 +905,14 @@ function ArticuloFormDialog({
                       <FormControl>
                         {/* inputMode decimal abre el teclado numérico en móvil
                             sin las flechas de un type="number". */}
-                        <Input {...field} inputMode="decimal" placeholder="0" autoComplete="off" />
+                        <Input
+                          {...field}
+                          inputMode="decimal"
+                          placeholder="0"
+                          autoComplete="off"
+                          disabled={esEdicion}
+                          className="tabular-nums"
+                        />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -848,7 +926,101 @@ function ArticuloFormDialog({
                     <FormItem>
                       <FormLabel>Precio última compra</FormLabel>
                       <FormControl>
-                        <Input {...field} inputMode="decimal" placeholder="0" autoComplete="off" />
+                        <Input
+                          {...field}
+                          inputMode="decimal"
+                          placeholder="0"
+                          autoComplete="off"
+                          disabled={esEdicion}
+                          className="tabular-nums"
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="idMoneda"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Moneda</FormLabel>
+                      <FormControl>
+                        <Combobox
+                          opciones={monedasOpciones}
+                          value={field.value}
+                          onChange={field.onChange}
+                          placeholder="Sin moneda"
+                          buscarPlaceholder="Buscar moneda…"
+                          cargando={cargandoMonedas}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="cantidadStock"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Stock actual</FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          inputMode="decimal"
+                          placeholder="0"
+                          autoComplete="off"
+                          disabled={esEdicion}
+                          className="tabular-nums"
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                {/* La cantidad mínima queda FUERA del bloque bloqueado: es una
+                    política del negocio —cuándo avisar que falta stock— y no un
+                    valor que calcule ningún proceso, así que se edita siempre. */}
+                <FormField
+                  control={form.control}
+                  name="cantidadMinima"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Cantidad mínima</FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          inputMode="decimal"
+                          placeholder="0"
+                          autoComplete="off"
+                          className="tabular-nums"
+                        />
+                      </FormControl>
+                      <FormDescription>Avisa cuando el stock baja de acá.</FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="idUnidadMedida"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Unidad de medida</FormLabel>
+                      <FormControl>
+                        <Combobox
+                          opciones={unidadesOpciones}
+                          value={field.value}
+                          onChange={field.onChange}
+                          placeholder="Sin unidad"
+                          buscarPlaceholder="Buscar unidad…"
+                          cargando={cargandoUnidades}
+                        />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -856,124 +1028,81 @@ function ArticuloFormDialog({
                 />
               </div>
 
-              <FormField
-                control={form.control}
-                name="cantidadStock"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Stock actual</FormLabel>
-                    <FormControl>
-                      <Input {...field} inputMode="decimal" placeholder="0" autoComplete="off" />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
+              {/* Último inventario: SÓLO LECTURA, y sólo en edición —un alta no
+                  tiene conteo previo. No es un campo del formulario (no está en
+                  el schema ni viaja en el submit): lo estampa el proceso de
+                  inventario. Se muestra acá porque es el dato que dice si el
+                  stock de arriba es confiable, y es donde alguien lo busca. */}
+              {esEdicion && (
+                <div className="flex items-center justify-between gap-3 rounded-lg border border-dashed border-border px-3 py-2">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Último inventario</p>
+                    <p className="text-xs text-muted-foreground">
+                      Lo registra el conteo físico, no se carga a mano.
+                    </p>
+                  </div>
+                  <span
+                    className={
+                      articulo.fechaUltimoInventario
+                        ? "text-sm tabular-nums text-foreground"
+                        : "text-sm text-muted-foreground"
+                    }
+                  >
+                    {formatearFechaInventario(articulo.fechaUltimoInventario)}
+                  </span>
+                </div>
+              )}
+            </section>
+
+            {/* DETALLE — lo largo al final, para que no parta las dos columnas
+                de arriba. El switch de estado comparte fila con la descripción
+                en escritorio: es un control chico y solo aparece en edición. */}
+            <section className="space-y-3">
+              <h3 className="text-sm font-semibold text-foreground">Detalle</h3>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <FormField
+                  control={form.control}
+                  name="descripcion"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Descripción</FormLabel>
+                      <FormControl>
+                        <Textarea
+                          {...field}
+                          rows={3}
+                          placeholder="Detalle del artículo."
+                          className="resize-none"
+                        />
+                      </FormControl>
+                      <FormDescription>Opcional. Hasta 1000 caracteres.</FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                {/* Solo en edición: el alta siempre nace activa. */}
+                {esEdicion && (
+                  <FormField
+                    control={form.control}
+                    name="activo"
+                    render={({ field }) => (
+                      <FormItem className="flex h-fit items-center justify-between rounded-lg border border-border p-3">
+                        <div className="space-y-0.5">
+                          <FormLabel>Activo</FormLabel>
+                          <FormDescription>
+                            Un artículo inactivo deja de ofrecerse en los formularios.
+                          </FormDescription>
+                        </div>
+                        <FormControl>
+                          <Switch checked={field.value} onCheckedChange={field.onChange} />
+                        </FormControl>
+                      </FormItem>
+                    )}
+                  />
                 )}
-              />
-            </fieldset>
-
-            <FormField
-              control={form.control}
-              name="idMoneda"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Moneda</FormLabel>
-                  <FormControl>
-                    <Combobox
-                      opciones={monedasOpciones}
-                      value={field.value}
-                      onChange={field.onChange}
-                      placeholder="Sin moneda"
-                      buscarPlaceholder="Buscar moneda…"
-                      cargando={cargandoMonedas}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            {/* La cantidad mínima queda FUERA del bloque bloqueado: es una
-                política del negocio —cuándo avisar que falta stock— y no un
-                valor que calcule ningún proceso, así que se edita siempre. */}
-            <FormField
-              control={form.control}
-              name="cantidadMinima"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Cantidad mínima</FormLabel>
-                  <FormControl>
-                    <Input {...field} inputMode="decimal" placeholder="0" autoComplete="off" />
-                  </FormControl>
-                  <FormDescription>Avisa cuando el stock baja de acá.</FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            {/* Fuera del fieldset bloqueado: la moneda define en qué unidad se
-                expresan los precios, y corregirla no altera ningún importe. */}
-
-            <FormField
-              control={form.control}
-              name="idUnidadMedida"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Unidad de medida</FormLabel>
-                  <FormControl>
-                    <Combobox
-                      opciones={unidadesOpciones}
-                      value={field.value}
-                      onChange={field.onChange}
-                      placeholder="Sin unidad"
-                      buscarPlaceholder="Buscar unidad…"
-                      cargando={cargandoUnidades}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name="descripcion"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Descripción</FormLabel>
-                  <FormControl>
-                    <Textarea
-                      {...field}
-                      rows={3}
-                      placeholder="Detalle del artículo."
-                      className="resize-none"
-                    />
-                  </FormControl>
-                  <FormDescription>Opcional. Hasta 1000 caracteres.</FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            {/* Solo en edición: el alta siempre nace activa. */}
-            {esEdicion && (
-              <FormField
-                control={form.control}
-                name="activo"
-                render={({ field }) => (
-                  <FormItem className="flex items-center justify-between rounded-lg border border-border p-3">
-                    <div className="space-y-0.5">
-                      <FormLabel>Activo</FormLabel>
-                      <FormDescription>
-                        Un artículo inactivo deja de ofrecerse en los formularios.
-                      </FormDescription>
-                    </div>
-                    <FormControl>
-                      <Switch checked={field.value} onCheckedChange={field.onChange} />
-                    </FormControl>
-                  </FormItem>
-                )}
-              />
-            )}
+              </div>
+            </section>
 
             <DialogFooter>
               <Button type="button" variant="outline" onClick={onClose}>

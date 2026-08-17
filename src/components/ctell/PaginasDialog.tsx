@@ -205,8 +205,12 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
         </p>
       )}
 
+      {/* La lista scrollea DENTRO de su caja en vez de estirar el diálogo: así
+          el buscador de arriba y el conteo de abajo quedan siempre visibles, y
+          la rueda del mouse actúa sobre las filas y no sobre toda la pantalla.
+          `scrollbar-fino` porque es un contenedor con scroll propio. */}
       {paginas.length > 0 && (
-        <ul className="divide-y divide-border rounded-lg border border-border">
+        <ul className="scrollbar-fino max-h-[45vh] divide-y divide-border overflow-y-auto rounded-lg border border-border">
           {paginas.map((pagina) => {
             const activo = esActivo(pagina.activo);
 
@@ -355,153 +359,159 @@ function PanelForm({ pagina, onVolver }: { pagina?: Pagina; onVolver: () => void
   return (
     <Form {...form}>
       <form onSubmit={form.handleSubmit((v) => guardar.mutate(v))} className="space-y-4">
-        <FormField
-          control={form.control}
-          name="idModulo"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Módulo</FormLabel>
-              <FormControl>
-                <Combobox
-                  opciones={(modulos?.items ?? []).map((m) => ({
-                    valor: String(m.id),
-                    etiqueta: m.nombre,
-                  }))}
-                  value={field.value}
-                  onChange={field.onChange}
-                  placeholder="Elegí un módulo"
-                  buscarPlaceholder="Buscar módulo…"
-                  cargando={cargandoModulos}
-                />
-              </FormControl>
-              <FormDescription>La página se muestra dentro de este módulo.</FormDescription>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        <FormField
-          control={form.control}
-          name="nombre"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Nombre</FormLabel>
-              <FormControl>
-                <Input {...field} placeholder="Órdenes de compra" autoComplete="off" />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        <FormField
-          control={form.control}
-          name="ruta"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Ruta</FormLabel>
-              {/* El MISMO combobox en alta y en edición.
-                  Antes la edición usaba un <Input> de texto libre, y era justo al
-                  revés de lo que conviene: editar es lo que se hace para
-                  CORREGIR una ruta mal cargada, así que es donde más importa
-                  elegir de una lista válida. Con el input, una página guardada
-                  con la ruta vacía se abría mostrando un campo en blanco —sin
-                  ninguna pista de qué rutas existen— y el desplegable sólo
-                  aparecía al crear otra página desde cero. */}
-              <FormControl>
-                <Combobox
-                  opciones={RUTAS_DISPONIBLES.map((ruta) => ({
-                    valor: ruta.valor,
-                    etiqueta: ruta.label,
-                    descripcion: ruta.valor,
-                  }))}
-                  value={field.value}
-                  onChange={field.onChange}
-                  placeholder="Elegí una ruta disponible"
-                  buscarPlaceholder="Buscar ruta…"
-                />
-              </FormControl>
-              <FormDescription>
-                {/* Avisa cuando la ruta guardada no está entre las del router:
-                    es exactamente el caso de una página que quedó apuntando a
-                    una URL que no resuelve, y sin esto el combobox se ve vacío
-                    sin explicar por qué. */}
-                {esEdicion && field.value && !RUTAS_DISPONIBLES.some((r) => r.valor === field.value)
-                  ? `La ruta guardada ("${field.value}") no existe en el proyecto. Elegí una de la lista.`
-                  : "Las rutas salen del router: si creaste la página .tsx, está acá."}
-              </FormDescription>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        <FormField
-          control={form.control}
-          name="entrada"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Entrada</FormLabel>
-              <Select value={field.value} onValueChange={field.onChange}>
-                <FormControl>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Elegí una entrada" />
-                  </SelectTrigger>
-                </FormControl>
-                <SelectContent>
-                  <SelectItem value="D">Definiciones</SelectItem>
-                  <SelectItem value="O">Operaciones</SelectItem>
-                  <SelectItem value="R">Reportes</SelectItem>
-                </SelectContent>
-              </Select>
-              <FormDescription>Sección donde aparece la página en el menú.</FormDescription>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        <FormField
-          control={form.control}
-          name="orden"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Orden {!esEdicion && "(opcional)"}</FormLabel>
-              <FormControl>
-                <Input
-                  {...field}
-                  type="number"
-                  placeholder={esEdicion ? undefined : "Automático"}
-                />
-              </FormControl>
-              <FormDescription>
-                {esEdicion
-                  ? "Define la posición dentro de la sección del módulo."
-                  : "Si lo dejás vacío, la página se agrega al final de su sección."}
-              </FormDescription>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        {/* Solo en edición: el alta siempre nace activa. */}
-        {esEdicion && (
+        {/* Dos columnas: el diálogo ya es `max-w-3xl` y a una columna estos
+            cinco campos empujaban el botón de guardar fuera de la pantalla. Ver
+            "Un formulario entra en un pantallazo" en docs/GUIA-FRONTEND.md. */}
+        <div className="grid gap-4 sm:grid-cols-2">
           <FormField
             control={form.control}
-            name="activo"
+            name="idModulo"
             render={({ field }) => (
-              <FormItem className="flex items-center justify-between rounded-lg border border-border p-3">
-                <div className="space-y-0.5">
-                  <FormLabel>Activa</FormLabel>
-                  <FormDescription>
-                    Una página inactiva desaparece del menú de todos los usuarios.
-                  </FormDescription>
-                </div>
+              <FormItem>
+                <FormLabel>Módulo</FormLabel>
                 <FormControl>
-                  <Switch checked={field.value} onCheckedChange={field.onChange} />
+                  <Combobox
+                    opciones={(modulos?.items ?? []).map((m) => ({
+                      valor: String(m.id),
+                      etiqueta: m.nombre,
+                    }))}
+                    value={field.value}
+                    onChange={field.onChange}
+                    placeholder="Elegí un módulo"
+                    buscarPlaceholder="Buscar módulo…"
+                    cargando={cargandoModulos}
+                  />
                 </FormControl>
+                <FormDescription>La página se muestra dentro de este módulo.</FormDescription>
+                <FormMessage />
               </FormItem>
             )}
           />
-        )}
+
+          <FormField
+            control={form.control}
+            name="nombre"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Nombre</FormLabel>
+                <FormControl>
+                  <Input {...field} placeholder="Órdenes de compra" autoComplete="off" />
+                </FormControl>
+                <FormDescription>Como se lee en el menú.</FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name="ruta"
+            render={({ field }) => (
+              <FormItem className="sm:col-span-2">
+                <FormLabel>Ruta</FormLabel>
+                {/* El MISMO combobox en alta y en edición.
+                    Antes la edición usaba un <Input> de texto libre, y era justo
+                    al revés de lo que conviene: editar es lo que se hace para
+                    CORREGIR una ruta mal cargada, así que es donde más importa
+                    elegir de una lista válida. Con el input, una página guardada
+                    con la ruta vacía se abría mostrando un campo en blanco —sin
+                    ninguna pista de qué rutas existen— y el desplegable sólo
+                    aparecía al crear otra página desde cero. */}
+                <FormControl>
+                  <Combobox
+                    opciones={RUTAS_DISPONIBLES.map((ruta) => ({
+                      valor: ruta.valor,
+                      etiqueta: ruta.label,
+                      descripcion: ruta.valor,
+                    }))}
+                    value={field.value}
+                    onChange={field.onChange}
+                    placeholder="Elegí una ruta disponible"
+                    buscarPlaceholder="Buscar ruta…"
+                  />
+                </FormControl>
+                <FormDescription>
+                  {/* Avisa cuando la ruta guardada no está entre las del router:
+                      es exactamente el caso de una página que quedó apuntando a
+                      una URL que no resuelve, y sin esto el combobox se ve vacío
+                      sin explicar por qué. */}
+                  {esEdicion &&
+                  field.value &&
+                  !RUTAS_DISPONIBLES.some((r) => r.valor === field.value)
+                    ? `La ruta guardada ("${field.value}") no existe en el proyecto. Elegí una de la lista.`
+                    : "Las rutas salen del router: si creaste la página .tsx, está acá."}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name="entrada"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Entrada</FormLabel>
+                <Select value={field.value} onValueChange={field.onChange}>
+                  <FormControl>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Elegí una entrada" />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent>
+                    <SelectItem value="D">Definiciones</SelectItem>
+                    <SelectItem value="O">Operaciones</SelectItem>
+                    <SelectItem value="R">Reportes</SelectItem>
+                  </SelectContent>
+                </Select>
+                <FormDescription>Sección del menú.</FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name="orden"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Orden {!esEdicion && "(opcional)"}</FormLabel>
+                <FormControl>
+                  <Input
+                    {...field}
+                    type="number"
+                    placeholder={esEdicion ? undefined : "Automático"}
+                  />
+                </FormControl>
+                <FormDescription>
+                  {esEdicion ? "Posición en la sección." : "Vacío: se agrega al final."}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          {/* Solo en edición: el alta siempre nace activa. */}
+          {esEdicion && (
+            <FormField
+              control={form.control}
+              name="activo"
+              render={({ field }) => (
+                <FormItem className="flex h-fit items-center justify-between gap-3 rounded-lg border border-border p-3 sm:col-span-2">
+                  <div className="space-y-0.5">
+                    <FormLabel>Activa</FormLabel>
+                    <FormDescription>
+                      Una página inactiva desaparece del menú de todos los usuarios.
+                    </FormDescription>
+                  </div>
+                  <FormControl>
+                    <Switch checked={field.value} onCheckedChange={field.onChange} />
+                  </FormControl>
+                </FormItem>
+              )}
+            />
+          )}
+        </div>
 
         <DialogFooter>
           <Button type="button" variant="outline" onClick={onVolver}>

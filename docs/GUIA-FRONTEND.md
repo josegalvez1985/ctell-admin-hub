@@ -19,6 +19,7 @@ pantalla ABM completa.
 5. [Listados: tabla y tarjetas](#5-listados-tabla-y-tarjetas)
    - [Todo listado busca y ordena](#51-todo-listado-busca-y-ordena)
 6. [Formularios](#6-formularios)
+   - [Un formulario entra en un pantallazo](#un-formulario-entra-en-un-pantallazo)
    - [Elegir un valor de otra tabla: Combobox](#elegir-un-valor-de-otra-tabla-combobox-no-select)
 7. [El menú dinámico por dentro](#7-el-menú-dinámico-por-dentro)
    - [Imágenes: siempre con respaldo](#71-imágenes-siempre-con-respaldo)
@@ -661,6 +662,60 @@ const form = useForm<FormValues>({
 controlados. Usá `values` cuando el formulario se reutiliza para editar
 registros distintos.
 
+### Un formulario entra en un pantallazo
+
+> **Regla: el formulario se ve entero sin scrollear, con el botón de guardar
+> visible. Si no entra en una columna, se usan dos — no se scrollea.**
+
+Este es un sistema de gestión: quien carga artículos abre el mismo diálogo
+cincuenta veces por día. Un formulario que obliga a scrollear para llegar a
+"Guardar" esconde la mitad de los campos en cada carga, y no deja revisar lo
+escrito antes de confirmar.
+
+**El ancho se elige por la cantidad de campos, no por costumbre:**
+
+| Campos  | Ancho          | Disposición                       |
+| ------- | -------------- | --------------------------------- |
+| hasta 4 | `sm:max-w-md`  | una columna                       |
+| 5 a 8   | `sm:max-w-2xl` | dos columnas (`sm:grid-cols-2`)   |
+| 9 o más | `sm:max-w-3xl` | dos o tres columnas, en secciones |
+
+```tsx
+// Once campos: a una columna el footer quedaba fuera de la pantalla.
+<DialogContent className="scrollbar-fino max-h-[92vh] overflow-y-auto sm:max-w-3xl">
+```
+
+**`max-h-[92vh]` se deja igual**, como red de seguridad para pantallas muy bajas
+o zoom alto. La diferencia es que deja de ser el caso normal: con el ancho
+correcto no se activa en un portátil.
+
+**Agrupá en secciones con título, no en una lista plana.** Los campos se ordenan
+por significado y cada grupo lleva un `<h3>`; así el ojo salta al bloque que
+busca en vez de recorrer once etiquetas:
+
+```tsx
+<section className="space-y-3">
+  <h3 className="text-sm font-semibold text-foreground">Precios y stock</h3>
+  <div className="grid gap-4 sm:grid-cols-3">{/* … */}</div>
+</section>
+```
+
+Tres detalles que se aprendieron rehaciendo el formulario de Artículos:
+
+- **Un campo va al lado de los que le dan sentido.** La moneda estaba suelta
+  abajo, lejos de los precios que denomina, y la unidad de medida lejos de las
+  cantidades. Agruparlas con sus números ahorró dos secciones.
+- **Lo largo (un `<Textarea>`) va al final**, en su propia sección: en el medio
+  de una grilla parte las dos columnas y deja un hueco.
+- **`space-y-4`, no `space-y-6`.** Con varias secciones, el aire de más es lo
+  que termina empujando el footer fuera de la pantalla.
+
+> **Cuidado con `<fieldset disabled>` dentro de una grilla.** Para que los
+> campos participen de la grilla del padre, el fieldset necesita
+> `display: contents`, que varios navegadores soportan de forma irregular — y si
+> falla, **el bloqueo se pierde en silencio**. Cuando el `disabled` protege algo
+> que importa, poné `disabled` en cada `Input`.
+
 ### El toggle de activo va sólo en edición
 
 El backend fuerza `'A'` en los INSERT: crear algo para dejarlo inactivo de
@@ -1031,7 +1086,7 @@ Antes de dar por terminada una pantalla:
       con un ícono que no esté ya usado por otra entrada
 - [ ] Registrada en Administración → Páginas, y asignada en Permisos
 - [ ] Si es una tabla por empresa: `empresa.id` en la `queryKey`, `enabled:
-    empresa !== null`, y el caso `empresa === null` contemplado en el render
+  empresa !== null`, y el caso `empresa === null` contemplado en el render
 - [ ] Si además cuelga de una sucursal: **`sucursal.id` también** en la
       `queryKey` y en el `enabled`, y el caso "la empresa no tiene sucursales"
       resuelto en el render — ver [Empresa y sucursal activas](#empresa-y-sucursal-activas)
@@ -1046,6 +1101,8 @@ Antes de dar por terminada una pantalla:
       tabla y en las tarjetas
 - [ ] **Selectores de FK con `Combobox`**, no `<Select>` — país, módulo, usuario, etc.
 - [ ] Formularios con `values`/`defaultValues` y validación zod
+- [ ] **El formulario entra sin scrollear**, con el botón de guardar visible: dos
+      columnas y ancho acorde a la cantidad de campos, agrupados en secciones
 - [ ] Toggle de activo sólo en edición, no en el alta
 - [ ] Las mutaciones invalidan sus queries
 - [ ] Probado en claro/oscuro y en ancho de móvil
@@ -1059,6 +1116,8 @@ Antes de dar por terminada una pantalla:
 | Todo se ve bien pero una acción no hace nada              | La API no devuelve un campo: llega `undefined`. Corré `npx tsc --noEmit`                                                                                                                                        |
 | El texto no se lee en hover en el sidebar                 | Falta `variant="dark"`: las clases claras no contrastan sobre el navy                                                                                                                                           |
 | El formulario muestra datos del registro anterior         | Se usó `defaultValues` en vez de `values` en un dialog reutilizado                                                                                                                                              |
+| Hay que scrollear para llegar al botón de guardar         | El diálogo quedó en una columna con demasiados campos: subí el ancho y pasá a `sm:grid-cols-2`                                                                                                                  |
+| Un campo bloqueado se puede editar igual                  | El `<fieldset disabled>` está con `display:contents` dentro de una grilla: poné `disabled` en cada `Input`                                                                                                      |
 | El error del backend no se ve al borrar                   | Falta `e.preventDefault()` en el `AlertDialogAction`                                                                                                                                                            |
 | La lista no se actualiza tras guardar                     | Falta `invalidateQueries`                                                                                                                                                                                       |
 | `window is not defined`                                   | Acceso al DOM fuera de `useEffect` (corre en el prerender de build)                                                                                                                                             |

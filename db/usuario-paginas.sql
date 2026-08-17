@@ -188,6 +188,26 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIO_PAGINAS AS
     -- que TO_NUMBER la toque (si no, ORA-01722).
     l_id_usuario := TO_NUMBER(NULLIF(p_id_usuario, ''));
 
+    -- ESTE LISTAR TIENE DOS USOS Y SOLO UNO ES ADMINISTRATIVO:
+    --
+    --   1. El MENU de cada usuario, que pide SUS PROPIOS permisos
+    --      (?idUsuario=<el suyo>). Lo usa toda la app en cada carga, asi que
+    --      exigir admin lo dejaria sin menu a todo el mundo.
+    --   2. El ABM de Permisos, que consulta los de OTRO usuario.
+    --
+    -- La regla que cubre los dos: cada uno puede ver los suyos, y solo un
+    -- administrador puede ver los de otro. Sin este control, cualquiera podia
+    -- mapear los accesos de cualquier cuenta pasando otro id.
+    --
+    -- El filtro vacio (todos los usuarios) tambien es administrativo: devuelve
+    -- el mapa de permisos completo del sistema.
+    IF (l_id_usuario IS NULL OR l_id_usuario != l_sesion)
+       AND NOT PKG_AUTH.ES_ADMINISTRADOR(l_sesion) THEN
+      p_status_code := 403;
+      p_resultado := '{"error":"Solo un administrador puede ver los permisos de otro usuario"}';
+      RETURN;
+    END IF;
+
     SELECT COUNT(*)
       INTO l_total
       FROM USUARIO_PAGINAS
@@ -268,10 +288,14 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIO_PAGINAS AS
     l_id_empresa NUMBER;
     l_existe     PLS_INTEGER;
   BEGIN
-    l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
+    -- SOLO ADMINISTRADORES: otorgar accesos es la operacion mas sensible del
+    -- sistema. Sin este control, cualquier usuario con sesion podia asignarse a
+    -- si mismo cualquier pagina —incluida Administracion— y escalar privilegios
+    -- con una sola peticion.
+    l_sesion := PKG_AUTH.VALIDAR_TOKEN_ADMIN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
-      p_status_code := 401;
-      p_resultado := '{"error":"Sesion invalida o vencida"}';
+      p_status_code := 403;
+      p_resultado := '{"error":"Se requieren permisos de administrador"}';
       RETURN;
     END IF;
 
@@ -345,10 +369,12 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIO_PAGINAS AS
   ) IS
     l_sesion NUMBER;
   BEGIN
-    l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
+    -- SOLO ADMINISTRADORES, igual que ASIGNAR: quitarle el acceso a alguien es
+    -- tan sensible como darselo.
+    l_sesion := PKG_AUTH.VALIDAR_TOKEN_ADMIN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
-      p_status_code := 401;
-      p_resultado := '{"error":"Sesion invalida o vencida"}';
+      p_status_code := 403;
+      p_resultado := '{"error":"Se requieren permisos de administrador"}';
       RETURN;
     END IF;
 

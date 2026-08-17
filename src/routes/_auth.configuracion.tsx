@@ -20,8 +20,10 @@ import { PaginasDialog } from "@/components/ctell/PaginasDialog";
 import { PermisosDialog } from "@/components/ctell/PermisosDialog";
 import { useTheme, type Theme } from "@/components/ctell/theme-provider";
 import { UsuariosDialog } from "@/components/ctell/UsuariosDialog";
+import { useUsuarioActual } from "@/hooks/use-usuario-actual";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { esAdmin } from "@/lib/api";
 import { tituloPagina } from "@/lib/marca";
 
 export const Route = createFileRoute("/_auth/configuracion")({
@@ -60,6 +62,27 @@ function ConfiguracionPage() {
   const [paginasAbierto, setPaginasAbierto] = useState(false);
   const [permisosAbierto, setPermisosAbierto] = useState(false);
   const [passwordAbierto, setPasswordAbierto] = useState(false);
+
+  /**
+   * Las herramientas de gestión son sólo para administradores.
+   *
+   * Se OCULTAN en vez de mostrarse y fallar al abrirlas: ofrecer un botón que
+   * termina en "No tenés permisos" es una promesa que la pantalla no puede
+   * cumplir. Quien no administra el sistema no necesita saber que esas
+   * opciones existen.
+   *
+   * Esto es sólo la capa visual. Quien conozca los endpoints los puede llamar
+   * igual, y por eso el backend valida el rol por su cuenta: los paquetes de
+   * usuarios, módulos, páginas y permisos exigen ES_ADMIN='S' y devuelven 403
+   * (ver PKG_AUTH.VALIDAR_TOKEN_ADMIN). Esconder el botón evita el acceso
+   * accidental; el control del servidor evita el deliberado.
+   *
+   * Mientras `/auth/me` está en vuelo, `usuario` es undefined y las tarjetas no
+   * se dibujan: es preferible que aparezcan un instante después a que
+   * parpadeen y desaparezcan delante de quien no debía verlas.
+   */
+  const { data: usuario } = useUsuarioActual();
+  const puedeAdministrar = esAdmin(usuario?.esAdmin);
 
   return (
     <AppLayout active="Configuración" title="Configuración" showSearch={false}>
@@ -103,90 +126,120 @@ function ConfiguracionPage() {
 
         <CambiarPasswordDialog open={passwordAbierto} onOpenChange={setPasswordAbierto} />
 
-        <Card className="surface-card">
-          <CardHeader>
-            <CardTitle>Administración</CardTitle>
-            <CardDescription>Cuentas, estructura del menú y permisos de acceso.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <button
-              onClick={() => setUsuariosAbierto(true)}
-              className="flex w-full items-center gap-4 rounded-xl border border-border p-4 text-left transition-colors hover:border-primary/40 hover:bg-accent/30"
-            >
-              <span className="gradient-primary flex size-10 shrink-0 items-center justify-center rounded-xl text-primary-foreground">
-                <Users className="size-5" />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-semibold text-foreground">Usuarios</span>
-                <span className="mt-0.5 block text-xs text-muted-foreground">
-                  Crear, editar, cambiar contraseñas y dar de baja cuentas.
-                </span>
-              </span>
-              <Button asChild variant="outline" size="sm" className="pointer-events-none shrink-0">
-                <span>Abrir</span>
-              </Button>
-            </button>
+        {puedeAdministrar && (
+          <>
+            <Card className="surface-card">
+              <CardHeader>
+                <CardTitle>Administración</CardTitle>
+                <CardDescription>
+                  Cuentas, estructura del menú y permisos de acceso.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <button
+                  onClick={() => setUsuariosAbierto(true)}
+                  className="flex w-full items-center gap-4 rounded-xl border border-border p-4 text-left transition-colors hover:border-primary/40 hover:bg-accent/30"
+                >
+                  <span className="gradient-primary flex size-10 shrink-0 items-center justify-center rounded-xl text-primary-foreground">
+                    <Users className="size-5" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-semibold text-foreground">Usuarios</span>
+                    <span className="mt-0.5 block text-xs text-muted-foreground">
+                      Crear, editar, cambiar contraseñas y dar de baja cuentas.
+                    </span>
+                  </span>
+                  <Button
+                    asChild
+                    variant="outline"
+                    size="sm"
+                    className="pointer-events-none shrink-0"
+                  >
+                    <span>Abrir</span>
+                  </Button>
+                </button>
 
-            <button
-              onClick={() => setModulosAbierto(true)}
-              className="flex w-full items-center gap-4 rounded-xl border border-border p-4 text-left transition-colors hover:border-primary/40 hover:bg-accent/30"
-            >
-              <span className="gradient-primary flex size-10 shrink-0 items-center justify-center rounded-xl text-primary-foreground">
-                <LayoutGrid className="size-5" />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-semibold text-foreground">Módulos</span>
-                <span className="mt-0.5 block text-xs text-muted-foreground">
-                  Crear, editar y eliminar los módulos del menú.
-                </span>
-              </span>
-              <Button asChild variant="outline" size="sm" className="pointer-events-none shrink-0">
-                <span>Abrir</span>
-              </Button>
-            </button>
+                <button
+                  onClick={() => setModulosAbierto(true)}
+                  className="flex w-full items-center gap-4 rounded-xl border border-border p-4 text-left transition-colors hover:border-primary/40 hover:bg-accent/30"
+                >
+                  <span className="gradient-primary flex size-10 shrink-0 items-center justify-center rounded-xl text-primary-foreground">
+                    <LayoutGrid className="size-5" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-semibold text-foreground">Módulos</span>
+                    <span className="mt-0.5 block text-xs text-muted-foreground">
+                      Crear, editar y eliminar los módulos del menú.
+                    </span>
+                  </span>
+                  <Button
+                    asChild
+                    variant="outline"
+                    size="sm"
+                    className="pointer-events-none shrink-0"
+                  >
+                    <span>Abrir</span>
+                  </Button>
+                </button>
 
-            <button
-              onClick={() => setPaginasAbierto(true)}
-              className="flex w-full items-center gap-4 rounded-xl border border-border p-4 text-left transition-colors hover:border-primary/40 hover:bg-accent/30"
-            >
-              <span className="gradient-primary flex size-10 shrink-0 items-center justify-center rounded-xl text-primary-foreground">
-                <FileText className="size-5" />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-semibold text-foreground">Páginas</span>
-                <span className="mt-0.5 block text-xs text-muted-foreground">
-                  Las páginas que hay dentro de cada módulo.
-                </span>
-              </span>
-              <Button asChild variant="outline" size="sm" className="pointer-events-none shrink-0">
-                <span>Abrir</span>
-              </Button>
-            </button>
+                <button
+                  onClick={() => setPaginasAbierto(true)}
+                  className="flex w-full items-center gap-4 rounded-xl border border-border p-4 text-left transition-colors hover:border-primary/40 hover:bg-accent/30"
+                >
+                  <span className="gradient-primary flex size-10 shrink-0 items-center justify-center rounded-xl text-primary-foreground">
+                    <FileText className="size-5" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-semibold text-foreground">Páginas</span>
+                    <span className="mt-0.5 block text-xs text-muted-foreground">
+                      Las páginas que hay dentro de cada módulo.
+                    </span>
+                  </span>
+                  <Button
+                    asChild
+                    variant="outline"
+                    size="sm"
+                    className="pointer-events-none shrink-0"
+                  >
+                    <span>Abrir</span>
+                  </Button>
+                </button>
 
-            <button
-              onClick={() => setPermisosAbierto(true)}
-              className="flex w-full items-center gap-4 rounded-xl border border-border p-4 text-left transition-colors hover:border-primary/40 hover:bg-accent/30"
-            >
-              <span className="gradient-primary flex size-10 shrink-0 items-center justify-center rounded-xl text-primary-foreground">
-                <ShieldCheck className="size-5" />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-semibold text-foreground">Permisos</span>
-                <span className="mt-0.5 block text-xs text-muted-foreground">
-                  Qué páginas puede ver cada usuario.
-                </span>
-              </span>
-              <Button asChild variant="outline" size="sm" className="pointer-events-none shrink-0">
-                <span>Abrir</span>
-              </Button>
-            </button>
-          </CardContent>
-        </Card>
+                <button
+                  onClick={() => setPermisosAbierto(true)}
+                  className="flex w-full items-center gap-4 rounded-xl border border-border p-4 text-left transition-colors hover:border-primary/40 hover:bg-accent/30"
+                >
+                  <span className="gradient-primary flex size-10 shrink-0 items-center justify-center rounded-xl text-primary-foreground">
+                    <ShieldCheck className="size-5" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-semibold text-foreground">Permisos</span>
+                    <span className="mt-0.5 block text-xs text-muted-foreground">
+                      Qué páginas puede ver cada usuario.
+                    </span>
+                  </span>
+                  <Button
+                    asChild
+                    variant="outline"
+                    size="sm"
+                    className="pointer-events-none shrink-0"
+                  >
+                    <span>Abrir</span>
+                  </Button>
+                </button>
+              </CardContent>
+            </Card>
 
-        <UsuariosDialog open={usuariosAbierto} onOpenChange={setUsuariosAbierto} />
-        <ModulosDialog open={modulosAbierto} onOpenChange={setModulosAbierto} />
-        <PaginasDialog open={paginasAbierto} onOpenChange={setPaginasAbierto} />
-        <PermisosDialog open={permisosAbierto} onOpenChange={setPermisosAbierto} />
+            {/* Dentro del mismo bloque que la tarjeta: sin los botones no hay
+                forma de abrirlos, y montarlos igual dejaría en el árbol cuatro
+                componentes que consultan endpoints que ese usuario no puede
+                llamar. */}
+            <UsuariosDialog open={usuariosAbierto} onOpenChange={setUsuariosAbierto} />
+            <ModulosDialog open={modulosAbierto} onOpenChange={setModulosAbierto} />
+            <PaginasDialog open={paginasAbierto} onOpenChange={setPaginasAbierto} />
+            <PermisosDialog open={permisosAbierto} onOpenChange={setPermisosAbierto} />
+          </>
+        )}
 
         <Card className="surface-card">
           <CardHeader>

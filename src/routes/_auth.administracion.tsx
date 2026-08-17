@@ -55,6 +55,14 @@ function AdministracionPage() {
     }
   }, [usuario, isPending, navigate]);
 
+  // Mientras carga `/auth/me` o mientras el efecto de arriba redirige, no se
+  // dibuja nada: mostrar el panel un instante antes de expulsar a quien no
+  // corresponde sería peor que una pantalla en blanco breve.
+  //
+  // El acceso normal a esta pantalla ya está oculto para los no-admin (la
+  // tarjeta de Configuración sólo se dibuja si `esAdmin`), así que acá se llega
+  // escribiendo la URL a mano. El guard queda igual: es la red de seguridad de
+  // ese caso, y del enlace compartido o el favorito guardado.
   if (!usuario || usuario.esAdmin !== "S") {
     return null;
   }

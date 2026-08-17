@@ -38,7 +38,13 @@ export function PermisosDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
+      {/* `flex flex-col` + `overflow-hidden`: el diálogo NO scrollea como un
+          todo. El selector de usuario y el encabezado quedan fijos, y el que
+          scrollea es el panel de páginas — que es lo único que puede crecer.
+          Antes, con el scroll en el contenedor, elegir un usuario y bajar a
+          tildar dejaba el combobox fuera de vista y no se sabía sobre quién se
+          estaba trabajando. */}
+      <DialogContent className="flex max-h-[90vh] max-w-4xl flex-col overflow-hidden">
         <DialogHeader>
           <DialogTitle>Permisos</DialogTitle>
           <DialogDescription>
@@ -152,7 +158,8 @@ function PanelPermisos({ idUsuario }: { idUsuario: number }) {
 
   if (paginasQuery.isPending || permisosQuery.isPending) {
     return (
-      <div className="space-y-2">
+      // `min-h-0` para que el esqueleto no estire el diálogo mientras carga.
+      <div className="min-h-0 flex-1 space-y-2 overflow-hidden">
         {[0, 1, 2].map((i) => (
           <Skeleton key={i} className="h-16 w-full" />
         ))}
@@ -211,47 +218,64 @@ function PanelPermisos({ idUsuario }: { idUsuario: number }) {
   }
 
   return (
-    <div className="space-y-4">
-      {[...porModulo.entries()].map(([modulo, susPaginas]) => (
-        <div key={modulo} className="rounded-lg border border-border">
-          <p className="border-b border-border bg-muted/50 px-3 py-2 text-sm font-semibold text-foreground">
-            {modulo}
-          </p>
-          <ul className="divide-y divide-border">
-            {susPaginas.map((pagina, i) => {
-              const tiene = asignadas.has(pagina.id);
-              // Primera asignada del grupo, habiendo alguna sin asignar antes:
-              // ahí es donde termina "lo que falta" y empieza "lo que ya
-              // tiene". Sin esa marca el reordenamiento parece arbitrario.
-              const abreAsignadas = tiene && i > 0 && !asignadas.has(susPaginas[i - 1]!.id);
+    // `min-h-0` es imprescindible: sin él, un hijo flex no se deja encoger por
+    // debajo de su contenido y el área de scroll crece hasta desbordar el
+    // diálogo, que es justo lo que se quiere evitar.
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
+      {/* Los módulos en COLUMNAS y no apilados: a una columna, con seis módulos
+          había que rodar la rueda del mouse para llegar al último. En dos o tres
+          columnas entran casi todos de una sola mirada.
 
-              return (
-                <li
-                  key={pagina.id}
-                  className={cn("px-3 py-2.5", abreAsignadas && "border-t-2 border-t-border")}
-                >
-                  <Label className="flex cursor-pointer items-center gap-3 text-sm font-normal">
-                    <Checkbox
-                      checked={tiene}
-                      disabled={cambiar.isPending}
-                      onCheckedChange={(v) =>
-                        cambiar.mutate({ idPagina: pagina.id, dar: v === true })
-                      }
-                    />
-                    {/* Las ya asignadas se atenúan: lo que se viene a buscar
-                        acá es lo que falta. */}
-                    <span className={tiene ? "text-muted-foreground" : "text-foreground"}>
-                      {pagina.nombre}
-                    </span>
-                  </Label>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      ))}
+          `items-start` evita que las tarjetas de una fila se estiren a la altura
+          de la más alta; `[column-fill:balance]` reparte parejo. */}
+      <div className="scrollbar-fino min-h-0 flex-1 gap-3 space-y-3 overflow-y-auto pr-1 [column-fill:balance] sm:columns-2 lg:columns-3">
+        {[...porModulo.entries()].map(([modulo, susPaginas]) => (
+          <div key={modulo} className="mb-3 break-inside-avoid rounded-lg border border-border">
+            <p className="border-b border-border bg-muted/50 px-3 py-2 text-sm font-semibold text-foreground">
+              {modulo}
+            </p>
+            <ul className="divide-y divide-border">
+              {susPaginas.map((pagina, i) => {
+                const tiene = asignadas.has(pagina.id);
+                // Primera asignada del grupo, habiendo alguna sin asignar antes:
+                // ahí es donde termina "lo que falta" y empieza "lo que ya
+                // tiene". Sin esa marca el reordenamiento parece arbitrario.
+                const abreAsignadas = tiene && i > 0 && !asignadas.has(susPaginas[i - 1]!.id);
 
-      <p className="text-xs text-muted-foreground">
+                return (
+                  <li
+                    key={pagina.id}
+                    className={cn("px-3 py-2", abreAsignadas && "border-t-2 border-t-border")}
+                  >
+                    <Label className="flex cursor-pointer items-center gap-3 text-sm font-normal">
+                      <Checkbox
+                        checked={tiene}
+                        disabled={cambiar.isPending}
+                        onCheckedChange={(v) =>
+                          cambiar.mutate({ idPagina: pagina.id, dar: v === true })
+                        }
+                      />
+                      {/* Las ya asignadas se atenúan: lo que se viene a buscar
+                          acá es lo que falta. */}
+                      <span
+                        className={cn(
+                          "min-w-0 flex-1 truncate",
+                          tiene ? "text-muted-foreground" : "text-foreground",
+                        )}
+                      >
+                        {pagina.nombre}
+                      </span>
+                    </Label>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ))}
+      </div>
+
+      {/* Fuera del área con scroll: el contador queda siempre a la vista. */}
+      <p className="shrink-0 text-xs text-muted-foreground">
         {asignadas.size} de {paginas.length} página{paginas.length === 1 ? "" : "s"} asignada
         {asignadas.size === 1 ? "" : "s"}
       </p>

@@ -24,7 +24,21 @@
 --              ID_UNIDAD_MEDIDA, CODIGO_ARTICULO, NOMBRE_ARTICULO,
 --              DESCRIPCION, PRECIO_ULTIMA_COMPRA, PRECIO_VENTA,
 --              CANTIDAD_STOCK, CANTIDAD_MINIMA, ACTIVO,
---              FECHA_CREACION, FECHA_ACTUALIZACION, IMAGEN
+--              FECHA_CREACION, FECHA_ACTUALIZACION, IMAGEN,
+--              FEC_ULTIMO_INVENTARIO
+--
+-- FEC_ULTIMO_INVENTARIO ES DE SOLO LECTURA. El listado la devuelve como
+-- `fechaUltimoInventario` (ISO) y NINGUN endpoint la escribe: ni INSERTAR ni
+-- ACTUALIZAR la tocan, y el UPDATE no la menciona, asi que un PUT normal la deja
+-- intacta en vez de pisarla con null.
+--
+-- Es deliberado. La fecha responde "cuando se conto fisicamente este articulo",
+-- y ese dato lo tiene que estampar el proceso de inventario —contra un conteo
+-- real—, no alguien tipeando una fecha en un formulario. Mientras ese proceso no
+-- exista, la columna queda en null y la pantalla muestra "Sin inventariar".
+--
+-- Cuando se implemente el inventario, lo que corresponde es un procedimiento
+-- propio (MARCAR_INVENTARIADO, con SYSTIMESTAMP) y no agregarla a ACTUALIZAR.
 --
 -- EL ARTICULO ES POR EMPRESA. El idEmpresa sale de la empresa que se eligió al
 -- iniciar sesión, no de un combobox. Mismo criterio que db/monedas.sql,
@@ -344,6 +358,17 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
                  'precioVenta'          VALUE a.PRECIO_VENTA,
                  'cantidadStock'        VALUE a.CANTIDAD_STOCK,
                  'cantidadMinima'       VALUE a.CANTIDAD_MINIMA,
+                 -- SÓLO LECTURA: ningún endpoint la escribe. La va a estampar el
+                 -- proceso de inventario cuando exista; hasta entonces llega
+                 -- null en todas las filas y la pantalla lo muestra como "Sin
+                 -- inventariar".
+                 --
+                 -- TO_CHAR y no la columna pelada: un TIMESTAMP crudo sale en el
+                 -- JSON con el formato de sesión de NLS ('17-AGO-26 10.30.00'),
+                 -- que `new Date()` no parsea y deja "Invalid Date" en pantalla.
+                 -- Mismo formato ISO que usa db/usuarios.sql.
+                 'fechaUltimoInventario' VALUE TO_CHAR(a.FEC_ULTIMO_INVENTARIO,
+                                                       'YYYY-MM-DD"T"HH24:MI:SS'),
                  -- El BLOB no entra en el JSON, pero el frontend necesita saber
                  -- si pedir /articulos/imagen/:id o dibujar el marcador.
                  -- GETLENGTH > 0 y no "IS NOT NULL": una fila puede tener un

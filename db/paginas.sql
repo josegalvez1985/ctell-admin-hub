@@ -162,10 +162,14 @@ CREATE OR REPLACE PACKAGE BODY PKG_PAGINAS AS
     l_total      NUMBER;
     l_items      CLOB;
   BEGIN
-    l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
+    -- SOLO ADMINISTRADORES: la estructura del menu se administra desde la
+    -- pantalla de Administracion, que ya es exclusiva de admins. El menu que ve
+    -- cada usuario NO sale de aca sino de /usuario-paginas/listar, asi que
+    -- restringir este modulo no deja a nadie sin menu.
+    l_sesion := PKG_AUTH.VALIDAR_TOKEN_ADMIN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
-      p_status_code := 401;
-      p_resultado := '{"error":"Sesion invalida o vencida"}';
+      p_status_code := 403;
+      p_resultado := '{"error":"Se requieren permisos de administrador"}';
       RETURN;
     END IF;
 
@@ -239,10 +243,14 @@ CREATE OR REPLACE PACKAGE BODY PKG_PAGINAS AS
     l_orden     NUMBER;
     l_id        NUMBER;
   BEGIN
-    l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
+    -- SOLO ADMINISTRADORES: la estructura del menu se administra desde la
+    -- pantalla de Administracion, que ya es exclusiva de admins. El menu que ve
+    -- cada usuario NO sale de aca sino de /usuario-paginas/listar, asi que
+    -- restringir este modulo no deja a nadie sin menu.
+    l_sesion := PKG_AUTH.VALIDAR_TOKEN_ADMIN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
-      p_status_code := 401;
-      p_resultado := '{"error":"Sesion invalida o vencida"}';
+      p_status_code := 403;
+      p_resultado := '{"error":"Se requieren permisos de administrador"}';
       RETURN;
     END IF;
 
@@ -332,10 +340,14 @@ CREATE OR REPLACE PACKAGE BODY PKG_PAGINAS AS
     l_entrada   VARCHAR2(1);
     l_estado    VARCHAR2(1);
   BEGIN
-    l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
+    -- SOLO ADMINISTRADORES: la estructura del menu se administra desde la
+    -- pantalla de Administracion, que ya es exclusiva de admins. El menu que ve
+    -- cada usuario NO sale de aca sino de /usuario-paginas/listar, asi que
+    -- restringir este modulo no deja a nadie sin menu.
+    l_sesion := PKG_AUTH.VALIDAR_TOKEN_ADMIN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
-      p_status_code := 401;
-      p_resultado := '{"error":"Sesion invalida o vencida"}';
+      p_status_code := 403;
+      p_resultado := '{"error":"Se requieren permisos de administrador"}';
       RETURN;
     END IF;
 
@@ -397,10 +409,14 @@ CREATE OR REPLACE PACKAGE BODY PKG_PAGINAS AS
   ) IS
     l_sesion NUMBER;
   BEGIN
-    l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
+    -- SOLO ADMINISTRADORES: la estructura del menu se administra desde la
+    -- pantalla de Administracion, que ya es exclusiva de admins. El menu que ve
+    -- cada usuario NO sale de aca sino de /usuario-paginas/listar, asi que
+    -- restringir este modulo no deja a nadie sin menu.
+    l_sesion := PKG_AUTH.VALIDAR_TOKEN_ADMIN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
-      p_status_code := 401;
-      p_resultado := '{"error":"Sesion invalida o vencida"}';
+      p_status_code := 403;
+      p_resultado := '{"error":"Se requieren permisos de administrador"}';
       RETURN;
     END IF;
 

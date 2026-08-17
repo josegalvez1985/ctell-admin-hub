@@ -248,6 +248,24 @@ CREATE OR REPLACE PACKAGE PKG_AUTH AS
   -- protegido debe llamar antes de hacer nada.
   FUNCTION VALIDAR_TOKEN (p_token IN VARCHAR2) RETURN NUMBER;
 
+  -- Igual que VALIDAR_TOKEN pero exige además que la cuenta sea ADMINISTRADORA
+  -- (ES_ADMIN = 'S'). Devuelve NULL si el token no vale o si el usuario no es
+  -- admin.
+  --
+  -- La usan los endpoints que sólo un administrador puede tocar: el ABM de
+  -- usuarios entero, y la estructura del menú (módulos, páginas, permisos).
+  --
+  -- POR QUE EXISTE: la pantalla de Administración ya se esconde en el frontend
+  -- a los no-admin, pero eso es SOLO cosmético — el que sabe la URL del
+  -- endpoint la llama igual con su propio token y recibe la lista completa de
+  -- usuarios. La autorización tiene que estar acá, que es lo único que el
+  -- cliente no puede saltear.
+  FUNCTION VALIDAR_TOKEN_ADMIN (p_token IN VARCHAR2) RETURN NUMBER;
+
+  -- Si ese usuario es administrador. Para cuando ya se validó el token y hace
+  -- falta decidir sobre el rol sin volver a validarlo.
+  FUNCTION ES_ADMINISTRADOR (p_id_usuario IN NUMBER) RETURN BOOLEAN;
+
   -- Quita el prefijo "Bearer " del header Authorization y devuelve el token
   -- limpio. Centralizado acá para que cada handler no repita el REPLACE.
   FUNCTION TOKEN_DE_HEADER (p_authorization IN VARCHAR2) RETURN VARCHAR2;
@@ -588,6 +606,41 @@ CREATE OR REPLACE PACKAGE BODY PKG_AUTH AS
     WHEN NO_DATA_FOUND THEN
       RETURN NULL;
   END VALIDAR_TOKEN;
+
+  FUNCTION ES_ADMINISTRADOR (p_id_usuario IN NUMBER) RETURN BOOLEAN IS
+    l_es_admin VARCHAR2(1);
+  BEGIN
+    IF p_id_usuario IS NULL THEN
+      RETURN FALSE;
+    END IF;
+
+    SELECT NVL(UPPER(TRIM(ES_ADMIN)), 'N')
+      INTO l_es_admin
+      FROM USUARIOS
+     WHERE ID_USUARIO = p_id_usuario;
+
+    RETURN l_es_admin = 'S';
+  EXCEPTION
+    -- El usuario no existe: no es admin. No se distingue de "existe y no es
+    -- admin" porque para el que llama el resultado es el mismo.
+    WHEN NO_DATA_FOUND THEN
+      RETURN FALSE;
+  END ES_ADMINISTRADOR;
+
+  FUNCTION VALIDAR_TOKEN_ADMIN (p_token IN VARCHAR2) RETURN NUMBER IS
+    l_id_usuario NUMBER;
+  BEGIN
+    -- Se apoya en VALIDAR_TOKEN en vez de repetir la consulta: así los
+    -- controles de vigencia, revocación y cuenta activa viven en un solo lugar
+    -- y no se pueden desincronizar.
+    l_id_usuario := VALIDAR_TOKEN(p_token);
+
+    IF l_id_usuario IS NULL OR NOT ES_ADMINISTRADOR(l_id_usuario) THEN
+      RETURN NULL;
+    END IF;
+
+    RETURN l_id_usuario;
+  END VALIDAR_TOKEN_ADMIN;
 
   FUNCTION TOKEN_DE_HEADER (p_authorization IN VARCHAR2) RETURN VARCHAR2 IS
     l_token VARCHAR2(200);
