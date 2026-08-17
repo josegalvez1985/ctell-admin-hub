@@ -207,7 +207,11 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIO_PAGINAS AS
                'idPagina'   VALUE up.ID_PAGINA,
                'pagina'     VALUE p.NOMBRE,
                'ruta'       VALUE p.RUTA,
-               'entrada'    VALUE p.ENTRADA,
+               -- UPPER(TRIM(...)): el frontend agrupa el menu con esta letra
+               -- como clave de un objeto ('D'/'O'/'R'). Una 'o' minuscula o con
+               -- un espacio no matchea, y el grupo entero —"Operaciones"— no se
+               -- dibuja aunque el permiso exista. Mismo criterio que ACTIVO.
+               'entrada'    VALUE UPPER(TRIM(p.ENTRADA)),
                'orden'      VALUE p.ORDEN,
                'idModulo'   VALUE m.ID_MODULO,
                'modulo'     VALUE m.NOMBRE,

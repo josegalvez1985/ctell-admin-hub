@@ -1,13 +1,21 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { ArrowDownRight, ArrowUpRight, Banknote } from "lucide-react";
+import { ArrowDownRight, ArrowUpRight, Banknote, Building2 } from "lucide-react";
 import { AppLayout } from "@/components/ctell/AppLayout";
 import { LogoEmpresa } from "@/components/ctell/LogoEmpresa";
 import { MenuDinamico } from "@/components/ctell/MenuDinamico";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
+import { useSucursal } from "@/components/ctell/sucursal-provider";
 import { primerNombre, useUsuarioActual } from "@/hooks/use-usuario-actual";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { tituloPagina } from "@/lib/marca";
 
@@ -81,6 +89,73 @@ const stockCritico = [
   { item: "Conector RJ45 blindado", nivel: 9 },
 ];
 
+/**
+ * Sucursal en la que se está trabajando.
+ *
+ * Con una sola sucursal no es un selector sino un rótulo: no hay nada que
+ * elegir, y un desplegable de una opción sugiere que sí. Con varias, cambiarla
+ * afecta a toda la app (el valor vive en el provider), así que se muestra
+ * siempre —no escondido en Configuración— para que quede claro sobre qué
+ * sucursal se está operando.
+ */
+function SelectorSucursal() {
+  const { sucursal, sucursales, cargando, setSucursal } = useSucursal();
+
+  if (cargando) return <Skeleton className="h-9 w-40" />;
+
+  // La empresa no tiene sucursales activas: se avisa en vez de no mostrar nada,
+  // porque sin sucursal las pantallas que dependen de ella no van a funcionar.
+  if (sucursales.length === 0) {
+    return (
+      <span className="rounded-lg border border-border bg-muted px-3 py-2 text-xs text-muted-foreground">
+        Sin sucursales
+      </span>
+    );
+  }
+
+  if (sucursales.length === 1) {
+    return (
+      <span
+        className="flex items-center gap-1.5 rounded-lg border border-border bg-muted px-3 py-2 text-sm text-muted-foreground"
+        title="Única sucursal de la empresa"
+      >
+        <Building2 className="size-4 shrink-0" />
+        <span className="max-w-40 truncate">{sucursal?.nombreSucursal}</span>
+      </span>
+    );
+  }
+
+  return (
+    <Select
+      // Spread condicional y no `value={... : undefined}`: con
+      // exactOptionalPropertyTypes, pasar undefined explícito no compila.
+      {...(sucursal ? { value: String(sucursal.id) } : {})}
+      onValueChange={(valor) => {
+        const elegida = sucursales.find((s) => s.id === Number(valor));
+        if (elegida) {
+          setSucursal({
+            id: elegida.id,
+            idEmpresa: elegida.idEmpresa,
+            nombreSucursal: elegida.nombreSucursal,
+          });
+        }
+      }}
+    >
+      <SelectTrigger className="w-44" aria-label="Sucursal activa">
+        <Building2 className="size-4 shrink-0 text-muted-foreground" />
+        <SelectValue placeholder="Sucursal" />
+      </SelectTrigger>
+      <SelectContent>
+        {sucursales.map((s) => (
+          <SelectItem key={s.id} value={String(s.id)}>
+            {s.nombreSucursal}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
 function HomePage() {
   const { data: usuario } = useUsuarioActual();
   const { empresa } = useEmpresa();
@@ -121,7 +196,10 @@ function HomePage() {
               </p>
             </div>
           </div>
-          <Button className="hidden sm:inline-flex">Nueva operación</Button>
+          <div className="flex items-center gap-2">
+            <SelectorSucursal />
+            <Button className="hidden sm:inline-flex">Nueva operación</Button>
+          </div>
         </div>
 
         <section className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">

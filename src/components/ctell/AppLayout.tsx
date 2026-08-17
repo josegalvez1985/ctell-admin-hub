@@ -14,7 +14,7 @@ import {
 import { useEffect, useState, type ReactNode } from "react";
 
 import { Logo } from "@/components/ctell/Logo";
-import { MenuDinamico } from "@/components/ctell/MenuDinamico";
+import { MenuDinamico, MenuDinamicoIconos } from "@/components/ctell/MenuDinamico";
 import { ThemeToggle } from "@/components/ctell/ThemeToggle";
 import { iniciales, useUsuarioActual } from "@/hooks/use-usuario-actual";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -63,12 +63,13 @@ export function AppLayout({
     setCollapsed(localStorage.getItem(COLLAPSE_KEY) === "1");
   }, []);
 
+  function guardarCollapsed(next: boolean) {
+    localStorage.setItem(COLLAPSE_KEY, next ? "1" : "0");
+    setCollapsed(next);
+  }
+
   function toggleCollapsed() {
-    setCollapsed((prev) => {
-      const next = !prev;
-      localStorage.setItem(COLLAPSE_KEY, next ? "1" : "0");
-      return next;
-    });
+    guardarCollapsed(!collapsed);
   }
 
   // Navegar a "/" sin llamar a logout dejaba el token vigente en el servidor y
@@ -121,7 +122,7 @@ export function AppLayout({
                 sólo quedaba Dashboard. Los íconos de módulo expanden la barra
                 y despliegan el módulo elegido. */}
             {collapsed ? (
-              <MenuDinamicoIconos onAbrirModulo={() => setCollapsed(false)} />
+              <MenuDinamicoIconos onAbrirModulo={() => guardarCollapsed(false)} />
             ) : (
               <MenuDinamico active={active} variant="dark" />
             )}

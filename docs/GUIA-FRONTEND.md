@@ -12,7 +12,7 @@ pantalla ABM completa.
 ## Índice
 
 1. [Lo que hay que saber antes de escribir](#1-lo-que-hay-que-saber-antes-de-escribir)
-   - [La empresa activa](#la-empresa-activa)
+   - [Empresa y sucursal activas](#empresa-y-sucursal-activas)
 2. [Agregar una página](#2-agregar-una-página)
 3. [Registrarla en el menú](#3-registrarla-en-el-menú)
 4. [Consumir la API](#4-consumir-la-api)
@@ -74,7 +74,7 @@ Una página nueva se llama `_auth.<algo>.tsx`, no `<algo>.tsx` suelto.
 `exactOptionalPropertyTypes` activado y el compilador detecta cosas que en
 runtime fallan en silencio — un campo que la API no devuelve, por ejemplo.
 
-### La empresa activa
+### Empresa y sucursal activas
 
 El login pide credenciales **y** a qué empresa conectarse. Varias tablas
 —Monedas, Unidades de medida, Categorías, Artículos— cuelgan de `EMPRESAS`, y su
@@ -123,6 +123,52 @@ pantallas.
 > El menú también filtra por empresa: solo muestra las páginas cuyo permiso
 > corresponde a la empresa activa (ver [7](#7-el-menú-dinámico-por-dentro)).
 
+#### La sucursal activa
+
+Algunas tablas cuelgan de la empresa **y** de la sucursal — `UBICACIONES` es la
+primera. La sucursal vive en su propio provider, con la misma forma de uso:
+
+```tsx
+import { useSucursal } from "@/components/ctell/sucursal-provider";
+
+const { sucursal, sucursales, cargando, setSucursal } = useSucursal();
+// sucursal: { id, idEmpresa, nombreSucursal } | null
+```
+
+**No se elige en el login sino en el home**, y se elige sola cuando no hay
+ambigüedad: si la empresa tiene una sola sucursal queda esa, y si tiene varias se
+toma la primera hasta que el usuario cambie. Obligar a elegir entre una sola
+opción es un click sin información.
+
+En una página por empresa y sucursal van **las dos** en la `queryKey` y en el
+`enabled`:
+
+```tsx
+const { empresa } = useEmpresa();
+const { sucursal, cargando: cargandoSucursal } = useSucursal();
+
+const { data } = useQuery({
+  queryKey: ["ubicaciones", empresa?.id ?? null, sucursal?.id ?? null],
+  queryFn: () => api.ubicaciones.listar({ idEmpresa: empresa!.id, idSucursal: sucursal!.id }),
+  enabled: empresa !== null && sucursal !== null,
+});
+```
+
+Y hay un estado más que contemplar, que no existe con la empresa: **la empresa
+puede no tener ninguna sucursal activa**. Ahí `sucursal` queda en null para
+siempre, así que hay que distinguirlo de "todavía cargando" o el usuario ve una
+tabla vacía que parece un depósito sin ubicaciones:
+
+```tsx
+const sinSucursal = !cargandoSucursal && sucursal === null;
+// → "La empresa no tiene sucursales activas. Cargá una antes de…"
+```
+
+> **Cambiar de empresa invalida la sucursal.** Una sucursal pertenece a una sola
+> empresa: el provider guarda el `idEmpresa` junto a la sucursal y la descarta si
+> no coincide con la empresa activa, o si fue borrada o inactivada. También se
+> limpia en el logout y ante un 401, igual que la empresa.
+
 ---
 
 ## 2. Agregar una página
@@ -166,6 +212,34 @@ Tres detalles que importan:
 - **Envolvé siempre en `<AppLayout>`** — da el sidebar, el header y el menú
   móvil.
 
+### Regla: cada tabla del backend lleva su página
+
+**Si hay un `db/<tabla>.sql`, hay un `src/routes/_auth.<tabla>.tsx` y una entrada
+de menú.** Sin excepciones, y sin preguntar: el flujo del proyecto es backend
+primero y frontend después, así que cada paquete PL/SQL nuevo termina en una
+página propia con su listado, su alta y su baja.
+
+Esto vale **también para las tablas de detalle y las de cruce**. `DETALLE_MONEDAS`
+y `ARTICULOS_UBICACIONES` cuelgan de otra tabla, y aun así cada una tiene su
+página: se cargan y se revisan de corrido, y una pantalla propia es lo que
+permite hacerlo sin entrar por la cabecera de a una fila.
+
+> **No conviertas una tabla en un diálogo anidado dentro de otra pantalla.** Es
+> tentador razonar que "el detalle sólo tiene sentido dentro de su cabecera", y es
+> el error que ya costó dos vueltas acá: la tabla quedó sin ruta, sin entrada de
+> menú y sin forma de darla de alta, mientras el backend estaba listo. El acceso
+> desde la cabecera es un **agregado** —un botón en la fila, cómodo para el caso
+> "¿dónde está este artículo?"— nunca el único camino.
+>
+> Las dos cosas conviven bien: `ARTICULOS_UBICACIONES` tiene la página
+> `/articulos-ubicaciones` **y** el botón de ubicación en cada fila de Artículos.
+> Comparten el mismo endpoint, que acepta `?idArticulo=` y `?idUbicacion=`.
+
+Para una tabla de cruce, el ABM es **asignar y quitar**, sin edición: la fila no
+tiene datos propios, así que cambiar cualquiera de los dos ids es otra
+asignación. El alta son dos combobox (uno por cada lado del cruce) y conviene
+ofrecer sólo los pares libres — el `UNIQUE` devuelve 409 si se repite uno.
+
 ### Una página es una página, no un modal
 
 Si la pantalla existe en el menú, tiene que mostrar su contenido al entrar. Una
@@ -207,11 +281,20 @@ y `USUARIO_PAGINAS`. Crear el archivo `.tsx` no la hace aparecer.
 Después de crear la página, desde **Administración**:
 
 1. **Páginas → Nueva** — elegí el módulo, poné el nombre, y **seleccioná la ruta
-   del desplegable**. Las opciones salen de `RUTAS_DISPONIBLES` en
-   [PaginasDialog.tsx](../src/components/ctell/PaginasDialog.tsx): **cuando
-   agregues una ruta nueva, agregala también a ese array**, o no va a estar
-   disponible para elegir.
-2. **Permisos** — elegí el usuario y tildá la página.
+   del desplegable**. Las opciones **se derivan del router** ([rutas-app.ts](../src/lib/rutas-app.ts)),
+   así que crear `src/routes/_auth.<algo>.tsx` alcanza para que la ruta aparezca
+   sola: no hay lista que mantener.
+2. **Permisos** — elegí el usuario y tildá la página, **con la empresa**: un
+   permiso con `ID_EMPRESA` en null no se ve en ningún menú.
+
+> Antes las opciones salían de un array escrito a mano en `PaginasDialog.tsx` y
+> se desincronizaba con cada página nueva: la ruta existía como archivo pero no
+> aparecía en el desplegable, así que la página quedaba registrada sin ruta
+> válida y su ítem de menú no navegaba a ningún lado. Se reemplazó por la
+> derivación del `routeTree`, que el build regenera solo.
+>
+> Sigue siendo un desplegable y no texto libre: la ruta la carga una persona, y
+> un typo (`/ubicacion` por `/ubicaciones`) daba un ítem muerto sin ningún aviso.
 
 ### La ruta en la base tiene que existir en el router
 
@@ -941,12 +1024,17 @@ Antes de dar por terminada una pantalla:
 - [ ] El tipo declara **todos** los campos que devuelve el `JSON_OBJECT`
 - [ ] Página envuelta en `<AppLayout>` con `active="/la-ruta"` (la ruta, no el nombre)
 - [ ] `pb-28` en el `<main>` para el botón flotante de móvil
-- [ ] La ruta agregada a `RUTAS_DISPONIBLES` en `PaginasDialog.tsx`
+- [ ] ~~La ruta agregada a `RUTAS_DISPONIBLES`~~ — **ya no hace falta**: las
+      opciones del alta se derivan del router ([rutas-app.ts](../src/lib/rutas-app.ts)).
+      Crear el archivo en `src/routes/` alcanza
 - [ ] **El nombre de la página sumado a `ICONOS_PAGINA`** en `menu-iconos.ts`,
       con un ícono que no esté ya usado por otra entrada
 - [ ] Registrada en Administración → Páginas, y asignada en Permisos
 - [ ] Si es una tabla por empresa: `empresa.id` en la `queryKey`, `enabled:
     empresa !== null`, y el caso `empresa === null` contemplado en el render
+- [ ] Si además cuelga de una sucursal: **`sucursal.id` también** en la
+      `queryKey` y en el `enabled`, y el caso "la empresa no tiene sucursales"
+      resuelto en el render — ver [Empresa y sucursal activas](#empresa-y-sucursal-activas)
 - [ ] Los contenedores con scroll propio llevan `scrollbar-fino`
 - [ ] Los cuatro estados del listado: cargando, error, vacío con acción, con datos
 - [ ] Tarjetas abajo de `sm`, tabla arriba

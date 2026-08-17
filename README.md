@@ -60,6 +60,8 @@ db/                      Backend: un archivo SQL por tabla
 ├── unidades-medida.sql   │ Definiciones POR EMPRESA
 ├── categorias.sql       ─┘
 ├── detalle-monedas.sql  Denominaciones de cada moneda + foto (BLOB)
+├── ubicaciones.sql      Zona/estante/nivel del depósito, POR EMPRESA Y SUCURSAL
+└── articulos-ubicaciones.sql  Cruce: en qué ubicaciones está cada artículo
 └── articulos.sql        Artículos + imagen (BLOB)
 
 src/
@@ -92,7 +94,10 @@ src/
 ## Backend
 
 > **Regla: cada tabla tiene su propio archivo en `db/`, nombrado como la tabla,
-> con todo su CRUD adentro.**
+> con todo su CRUD adentro.** Y cada uno de esos archivos termina en una página
+> `src/routes/_auth.<tabla>.tsx` con su entrada de menú — incluidas las tablas de
+> detalle y las de cruce, que no se resuelven como diálogo dentro de otra
+> pantalla.
 
 Cada archivo define `PKG_<TABLA>` con sus 4 procedimientos —`LISTAR`,
 `INSERTAR`, `ACTUALIZAR`, `ELIMINAR`— y publica su módulo ORDS. Los endpoints
@@ -119,6 +124,49 @@ al iniciar sesión (ver [Empresa activa](#empresa-activa)).
 Consecuencia en el listado: **no hacen JOIN contra `EMPRESAS`**. Como ya vienen
 filtradas por una sola empresa, su nombre sería la misma constante repetida en
 cada fila, y el frontend ya lo tiene.
+
+`UBICACIONES` va un paso más: cuelga de la empresa **y** de la sucursal, y los dos
+ids salen de los providers globales (ver
+[Sucursal activa](#sucursal-activa)).
+
+> **Dos FK no garantizan coherencia entre sí.** `UBICACIONES` tiene una FK a
+> `EMPRESAS` y otra a `SUCURSALES`, y cada una valida sólo contra su tabla: la
+> base acepta una fila con la empresa A y una sucursal de la empresa B, y el
+> UNIQUE tampoco lo detecta. `PKG_UBICACIONES` lo verifica a mano antes de
+> escribir y devuelve 400 — con una vuelta extra en el `ACTUALIZAR`, donde hay que
+> resolver **cómo va a quedar la fila** (un `PUT` que cambia sólo la sucursal
+> también puede romperla). El `.sql` cierra con una consulta de auditoría que debe
+> devolver cero filas.
+
+### Tablas de cruce: `ARTICULOS_UBICACIONES`
+
+Un artículo puede estar en varias ubicaciones y una ubicación tener varios
+artículos. La tabla que los une **no tiene datos propios** (tuvo una
+`CANTIDAD_UBICADA` que se quitó del DDL), y eso cambia la forma del ABM:
+
+- **No hay `actualizar`, sólo `crear` y `eliminar`.** Cambiar cualquiera de los
+  dos ids es en la práctica otra asignación, así que reasignar es quitar y volver
+  a asignar. Un `PUT` que cambiara ambos ids sería indistinguible de un
+  `DELETE` + `POST`, con el riesgo extra de pisar una fila existente.
+- **El listado SÍ hace `JOIN`**, al revés que las tablas por empresa: cada fila
+  cruza un artículo distinto con una ubicación distinta, así que sus nombres no
+  son una constante repetida. Sin el JOIN el frontend tendría que traerse las dos
+  tablas enteras para mostrar una lista legible.
+- **El `:id` del `DELETE` es el de la asignación**, no el del artículo ni el de la
+  ubicación.
+
+> **La coherencia de empresa tampoco está en el DDL, y acá cruza dos tablas.**
+> `ARTICULOS` cuelga de `EMPRESAS` y `UBICACIONES` también, pero las FK de la
+> tabla de cruce apuntan a sus propias tablas sin mirar la empresa: se puede
+> asignar un artículo de la empresa A a una ubicación de la B. `ASIGNAR` compara
+> las dos empresas y devuelve 400. El `.sql` cierra con la consulta de auditoría
+> correspondiente.
+
+En el frontend va como diálogo sobre el ABM de artículos (botón de ubicación en
+cada fila), no como página propia: siempre se mira "dónde está **este**
+artículo". El selector ofrece sólo las ubicaciones **no** asignadas todavía —
+ofrecer una ya asignada daría 409 — y **no** se filtra por la sucursal activa, porque
+un artículo puede estar en depósitos de varias sucursales.
 
 ### Imágenes (BLOB)
 
@@ -328,6 +376,41 @@ const { data } = useQuery({
 });
 ```
 
+### Sucursal activa
+
+Algunas tablas cuelgan de la empresa **y** de la sucursal (`UBICACIONES` es la
+primera). La sucursal tiene su propio provider global:
+
+```tsx
+import { useSucursal } from "@/components/ctell/sucursal-provider";
+
+const { sucursal, sucursales, cargando, setSucursal } = useSucursal();
+// { id, idEmpresa, nombreSucursal } | null
+```
+
+A diferencia de la empresa, **no se elige en el login sino en el home**, y se
+elige sola cuando no hay ambigüedad: con una sola sucursal queda esa, con varias
+se toma la primera hasta que el usuario cambie. Un desplegable de una sola opción
+sugiere que hay algo que decidir cuando no lo hay, así que ahí se muestra un
+rótulo.
+
+En una página por empresa y sucursal van **las dos** en la `queryKey` y en el
+`enabled`:
+
+```tsx
+queryKey: ["ubicaciones", empresa?.id ?? null, sucursal?.id ?? null],
+enabled: empresa !== null && sucursal !== null,
+```
+
+Y hay un estado que no existe con la empresa: **la empresa puede no tener ninguna
+sucursal activa**, y ahí `sucursal` queda en null para siempre. Hay que
+distinguirlo de "todavía cargando" (`!cargando && sucursal === null`) o el usuario
+ve una tabla vacía que parece un depósito sin cargar.
+
+> **Cambiar de empresa invalida la sucursal.** Se guarda junto a su `idEmpresa` y
+> se descarta si no coincide con la empresa activa, o si la sucursal fue borrada o
+> inactivada. Se limpia en el logout y ante un 401, igual que la empresa.
+
 ### Permisos y menú
 
 `USUARIO_PAGINAS` define qué páginas ve cada usuario, y desde esta versión
@@ -346,6 +429,28 @@ Dos límites que vienen del DDL y conviene tener presentes:
   `db/usuario-paginas.sql` trae al final una consulta que los lista y, comentado,
   el `UPDATE` para migrarlos de una si el sistema venía usándose con una sola
   empresa.
+
+#### Una página nueva no aparece sola: dos pasos
+
+Crear `src/routes/_auth.<tabla>.tsx` **no la hace visible**. Hacen falta:
+
+1. **Administración → Páginas**: módulo, nombre, la ruta del desplegable y la
+   entrada (`D` definiciones, `O` operaciones, `R` reportes).
+2. **Administración → Permisos**: asignarla al usuario **y a la empresa**. Sin la
+   empresa el permiso no se ve en ningún menú, como dice el punto anterior.
+
+> **La ruta aparece sola en el desplegable.** Las opciones se derivan del
+> `routeTree` que genera el build ([rutas-app.ts](src/lib/rutas-app.ts)), así que
+> alcanza con crear el archivo. Antes era una lista escrita a mano que había que
+> actualizar en cada tabla nueva, y olvidarla dejaba la página sin ruta válida:
+> el ítem aparecía en el menú y no navegaba.
+
+> El nombre de la página también conviene sumarlo a `ICONOS_PAGINA` en
+> [menu-iconos.ts](src/components/ctell/menu-iconos.ts), o el ítem sale con el
+> ícono genérico.
+>
+> Y en la página, `<AppLayout active="/la-ruta" title="Nombre">` lleva **la ruta**
+> en `active` — con el nombre, el ítem del menú no queda resaltado.
 
 ### El estado es `'A'`/`'I'`
 

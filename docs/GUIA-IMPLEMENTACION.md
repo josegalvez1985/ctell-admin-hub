@@ -15,6 +15,7 @@ de plantilla para todo lo demás.
    - [El estado es `'A'`/`'I'`, nunca 1/0](#21-el-estado-es-ai-nunca-10)
 3. [Crear el backend de una tabla](#3-crear-el-backend-de-una-tabla)
    - [Tablas por empresa](#31-tablas-por-empresa)
+   - [Tablas por empresa Y sucursal](#311-tablas-por-empresa-y-sucursal)
    - [Imágenes y otros binarios](#32-imágenes-y-otros-binarios)
 4. [Consumir la API desde el frontend](#4-consumir-la-api-desde-el-frontend)
 5. [Devolver lo que el consumidor necesita](#5-devolver-lo-que-el-consumidor-necesita)
@@ -65,6 +66,11 @@ renderizar sus hijos; una página nueva que requiera sesión se nombra
 ## 2. Regla: un archivo SQL por tabla
 
 > **Cada tabla tiene su propio archivo en `db/`, con todo su CRUD adentro.**
+>
+> Y su corolario del lado del frontend: **cada `db/<tabla>.sql` termina en una
+> página `src/routes/_auth.<tabla>.tsx` con su entrada de menú** — también las
+> tablas de detalle y las de cruce. Ver
+> [Regla: cada tabla del backend lleva su página](GUIA-FRONTEND.md#regla-cada-tabla-del-backend-lleva-su-página).
 
 ```
 db/
@@ -675,6 +681,101 @@ existe una unidad con ese nombre" mandaría a cambiar el campo equivocado.
 
 ---
 
+## 3.1.1 Tablas por empresa Y sucursal
+
+`UBICACIONES` es la primera tabla que cuelga de dos contextos: `ID_EMPRESA` **y**
+`ID_SUCURSAL`. El listado acepta los dos filtros y el alta los exige.
+
+Los dos ids salen de los providers globales del frontend (`useEmpresa()` y
+`useSucursal()`), nunca de un combobox del formulario — igual que el `idEmpresa`
+de las tablas por empresa.
+
+### Dos FK no garantizan coherencia entre sí
+
+Este es el detalle que hay que cuidar. El DDL declara las dos FK por separado:
+
+```sql
+ALTER TABLE UBICACIONES ADD FOREIGN KEY (ID_EMPRESA)  REFERENCES EMPRESAS (ID_EMPRESA);
+ALTER TABLE UBICACIONES ADD FOREIGN KEY (ID_SUCURSAL) REFERENCES SUCURSALES (ID_SUCURSAL);
+```
+
+Las dos se validan **contra su propia tabla y nada más**, así que la base acepta
+sin chistar una fila con la empresa A y una sucursal de la empresa B. El UNIQUE
+tampoco lo detecta. La fila queda colgada de una sucursal ajena, y el listado
+filtrado por empresa la muestra igual.
+
+**Hay que validarlo a mano antes de escribir.** En `PKG_UBICACIONES` está en un
+helper privado:
+
+```sql
+FUNCTION SUCURSAL_ES_DE_EMPRESA (
+  p_id_sucursal IN NUMBER,
+  p_id_empresa  IN NUMBER
+) RETURN BOOLEAN IS
+  l_existe PLS_INTEGER;
+BEGIN
+  SELECT COUNT(*) INTO l_existe
+    FROM SUCURSALES
+   WHERE ID_SUCURSAL = p_id_sucursal
+     AND ID_EMPRESA  = p_id_empresa;
+  RETURN l_existe > 0;
+END;
+```
+
+Devolver **400** si no coincide: el dato es inválido, no falló el servidor.
+
+> **En el `ACTUALIZAR` hay que resolver primero cómo va a quedar la fila.**
+> Validar sólo los parámetros recibidos no alcanza: un `PUT` que cambia
+> únicamente la sucursal —dejando la empresa como estaba— también puede romper la
+> coherencia. Se leen los valores actuales, se aplica el `NVL` mentalmente y se
+> valida el par final:
+>
+> ```sql
+> SELECT NVL(l_id_empresa, ID_EMPRESA), NVL(l_id_sucursal, ID_SUCURSAL)
+>   INTO l_emp_final, l_suc_final
+>   FROM UBICACIONES WHERE ID_UBICACION = l_id;
+> -- recién ahora: SUCURSAL_ES_DE_EMPRESA(l_suc_final, l_emp_final)
+> ```
+
+Conviene dejar al final del `.sql` una consulta de auditoría que **debe devolver
+cero filas** — si devuelve alguna, hay datos ya inconsistentes de antes:
+
+```sql
+SELECT u.ID_UBICACION, u.ID_EMPRESA AS EMPRESA_UBICACION, s.ID_EMPRESA AS EMPRESA_SUCURSAL
+  FROM UBICACIONES u
+  JOIN SUCURSALES  s ON s.ID_SUCURSAL = u.ID_SUCURSAL
+ WHERE s.ID_EMPRESA != u.ID_EMPRESA;
+```
+
+### Columnas de texto que en realidad son datos
+
+`UBICACIONES.ZONA` es `VARCHAR2(10)` y se guarda **en mayúsculas**: sin
+normalizar, `a1` y `A1` pasan el UNIQUE como dos ubicaciones distintas siendo la
+misma repisa. La normalización va en el paquete (`UPPER(TRIM(...))`), no confiada
+al frontend.
+
+El caso hermano está en `DETALLE_MONEDAS.DENOMINACION`, también `VARCHAR2`:
+guarda **dígitos pelados** (`'50000'`, no `'50.000'` ni `'Billete de 50'`) porque
+como texto el orden sale mal — `'10000'` se ordena antes que `'2000'`. El
+`ORDER BY` convierte a número:
+
+```sql
+ORDER BY TO_NUMBER(
+           REGEXP_REPLACE(DENOMINACION, '[^0-9]', '')
+           DEFAULT NULL ON CONVERSION ERROR
+         ) NULLS LAST
+```
+
+> **`DEFAULT NULL ON CONVERSION ERROR` no es opcional.** Una sola fila con texto
+> —cargada a mano antes de que el alta validara— mata el listado entero con
+> `ORA-01722`. Con el default, esas filas quedan en NULL y `NULLS LAST` las manda
+> al final.
+>
+> Si la columna va a servir para **calcular** (cantidad × valor en un cierre de
+> caja), no la parsees en cada consulta: agregá una columna `NUMBER`.
+
+---
+
 ## 3.2 Imágenes y otros binarios
 
 Un BLOB **no entra en un `JSON_OBJECT`**, así que no viaja en el CRUD. Va por
@@ -1100,10 +1201,22 @@ Backend (`db/<tabla>.sql`):
       dato desaparece del listado sin ningún error visible
 - [ ] Si es una tabla por empresa: se filtra por `?idEmpresa=` y **no** hace
       `JOIN` contra `EMPRESAS` (ver [3.1](#31-tablas-por-empresa))
+- [ ] **Si tiene dos FK de contexto (empresa + sucursal): se valida a mano que
+      una pertenezca a la otra** y se devuelve 400 si no. Las FK sueltas no lo
+      garantizan (ver [3.1.1](#311-tablas-por-empresa-y-sucursal))
+- [ ] **Si el `ACTUALIZAR` puede romper una coherencia entre columnas**, se
+      resuelven los valores finales (`NVL` contra la fila actual) **antes** de
+      validar — no sólo los parámetros recibidos
 - [ ] El mensaje del 409 nombra **la columna del `UNIQUE`**, que no siempre es
       el nombre (en `UNIDADES_MEDIDA` es la abreviatura)
 - [ ] Si hay BLOB: `source_type_media` para el `GET`, **nunca** un
       `p_param_type => 'BLOB'` (ver [3.2](#32-imágenes-y-otros-binarios))
+- [ ] **Las columnas de texto que representan códigos se normalizan en el
+      paquete** (`UPPER(TRIM(...))`), no en el frontend: sin eso el `UNIQUE` deja
+      pasar `a1` y `A1` como dos filas
+- [ ] **Si se ordena por una columna `VARCHAR2` que guarda números**, la
+      conversión lleva `DEFAULT NULL ON CONVERSION ERROR` — una fila con texto
+      tumba el listado entero con `ORA-01722`
 
 Después de ejecutarlo en APEX:
 
@@ -1111,6 +1224,17 @@ Después de ejecutarlo en APEX:
 - [ ] Las consultas de verificación del final no muestran `INVALID` ni errores
 - [ ] El tipo en `src/lib/api.ts` refleja todos los campos del `JSON_OBJECT`
 - [ ] `npx tsc --noEmit` pasa sin errores
+
+Para que la página sea alcanzable (el backend listo no alcanza):
+
+- [ ] **El archivo `src/routes/_auth.<tabla>.tsx` creado — TODA tabla del backend
+      lleva su página propia**, incluidas las de detalle y las de cruce. No la
+      conviertas en un diálogo dentro de otra pantalla: queda sin ruta, sin menú y
+      sin forma de darla de alta. Con el archivo creado, la ruta ya aparece sola
+      en el alta de páginas, que deriva sus opciones del router
+      ([rutas-app.ts](../src/lib/rutas-app.ts))
+- [ ] Registrada en Administración → Páginas **y** asignada en Permisos, con la
+      empresa elegida (un permiso con `ID_EMPRESA` en null no se ve en el menú)
 
 > El checklist del frontend está en [GUIA-FRONTEND.md](GUIA-FRONTEND.md).
 
@@ -1147,3 +1271,9 @@ Después de ejecutarlo en APEX:
 | El `<img>` de un logo o imagen no carga                                           | El endpoint todavía no se publicó en APEX, o la fila tiene el BLOB vacío. El componente cae al respaldo por `onError`, así que se ve el ícono o las iniciales — no un ícono de imagen rota                                                                                                            |
 | **`ORA-20987` al mandar correo (identificador de grupo de seguridad no válido)**  | El handler no fijó el workspace antes de `APEX_MAIL.SEND`. Llamá a `PKG_AUTH.ESTABLECER_WORKSPACE_MAIL`. **No uses `APEX_SESSION.CREATE_SESSION`**: exige una app APEX y este workspace no tiene ninguna — ver [6.1](#61-enviar-correo-desde-un-handler)                                              |
 | **El correo no llega y no hay ningún error en ningún lado**                       | Los envíos se tragan la excepción a propósito (`p_enviado = 'I'`) y la mandan a `APEX_DEBUG`, que no está activo. Diagnosticá con `SELECT PKG_AUTH.PROBAR_CORREO('vos@ejemplo.com') FROM DUAL;`, que sí devuelve el error                                                                             |
+| **La página existe pero el ítem del menú no navega a ningún lado**                | `PAGINAS.RUTA` está vacía o no coincide con ningún archivo de `src/routes/`. Editá la página en Administración → Páginas y elegí la ruta del desplegable (que hoy se deriva del router, así que las lista todas)                                                                                        |
+| **La página no aparece en el menú, aunque esté creada**                           | Falta el permiso, o se cargó **sin empresa**: `USUARIO_PAGINAS` con `ID_EMPRESA` en null no se muestra en ningún menú. Reasignalo desde Permisos eligiendo la empresa                                                                                                                                 |
+| **El ítem del menú no queda resaltado al entrar a la página**                      | `<AppLayout active="…">` recibe el nombre en vez de la ruta. Va la ruta: `active="/ubicaciones"`, y el nombre visible va en `title`                                                                                                                                                                    |
+| **Una fila guarda la sucursal de otra empresa**                                   | Las dos FK se validan por separado y ninguna comprueba la relación entre sí. Hay que verificarlo en el paquete antes de escribir — ver [3.1.1](#311-tablas-por-empresa-y-sucursal)                                                                                                                    |
+| **`ORA-01722` al ordenar un listado que antes funcionaba**                        | El `ORDER BY` convierte a número una columna `VARCHAR2` y alguien cargó una fila con texto. Usá `TO_NUMBER(… DEFAULT NULL ON CONVERSION ERROR)` con `NULLS LAST`                                                                                                                                      |
+| **Dos filas que parecen iguales pasan el `UNIQUE`**                                | Una columna de texto sin normalizar: `a1` y `A1` son distintas para el índice. El `UPPER(TRIM(...))` va en el paquete, no en el frontend                                                                                                                                                              |

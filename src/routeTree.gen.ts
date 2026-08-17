@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthRouteImport } from './routes/_auth'
 import { Route as AuthAdministracionRouteImport } from './routes/_auth.administracion'
 import { Route as AuthArticulosRouteImport } from './routes/_auth.articulos'
+import { Route as AuthArticulosUbicacionesRouteImport } from './routes/_auth.articulos-ubicaciones'
 import { Route as AuthCategoriasRouteImport } from './routes/_auth.categorias'
 import { Route as AuthCiudadesRouteImport } from './routes/_auth.ciudades'
 import { Route as AuthConfiguracionRouteImport } from './routes/_auth.configuracion'
@@ -23,6 +24,7 @@ import { Route as AuthMenuRouteImport } from './routes/_auth.menu'
 import { Route as AuthMonedasRouteImport } from './routes/_auth.monedas'
 import { Route as AuthPaisesRouteImport } from './routes/_auth.paises'
 import { Route as AuthSucursalesRouteImport } from './routes/_auth.sucursales'
+import { Route as AuthUbicacionesRouteImport } from './routes/_auth.ubicaciones'
 import { Route as AuthUnidadesMedidaRouteImport } from './routes/_auth.unidades-medida'
 
 const IndexRoute = IndexRouteImport.update({
@@ -44,6 +46,12 @@ const AuthArticulosRoute = AuthArticulosRouteImport.update({
   path: '/articulos',
   getParentRoute: () => AuthRoute,
 } as any)
+const AuthArticulosUbicacionesRoute =
+  AuthArticulosUbicacionesRouteImport.update({
+    id: '/articulos-ubicaciones',
+    path: '/articulos-ubicaciones',
+    getParentRoute: () => AuthRoute,
+  } as any)
 const AuthCategoriasRoute = AuthCategoriasRouteImport.update({
   id: '/categorias',
   path: '/categorias',
@@ -94,6 +102,11 @@ const AuthSucursalesRoute = AuthSucursalesRouteImport.update({
   path: '/sucursales',
   getParentRoute: () => AuthRoute,
 } as any)
+const AuthUbicacionesRoute = AuthUbicacionesRouteImport.update({
+  id: '/ubicaciones',
+  path: '/ubicaciones',
+  getParentRoute: () => AuthRoute,
+} as any)
 const AuthUnidadesMedidaRoute = AuthUnidadesMedidaRouteImport.update({
   id: '/unidades-medida',
   path: '/unidades-medida',
@@ -104,6 +117,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/administracion': typeof AuthAdministracionRoute
   '/articulos': typeof AuthArticulosRoute
+  '/articulos-ubicaciones': typeof AuthArticulosUbicacionesRoute
   '/categorias': typeof AuthCategoriasRoute
   '/ciudades': typeof AuthCiudadesRoute
   '/configuracion': typeof AuthConfiguracionRoute
@@ -114,12 +128,14 @@ export interface FileRoutesByFullPath {
   '/monedas': typeof AuthMonedasRoute
   '/paises': typeof AuthPaisesRoute
   '/sucursales': typeof AuthSucursalesRoute
+  '/ubicaciones': typeof AuthUbicacionesRoute
   '/unidades-medida': typeof AuthUnidadesMedidaRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/administracion': typeof AuthAdministracionRoute
   '/articulos': typeof AuthArticulosRoute
+  '/articulos-ubicaciones': typeof AuthArticulosUbicacionesRoute
   '/categorias': typeof AuthCategoriasRoute
   '/ciudades': typeof AuthCiudadesRoute
   '/configuracion': typeof AuthConfiguracionRoute
@@ -130,6 +146,7 @@ export interface FileRoutesByTo {
   '/monedas': typeof AuthMonedasRoute
   '/paises': typeof AuthPaisesRoute
   '/sucursales': typeof AuthSucursalesRoute
+  '/ubicaciones': typeof AuthUbicacionesRoute
   '/unidades-medida': typeof AuthUnidadesMedidaRoute
 }
 export interface FileRoutesById {
@@ -138,6 +155,7 @@ export interface FileRoutesById {
   '/_auth': typeof AuthRouteWithChildren
   '/_auth/administracion': typeof AuthAdministracionRoute
   '/_auth/articulos': typeof AuthArticulosRoute
+  '/_auth/articulos-ubicaciones': typeof AuthArticulosUbicacionesRoute
   '/_auth/categorias': typeof AuthCategoriasRoute
   '/_auth/ciudades': typeof AuthCiudadesRoute
   '/_auth/configuracion': typeof AuthConfiguracionRoute
@@ -148,6 +166,7 @@ export interface FileRoutesById {
   '/_auth/monedas': typeof AuthMonedasRoute
   '/_auth/paises': typeof AuthPaisesRoute
   '/_auth/sucursales': typeof AuthSucursalesRoute
+  '/_auth/ubicaciones': typeof AuthUbicacionesRoute
   '/_auth/unidades-medida': typeof AuthUnidadesMedidaRoute
 }
 export interface FileRouteTypes {
@@ -156,6 +175,7 @@ export interface FileRouteTypes {
     | '/'
     | '/administracion'
     | '/articulos'
+    | '/articulos-ubicaciones'
     | '/categorias'
     | '/ciudades'
     | '/configuracion'
@@ -166,12 +186,14 @@ export interface FileRouteTypes {
     | '/monedas'
     | '/paises'
     | '/sucursales'
+    | '/ubicaciones'
     | '/unidades-medida'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/administracion'
     | '/articulos'
+    | '/articulos-ubicaciones'
     | '/categorias'
     | '/ciudades'
     | '/configuracion'
@@ -182,6 +204,7 @@ export interface FileRouteTypes {
     | '/monedas'
     | '/paises'
     | '/sucursales'
+    | '/ubicaciones'
     | '/unidades-medida'
   id:
     | '__root__'
@@ -189,6 +212,7 @@ export interface FileRouteTypes {
     | '/_auth'
     | '/_auth/administracion'
     | '/_auth/articulos'
+    | '/_auth/articulos-ubicaciones'
     | '/_auth/categorias'
     | '/_auth/ciudades'
     | '/_auth/configuracion'
@@ -199,6 +223,7 @@ export interface FileRouteTypes {
     | '/_auth/monedas'
     | '/_auth/paises'
     | '/_auth/sucursales'
+    | '/_auth/ubicaciones'
     | '/_auth/unidades-medida'
   fileRoutesById: FileRoutesById
 }
@@ -235,6 +260,13 @@ declare module '@tanstack/react-router' {
       path: '/articulos'
       fullPath: '/articulos'
       preLoaderRoute: typeof AuthArticulosRouteImport
+      parentRoute: typeof AuthRoute
+    }
+    '/_auth/articulos-ubicaciones': {
+      id: '/_auth/articulos-ubicaciones'
+      path: '/articulos-ubicaciones'
+      fullPath: '/articulos-ubicaciones'
+      preLoaderRoute: typeof AuthArticulosUbicacionesRouteImport
       parentRoute: typeof AuthRoute
     }
     '/_auth/categorias': {
@@ -307,6 +339,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthSucursalesRouteImport
       parentRoute: typeof AuthRoute
     }
+    '/_auth/ubicaciones': {
+      id: '/_auth/ubicaciones'
+      path: '/ubicaciones'
+      fullPath: '/ubicaciones'
+      preLoaderRoute: typeof AuthUbicacionesRouteImport
+      parentRoute: typeof AuthRoute
+    }
     '/_auth/unidades-medida': {
       id: '/_auth/unidades-medida'
       path: '/unidades-medida'
@@ -320,6 +359,7 @@ declare module '@tanstack/react-router' {
 interface AuthRouteChildren {
   AuthAdministracionRoute: typeof AuthAdministracionRoute
   AuthArticulosRoute: typeof AuthArticulosRoute
+  AuthArticulosUbicacionesRoute: typeof AuthArticulosUbicacionesRoute
   AuthCategoriasRoute: typeof AuthCategoriasRoute
   AuthCiudadesRoute: typeof AuthCiudadesRoute
   AuthConfiguracionRoute: typeof AuthConfiguracionRoute
@@ -330,12 +370,14 @@ interface AuthRouteChildren {
   AuthMonedasRoute: typeof AuthMonedasRoute
   AuthPaisesRoute: typeof AuthPaisesRoute
   AuthSucursalesRoute: typeof AuthSucursalesRoute
+  AuthUbicacionesRoute: typeof AuthUbicacionesRoute
   AuthUnidadesMedidaRoute: typeof AuthUnidadesMedidaRoute
 }
 
 const AuthRouteChildren: AuthRouteChildren = {
   AuthAdministracionRoute: AuthAdministracionRoute,
   AuthArticulosRoute: AuthArticulosRoute,
+  AuthArticulosUbicacionesRoute: AuthArticulosUbicacionesRoute,
   AuthCategoriasRoute: AuthCategoriasRoute,
   AuthCiudadesRoute: AuthCiudadesRoute,
   AuthConfiguracionRoute: AuthConfiguracionRoute,
@@ -346,6 +388,7 @@ const AuthRouteChildren: AuthRouteChildren = {
   AuthMonedasRoute: AuthMonedasRoute,
   AuthPaisesRoute: AuthPaisesRoute,
   AuthSucursalesRoute: AuthSucursalesRoute,
+  AuthUbicacionesRoute: AuthUbicacionesRoute,
   AuthUnidadesMedidaRoute: AuthUnidadesMedidaRoute,
 }
 

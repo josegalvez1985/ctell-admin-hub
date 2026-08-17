@@ -12,6 +12,7 @@ import { useEffect, type ReactNode } from "react";
 import appCss from "../styles.css?url";
 import { reportError } from "../lib/error-reporting";
 import { EmpresaProvider } from "../components/ctell/empresa-provider";
+import { SucursalProvider } from "../components/ctell/sucursal-provider";
 import { ThemeProvider, themeInitScript } from "../components/ctell/theme-provider";
 import { Toaster } from "../components/ui/sonner";
 import { NOMBRE_SISTEMA } from "../lib/marca";
@@ -196,10 +197,14 @@ function RootComponent() {
         {/* Envuelve todo, no solo las rutas con sesión: la empresa se elige en
             el login, que está fuera de _auth. */}
         <EmpresaProvider>
-          {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
-          <Outlet />
-          {/* Sin esto los toast() de las mutaciones no se renderizan en ningún lado. */}
-          <Toaster richColors position="top-right" />
+          {/* Adentro de EmpresaProvider, no al lado: la sucursal se lista por
+              empresa, así que necesita leer la empresa activa. */}
+          <SucursalProvider>
+            {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
+            <Outlet />
+            {/* Sin esto los toast() de las mutaciones no se renderizan en ningún lado. */}
+            <Toaster richColors position="top-right" />
+          </SucursalProvider>
         </EmpresaProvider>
       </ThemeProvider>
     </QueryClientProvider>

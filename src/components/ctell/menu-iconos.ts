@@ -140,6 +140,11 @@ const ICONOS_PAGINA: Record<string, LucideIcon> = {
   rubros: Tags,
   deposito: Warehouse,
   depositos: Warehouse,
+  // Warehouse y NO MapPin: la ubicación acá es la posición dentro del depósito
+  // (zona/estante/nivel), y MapPin ya es "ciudades" — el ícono geográfico haría
+  // pensar en una dirección.
+  ubicaciones: Warehouse,
+  ubicacion: Warehouse,
   ordenes: ClipboardList,
   "ordenes de compra": ClipboardList,
   facturas: Receipt,

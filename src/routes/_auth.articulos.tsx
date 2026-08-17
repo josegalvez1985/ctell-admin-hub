@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ImageUp, Loader2, Pencil, Plus, Search, Trash2 } from "lucide-react";
+import { ImageUp, Loader2, MapPin, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
@@ -10,6 +10,7 @@ import { z } from "zod";
 import { AppLayout } from "@/components/ctell/AppLayout";
 import { Combobox } from "@/components/ctell/Combobox";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
+import { ArticuloUbicacionesDialog } from "@/components/ctell/ArticuloUbicacionesDialog";
 import { ImagenArticulo } from "@/components/ctell/ImagenArticulo";
 import { SIN_FILTRO, TableHeadFiltrable } from "@/components/ctell/TableHeadFiltrable";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
@@ -118,6 +119,9 @@ function ArticulosPage() {
   const [editando, setEditando] = useState<Articulo | null>(null);
   const [creando, setCreando] = useState(false);
   const [aEliminar, setAEliminar] = useState<Articulo | null>(null);
+  // Artículo cuyas ubicaciones se están viendo. Va en diálogo y no en ruta
+  // propia: siempre se mira "dónde está ESTE artículo".
+  const [verUbicaciones, setVerUbicaciones] = useState<Articulo | null>(null);
   const [filtroCategoria, setFiltroCategoria] = useState<string>(SIN_FILTRO);
 
   // Los artículos son POR EMPRESA: la que se eligió al iniciar sesión.
@@ -296,25 +300,36 @@ function ArticulosPage() {
                     {bajoMinimo ? ` (mínimo ${articulo.cantidadMinima})` : ""}
                   </p>
 
-                  <div className="mt-3 flex gap-2 border-t border-border pt-3">
+                  <div className="mt-3 space-y-2 border-t border-border pt-3">
                     <Button
                       variant="outline"
                       size="sm"
-                      className="flex-1"
-                      onClick={() => setEditando(articulo)}
+                      className="w-full"
+                      onClick={() => setVerUbicaciones(articulo)}
                     >
-                      <Pencil className="size-4" />
-                      Editar
+                      <MapPin className="size-4" />
+                      Ubicaciones
                     </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="flex-1 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                      onClick={() => setAEliminar(articulo)}
-                    >
-                      <Trash2 className="size-4" />
-                      Eliminar
-                    </Button>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1"
+                        onClick={() => setEditando(articulo)}
+                      >
+                        <Pencil className="size-4" />
+                        Editar
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                        onClick={() => setAEliminar(articulo)}
+                      >
+                        <Trash2 className="size-4" />
+                        Eliminar
+                      </Button>
+                    </div>
                   </div>
                 </li>
               );
@@ -406,6 +421,15 @@ function ArticulosPage() {
                           <Button
                             variant="ghost"
                             size="icon"
+                            title="Ubicaciones"
+                            aria-label={`Ubicaciones de ${articulo.nombreArticulo}`}
+                            onClick={() => setVerUbicaciones(articulo)}
+                          >
+                            <MapPin className="size-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
                             title="Editar"
                             aria-label={`Editar ${articulo.nombreArticulo}`}
                             onClick={() => setEditando(articulo)}
@@ -459,6 +483,12 @@ function ArticulosPage() {
             }}
           />
         )}
+
+        {/* En qué ubicaciones del depósito está el artículo. */}
+        <ArticuloUbicacionesDialog
+          articulo={verUbicaciones}
+          onOpenChange={(abierto) => !abierto && setVerUbicaciones(null)}
+        />
 
         <AlertDialog open={aEliminar !== null} onOpenChange={(o) => !o && setAEliminar(null)}>
           <AlertDialogContent>

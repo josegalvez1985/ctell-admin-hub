@@ -24,6 +24,7 @@ const TOKEN_KEY = "ctell-token";
 const USUARIO_KEY = "ctell-usuario";
 const USUARIO_RECORDADO_KEY = "ctell-usuario-recordado";
 const EMPRESA_KEY = "ctell-empresa";
+const SUCURSAL_KEY = "ctell-sucursal";
 
 /**
  * Estado de un registro, tal como lo guarda la base: "A" activo, "I" inactivo.
@@ -209,6 +210,90 @@ export type Moneda = {
 
 export type ListaMonedas = {
   items: Moneda[];
+  total: number;
+};
+
+/**
+ * Denominación de una moneda: el billete de 50.000, la moneda de 500.
+ *
+ * MONEDAS es la cabecera y esto el detalle. Sirve para los cierres de caja,
+ * donde se cuenta por denominación y la foto ayuda a identificarla.
+ *
+ * A diferencia del resto de las tablas **no tiene estado `activo`**: el DDL no
+ * trae la columna, así que la baja es física. Una denominación existe o no.
+ */
+export type DetalleMoneda = {
+  id: number;
+  /** Moneda a la que pertenece. Sale de la cabecera, no de un combobox. */
+  idMoneda: number;
+  denominacion: string;
+  /**
+   * Si tiene foto cargada. El binario no viaja en este JSON: se pide aparte con
+   * `urlFotoDetalleMoneda(id)` y se sube con `api.detalleMonedas.subirFoto`.
+   */
+  tieneFoto: boolean;
+};
+
+export type ListaDetalleMonedas = {
+  items: DetalleMoneda[];
+  total: number;
+};
+
+/**
+ * Ubicación física del depósito: zona, estante y nivel.
+ *
+ * Cuelga de la empresa **y** de la sucursal: los dos ids salen de los providers
+ * globales (`useEmpresa()` y `useSucursal()`), no de combobox del formulario.
+ *
+ * No tiene estado `activo` —el DDL no trae la columna— así que la baja es
+ * física, igual que en `DetalleMoneda`.
+ */
+export type Ubicacion = {
+  id: number;
+  idEmpresa: number;
+  idSucursal: number;
+  /** Se guarda en mayúsculas: "a1" y "A1" son la misma ubicación física. */
+  zona: string;
+  estante: number;
+  nivel: number;
+  descripcion: string | null;
+};
+
+export type ListaUbicaciones = {
+  items: Ubicacion[];
+  total: number;
+};
+
+/**
+ * Asignación de un artículo a una ubicación del depósito.
+ *
+ * Tabla de cruce pura: la fila **no tiene datos propios**, sólo une los dos ids.
+ * Por eso no hay "actualizar" — reasignar es quitar y volver a asignar.
+ *
+ * A diferencia de las tablas por empresa, el listado SÍ trae los nombres del
+ * artículo y de la ubicación: cada fila cruza dos entidades distintas, así que no
+ * son una constante repetida.
+ */
+export type ArticuloUbicacion = {
+  /** Id de la ASIGNACIÓN, no del artículo ni de la ubicación. */
+  id: number;
+  idArticulo: number;
+  idUbicacion: number;
+  /** Del artículo (JOIN). */
+  codigoArticulo: string | null;
+  nombreArticulo: string;
+  /** De la ubicación (JOIN). */
+  zona: string;
+  estante: number;
+  nivel: number;
+  descripcion: string | null;
+  /** Sucursal de la ubicación: un artículo puede estar en varias. */
+  idSucursal: number;
+  sucursal: string;
+};
+
+export type ListaArticulosUbicaciones = {
+  items: ArticuloUbicacion[];
   total: number;
 };
 
@@ -497,6 +582,17 @@ export function urlImagenArticulo(id: number): string {
 }
 
 /**
+ * URL de la foto de una denominación, para usar directo en `<img src>`.
+ *
+ * Mismo criterio que `urlLogoEmpresa`: el navegador descarga la imagen con su
+ * propia petición y ahí no hay forma de mandar el header Authorization, así que
+ * el endpoint es público. Devuelve 404 si la denominación no tiene foto.
+ */
+export function urlFotoDetalleMoneda(id: number): string {
+  return `${BASE_URL}/detalle-monedas/foto/${id}`;
+}
+
+/**
  * Empresa a la que el usuario eligió conectarse en el login.
  *
  * Vive en localStorage —no en sessionStorage— para que el login la deje
@@ -535,6 +631,57 @@ export function setEmpresaSeleccionada(empresa: EmpresaPublica | null) {
     localStorage.setItem(EMPRESA_KEY, JSON.stringify(empresa));
   } else {
     localStorage.removeItem(EMPRESA_KEY);
+  }
+}
+
+/**
+ * Sucursal activa de la sesión: lo mínimo para identificarla.
+ *
+ * No se guarda la `Sucursal` completa porque su `idEmpresa` y `empresa` ya los
+ * da la empresa activa, y guardar dos veces el mismo dato deja lugar a que
+ * queden desincronizados.
+ */
+export type SucursalActiva = {
+  id: number;
+  idEmpresa: number;
+  nombreSucursal: string;
+};
+
+/**
+ * Sucursal en la que está trabajando el usuario.
+ *
+ * Mismo ciclo de vida que la empresa —localStorage, y se borra en el logout y
+ * ante un 401— con una diferencia: **cambiar de empresa la invalida**. Una
+ * sucursal pertenece a una sola empresa, así que la de la empresa anterior no
+ * sirve. Por eso se guarda junto al `idEmpresa`: al leerla se compara contra la
+ * empresa activa y se descarta si no coincide.
+ */
+export function getSucursalSeleccionada(): SucursalActiva | null {
+  if (typeof window === "undefined") return null;
+
+  const crudo = localStorage.getItem(SUCURSAL_KEY);
+  if (!crudo) return null;
+
+  try {
+    const datos = JSON.parse(crudo) as Partial<SucursalActiva>;
+    if (typeof datos.id !== "number" || typeof datos.idEmpresa !== "number") return null;
+    return {
+      id: datos.id,
+      idEmpresa: datos.idEmpresa,
+      nombreSucursal: datos.nombreSucursal ?? "",
+    };
+  } catch {
+    localStorage.removeItem(SUCURSAL_KEY);
+    return null;
+  }
+}
+
+export function setSucursalSeleccionada(sucursal: SucursalActiva | null) {
+  if (typeof window === "undefined") return;
+  if (sucursal) {
+    localStorage.setItem(SUCURSAL_KEY, JSON.stringify(sucursal));
+  } else {
+    localStorage.removeItem(SUCURSAL_KEY);
   }
 }
 
@@ -676,6 +823,8 @@ async function request<T>(
       // La empresa se elige al iniciar sesión: si la sesión se cayó, la
       // elección caducó con ella y hay que volver a hacerla en el login.
       setEmpresaSeleccionada(null);
+      // La sucursal pertenece a una empresa: sin empresa no tiene sentido.
+      setSucursalSeleccionada(null);
       // …y hay que sacarlo de la pantalla protegida donde quedó. Limpiar el
       // token no alcanza: sin esto seguiría viendo el panel, con un toast de
       // error y sin entender que lo que pasó fue que se le venció la sesión.
@@ -744,6 +893,8 @@ export const api = {
       // que el siguiente que entre en esta PC arranque conectado a la empresa
       // del anterior.
       setEmpresaSeleccionada(null);
+      // La sucursal pertenece a una empresa: sin empresa no tiene sentido.
+      setSucursalSeleccionada(null);
     }
   },
 
@@ -786,6 +937,7 @@ export const api = {
     setToken(null);
     setUsuarioSesion(null);
     setEmpresaSeleccionada(null);
+    setSucursalSeleccionada(null);
 
     return data;
   },
@@ -1162,6 +1314,97 @@ export const api = {
       request<{ ok: boolean }>(`/sucursales/eliminar/${id}`, { method: "DELETE" }),
   },
 
+  /**
+   * Ubicaciones del depósito (zona / estante / nivel).
+   *
+   * Filtran por empresa **y** sucursal: los dos ids salen de los providers
+   * globales, no de la pantalla. Es la primera tabla del proyecto que usa la
+   * sucursal activa además de la empresa.
+   */
+  ubicaciones: {
+    listar: (params: { idEmpresa?: number; idSucursal?: number } = {}) => {
+      const q = new URLSearchParams();
+      if (params.idEmpresa) q.set("idEmpresa", String(params.idEmpresa));
+      if (params.idSucursal) q.set("idSucursal", String(params.idSucursal));
+      const query = q.toString();
+      return request<ListaUbicaciones>(`/ubicaciones/listar${query ? `?${query}` : ""}`);
+    },
+
+    crear: (datos: {
+      idEmpresa: number;
+      idSucursal: number;
+      zona: string;
+      estante: number;
+      nivel: number;
+      descripcion?: string;
+    }) =>
+      request<{ id: number; ok: boolean }>("/ubicaciones/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Los campos ausentes no se modifican. */
+    actualizar: (
+      id: number,
+      datos: {
+        idEmpresa?: number;
+        idSucursal?: number;
+        zona?: string;
+        estante?: number;
+        nivel?: number;
+        descripcion?: string;
+      },
+    ) =>
+      request<{ ok: boolean }>(`/ubicaciones/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    eliminar: (id: number) =>
+      request<{ ok: boolean }>(`/ubicaciones/eliminar/${id}`, { method: "DELETE" }),
+  },
+
+  /**
+   * En qué ubicaciones está cada artículo.
+   *
+   * Tabla de cruce: sólo asignar y quitar. **No hay `actualizar`** — la fila no
+   * tiene datos propios, así que mover un artículo de estante es quitar la
+   * asignación vieja y crear la nueva.
+   */
+  articulosUbicaciones: {
+    /**
+     * Los dos filtros se combinan:
+     * - `idArticulo` → dónde está ese artículo (lo que usa el ABM de artículos).
+     * - `idUbicacion` → qué hay en ese estante.
+     */
+    listar: (params: { idArticulo?: number; idUbicacion?: number } = {}) => {
+      const q = new URLSearchParams();
+      if (params.idArticulo) q.set("idArticulo", String(params.idArticulo));
+      if (params.idUbicacion) q.set("idUbicacion", String(params.idUbicacion));
+      const query = q.toString();
+      return request<ListaArticulosUbicaciones>(
+        `/articulos-ubicaciones/listar${query ? `?${query}` : ""}`,
+      );
+    },
+
+    /**
+     * Asigna un artículo a una ubicación.
+     *
+     * 409 si ya estaba asignado, y **400 si el artículo y la ubicación son de
+     * empresas distintas**: el DDL lo permite (las dos FK no miran la empresa) y
+     * sólo el paquete lo evita.
+     */
+    asignar: (datos: { idArticulo: number; idUbicacion: number }) =>
+      request<{ id: number; ok: boolean }>("/articulos-ubicaciones/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /** El id es el de la ASIGNACIÓN (`ArticuloUbicacion.id`). */
+    quitar: (id: number) =>
+      request<{ ok: boolean }>(`/articulos-ubicaciones/eliminar/${id}`, { method: "DELETE" }),
+  },
+
   monedas: {
     /**
      * Monedas de una empresa. `idEmpresa` sale de la empresa activa de la
@@ -1198,6 +1441,51 @@ export const api = {
 
     eliminar: (id: number) =>
       request<{ ok: boolean }>(`/monedas/eliminar/${id}`, { method: "DELETE" }),
+  },
+
+  /**
+   * Denominaciones de una moneda (el detalle de la cabecera MONEDAS).
+   *
+   * Cuelga de la moneda, no de la empresa: el filtro es `idMoneda`, que sale de
+   * la moneda que se está viendo. La empresa se deduce por la moneda padre.
+   */
+  detalleMonedas: {
+    listar: (params: { idMoneda?: number } = {}) => {
+      const q = params.idMoneda ? `?idMoneda=${params.idMoneda}` : "";
+      return request<ListaDetalleMonedas>(`/detalle-monedas/listar${q}`);
+    },
+
+    /**
+     * Crea la denominación SIN la foto: el `PUT` de la imagen necesita el id,
+     * que recién existe después de esta llamada. Mismo flujo que el logo de una
+     * empresa.
+     */
+    crear: (datos: { idMoneda: number; denominacion: string }) =>
+      request<{ id: number; ok: boolean }>("/detalle-monedas/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Los campos ausentes no se modifican. La foto tiene su propio endpoint. */
+    actualizar: (id: number, datos: { idMoneda?: number; denominacion?: string }) =>
+      request<{ ok: boolean }>(`/detalle-monedas/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    eliminar: (id: number) =>
+      request<{ ok: boolean }>(`/detalle-monedas/eliminar/${id}`, { method: "DELETE" }),
+
+    /**
+     * Sube la foto de una denominación. Igual que `empresas.subirLogo`: el
+     * archivo va como cuerpo crudo del PUT y su tipo en el Content-Type.
+     */
+    subirFoto: (id: number, archivo: File) =>
+      request<{ ok: boolean }>(`/detalle-monedas/foto/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": archivo.type },
+        body: archivo,
+      }),
   },
 
   unidadesMedida: {

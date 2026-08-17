@@ -1,13 +1,14 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Pencil, Plus, Search, Trash2 } from "lucide-react";
+import { Coins, Loader2, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
+import { DetalleMonedasDialog } from "@/components/ctell/DetalleMonedasDialog";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
 import { useTablaListado } from "@/hooks/use-tabla-listado";
@@ -78,6 +79,9 @@ function MonedasPage() {
   const [editando, setEditando] = useState<Moneda | null>(null);
   const [creando, setCreando] = useState(false);
   const [aEliminar, setAEliminar] = useState<Moneda | null>(null);
+  // Moneda cuyas denominaciones se están viendo. El detalle va en un diálogo y
+  // no en una ruta propia: sólo tiene sentido dentro de su cabecera.
+  const [verDetalle, setVerDetalle] = useState<Moneda | null>(null);
 
   // Las monedas son POR EMPRESA: la que se eligió al iniciar sesión. No hay
   // filtro ni combobox de empresa en la pantalla — se trabaja sobre la empresa
@@ -220,25 +224,36 @@ function MonedasPage() {
                     </Badge>
                   </div>
 
-                  <div className="mt-3 flex gap-2 border-t border-border pt-3">
+                  <div className="mt-3 space-y-2 border-t border-border pt-3">
                     <Button
                       variant="outline"
                       size="sm"
-                      className="flex-1"
-                      onClick={() => setEditando(moneda)}
+                      className="w-full"
+                      onClick={() => setVerDetalle(moneda)}
                     >
-                      <Pencil className="size-4" />
-                      Editar
+                      <Coins className="size-4" />
+                      Denominaciones
                     </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="flex-1 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                      onClick={() => setAEliminar(moneda)}
-                    >
-                      <Trash2 className="size-4" />
-                      Eliminar
-                    </Button>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1"
+                        onClick={() => setEditando(moneda)}
+                      >
+                        <Pencil className="size-4" />
+                        Editar
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                        onClick={() => setAEliminar(moneda)}
+                      >
+                        <Trash2 className="size-4" />
+                        Eliminar
+                      </Button>
+                    </div>
                   </div>
                 </li>
               );
@@ -291,6 +306,15 @@ function MonedasPage() {
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            title="Denominaciones"
+                            aria-label={`Denominaciones de ${moneda.nombreMoneda}`}
+                            onClick={() => setVerDetalle(moneda)}
+                          >
+                            <Coins className="size-4" />
+                          </Button>
                           <Button
                             variant="ghost"
                             size="icon"
@@ -347,6 +371,13 @@ function MonedasPage() {
             }}
           />
         )}
+
+        {/* Denominaciones de la moneda: billetes y monedas para el cierre de
+            caja, cada una con su foto. */}
+        <DetalleMonedasDialog
+          moneda={verDetalle}
+          onOpenChange={(abierto) => !abierto && setVerDetalle(null)}
+        />
 
         <AlertDialog open={aEliminar !== null} onOpenChange={(o) => !o && setAEliminar(null)}>
           <AlertDialogContent>

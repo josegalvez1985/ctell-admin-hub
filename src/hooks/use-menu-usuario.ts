@@ -80,7 +80,17 @@ export function useMenuUsuario() {
       }
 
       const modulo = modulosMap.get(permiso.idModulo)!;
-      const entrada = permiso.entrada || "O"; // default a Operaciones
+
+      // Se normaliza acá además de en el SQL: esta letra es la CLAVE con la que
+      // se agrupa el menú, y si no matchea con ENTRADA_LABELS el grupo entero
+      // —"Operaciones", por ejemplo— no se dibuja aunque el permiso exista. Una
+      // 'o' minúscula o con espacios cargada a mano en PAGINAS.ENTRADA alcanzaba
+      // para que la página fuera invisible sin ningún error.
+      //
+      // Cualquier valor que no sea D/O/R cae en 'O': es mejor mostrar la página
+      // en Operaciones que ocultarla.
+      const cruda = (permiso.entrada ?? "").trim().toUpperCase();
+      const entrada = cruda === "D" || cruda === "R" ? cruda : "O";
 
       if (!modulo.entradas[entrada]) {
         modulo.entradas[entrada] = [];

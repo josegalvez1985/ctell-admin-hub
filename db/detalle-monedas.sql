@@ -37,6 +37,18 @@
 -- repetida en cada fila, y el frontend ya la tiene. Mismo criterio que
 -- db/monedas.sql con EMPRESAS.
 --
+-- DENOMINACION GUARDA DIGITOS PELADOS: '50000', no '50.000' ni 'Billete de 50'.
+-- La columna es VARCHAR2(50) y acepta cualquier texto, pero el frontend valida
+-- que sean solo digitos y el separador de miles se agrega recien al mostrar. El
+-- motivo es el orden: como texto, '10000' se ordena antes que '2000'.
+--
+-- El LISTAR ordena de menor a mayor convirtiendo la columna a numero, con
+-- DEFAULT NULL ON CONVERSION ERROR para que las filas cargadas a mano con texto
+-- no tumben la consulta. Esas van al final.
+--
+-- Si el cierre de caja necesita CALCULAR (cantidad x valor), conviene agregar
+-- una columna VALOR NUMBER en vez de parsear este VARCHAR2 en cada consulta.
+--
 -- NO TIENE COLUMNA ACTIVO, a diferencia del resto de las tablas del proyecto.
 -- Es deliberado y viene del DDL: una denominacion existe o no existe. No hay
 -- baja logica, solo fisica — por eso no hay estado 'A'/'I' en el JSON ni
@@ -267,7 +279,15 @@ CREATE OR REPLACE PACKAGE BODY PKG_DETALLE_MONEDAS AS
     -- columna, que ya viene tipada como CLOB. Anidado, el resultado intermedio
     -- del agregado se materializa como VARCHAR2 y revienta al pasar los 4000
     -- bytes: el listado anda con pocas filas y devuelve 500 cuando crece.
-    SELECT JSON_ARRAYAGG(fila ORDER BY denominacion RETURNING CLOB)
+    -- ORDEN: de MENOR A MAYOR por el valor de la denominacion, no alfabetico.
+    -- DENOMINACION es VARCHAR2, y como texto "10000" va antes que "2000" — el
+    -- listado saldria con los billetes desordenados.
+    --
+    -- La conversion usa DEFAULT NULL ON CONVERSION ERROR: sin eso, una sola
+    -- fila con texto (las cargadas antes de que el alta exigiera solo digitos)
+    -- mataria el listado entero con ORA-01722. Las no numericas quedan NULL y
+    -- el NULLS LAST las manda al final, ordenadas por texto entre si.
+    SELECT JSON_ARRAYAGG(fila ORDER BY valor NULLS LAST, denominacion RETURNING CLOB)
       INTO l_items
       FROM (
         SELECT JSON_OBJECT(
@@ -281,7 +301,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_DETALLE_MONEDAS AS
                                       END FORMAT JSON
                  RETURNING CLOB
                ) AS fila,
-               d.DENOMINACION AS denominacion
+               d.DENOMINACION AS denominacion,
+               TO_NUMBER(
+                 -- Se limpia todo lo que no sea digito antes de convertir, para
+                 -- que un "50.000" cargado a mano igual ordene como 50000.
+                 REGEXP_REPLACE(d.DENOMINACION, '[^0-9]', '')
+                 DEFAULT NULL ON CONVERSION ERROR
+               ) AS valor
           FROM DETALLE_MONEDAS d
          WHERE l_id_moneda IS NULL OR d.ID_MONEDA = l_id_moneda
       );

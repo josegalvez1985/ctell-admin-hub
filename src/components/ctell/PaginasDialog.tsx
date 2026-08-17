@@ -9,6 +9,7 @@ import { z } from "zod";
 import { Combobox } from "@/components/ctell/Combobox";
 import { useTablaListado } from "@/hooks/use-tabla-listado";
 import { api, ApiError, esActivo, type Pagina, type Entrada } from "@/lib/api";
+import { RUTAS_APP } from "@/lib/rutas-app";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -68,22 +69,16 @@ type FormValues = z.infer<typeof schema>;
 
 type Vista = { tipo: "lista" } | { tipo: "alta" } | { tipo: "edicion"; pagina: Pagina };
 
-// Rutas disponibles en el proyecto (deben coincidir con src/routes/_auth*.tsx)
-const RUTAS_DISPONIBLES = [
-  { valor: "/home", label: "Dashboard" },
-  { valor: "/configuracion", label: "Configuración" },
-  { valor: "/menu", label: "Menú" },
-  { valor: "/administracion", label: "Administración" },
-  { valor: "/paises", label: "Países" },
-  { valor: "/departamentos", label: "Departamentos" },
-  { valor: "/ciudades", label: "Ciudades" },
-  { valor: "/empresas", label: "Empresas" },
-  { valor: "/sucursales", label: "Sucursales" },
-  { valor: "/monedas", label: "Monedas" },
-  { valor: "/unidades-medida", label: "Unidades de medida" },
-  { valor: "/categorias", label: "Categorías" },
-  { valor: "/articulos", label: "Artículos" },
-];
+/**
+ * Rutas asignables a una página, **derivadas del router** — ver
+ * [rutas-app.ts](../../lib/rutas-app.ts).
+ *
+ * Antes era un array a mano acá mismo, y se desincronizaba con cada página
+ * nueva: la ruta existía como archivo pero no aparecía en este desplegable, así
+ * que la página quedaba sin ruta válida y su ítem de menú no navegaba. **Ya no
+ * hay lista que mantener**: alcanza con crear `src/routes/_auth.<algo>.tsx`.
+ */
+const RUTAS_DISPONIBLES = RUTAS_APP;
 
 const MENSAJE_ERROR = (error: unknown, fallback: string) =>
   error instanceof ApiError ? error.message : fallback;
@@ -405,29 +400,35 @@ function PanelForm({ pagina, onVolver }: { pagina?: Pagina; onVolver: () => void
           render={({ field }) => (
             <FormItem>
               <FormLabel>Ruta</FormLabel>
-              {esEdicion ? (
-                <FormControl>
-                  <Input {...field} placeholder="/compras/ordenes" autoComplete="off" />
-                </FormControl>
-              ) : (
-                <FormControl>
-                  <Combobox
-                    opciones={RUTAS_DISPONIBLES.map((ruta) => ({
-                      valor: ruta.valor,
-                      etiqueta: ruta.label,
-                      descripcion: ruta.valor,
-                    }))}
-                    value={field.value}
-                    onChange={field.onChange}
-                    placeholder="Elegí una ruta disponible"
-                    buscarPlaceholder="Buscar ruta…"
-                  />
-                </FormControl>
-              )}
+              {/* El MISMO combobox en alta y en edición.
+                  Antes la edición usaba un <Input> de texto libre, y era justo al
+                  revés de lo que conviene: editar es lo que se hace para
+                  CORREGIR una ruta mal cargada, así que es donde más importa
+                  elegir de una lista válida. Con el input, una página guardada
+                  con la ruta vacía se abría mostrando un campo en blanco —sin
+                  ninguna pista de qué rutas existen— y el desplegable sólo
+                  aparecía al crear otra página desde cero. */}
+              <FormControl>
+                <Combobox
+                  opciones={RUTAS_DISPONIBLES.map((ruta) => ({
+                    valor: ruta.valor,
+                    etiqueta: ruta.label,
+                    descripcion: ruta.valor,
+                  }))}
+                  value={field.value}
+                  onChange={field.onChange}
+                  placeholder="Elegí una ruta disponible"
+                  buscarPlaceholder="Buscar ruta…"
+                />
+              </FormControl>
               <FormDescription>
-                {esEdicion
-                  ? "Ruta del archivo .tsx en el proyecto."
-                  : "Selecciona una ruta disponible del proyecto."}
+                {/* Avisa cuando la ruta guardada no está entre las del router:
+                    es exactamente el caso de una página que quedó apuntando a
+                    una URL que no resuelve, y sin esto el combobox se ve vacío
+                    sin explicar por qué. */}
+                {esEdicion && field.value && !RUTAS_DISPONIBLES.some((r) => r.valor === field.value)
+                  ? `La ruta guardada ("${field.value}") no existe en el proyecto. Elegí una de la lista.`
+                  : "Las rutas salen del router: si creaste la página .tsx, está acá."}
               </FormDescription>
               <FormMessage />
             </FormItem>
