@@ -377,7 +377,16 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
                  -- SUM() devuelve NULL, no cero. Sin esto el frontend recibiria
                  -- null y la comparacion contra CANTIDAD_MINIMA no marcaria como
                  -- faltante justo al que no tiene NADA en deposito.
-                 'cantidadStock'        VALUE NVL((SELECT SUM(l.CANTIDAD)
+                 --
+                 -- SUMA CANTIDAD_DISPON, NO CANTIDAD: lo que QUEDA en cada
+                 -- partida, no lo que entro. Sumar CANTIDAD daria todo lo que
+                 -- alguna vez ingreso al deposito —incluida la mercaderia ya
+                 -- consumida— y el stock nunca bajaria.
+                 --
+                 -- El NVL interno cubre las filas cargadas antes de que
+                 -- existiera la columna, que la tienen en null: ahi se asume que
+                 -- no se consumio nada.
+                 'cantidadStock'        VALUE NVL((SELECT SUM(NVL(l.CANTIDAD_DISPON, l.CANTIDAD))
                                                      FROM LOTES l
                                                     WHERE l.ID_ARTICULO = a.ID_ARTICULO), 0),
                  'cantidadMinima'       VALUE a.CANTIDAD_MINIMA,
@@ -1089,7 +1098,7 @@ SELECT ID_ARTICULO,
 -- quedaria justamente afuera del listado de faltantes.
 SELECT a.ID_ARTICULO,
        a.NOMBRE_ARTICULO,
-       NVL(SUM(l.CANTIDAD), 0) AS STOCK,
+       NVL(SUM(NVL(l.CANTIDAD_DISPON, l.CANTIDAD)), 0) AS STOCK,
        NVL(a.CANTIDAD_MINIMA, 0) AS MINIMA
   FROM ARTICULOS a
   LEFT JOIN LOTES l ON l.ID_ARTICULO = a.ID_ARTICULO
@@ -1100,11 +1109,11 @@ SELECT a.ID_ARTICULO,
 -- Solo los que estan por debajo del minimo: lo que hay que reponer.
 SELECT a.ID_ARTICULO,
        a.NOMBRE_ARTICULO,
-       NVL(SUM(l.CANTIDAD), 0) AS STOCK,
+       NVL(SUM(NVL(l.CANTIDAD_DISPON, l.CANTIDAD)), 0) AS STOCK,
        NVL(a.CANTIDAD_MINIMA, 0) AS MINIMA
   FROM ARTICULOS a
   LEFT JOIN LOTES l ON l.ID_ARTICULO = a.ID_ARTICULO
  WHERE UPPER(TRIM(a.ACTIVO)) != 'I'
  GROUP BY a.ID_ARTICULO, a.NOMBRE_ARTICULO, a.CANTIDAD_MINIMA
-HAVING NVL(SUM(l.CANTIDAD), 0) < NVL(a.CANTIDAD_MINIMA, 0)
+HAVING NVL(SUM(NVL(l.CANTIDAD_DISPON, l.CANTIDAD)), 0) < NVL(a.CANTIDAD_MINIMA, 0)
  ORDER BY a.NOMBRE_ARTICULO;

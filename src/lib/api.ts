@@ -288,7 +288,19 @@ export type Lote = {
    * el UNIQUE no impide varios lotes sin número para el mismo artículo.
    */
   numeroLote: number | null;
+  /**
+   * Cuánto **entró** en la partida. Es histórico: no cambia al consumirse la
+   * mercadería, sólo si se corrige un error de carga.
+   */
   cantidad: number;
+  /**
+   * Cuánto **queda** sin consumir hoy. Arranca igual a `cantidad` y baja con el
+   * uso; la resta entre las dos es lo consumido.
+   *
+   * **El stock de un artículo suma este campo, no `cantidad`.** Nunca llega
+   * null: el backend lo iguala a `cantidad` en las filas viejas.
+   */
+  cantidadDispon: number;
   costo: number | null;
   /**
    * Fechas en ISO **sólo día** ("2026-04-03"), sin hora: un vencimiento es un
@@ -1452,6 +1464,7 @@ export const api = {
       idArticulo: number;
       numeroLote?: number;
       cantidad?: number;
+      cantidadDispon?: number;
       costo?: number;
       /** ISO de sólo día: "2026-04-03". */
       fechaVencimiento?: string;
@@ -1477,6 +1490,7 @@ export const api = {
         idArticulo?: number;
         numeroLote?: number;
         cantidad?: number;
+        cantidadDispon?: number;
         costo?: number;
         fechaVencimiento?: string;
         fechaEntrada?: string;

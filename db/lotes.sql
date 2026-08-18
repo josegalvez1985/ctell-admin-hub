@@ -19,8 +19,27 @@
 --
 -- Tabla (no la crea ni la altera; el DDL se administra aparte):
 --   LOTES  ID_LOTE, ID_EMPRESA, ID_SUCURSAL, ID_ARTICULO, NUMERO_LOTE,
---          CANTIDAD, COSTO, FECHA_VENCIMIENTO, FECHA_ENTRADA, OBSERVACIONES,
---          FECHA_CREACION, FECHA_ACTUALIZACION
+--          CANTIDAD, CANTIDAD_DISPON, COSTO, FECHA_VENCIMIENTO, FECHA_ENTRADA,
+--          OBSERVACIONES, FECHA_CREACION, FECHA_ACTUALIZACION
+--
+-- CANTIDAD vs CANTIDAD_DISPON — LA DISTINCION CLAVE DE ESTA TABLA:
+--
+--   CANTIDAD         cuanto ENTRO en la partida. Es historico: no se toca
+--                    despues del alta, salvo para corregir un error de carga.
+--   CANTIDAD_DISPON  cuanto QUEDA sin consumir hoy. Arranca igual a CANTIDAD y
+--                    baja a medida que se usa la mercaderia.
+--
+-- La diferencia entre las dos es lo consumido, y por eso conviene tener las dos
+-- en vez de una sola que se pise: sin CANTIDAD no hay forma de saber si un lote
+-- con 2 unidades entro con 2 o entro con 500.
+--
+-- EL STOCK DE UN ARTICULO SUMA CANTIDAD_DISPON, NO CANTIDAD. Es el error mas
+-- facil de cometer al leer esta tabla: sumar CANTIDAD daria todo lo que alguna
+-- vez entro al deposito, no lo que hay ahora. Ver el listado de db/articulos.sql.
+--
+-- EN EL ALTA, disponible = cantidad si no viene: una partida recien ingresada
+-- todavia no se consumio. Que el INSERT lo resuelva evita el estado incoherente
+-- de un lote que entra ya con 0 disponible sin que nadie lo haya usado.
 --
 -- QUE ES: cada partida de mercaderia que entro al deposito, con su numero de
 -- lote, su cantidad, su costo y su vencimiento. Es lo que permite responder
@@ -61,10 +80,14 @@
 -- permite el mismo numero en OTRA sucursal o para OTRO articulo. El
 -- DUP_VAL_ON_INDEX se traduce a 409 con ese matiz en el mensaje.
 --
--- CANTIDAD y COSTO se validan >= 0. Un lote con cantidad negativa no existe, y
--- un costo negativo tampoco: los dos ensucian cualquier suma de stock o de
--- valorizacion. CANTIDAD 0 SI se acepta — es un lote que se consumio entero y
--- se quiere conservar como historia.
+-- CANTIDAD, CANTIDAD_DISPON y COSTO se validan >= 0. Un lote con cantidad
+-- negativa no existe, y un costo negativo tampoco: los dos ensucian cualquier
+-- suma de stock o de valorizacion. El 0 SI se acepta — un lote consumido entero
+-- se conserva como historia, con CANTIDAD_DISPON en 0 y CANTIDAD intacta.
+--
+-- Y CANTIDAD_DISPON <= CANTIDAD: no puede quedar mas de lo que entro. Se valida
+-- contra los valores FINALES en el ACTUALIZAR, porque cambiar una sola de las
+-- dos tambien puede romper la relacion.
 --
 -- LAS FECHAS VIAJAN COMO TEXTO ISO ('YYYY-MM-DD'). ORDS entrega los binds como
 -- VARCHAR2, asi que se convierten aca adentro con TO_TIMESTAMP y un formato
@@ -128,6 +151,7 @@ CREATE OR REPLACE PACKAGE PKG_LOTES AS
     p_id_articulo        IN  VARCHAR2,
     p_numero_lote        IN  VARCHAR2,
     p_cantidad           IN  VARCHAR2,
+    p_cantidad_dispon    IN  VARCHAR2,
     p_costo              IN  VARCHAR2,
     p_fecha_vencimiento  IN  VARCHAR2,
     p_fecha_entrada      IN  VARCHAR2,
@@ -145,6 +169,7 @@ CREATE OR REPLACE PACKAGE PKG_LOTES AS
     p_id_articulo        IN  VARCHAR2,
     p_numero_lote        IN  VARCHAR2,
     p_cantidad           IN  VARCHAR2,
+    p_cantidad_dispon    IN  VARCHAR2,
     p_costo              IN  VARCHAR2,
     p_fecha_vencimiento  IN  VARCHAR2,
     p_fecha_entrada      IN  VARCHAR2,
@@ -344,7 +369,12 @@ CREATE OR REPLACE PACKAGE BODY PKG_LOTES AS
                  'nombreArticulo'    VALUE a.NOMBRE_ARTICULO,
                  'codigoArticulo'    VALUE a.CODIGO_ARTICULO,
                  'numeroLote'        VALUE l.NUMERO_LOTE,
+                 -- Lo que ENTRO (historico) y lo que QUEDA (hoy). La resta es
+                 -- lo consumido. NVL en disponible: las filas cargadas antes de
+                 -- que existiera la columna la tienen en null, y ahi lo
+                 -- razonable es asumir que no se consumio nada.
                  'cantidad'          VALUE l.CANTIDAD,
+                 'cantidadDispon'    VALUE NVL(l.CANTIDAD_DISPON, l.CANTIDAD),
                  'costo'             VALUE l.COSTO,
                  -- TO_CHAR y no la columna pelada: un TIMESTAMP crudo sale en el
                  -- JSON con el formato NLS de la sesion ('17-AGO-26 10.30.00'),
@@ -391,6 +421,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_LOTES AS
     p_id_articulo        IN  VARCHAR2,
     p_numero_lote        IN  VARCHAR2,
     p_cantidad           IN  VARCHAR2,
+    p_cantidad_dispon    IN  VARCHAR2,
     p_costo              IN  VARCHAR2,
     p_fecha_vencimiento  IN  VARCHAR2,
     p_fecha_entrada      IN  VARCHAR2,
@@ -404,6 +435,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_LOTES AS
     l_id_articulo NUMBER;
     l_numero_lote NUMBER;
     l_cantidad    NUMBER;
+    l_dispon      NUMBER;
     l_costo       NUMBER;
     l_vence       TIMESTAMP;
     l_entrada     TIMESTAMP;
@@ -424,6 +456,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_LOTES AS
     l_id_articulo := TO_NUMBER(NULLIF(p_id_articulo, ''));
     l_numero_lote := TO_NUMBER(NULLIF(p_numero_lote, ''));
     l_cantidad    := TO_NUMBER(NULLIF(p_cantidad, ''));
+    l_dispon      := TO_NUMBER(NULLIF(p_cantidad_dispon, ''));
     l_costo       := TO_NUMBER(NULLIF(p_costo, ''));
     l_vence       := A_TIMESTAMP(p_fecha_vencimiento);
     l_entrada     := A_TIMESTAMP(p_fecha_entrada);
@@ -439,9 +472,18 @@ CREATE OR REPLACE PACKAGE BODY PKG_LOTES AS
     -- Cantidad y costo negativos ensucian cualquier suma de stock o de
     -- valorizacion. El 0 SI se acepta: un lote consumido que se conserva como
     -- historia, o mercaderia sin costo cargado todavia.
-    IF NVL(l_cantidad, 0) < 0 OR NVL(l_costo, 0) < 0 THEN
+    IF NVL(l_cantidad, 0) < 0 OR NVL(l_dispon, 0) < 0 OR NVL(l_costo, 0) < 0 THEN
       p_status_code := 400;
-      p_resultado := '{"error":"La cantidad y el costo no pueden ser negativos"}';
+      p_resultado := '{"error":"Las cantidades y el costo no pueden ser negativos"}';
+      RETURN;
+    END IF;
+
+    -- No puede quedar disponible mas de lo que entro. Solo se compara si vino:
+    -- cuando falta, el INSERT lo iguala a la cantidad y la relacion se cumple
+    -- por construccion.
+    IF l_dispon IS NOT NULL AND l_dispon > NVL(l_cantidad, 0) THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"La cantidad disponible no puede superar la cantidad que entro"}';
       RETURN;
     END IF;
 
@@ -484,16 +526,21 @@ CREATE OR REPLACE PACKAGE BODY PKG_LOTES AS
     -- NVL en cantidad: el DDL la declara DEFAULT 0, pero mandar NULL explicito
     -- pisaria ese default y dejaria la columna en NULL, que despues rompe
     -- cualquier suma de stock.
+    --
+    -- CANTIDAD_DISPON arranca igual a CANTIDAD si no viene: una partida recien
+    -- ingresada todavia no se consumio. Resolverlo aca —y no dejarlo en null—
+    -- evita que el stock del articulo dependa de un NVL en cada consulta.
     INSERT INTO LOTES (
       ID_EMPRESA, ID_SUCURSAL, ID_ARTICULO, NUMERO_LOTE,
-      CANTIDAD, COSTO, FECHA_VENCIMIENTO, FECHA_ENTRADA, OBSERVACIONES,
-      FECHA_CREACION, FECHA_ACTUALIZACION
+      CANTIDAD, CANTIDAD_DISPON, COSTO, FECHA_VENCIMIENTO, FECHA_ENTRADA,
+      OBSERVACIONES, FECHA_CREACION, FECHA_ACTUALIZACION
     ) VALUES (
       l_id_empresa,
       l_id_sucursal,
       l_id_articulo,
       l_numero_lote,
       NVL(l_cantidad, 0),
+      NVL(l_dispon, NVL(l_cantidad, 0)),
       l_costo,
       l_vence,
       NVL(l_entrada, SYSTIMESTAMP),
@@ -543,6 +590,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_LOTES AS
     p_id_articulo        IN  VARCHAR2,
     p_numero_lote        IN  VARCHAR2,
     p_cantidad           IN  VARCHAR2,
+    p_cantidad_dispon    IN  VARCHAR2,
     p_costo              IN  VARCHAR2,
     p_fecha_vencimiento  IN  VARCHAR2,
     p_fecha_entrada      IN  VARCHAR2,
@@ -557,6 +605,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_LOTES AS
     l_id_articulo NUMBER;
     l_numero_lote NUMBER;
     l_cantidad    NUMBER;
+    l_dispon      NUMBER;
     l_costo       NUMBER;
     l_vence       TIMESTAMP;
     l_entrada     TIMESTAMP;
@@ -567,6 +616,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_LOTES AS
     l_art_final   NUMBER;
     l_vence_final TIMESTAMP;
     l_entra_final TIMESTAMP;
+    l_cant_final  NUMBER;
+    l_disp_final  NUMBER;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -581,14 +632,16 @@ CREATE OR REPLACE PACKAGE BODY PKG_LOTES AS
     l_id_articulo := TO_NUMBER(NULLIF(p_id_articulo, ''));
     l_numero_lote := TO_NUMBER(NULLIF(p_numero_lote, ''));
     l_cantidad    := TO_NUMBER(NULLIF(p_cantidad, ''));
+    l_dispon      := TO_NUMBER(NULLIF(p_cantidad_dispon, ''));
     l_costo       := TO_NUMBER(NULLIF(p_costo, ''));
     l_vence       := A_TIMESTAMP(p_fecha_vencimiento);
     l_entrada     := A_TIMESTAMP(p_fecha_entrada);
 
     IF (l_cantidad IS NOT NULL AND l_cantidad < 0)
+       OR (l_dispon IS NOT NULL AND l_dispon < 0)
        OR (l_costo IS NOT NULL AND l_costo < 0) THEN
       p_status_code := 400;
-      p_resultado := '{"error":"La cantidad y el costo no pueden ser negativos"}';
+      p_resultado := '{"error":"Las cantidades y el costo no pueden ser negativos"}';
       RETURN;
     END IF;
 
@@ -621,8 +674,11 @@ CREATE OR REPLACE PACKAGE BODY PKG_LOTES AS
              NVL(l_id_sucursal, ID_SUCURSAL),
              NVL(l_id_articulo, ID_ARTICULO),
              NVL(l_vence,       FECHA_VENCIMIENTO),
-             NVL(l_entrada,     FECHA_ENTRADA)
-        INTO l_emp_final, l_suc_final, l_art_final, l_vence_final, l_entra_final
+             NVL(l_entrada,     FECHA_ENTRADA),
+             NVL(l_cantidad,    CANTIDAD),
+             NVL(l_dispon,      NVL(CANTIDAD_DISPON, CANTIDAD))
+        INTO l_emp_final, l_suc_final, l_art_final, l_vence_final, l_entra_final,
+             l_cant_final, l_disp_final
         FROM LOTES
        WHERE ID_LOTE    = l_id
          AND ID_EMPRESA = l_id_empresa;
@@ -632,6 +688,14 @@ CREATE OR REPLACE PACKAGE BODY PKG_LOTES AS
         p_resultado := '{"error":"El lote no existe"}';
         RETURN;
     END;
+
+    -- Contra los valores FINALES: bajar solo la cantidad por debajo del
+    -- disponible que ya estaba guardado tambien deja el lote incoherente.
+    IF l_disp_final > l_cant_final THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"La cantidad disponible no puede superar la cantidad que entro"}';
+      RETURN;
+    END IF;
 
     IF NOT SUCURSAL_ES_DE_EMPRESA(l_suc_final, l_emp_final) THEN
       p_status_code := 400;
@@ -668,6 +732,10 @@ CREATE OR REPLACE PACKAGE BODY PKG_LOTES AS
            ID_ARTICULO         = NVL(l_id_articulo, ID_ARTICULO),
            NUMERO_LOTE         = NVL(l_numero_lote, NUMERO_LOTE),
            CANTIDAD            = NVL(l_cantidad, CANTIDAD),
+           -- El NVL anidado cubre las filas viejas con CANTIDAD_DISPON en null:
+           -- sin el, un PUT que no manda el disponible lo dejaria en null para
+           -- siempre y esa fila no sumaria al stock.
+           CANTIDAD_DISPON     = NVL(l_dispon, NVL(CANTIDAD_DISPON, CANTIDAD)),
            COSTO               = NVL(l_costo, COSTO),
            FECHA_VENCIMIENTO   = NVL(l_vence, FECHA_VENCIMIENTO),
            FECHA_ENTRADA       = NVL(l_entrada, FECHA_ENTRADA),
@@ -832,7 +900,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_LOTES AS
 
     ----------------------------------------------------------------------------
     -- POST /lotes/crear
-    -- Body: { idEmpresa, idSucursal, idArticulo, numeroLote?, cantidad?,
+    -- Body: { idEmpresa, idSucursal, idArticulo, numeroLote?, cantidad?, cantidadDispon?,
     --         costo?, fechaVencimiento?, fechaEntrada?, observaciones? }
     -- Las fechas en formato 'YYYY-MM-DD'.
     ----------------------------------------------------------------------------
@@ -843,7 +911,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_LOTES AS
       p_pattern     => 'crear',
       p_method      => 'POST',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_LOTES.INSERTAR(:authorization, :idEmpresa, :idSucursal, :idArticulo, :numeroLote, :cantidad, :costo, :fechaVencimiento, :fechaEntrada, :observaciones, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_LOTES.INSERTAR(:authorization, :idEmpresa, :idSucursal, :idArticulo, :numeroLote, :cantidad, :cantidadDispon, :costo, :fechaVencimiento, :fechaEntrada, :observaciones, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
@@ -863,7 +931,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_LOTES AS
 
     ----------------------------------------------------------------------------
     -- PUT /lotes/actualizar/:id
-    -- Body: { idEmpresa?, idSucursal?, idArticulo?, numeroLote?, cantidad?,
+    -- Body: { idEmpresa?, idSucursal?, idArticulo?, numeroLote?, cantidad?, cantidadDispon?,
     --         costo?, fechaVencimiento?, fechaEntrada?, observaciones? }
     --       (ausentes = no cambia)
     ----------------------------------------------------------------------------
@@ -874,7 +942,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_LOTES AS
       p_pattern     => 'actualizar/:id',
       p_method      => 'PUT',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_LOTES.ACTUALIZAR(:authorization, :id, :idEmpresa, :idSucursal, :idArticulo, :numeroLote, :cantidad, :costo, :fechaVencimiento, :fechaEntrada, :observaciones, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_LOTES.ACTUALIZAR(:authorization, :id, :idEmpresa, :idSucursal, :idArticulo, :numeroLote, :cantidad, :cantidadDispon, :costo, :fechaVencimiento, :fechaEntrada, :observaciones, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
@@ -966,7 +1034,11 @@ SELECT t.URI_TEMPLATE, h.METHOD
  ORDER BY t.URI_TEMPLATE, h.METHOD;
 
 SELECT l.ID_LOTE, e.NOMBRE_EMPRESA, s.NOMBRE_SUCURSAL, a.NOMBRE_ARTICULO,
-       l.NUMERO_LOTE, l.CANTIDAD, l.COSTO,
+       l.NUMERO_LOTE,
+       l.CANTIDAD                                 AS ENTRO,
+       NVL(l.CANTIDAD_DISPON, l.CANTIDAD)         AS QUEDA,
+       l.CANTIDAD - NVL(l.CANTIDAD_DISPON, l.CANTIDAD) AS CONSUMIDO,
+       l.COSTO,
        TO_CHAR(l.FECHA_ENTRADA, 'YYYY-MM-DD')     AS ENTRADA,
        TO_CHAR(l.FECHA_VENCIMIENTO, 'YYYY-MM-DD') AS VENCE
   FROM LOTES      l
@@ -974,6 +1046,14 @@ SELECT l.ID_LOTE, e.NOMBRE_EMPRESA, s.NOMBRE_SUCURSAL, a.NOMBRE_ARTICULO,
   JOIN SUCURSALES s ON s.ID_SUCURSAL  = l.ID_SUCURSAL
   JOIN ARTICULOS  a ON a.ID_ARTICULO  = l.ID_ARTICULO
  ORDER BY l.FECHA_VENCIMIENTO NULLS LAST, a.NOMBRE_ARTICULO;
+
+-- Lotes incoherentes: mas disponible que lo que entro. Tiene que devolver CERO
+-- filas — el paquete lo impide, pero una carga a mano por SQL no.
+SELECT l.ID_LOTE, a.NOMBRE_ARTICULO, l.NUMERO_LOTE,
+       l.CANTIDAD AS ENTRO, l.CANTIDAD_DISPON AS QUEDA
+  FROM LOTES     l
+  JOIN ARTICULOS a ON a.ID_ARTICULO = l.ID_ARTICULO
+ WHERE l.CANTIDAD_DISPON > l.CANTIDAD;
 
 -- Coherencia empresa/sucursal/articulo: el DDL no la garantiza (las tres FK son
 -- independientes). Estas dos consultas tienen que devolver CERO filas; si
@@ -992,7 +1072,11 @@ SELECT l.ID_LOTE, l.ID_EMPRESA AS EMPRESA_LOTE,
  WHERE a.ID_EMPRESA != l.ID_EMPRESA;
 
 -- Lo que vence en los proximos 30 dias. Es la consulta que justifica la tabla.
-SELECT a.NOMBRE_ARTICULO, s.NOMBRE_SUCURSAL, l.NUMERO_LOTE, l.CANTIDAD,
+--
+-- Filtra por CANTIDAD_DISPON y no por CANTIDAD: un lote consumido entero no se
+-- pierde aunque venza, asi que no deberia aparecer en el aviso.
+SELECT a.NOMBRE_ARTICULO, s.NOMBRE_SUCURSAL, l.NUMERO_LOTE,
+       NVL(l.CANTIDAD_DISPON, l.CANTIDAD) AS QUEDA,
        TO_CHAR(l.FECHA_VENCIMIENTO, 'YYYY-MM-DD') AS VENCE,
        TRUNC(l.FECHA_VENCIMIENTO) - TRUNC(SYSDATE) AS DIAS
   FROM LOTES      l
@@ -1000,5 +1084,5 @@ SELECT a.NOMBRE_ARTICULO, s.NOMBRE_SUCURSAL, l.NUMERO_LOTE, l.CANTIDAD,
   JOIN SUCURSALES s ON s.ID_SUCURSAL = l.ID_SUCURSAL
  WHERE l.FECHA_VENCIMIENTO IS NOT NULL
    AND l.FECHA_VENCIMIENTO <= SYSTIMESTAMP + INTERVAL '30' DAY
-   AND l.CANTIDAD > 0
+   AND NVL(l.CANTIDAD_DISPON, l.CANTIDAD) > 0
  ORDER BY l.FECHA_VENCIMIENTO;

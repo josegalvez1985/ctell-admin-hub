@@ -110,17 +110,26 @@ const schema = z
     idArticulo: z.string().min(1, "Elegí un artículo"),
     numeroLote: numeroOpcional("El número de lote"),
     cantidad: numeroOpcional("La cantidad"),
+    cantidadDispon: numeroOpcional("La cantidad disponible"),
     costo: numeroOpcional("El costo"),
     fechaEntrada: fechaOpcional,
     fechaVencimiento: fechaOpcional,
     observaciones: z.string().trim().max(1000, "Máximo 1000 caracteres"),
   })
-  // Mismo control que hace el backend. Acá se valida además para no gastar un
-  // viaje a la red en un error que se ve en el formulario.
+  // Mismos controles que hace el backend. Acá se validan además para no gastar
+  // un viaje a la red en un error que se ve en el formulario.
   .refine((v) => !v.fechaEntrada || !v.fechaVencimiento || v.fechaVencimiento >= v.fechaEntrada, {
     message: "No puede vencer antes de entrar",
     path: ["fechaVencimiento"],
-  });
+  })
+  // No puede quedar disponible más de lo que entró.
+  .refine(
+    (v) => !v.cantidadDispon || !v.cantidad || Number(v.cantidadDispon) <= Number(v.cantidad),
+    {
+      message: "No puede superar la cantidad que entró",
+      path: ["cantidadDispon"],
+    },
+  );
 
 type FormValues = z.infer<typeof schema>;
 
@@ -242,7 +251,7 @@ function LotesPage() {
    * nulos tienen que ir al final igual que en el SQL.
    */
   const mostrados = useMemo(() => {
-    const numericas = ["numeroLote", "cantidad", "costo"] as const;
+    const numericas = ["numeroLote", "cantidad", "cantidadDispon", "costo"] as const;
     type CampoNumerico = (typeof numericas)[number];
     const esNumerica = (campo: string): campo is CampoNumerico =>
       (numericas as readonly string[]).includes(campo);
@@ -401,8 +410,13 @@ function LotesPage() {
 
                         <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
                           <div>
-                            <dt className="inline text-muted-foreground">Cantidad: </dt>
-                            <dd className="inline tabular-nums text-foreground">{lote.cantidad}</dd>
+                            <dt className="inline text-muted-foreground">Disponible: </dt>
+                            <dd className="inline tabular-nums text-foreground">
+                              {lote.cantidadDispon}
+                              {lote.cantidadDispon !== lote.cantidad && (
+                                <span className="text-muted-foreground"> de {lote.cantidad}</span>
+                              )}
+                            </dd>
                           </div>
                           <div>
                             <dt className="inline text-muted-foreground">Costo: </dt>
@@ -472,11 +486,13 @@ function LotesPage() {
                         >
                           Lote
                         </TableHeadOrdenable>
+                        {/* Ordena por lo DISPONIBLE, que es lo que la columna
+                            muestra primero. */}
                         <TableHeadOrdenable
-                          direccion={orden?.campo === "cantidad" ? orden.direccion : null}
-                          onClick={() => alternarOrden("cantidad")}
+                          direccion={orden?.campo === "cantidadDispon" ? orden.direccion : null}
+                          onClick={() => alternarOrden("cantidadDispon")}
                         >
-                          Cantidad
+                          Disponible
                         </TableHeadOrdenable>
                         <TableHeadOrdenable
                           direccion={orden?.campo === "costo" ? orden.direccion : null}
@@ -510,8 +526,26 @@ function LotesPage() {
                             <TableCell className="tabular-nums text-muted-foreground">
                               {lote.numeroLote ?? "—"}
                             </TableCell>
-                            <TableCell className="tabular-nums text-muted-foreground">
-                              {lote.cantidad}
+                            {/* "queda / entró": lo primero es el dato operativo
+                                —cuánto hay— y lo segundo el contexto. Cuando el
+                                lote está entero se muestra un solo número, para
+                                no repetirlo. */}
+                            <TableCell className="tabular-nums">
+                              <span
+                                className={
+                                  lote.cantidadDispon === 0
+                                    ? "text-muted-foreground"
+                                    : "font-medium text-foreground"
+                                }
+                              >
+                                {lote.cantidadDispon}
+                              </span>
+                              {lote.cantidadDispon !== lote.cantidad && (
+                                <span className="text-xs text-muted-foreground">
+                                  {" "}
+                                  / {lote.cantidad}
+                                </span>
+                              )}
                             </TableCell>
                             <TableCell className="tabular-nums text-muted-foreground">
                               {formatearImporte(lote.costo)}
@@ -655,6 +689,10 @@ function LoteFormDialog({
       idArticulo: lote ? String(lote.idArticulo) : "",
       numeroLote: lote?.numeroLote != null ? String(lote.numeroLote) : "",
       cantidad: lote ? String(lote.cantidad) : "0",
+      // En el alta queda vacío: el backend lo iguala a la cantidad, que es lo
+      // correcto para una partida recién ingresada. Poner "0" acá haría que el
+      // lote naciera sin nada disponible.
+      cantidadDispon: lote ? String(lote.cantidadDispon) : "",
       costo: lote?.costo != null ? String(lote.costo) : "",
       // El alta arranca con la fecha de hoy: lo habitual es cargar el lote el
       // día que entró la mercadería.
@@ -673,6 +711,7 @@ function LoteFormDialog({
         idArticulo: Number(v.idArticulo),
         ...(v.numeroLote ? { numeroLote: Number(v.numeroLote) } : {}),
         ...(v.cantidad ? { cantidad: Number(v.cantidad) } : {}),
+        ...(v.cantidadDispon ? { cantidadDispon: Number(v.cantidadDispon) } : {}),
         ...(v.costo ? { costo: Number(v.costo) } : {}),
         ...(v.fechaEntrada ? { fechaEntrada: v.fechaEntrada } : {}),
         ...(v.fechaVencimiento ? { fechaVencimiento: v.fechaVencimiento } : {}),
@@ -758,7 +797,7 @@ function LoteFormDialog({
                 name="cantidad"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Cantidad</FormLabel>
+                    <FormLabel>Cantidad que entró</FormLabel>
                     <FormControl>
                       <Input
                         {...field}
@@ -768,10 +807,37 @@ function LoteFormDialog({
                         className="tabular-nums"
                       />
                     </FormControl>
+                    <FormDescription>Histórico de la partida.</FormDescription>
                     <FormMessage />
                   </FormItem>
                 )}
               />
+
+              {/* Sólo en EDICIÓN: en el alta el backend lo iguala a la cantidad
+                  —una partida que recién entró no se consumió— y pedirlo sería
+                  un campo más para escribir el mismo número dos veces. */}
+              {esEdicion && (
+                <FormField
+                  control={form.control}
+                  name="cantidadDispon"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Disponible</FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          inputMode="decimal"
+                          placeholder="0"
+                          autoComplete="off"
+                          className="tabular-nums"
+                        />
+                      </FormControl>
+                      <FormDescription>Lo que queda sin consumir.</FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
 
               <FormField
                 control={form.control}
