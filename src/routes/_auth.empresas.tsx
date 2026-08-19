@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import { z } from "zod";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
-import { Combobox } from "@/components/ctell/Combobox";
+import { SelectorModal } from "@/components/ctell/SelectorModal";
 import { LogoEmpresa } from "@/components/ctell/LogoEmpresa";
 import { SIN_FILTRO, TableHeadFiltrable } from "@/components/ctell/TableHeadFiltrable";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
@@ -706,7 +706,7 @@ function EmpresaFormDialog({
                 <FormItem>
                   <FormLabel>País (opcional)</FormLabel>
                   <FormControl>
-                    <Combobox
+                    <SelectorModal
                       opciones={paisesOpciones}
                       value={field.value}
                       onChange={(v) => {
@@ -715,6 +715,7 @@ function EmpresaFormDialog({
                         form.setValue("idCiudad", "");
                       }}
                       placeholder="Elegí un país"
+                      titulo="Elegí un país"
                       buscarPlaceholder="Buscar país…"
                       cargando={cargandoPaises}
                     />
@@ -731,7 +732,7 @@ function EmpresaFormDialog({
                 <FormItem>
                   <FormLabel>Departamento (opcional)</FormLabel>
                   <FormControl>
-                    <Combobox
+                    <SelectorModal
                       opciones={departamentosOpciones}
                       value={field.value}
                       onChange={(v) => {
@@ -758,7 +759,7 @@ function EmpresaFormDialog({
                 <FormItem>
                   <FormLabel>Ciudad (opcional)</FormLabel>
                   <FormControl>
-                    <Combobox
+                    <SelectorModal
                       opciones={ciudadesOpciones}
                       value={field.value}
                       onChange={field.onChange}

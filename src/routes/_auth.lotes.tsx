@@ -2,13 +2,13 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, Pencil, Plus, Search, Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
-import { Combobox } from "@/components/ctell/Combobox";
+import { SelectorArticulo } from "@/components/ctell/SelectorArticulo";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
 import { useSucursal } from "@/components/ctell/sucursal-provider";
 import { TableHeadFiltrable, SIN_FILTRO } from "@/components/ctell/TableHeadFiltrable";
@@ -72,6 +72,21 @@ export const Route = createFileRoute("/_auth/lotes")({
 
 const MENSAJE_ERROR = (error: unknown, fallback: string) =>
   error instanceof ApiError ? error.message : fallback;
+
+/**
+ * Lotes está en SOLO CONSULTA por ahora: no se puede crear, editar ni borrar.
+ *
+ * Es una decisión temporal, no una limitación técnica — el backend
+ * (`PKG_LOTES`) sigue aceptando las tres operaciones y otras pantallas las usan:
+ * Inventarios ajusta `CANTIDAD_DISPON` al procesar un conteo. Lo único que se
+ * apaga es la escritura DESDE ESTA PANTALLA.
+ *
+ * **Para volver a habilitarla, poné esto en `false`.** El formulario, las
+ * mutaciones y los botones siguen en el archivo y compilando: no hay nada que
+ * reescribir. Se hizo con un flag y no borrando el código justamente porque la
+ * intención declarada es rehabilitarlo.
+ */
+const SOLO_CONSULTA = true;
 
 /** Cuántas filas se muestran de entrada, y cuántas suma cada "Mostrar más". */
 const POR_PAGINA = 20;
@@ -215,9 +230,16 @@ function LotesPage() {
 
   // Los artículos alimentan el filtro de la columna y el formulario. Misma
   // queryKey que usa la página de Artículos, así se comparte la respuesta.
+  // SÓLO para saber si la empresa tiene artículos: el selector del formulario ya
+  // no se alimenta de acá (usa SelectorArticulo, que consulta paginado por su
+  // cuenta) y el filtro de la columna sale de los lotes listados.
+  //
+  // Por eso pide `tamanio: 1`: lo único que se mira es `total`, y traer 20 filas
+  // que nadie dibuja sería tráfico al pedo. La queryKey lleva "existen" para no
+  // pisar en caché la del listado completo de la pantalla de Artículos.
   const { data: articulos, isPending: cargandoArticulos } = useQuery({
-    queryKey: ["articulos", empresa?.id ?? null],
-    queryFn: () => api.articulos.listar({ idEmpresa: empresa!.id }),
+    queryKey: ["articulos", "existen", empresa?.id ?? null],
+    queryFn: () => api.articulos.listar({ idEmpresa: empresa!.id, tamanio: 1 }),
     enabled: empresa !== null,
   });
 
@@ -297,12 +319,17 @@ function LotesPage() {
     setVisibles(POR_PAGINA);
   }
 
-  const articulosOpciones = (articulos?.items ?? []).map((a) => ({
-    valor: String(a.id),
-    etiqueta: a.nombreArticulo,
-    descripcion: a.codigoArticulo ?? undefined,
-  }));
-
+  // Las opciones del FILTRO de la columna salen de los lotes ya listados, no de
+  // /articulos/listar: ese endpoint viene paginado y daría sólo 20 artículos.
+  //
+  // Además es lo correcto: filtrar por un artículo que no tiene ningún lote
+  // vaciaría la tabla, así que las únicas opciones útiles son las que de verdad
+  // aparecen. Mismo criterio que las sucursales en Artículos-Ubicaciones.
+  const articulosDelListado = Array.from(
+    new Map(items.map((l) => [l.idArticulo, l.nombreArticulo])).entries(),
+  )
+    .sort((a, b) => a[1].localeCompare(b[1], "es"))
+    .map(([id, nombre]) => ({ valor: String(id), etiqueta: nombre }));
   const eliminar = useMutation({
     mutationFn: (lote: Lote) => api.lotes.eliminar(lote.id, lote.idEmpresa),
     onSuccess: () => {
@@ -316,7 +343,11 @@ function LotesPage() {
   // Sin sucursal no hay dónde crear ni qué listar: la pantalla lo dice en vez de
   // mostrar una tabla vacía que parecería un depósito sin mercadería.
   const sinSucursal = !cargandoSucursal && sucursal === null;
-  const sinArticulos = !cargandoArticulos && (articulos?.items.length ?? 0) === 0;
+  // `total` y NO `items.length`: el listado de artículos viene paginado, así que
+  // items son 20 como mucho. Da igual para saber si hay CERO —que es lo único
+  // que se pregunta acá—, pero usar el total deja claro contra qué se compara y
+  // no se rompe si algún día cambia el tamaño de página.
+  const sinArticulos = !cargandoArticulos && (articulos?.total ?? 0) === 0;
 
   return (
     <AppLayout active="/lotes" title="Lotes">
@@ -327,20 +358,31 @@ function LotesPage() {
             <p className="mt-1 text-sm text-muted-foreground">
               Partidas de mercadería con su vencimiento y su costo
               {sucursal ? ` en ${sucursal.nombreSucursal}` : ""}.
+              {SOLO_CONSULTA && " Sólo consulta: los lotes se cargan desde otro proceso."}
             </p>
           </div>
-          <Button onClick={() => setCreando(true)} disabled={sucursal === null || sinArticulos}>
-            <Plus className="size-4" />
-            Nuevo lote
-          </Button>
+          {/* En solo consulta el botón no se deshabilita: se saca. Un botón gris
+              invita a averiguar por qué no anda; ausente, la pantalla se lee
+              como lo que es, un listado. El aviso está en el subtítulo. */}
+          {!SOLO_CONSULTA && (
+            <Button onClick={() => setCreando(true)} disabled={sucursal === null || sinArticulos}>
+              <Plus className="size-4" />
+              Nuevo lote
+            </Button>
+          )}
         </div>
 
         {sinSucursal ? (
           <p className="rounded-lg border border-border bg-muted px-4 py-6 text-center text-sm text-muted-foreground">
             La empresa no tiene sucursales activas. Cargá una sucursal antes de registrar lotes.
           </p>
-        ) : sinArticulos ? (
+        ) : sinArticulos && !SOLO_CONSULTA ? (
           // Un lote sin artículo no existe: el formulario no se podría completar.
+          //
+          // El aviso REEMPLAZA a la tabla, así que en solo consulta no va: no
+          // hay formulario que completar y esconder los lotes ya cargados por
+          // un alta que nadie puede hacer sería ocultar justo lo que se viene a
+          // mirar.
           <p className="rounded-lg border border-border bg-muted px-4 py-6 text-center text-sm text-muted-foreground">
             La empresa no tiene artículos cargados. Cargá un artículo antes de registrar lotes.
           </p>
@@ -374,7 +416,7 @@ function LotesPage() {
                     ? "Ningún lote coincide con la búsqueda."
                     : "Todavía no hay lotes cargados en esta sucursal."}
                 </p>
-                {!termino && filtroArticulo === SIN_FILTRO && (
+                {!SOLO_CONSULTA && !termino && filtroArticulo === SIN_FILTRO && (
                   <Button className="mt-4" onClick={() => setCreando(true)}>
                     Cargar el primero
                   </Button>
@@ -438,26 +480,28 @@ function LotesPage() {
                           </div>
                         </dl>
 
-                        <div className="mt-3 flex gap-2 border-t border-border pt-3">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="flex-1"
-                            onClick={() => setEditando(lote)}
-                          >
-                            <Pencil className="size-4" />
-                            Editar
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="flex-1 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                            onClick={() => setAEliminar(lote)}
-                          >
-                            <Trash2 className="size-4" />
-                            Eliminar
-                          </Button>
-                        </div>
+                        {!SOLO_CONSULTA && (
+                          <div className="mt-3 flex gap-2 border-t border-border pt-3">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="flex-1"
+                              onClick={() => setEditando(lote)}
+                            >
+                              <Pencil className="size-4" />
+                              Editar
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="flex-1 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                              onClick={() => setAEliminar(lote)}
+                            >
+                              <Trash2 className="size-4" />
+                              Eliminar
+                            </Button>
+                          </div>
+                        )}
                       </li>
                     );
                   })}
@@ -470,10 +514,7 @@ function LotesPage() {
                         <TableHeadFiltrable
                           direccion={orden?.campo === "nombreArticulo" ? orden.direccion : null}
                           onOrdenar={() => alternarOrden("nombreArticulo")}
-                          opciones={articulosOpciones.map((a) => ({
-                            valor: a.valor,
-                            etiqueta: a.etiqueta,
-                          }))}
+                          opciones={articulosDelListado}
                           valor={filtroArticulo}
                           onFiltrar={setFiltroArticulo}
                           buscarPlaceholder="Buscar artículo…"
@@ -506,7 +547,7 @@ function LotesPage() {
                         >
                           Vence
                         </TableHeadOrdenable>
-                        <TableHead className="text-right">Acciones</TableHead>
+                        {!SOLO_CONSULTA && <TableHead className="text-right">Acciones</TableHead>}
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -565,28 +606,30 @@ function LotesPage() {
                                 Entró {formatearFecha(lote.fechaEntrada)}
                               </span>
                             </TableCell>
-                            <TableCell className="text-right">
-                              <div className="flex justify-end gap-1">
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  title="Editar"
-                                  aria-label={`Editar lote de ${lote.nombreArticulo}`}
-                                  onClick={() => setEditando(lote)}
-                                >
-                                  <Pencil className="size-4" />
-                                </Button>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  title="Eliminar"
-                                  aria-label={`Eliminar lote de ${lote.nombreArticulo}`}
-                                  onClick={() => setAEliminar(lote)}
-                                >
-                                  <Trash2 className="size-4 text-destructive" />
-                                </Button>
-                              </div>
-                            </TableCell>
+                            {!SOLO_CONSULTA && (
+                              <TableCell className="text-right">
+                                <div className="flex justify-end gap-1">
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    title="Editar"
+                                    aria-label={`Editar lote de ${lote.nombreArticulo}`}
+                                    onClick={() => setEditando(lote)}
+                                  >
+                                    <Pencil className="size-4" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    title="Eliminar"
+                                    aria-label={`Eliminar lote de ${lote.nombreArticulo}`}
+                                    onClick={() => setAEliminar(lote)}
+                                  >
+                                    <Trash2 className="size-4 text-destructive" />
+                                  </Button>
+                                </div>
+                              </TableCell>
+                            )}
                           </TableRow>
                         );
                       })}
@@ -606,15 +649,15 @@ function LotesPage() {
           </>
         )}
 
-        {/* Sin empresa Y sucursal no se abre: el alta necesita los dos ids. */}
-        {empresa !== null && sucursal !== null && (
+        {/* Sin empresa Y sucursal no se abre: el alta necesita los dos ids.
+            En solo consulta tampoco se monta: nada puede abrirlo, y dejarlo
+            armado igual haría trabajo por una pantalla que no se va a ver. */}
+        {!SOLO_CONSULTA && empresa !== null && sucursal !== null && (
           <LoteFormDialog
             open={creando || editando !== null}
             lote={editando}
             idEmpresa={empresa.id}
             idSucursal={sucursal.id}
-            articulosOpciones={articulosOpciones}
-            cargandoArticulos={cargandoArticulos}
             onClose={() => {
               setCreando(false);
               setEditando(null);
@@ -622,7 +665,10 @@ function LotesPage() {
           />
         )}
 
-        <AlertDialog open={aEliminar !== null} onOpenChange={(o) => !o && setAEliminar(null)}>
+        <AlertDialog
+          open={!SOLO_CONSULTA && aEliminar !== null}
+          onOpenChange={(o) => !o && setAEliminar(null)}
+        >
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>¿Eliminar el lote?</AlertDialogTitle>
@@ -662,8 +708,6 @@ function LoteFormDialog({
   lote,
   idEmpresa,
   idSucursal,
-  articulosOpciones,
-  cargandoArticulos,
   onClose,
 }: {
   open: boolean;
@@ -671,15 +715,25 @@ function LoteFormDialog({
   lote: Lote | null;
   idEmpresa: number;
   idSucursal: number;
-  // `descripcion` admite undefined explícito y no sólo la ausencia de la clave:
-  // el proyecto tiene `exactOptionalPropertyTypes`, y el `?? undefined` con el
-  // que se arman las opciones produce la propiedad presente y en undefined.
-  articulosOpciones: { valor: string; etiqueta: string; descripcion: string | undefined }[];
-  cargandoArticulos: boolean;
+  // Ya no recibe las opciones de artículos: SelectorArticulo las consulta por su
+  // cuenta contra el endpoint paginado.
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
   const esEdicion = lote !== null;
+
+  // El NOMBRE del artículo elegido, para mostrarlo en el botón del selector.
+  //
+  // Va en estado y no se busca por id contra una lista: el listado de artículos
+  // viene paginado, así que el artículo de este lote puede no estar entre los
+  // que el selector trajo, y el campo se vería vacío al editar.
+  const [nombreArticulo, setNombreArticulo] = useState(lote?.nombreArticulo ?? "");
+
+  // El mismo diálogo sirve para alta y edición: sin esto, al abrirlo para otro
+  // lote seguiría mostrando el nombre del anterior.
+  useEffect(() => {
+    setNombreArticulo(lote?.nombreArticulo ?? "");
+  }, [lote]);
 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -719,7 +773,10 @@ function LoteFormDialog({
       };
 
       return esEdicion
-        ? api.lotes.actualizar(lote.id, datos)
+        ? // idEmpresa es OBLIGATORIO en el update aunque no sea un campo del
+          // formulario: el backend lo usa en el WHERE para acotar a cuál fila
+          // se aplica el cambio. Sin él responde 400.
+          api.lotes.actualizar(lote.id, { idEmpresa: lote.idEmpresa, ...datos })
         : api.lotes.crear({ idEmpresa, idSucursal, ...datos });
     },
     onSuccess: () => {
@@ -756,13 +813,14 @@ function LoteFormDialog({
                   <FormItem className="sm:col-span-2">
                     <FormLabel>Artículo</FormLabel>
                     <FormControl>
-                      <Combobox
-                        opciones={articulosOpciones}
+                      <SelectorArticulo
+                        idEmpresa={idEmpresa}
                         value={field.value}
-                        onChange={field.onChange}
-                        placeholder="Elegí un artículo"
-                        buscarPlaceholder="Buscar artículo…"
-                        cargando={cargandoArticulos}
+                        etiquetaSeleccionada={nombreArticulo}
+                        onChange={(valor, etiqueta) => {
+                          field.onChange(valor);
+                          setNombreArticulo(etiqueta);
+                        }}
                       />
                     </FormControl>
                     <FormDescription>De qué artículo es esta partida.</FormDescription>

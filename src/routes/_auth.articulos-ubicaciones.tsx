@@ -5,7 +5,8 @@ import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
-import { Combobox } from "@/components/ctell/Combobox";
+import { SelectorModal } from "@/components/ctell/SelectorModal";
+import { SelectorArticulo } from "@/components/ctell/SelectorArticulo";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
 import { SIN_FILTRO, TableHeadFiltrable } from "@/components/ctell/TableHeadFiltrable";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
@@ -372,13 +373,14 @@ function AsignarDialog({
 }) {
   const queryClient = useQueryClient();
   const [idArticulo, setIdArticulo] = useState("");
+  // El nombre del artículo elegido, para el botón del selector: el listado
+  // viene paginado, así que no se puede resolver el id contra una lista local.
+  const [nombreArticulo, setNombreArticulo] = useState("");
   const [idUbicacion, setIdUbicacion] = useState("");
 
-  const articulos = useQuery({
-    queryKey: ["articulos", idEmpresa],
-    queryFn: () => api.articulos.listar({ idEmpresa }),
-    enabled: open,
-  });
+  // Los artículos NO se consultan acá: SelectorArticulo va contra el endpoint
+  // paginado por su cuenta. Traer una lista completa dejó de ser posible cuando
+  // ese listado pasó a devolver 20 filas.
 
   // La queryKey lleva "todas": la clave ["ubicaciones", idEmpresa, …] la usa la
   // página de Ubicaciones con filtro por sucursal, y compartirla haría que este
@@ -388,16 +390,6 @@ function AsignarDialog({
     queryFn: () => api.ubicaciones.listar({ idEmpresa }),
     enabled: open,
   });
-
-  const opcionesArticulos = useMemo(
-    () =>
-      (articulos.data?.items ?? []).map((a) => ({
-        valor: String(a.id),
-        etiqueta: a.nombreArticulo,
-        descripcion: a.codigoArticulo ?? undefined,
-      })),
-    [articulos.data?.items],
-  );
 
   /** Las ubicaciones que ese artículo todavía no tiene asignadas. */
   const opcionesUbicaciones = useMemo(() => {
@@ -448,24 +440,23 @@ function AsignarDialog({
         <div className="space-y-4">
           <div className="space-y-2">
             <Label>Artículo</Label>
-            <Combobox
-              opciones={opcionesArticulos}
+            <SelectorArticulo
+              idEmpresa={idEmpresa}
               value={idArticulo}
-              onChange={(v) => {
+              etiquetaSeleccionada={nombreArticulo || undefined}
+              onChange={(v, etiqueta) => {
                 setIdArticulo(v);
+                setNombreArticulo(etiqueta);
                 // La ubicación elegida puede estar ya asignada al artículo
                 // nuevo: se limpia para no mandar un par que daría 409.
                 setIdUbicacion("");
               }}
-              placeholder={articulos.isPending ? "Cargando…" : "Elegí un artículo"}
-              buscarPlaceholder="Buscar artículo…"
-              disabled={articulos.isPending}
             />
           </div>
 
           <div className="space-y-2">
             <Label>Ubicación</Label>
-            <Combobox
+            <SelectorModal
               opciones={opcionesUbicaciones}
               value={idUbicacion}
               onChange={setIdUbicacion}

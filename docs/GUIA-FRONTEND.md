@@ -20,7 +20,8 @@ pantalla ABM completa.
    - [Todo listado busca y ordena](#51-todo-listado-busca-y-ordena)
 6. [Formularios](#6-formularios)
    - [Un formulario entra en un pantallazo](#un-formulario-entra-en-un-pantallazo)
-   - [Elegir un valor de otra tabla: Combobox](#elegir-un-valor-de-otra-tabla-combobox-no-select)
+   - [Elegir un valor de otra tabla: SelectorModal](#elegir-un-valor-de-otra-tabla-selectormodal-no-select)
+   - [Si la tabla de origen está paginada: selector en modal propio](#si-la-tabla-de-origen-está-paginada-selector-en-modal-propio)
    - [Formularios con detalle: cabecera y líneas](#61-formularios-con-detalle-cabecera-y-líneas)
 7. [El menú dinámico por dentro](#7-el-menú-dinámico-por-dentro)
    - [Imágenes: siempre con respaldo](#71-imágenes-siempre-con-respaldo)
@@ -874,21 +875,28 @@ const MENSAJE_ERROR = (error: unknown, fallback: string) =>
 cuenta es la del paquete PL/SQL, porque cualquiera puede llamar al endpoint sin
 pasar por el formulario.
 
-### Elegir un valor de otra tabla: `Combobox`, no `Select`
+### Elegir un valor de otra tabla: `SelectorModal`, no `Select`
 
-**Regla: todo selector de una FK —país, módulo, usuario, cualquier lista que
-salga de otra tabla— usa `Combobox`, no el `<Select>` de shadcn.**
+**Regla: toda lista de valores —país, módulo, usuario, cualquier FK— usa
+`SelectorModal`, que abre un MODAL. No hay popover pegado al campo.**
 
-Un `<Select>` nativo no filtra: con 200 países cargados, buscar "Paraguay"
-significa scrollear a mano por una lista alfabética. `<Select>` sigue siendo
-correcto para listas fijas y cortas que no salen de una tabla —"Activo/Inactivo",
-la `entrada` de una página (`D`/`O`/`R`)—, donde no hay nada que buscar.
+**El modal se usa siempre, aunque la lista traiga un solo ítem.** Es una decisión
+de consistencia, no de tamaño: si el control cambiara de forma según cuántas
+filas haya, la misma acción se vería distinta en cada pantalla y habría que
+aprender dos interacciones para lo mismo. El buscador dentro del modal sí se
+oculta con pocas opciones (menos de 7), porque ahí la lista entra entera.
 
-[Combobox.tsx](../src/components/ctell/Combobox.tsx) es un botón que abre un
-popover con un input de búsqueda arriba y las opciones filtrándose en vivo
-(`Command` + `Popover` de shadcn, ya instalados). No pide datos por su cuenta:
-arma `opciones` a partir de lo que ya haya cargado con `useQuery`, igual que
-antes se armaban los `<SelectItem>`.
+> El `Combobox` de popover que usaba el proyecto **ya no existe**: se eliminó al
+> migrar las 21 listas de valores. Si ves `<Combobox>` en un ejemplo viejo, es
+> `<SelectorModal>` con la misma API.
+
+`<Select>` sigue siendo correcto para listas **fijas y cortas que no salen de una
+tabla** —"Activo/Inactivo", la `entrada` de una página (`D`/`O`/`R`)—, donde no
+hay nada que buscar ni datos que cargar.
+
+[SelectorModal.tsx](../src/components/ctell/SelectorModal.tsx) no pide datos por
+su cuenta: arma `opciones` a partir de lo que ya haya cargado con `useQuery`,
+igual que antes se armaban los `<SelectItem>`.
 
 ```tsx
 const { data: paises, isPending: cargandoPaises } = useQuery({
@@ -911,11 +919,14 @@ const paisesOpciones = (paises?.items ?? []).map((p) => ({
     <FormItem>
       <FormLabel>País</FormLabel>
       <FormControl>
-        <Combobox
+        <SelectorModal
           opciones={paisesOpciones}
           value={field.value}
           onChange={field.onChange}
           placeholder="Elegí un país"
+          // Título del modal. Nombrá la entidad: con el default genérico todos
+          // los modales de la app dirían lo mismo.
+          titulo="Elegí un país"
           buscarPlaceholder="Buscar país…"
           cargando={cargandoPaises}
         />
@@ -930,17 +941,113 @@ const paisesOpciones = (paises?.items ?? []).map((p) => ({
 El `value` sigue siendo el `id` como string, igual que con `<Select>`: el
 `schema` de zod y la conversión a `Number(...)` al enviar no cambian.
 
-**También en los filtros de listado**, no sólo en el alta/edición — el
-selector de país en el filtro de Departamentos es el mismo componente:
+**También en los filtros**, no sólo en el alta/edición. El filtro de columna
+(`TableHeadFiltrable`) abre el mismo modal desde el embudo del encabezado: no
+hay que hacer nada, ya lo usa por dentro. Un filtro suelto arriba de la tabla es
+un `SelectorModal` común con la opción "todos" al principio:
 
 ```tsx
-<Combobox
+<SelectorModal
   opciones={[{ valor: TODOS, etiqueta: "Todos los países" }, ...paisesOpciones]}
   value={filtroPais}
   onChange={setFiltroPais}
   placeholder="Todos los países"
+  titulo="Filtrar por país"
 />
 ```
+
+### Si la tabla de origen está paginada: selector en modal propio
+
+**El `SelectorModal` sólo sirve cuando el listado de origen viene entero.** Filtra en
+memoria sobre las `opciones` que recibe, así que contra un endpoint paginado ve
+únicamente la primera página: el registro 300 no aparece por más que se lo
+escriba, y el que ya estaba guardado se muestra vacío si no cayó en esa página.
+
+Pasó con Artículos: al paginar `/articulos/listar` de a 20, los selectores de
+Lotes, Facturas de compra y Artículos-Ubicaciones quedaron viendo 20 de golpe.
+
+**La regla:** si el endpoint pagina, el selector va en **modal propio** y busca
+contra el servidor. El modelo es
+[SelectorArticulo.tsx](../src/components/ctell/SelectorArticulo.tsx).
+
+Tres cosas que ese componente resuelve y que hay que copiar:
+
+1. **Modal independiente, no popover pegado al campo.** La lista necesita su
+   espacio —buscador, filas de dos líneas, botón de paginar— y anclada al ancho
+   del input queda apretada. Es además el patrón visual elegido para las listas
+   de valores del proyecto.
+2. **La etiqueta seleccionada se recibe por prop** (`etiquetaSeleccionada`), no
+   se resuelve buscando el id en la lista cargada. Al editar, el registro
+   guardado puede no estar en la primera página; sin este dato el campo se ve
+   vacío como si no hubiera nada elegido. Por eso `onChange` devuelve
+   **`(valor, etiqueta)`** y el formulario guarda las dos cosas.
+3. **El contenido se monta sólo con el modal abierto.** Con varios selectores en
+   un formulario, montarlos siempre dispara una consulta por cada uno al abrir
+   la pantalla.
+
+```tsx
+// El nombre va en estado propio: no se puede derivar del id contra una lista
+// que viene paginada.
+const [nombreArticulo, setNombreArticulo] = useState(lote?.nombreArticulo ?? "");
+
+<SelectorArticulo
+  idEmpresa={idEmpresa}
+  value={field.value}
+  etiquetaSeleccionada={nombreArticulo}
+  onChange={(valor, etiqueta) => {
+    field.onChange(valor);
+    setNombreArticulo(etiqueta);
+  }}
+/>;
+```
+
+Adentro es un `useInfiniteQuery` con búsqueda debounced (350 ms) que manda
+`?busqueda=` al backend y un "Mostrar más" que pide la página siguiente — la
+misma forma que la pantalla de Artículos. Ver la sección de paginación en
+[GUIA-IMPLEMENTACION.md](GUIA-IMPLEMENTACION.md) para el lado del PL/SQL.
+
+> Los `SelectorModal` que quedan (país, módulo, moneda, unidad, categoría) siguen
+> siendo correctos: esas tablas son catálogos acotados y su `LISTAR` no pagina.
+> Si alguna crece y se pagina, ese selector hay que migrarlo también.
+>
+> **Los dos son modales y se ven igual** —mismo ancho, misma lista, mismo
+> comportamiento—; la diferencia es de dónde salen los datos, no de forma.
+
+#### Al paginar un listado, revisá TODOS sus consumidores
+
+Migrar el selector no alcanza. La misma consulta suele alimentar otras cosas de
+la pantalla que también asumen el listado completo, y ésas fallan en silencio —
+no dan error, sólo muestran de menos:
+
+| Uso                        | Qué le pasa al paginar                      | Cómo se arregla                                             |
+| -------------------------- | ------------------------------------------- | ----------------------------------------------------------- |
+| Filtro de una columna      | Ofrece 20 opciones de un catálogo de 300     | Armalo desde **las filas ya listadas**, no del catálogo      |
+| "¿Hay al menos uno?"       | `items.length` mira la página, no el total   | Usá `total`, y pedí `tamanio: 1` — no hacen falta 20 filas   |
+| Resolver un id → nombre    | El id de la página 5 no está en la lista     | Que el nombre venga en el dato que ya tenés, o por prop      |
+
+El filtro de columna en Lotes es el ejemplo: sus opciones salen de los lotes
+listados y no de `/articulos/listar`. Además de esquivar la paginación es lo
+correcto, porque filtrar por un artículo sin lotes vaciaría la tabla.
+
+```tsx
+// Opciones del filtro, desde las filas que ya están en pantalla.
+const articulosDelListado = Array.from(
+  new Map(items.map((l) => [l.idArticulo, l.nombreArticulo])).entries(),
+)
+  .sort((a, b) => a[1].localeCompare(b[1], "es"))
+  .map(([id, nombre]) => ({ valor: String(id), etiqueta: nombre }));
+
+// "¿La empresa tiene artículos?": sólo interesa el total, no las filas.
+const { data: articulos } = useQuery({
+  queryKey: ["articulos", "existen", empresa?.id ?? null],
+  queryFn: () => api.articulos.listar({ idEmpresa: empresa!.id, tamanio: 1 }),
+});
+const sinArticulos = (articulos?.total ?? 0) === 0;
+```
+
+Buscá los consumidores con `grep -rn "api.<tabla>.listar" src/` antes de dar por
+cerrada la migración: quedan queries que ya nadie usa y otras que siguen
+funcionando pero con datos incompletos.
 
 ### Confirmación de borrado
 
@@ -1138,18 +1245,47 @@ explícito) y al mapa que corresponda. No se resuelve dinámicamente contra
 lucide-react a propósito: el bundler necesita saber en compilación qué se
 importa, y el paquete entero son miles de componentes.
 
-**Al crear una página, sumá su nombre a `ICONOS_PAGINA`.** Es un paso fácil de
-olvidar y no rompe nada —cae en el documento genérico—, pero deja la página
-nueva visualmente indistinguible del resto del menú.
+#### Regla: cada página nueva estrena ícono propio
 
-Y si la página pertenece a una jerarquía, **dale un ícono propio a cada nivel**.
-Países / Departamentos / Ciudades usan `Globe` / `Map` / `MapPin`: con el mismo
-ícono repetido, el menú no deja distinguir un nivel de otro de un vistazo.
+**Toda página que se crea se agrega a `ICONOS_PAGINA` con un ícono que no use
+ninguna otra entrada.** No es opcional ni cosmético: sin la entrada, la página
+cae en el fallback `FileText` — y como el fallback lo comparten TODAS las páginas
+sin mapear, dos páginas nuevas del mismo módulo salen con el mismo dibujo.
 
-**Antes de elegir un ícono, mirá si ya está tomado.** Monedas quedó con
-`Banknote` y no con `Coins` porque `Coins` ya era "cobros": dos entradas
-distintas con el mismo dibujo se leen como la misma opción. Lo mismo con
-Categorías → `Tags` (la agrupación) en vez de `Package`, que es el artículo.
+Pasó con "Ubicaciones de artículos" en Stock: nadie la había mapeado y se veía
+igual que las otras páginas sin mapear del módulo.
+
+**El fallback cuenta como una entrada tomada.** Un ícono que además es fallback
+no puede usarse para nada mapeado: `Módulos` no lleva `LayoutGrid` porque ése es
+el fallback de módulo, y `Páginas` lleva `Files` y no `FileText` por lo mismo.
+Es el caso más difícil de ver a ojo, porque cada mapa por separado se ve bien.
+
+**Verificalo, no lo confíes a la vista:**
+
+```sh
+npm run verificar-iconos
+```
+
+Corre también dentro de `npm run lint`. Compara módulos, páginas, entradas **y
+fallbacks** entre sí, y falla nombrando el ícono repetido y quiénes lo comparten.
+Los sinónimos legítimos (singular/plural, `categorías`/`rubros`) se declaran en
+`SINONIMOS` dentro del script — esos SÍ deben compartir ícono: son la misma
+página escrita distinto.
+
+**Si la página pertenece a una jerarquía, un ícono por nivel.** Países /
+Departamentos / Ciudades usan `Globe` / `Map` / `MapPin`: repetido, el menú no
+deja distinguir un nivel de otro de un vistazo.
+
+**Y el módulo nunca repite el ícono de una de sus páginas.** El módulo es el
+encabezado que agrupa; con el mismo dibujo que una página de adentro, el grupo se
+confunde con su propio contenido. Por eso Ventas es `TrendingUp` y no `Store`
+(que ya es Sucursales), y Stock es `Archive` y no `Warehouse` (que ya es
+Depósito).
+
+Ejemplos del criterio para elegir: Monedas quedó con `Banknote` y no `Coins`
+porque `Coins` ya era "cobros"; Categorías con `Tags` (la agrupación) y no
+`Package`, que es el artículo; Facturas de compra y de venta con `FileInput` /
+`FileOutput`, porque con el mismo `Receipt` sólo las distinguía el texto.
 
 ### Por qué el link es un `<a>` y no un `<Link>`
 
@@ -1317,7 +1453,14 @@ empresa !== null`, y el caso `empresa === null` contemplado en el render
 - [ ] El paginado y el estado vacío miran **todos** los filtros, no sólo `termino`
 - [ ] **Corte de a 20 con "Mostrar más"**, y `mostrados` (no `resultado`) en la
       tabla y en las tarjetas
-- [ ] **Selectores de FK con `Combobox`**, no `<Select>` — país, módulo, usuario, etc.
+- [ ] **Listas de valores con `SelectorModal`** (abre modal), no `<Select>` ni popover
+- [ ] …salvo que el endpoint de origen **pagine**: ahí va un **selector en modal**
+      que busca contra el servidor (ver `SelectorArticulo`). Un `SelectorModal` sobre
+      un listado paginado sólo ve la primera página
+- [ ] **`idEmpresa` en el `actualizar`**, no sólo en el `crear` — el backend lo
+      exige para acotar la fila y responde 400 sin él
+- [ ] **La página está en `ICONOS_PAGINA` con un ícono que nadie más usa** —
+      verificado con `npm run verificar-iconos`, no a ojo
 - [ ] Formularios con `values`/`defaultValues` y validación zod
 - [ ] **El formulario entra sin scrollear**, con el botón de guardar visible: dos
       columnas y ancho acorde a la cantidad de campos, agrupados en secciones
@@ -1346,9 +1489,13 @@ empresa !== null`, y el caso `empresa === null` contemplado en el render
 | `window is not defined`                                   | Acceso al DOM fuera de `useEffect` (corre en el prerender de build)                                                                                                                                             |
 | Cambios que no aparecen por más que recargues             | Hay más de un `npm run dev` corriendo: mirá en qué puerto estás                                                                                                                                                 |
 | El buscador no encuentra nada que sí está en pantalla     | Falta agregar ese campo al array que devuelve la función de `useTablaListado`                                                                                                                                   |
-| El Combobox no filtra por lo que se ve en pantalla        | El `filter` de `Command` compara contra `value` (el id): revisá que `Combobox` esté resolviendo `opcion.etiqueta`, no uses `Command` pelado sin ese `filter`                                                    |
+| El selector no filtra por lo que se ve en pantalla        | `SelectorModal` busca contra `etiqueta` y `descripcion`, nunca contra `valor` (que es el id). Si armaste una lista a mano con `Command`, ese es el error: el `filter` de cmdk compara contra el `value`         |
 | **El menú quedó vacío después de entrar**                 | El usuario no tiene permisos **en esa empresa**, o los tiene con `idEmpresa` en null (cargados antes de que existiera la columna). Reasignalos desde el ABM de permisos entrando con la empresa que corresponda |
 | **Un listado por empresa trae filas de otra**             | Falta `enabled: empresa !== null`: en el primer render `empresa` todavía es null y la petición sale sin `idEmpresa`                                                                                             |
+| **400 al MODIFICAR, pero el alta funciona**               | Falta `idEmpresa` en el `actualizar`. El backend lo exige para acotar a cuál fila se aplica el cambio, y es fácil de olvidar porque no es un campo del formulario. Pasó en 7 pantallas a la vez: se copió el formulario y se arrastró el olvido |
+| **El selector no encuentra un registro que sí existe**    | Ese endpoint pagina y se está usando `SelectorModal`, que filtra en memoria sobre la primera página. Usar un selector que consulte al servidor (ver `SelectorArticulo`)                                          |
+| **Dos páginas del menú tienen el mismo ícono**            | Alguna no está en `ICONOS_PAGINA` y cae en el fallback `FileText`, que comparten todas las no mapeadas. Corré `npm run verificar-iconos`: nombra el ícono y quiénes lo comparten                                |
+| **Un filtro de columna ofrece pocas opciones**            | Se está armando desde un `listar` paginado. Armalo desde las filas ya listadas (como el filtro de artículo en Lotes): además evita ofrecer valores que dejarían la tabla vacía                                   |
 | **Al cambiar de empresa se ven los datos de la anterior** | Falta `empresa.id` en la `queryKey`: TanStack Query cree que es la misma consulta                                                                                                                               |
 | Las imágenes se ven como ícono roto                       | Falta el `onError` que cae al respaldo. Si además es en todas, el endpoint de imagen no está publicado en APEX                                                                                                  |
 | Elegir el mismo archivo dos veces no hace nada            | Falta `event.target.value = ""` en el `onChange` del input file                                                                                                                                                 |

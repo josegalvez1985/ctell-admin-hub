@@ -1,20 +1,19 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { createFileRoute } from "@tanstack/react-router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ImageUp, Loader2, MapPin, Pencil, Plus, Search, Trash2 } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
-import { Combobox } from "@/components/ctell/Combobox";
+import { SelectorModal } from "@/components/ctell/SelectorModal";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
 import { ArticuloUbicacionesDialog } from "@/components/ctell/ArticuloUbicacionesDialog";
 import { ImagenArticulo } from "@/components/ctell/ImagenArticulo";
 import { SIN_FILTRO, TableHeadFiltrable } from "@/components/ctell/TableHeadFiltrable";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
-import { useTablaListado } from "@/hooks/use-tabla-listado";
 // El helper entra con alias: `esGasto` a secas chocaría con el campo del
 // formulario y con la variable de cada fila, que se llaman igual que la columna.
 import {
@@ -112,12 +111,23 @@ const MENSAJE_ERROR = (error: unknown, fallback: string) =>
 const IMAGEN_MAX_BYTES = 1024 * 1024;
 
 /**
- * Cuántas filas se muestran de entrada, y cuántas suma cada "Mostrar más".
+ * Cuántas filas trae cada página, y cuántas suma cada "Mostrar más".
  *
- * El endpoint devuelve todo de una vez —poco para la red, mucho para el DOM—,
- * así que la tabla corta acá.
+ * Es el tamaño que se le PIDE AL SERVIDOR, no un recorte de la tabla: el
+ * endpoint pagina de verdad. Traer el catálogo entero era lo que lo hacía
+ * fallar con 500 — cientos de artículos con descripciones de hasta 1000
+ * caracteres en un solo JSON.
  */
 const POR_PAGINA = 20;
+
+/**
+ * Espera antes de mandar la búsqueda al servidor.
+ *
+ * La búsqueda ahora es una consulta HTTP, no un filtro en memoria: sin esta
+ * espera, cada tecla dispararía un request y la lista parpadearía con
+ * resultados de términos a medio escribir.
+ */
+const ESPERA_BUSQUEDA_MS = 350;
 
 /**
  * Fecha del último inventario, sólo el día: la hora exacta de un conteo físico
@@ -153,14 +163,47 @@ function ArticulosPage() {
   // Los artículos son POR EMPRESA: la que se eligió al iniciar sesión.
   const { empresa } = useEmpresa();
 
-  // La empresa entra en la queryKey: al cambiarla, TanStack Query trata el
-  // listado como otra consulta en vez de mostrar en caché los de la anterior.
-  // `enabled` evita pedir sin empresa (el provider hidrata tras montar).
-  const { data, isPending, isError, error } = useQuery({
-    queryKey: ["articulos", empresa?.id ?? null],
-    queryFn: () => api.articulos.listar({ idEmpresa: empresa!.id }),
-    enabled: empresa !== null,
-  });
+  // La búsqueda se escribe acá y viaja al backend con un retraso: `busqueda` es
+  // lo que se ve en el input (inmediato, sin lag al tipear) y `busquedaEnvio` lo
+  // que entra en la queryKey.
+  const [busqueda, setBusqueda] = useState("");
+  const [busquedaEnvio, setBusquedaEnvio] = useState("");
+
+  useEffect(() => {
+    const id = setTimeout(() => setBusquedaEnvio(busqueda), ESPERA_BUSQUEDA_MS);
+    return () => clearTimeout(id);
+  }, [busqueda]);
+
+  // La empresa, la búsqueda y el filtro entran en la queryKey: al cambiar
+  // cualquiera, TanStack Query trata el listado como otra consulta —y descarta
+  // las páginas ya traídas, que eran de otro filtro— en vez de mostrar la
+  // caché anterior. `enabled` evita pedir sin empresa (el provider hidrata tras
+  // montar).
+  //
+  // useInfiniteQuery y no useQuery: "Mostrar más" ACUMULA páginas del servidor.
+  // Con useQuery cada página reemplazaría a la anterior y el botón navegaría en
+  // vez de agregar filas.
+  const { data, isPending, isError, error, fetchNextPage, hasNextPage, isFetchingNextPage } =
+    useInfiniteQuery({
+      queryKey: ["articulos", empresa?.id ?? null, busquedaEnvio.trim(), filtroCategoria],
+      queryFn: ({ pageParam }) =>
+        api.articulos.listar({
+          idEmpresa: empresa!.id,
+          busqueda: busquedaEnvio,
+          idCategoria: filtroCategoria === SIN_FILTRO ? undefined : Number(filtroCategoria),
+          pagina: pageParam,
+          tamanio: POR_PAGINA,
+        }),
+      enabled: empresa !== null,
+      initialPageParam: 1,
+      // `total` es el de las filas que pasan el filtro, así que sumar lo ya
+      // traído y compararlo dice si queda otra página. Devolver undefined es lo
+      // que apaga `hasNextPage` y esconde el botón.
+      getNextPageParam: (ultima, paginas) => {
+        const traidos = paginas.reduce((suma, p) => suma + p.items.length, 0);
+        return traidos < ultima.total ? paginas.length + 1 : undefined;
+      },
+    });
 
   // Las categorías alimentan el filtro de la columna y el formulario. Misma
   // queryKey que usa la página de Categorías, así se comparte la respuesta.
@@ -169,10 +212,6 @@ function ArticulosPage() {
     queryFn: () => api.categorias.listar({ idEmpresa: empresa!.id }),
     enabled: empresa !== null,
   });
-
-  const articulosFiltrados = (data?.items ?? []).filter(
-    (a) => filtroCategoria === SIN_FILTRO || String(a.idCategoria) === filtroCategoria,
-  );
 
   const eliminar = useMutation({
     mutationFn: (articulo: Articulo) => api.articulos.eliminar(articulo.id, articulo.idEmpresa),
@@ -187,45 +226,55 @@ function ArticulosPage() {
     },
   });
 
-  // Búsqueda por cualquier campo visible + orden por click en el header.
-  const { busqueda, setBusqueda, orden, alternarOrden, resultado, termino } = useTablaListado(
-    articulosFiltrados,
-    (a) => [
-      a.nombreArticulo,
-      a.codigoArticulo,
-      a.categoria,
-      a.descripcion,
-      esActivo(a.activo) ? "Activo" : "Inactivo",
-      // Sólo el gasto aporta un término buscable. "Stock" haría que buscar esa
-      // palabra devolviera todo el listado menos los gastos, que no es lo que
-      // nadie espera al tipearla.
-      esGastoArticulo(a.esGasto) ? "Gasto" : "",
-      // El texto que se ve, no el ISO crudo: en pantalla dice "17 ago 2026", y
-      // buscar "2026-08" no encontraría nada de lo que el usuario está leyendo.
-      // "Sin inventariar" también entra, y sirve para juntar los pendientes.
-      formatearFechaInventario(a.fechaUltimoInventario),
-    ],
-  );
+  // Todas las páginas traídas hasta ahora, aplanadas. Es lo que la tabla pinta:
+  // NO hay recorte en el cliente, porque cada fila que llegó ya la eligió el
+  // servidor.
+  const cargados = (data?.pages ?? []).flatMap((p) => p.items);
+
+  // El orden por click en el header ORDENA SOLO LO YA CARGADO, no el catálogo.
+  // Es una diferencia real con el resto de las pantallas: acá "ordenar por
+  // nombre descendente" con 40 de 300 artículos traídos muestra el último de
+  // esos 40, no el último del catálogo.
+  //
+  // Se mantiene igual porque el uso es reordenar lo que se está mirando. Para
+  // encontrar un artículo puntual está la búsqueda, que sí va al servidor.
+  //
+  // useTablaListado ya no sirve: su filtrado por término era en memoria y
+  // ahora esa parte la hace el SQL. Sólo se conserva el orden.
+  const [orden, setOrden] = useState<{
+    campo: keyof Articulo;
+    direccion: "asc" | "desc";
+  } | null>(null);
+
+  function alternarOrden(campo: keyof Articulo) {
+    setOrden((actual) => {
+      if (!actual || actual.campo !== campo) return { campo, direccion: "asc" };
+      if (actual.direccion === "asc") return { campo, direccion: "desc" };
+      return null; // Tercer click: vuelve al orden del backend (por nombre).
+    });
+  }
+
+  const mostrados = orden
+    ? [...cargados].sort(
+        (a, b) =>
+          (orden.direccion === "asc" ? 1 : -1) *
+          String(a[orden.campo] ?? "").localeCompare(String(b[orden.campo] ?? ""), "es"),
+      )
+    : cargados;
 
   const categoriasOpciones = (categorias?.items ?? []).map((c) => ({
     valor: String(c.id),
     etiqueta: c.nombreCategoria,
   }));
 
-  // Cuántas filas se están mostrando. Se resetea al cambiar el filtro o la
-  // búsqueda: seguir en "80 de 90" tras filtrar a 12 perdería el sentido.
-  const [visibles, setVisibles] = useState(POR_PAGINA);
-  const claveVista = `${filtroCategoria}|${termino}`;
-  const [claveAnterior, setClaveAnterior] = useState(claveVista);
-  if (claveVista !== claveAnterior) {
-    // Ajuste de estado en render, no useEffect: React re-renderiza antes de
-    // pintar, así que la lista nunca se ve con el valor viejo.
-    setClaveAnterior(claveVista);
-    setVisibles(POR_PAGINA);
-  }
+  // El total del backend son las filas que pasan el filtro, no las traídas.
+  const total = data?.pages[0]?.total ?? 0;
+  const quedan = total - cargados.length;
 
-  const mostrados = resultado.slice(0, visibles);
-  const quedan = resultado.length - mostrados.length;
+  // El término que el servidor está respondiendo, no el que se está tipeando:
+  // los mensajes de "sin resultados" tienen que nombrar lo que se buscó de
+  // verdad, no un texto a medio escribir cuyo request todavía no salió.
+  const termino = busquedaEnvio.trim();
 
   return (
     <AppLayout active="/articulos" title="Artículos">
@@ -278,7 +327,7 @@ function ArticulosPage() {
           </p>
         )}
 
-        {!isPending && !isError && empresa !== null && resultado.length === 0 && (
+        {!isPending && !isError && empresa !== null && cargados.length === 0 && (
           <div className="surface-card px-3 py-16 text-center">
             <p className="text-sm text-muted-foreground">
               {termino
@@ -298,7 +347,7 @@ function ArticulosPage() {
 
         {/* Móvil: tarjetas. Una tabla de 6 columnas en 360px obliga a scrollear
             de costado para leer una fila entera. */}
-        {resultado.length > 0 && (
+        {cargados.length > 0 && (
           <ul className="space-y-3 sm:hidden">
             {mostrados.map((articulo) => {
               const activo = esActivo(articulo.activo);
@@ -376,7 +425,7 @@ function ArticulosPage() {
           </ul>
         )}
 
-        {resultado.length > 0 && (
+        {cargados.length > 0 && (
           <div className="surface-card hidden overflow-x-auto sm:block">
             <Table>
               <TableHeader>
@@ -508,19 +557,28 @@ function ArticulosPage() {
           </div>
         )}
 
-        {quedan > 0 && (
+        {/* El botón PIDE OTRA PÁGINA AL SERVIDOR, no descubre filas ya traídas:
+            se deshabilita mientras llega, porque un segundo click dispararía un
+            request de más. */}
+        {hasNextPage && (
           <div className="flex justify-center">
-            <Button variant="outline" onClick={() => setVisibles((v) => v + POR_PAGINA)}>
-              Mostrar {Math.min(quedan, POR_PAGINA)} más
+            <Button variant="outline" onClick={() => fetchNextPage()} disabled={isFetchingNextPage}>
+              {isFetchingNextPage ? (
+                <>
+                  <Loader2 className="size-4 animate-spin" />
+                  Cargando…
+                </>
+              ) : (
+                `Mostrar ${Math.min(quedan, POR_PAGINA)} más`
+              )}
             </Button>
           </div>
         )}
 
-        {data && resultado.length > 0 && (
+        {cargados.length > 0 && (
           <p className="text-center text-xs text-muted-foreground">
-            Mostrando {mostrados.length} de {resultado.length} artículo
-            {resultado.length === 1 ? "" : "s"}
-            {termino || filtroCategoria !== SIN_FILTRO ? ` (${data.items.length} en total)` : ""}
+            Mostrando {cargados.length} de {total} artículo{total === 1 ? "" : "s"}
+            {termino || filtroCategoria !== SIN_FILTRO ? " que coinciden" : ""}
           </p>
         )}
 
@@ -758,6 +816,10 @@ function ArticuloFormDialog({
       // siendo sólo la ficha del artículo.
       return esEdicion
         ? api.articulos.actualizar(articulo.id, {
+            // OBLIGATORIO aunque no sea un campo del formulario: el backend lo
+            // usa en el WHERE para acotar A CUAL fila se aplica el cambio, no
+            // como un dato más a guardar. Sin él responde 400.
+            idEmpresa: articulo.idEmpresa,
             nombreArticulo: v.nombreArticulo,
             ...opcionales,
             esGasto,
@@ -858,11 +920,12 @@ function ArticuloFormDialog({
                       <FormItem>
                         <FormLabel>Categoría</FormLabel>
                         <FormControl>
-                          <Combobox
+                          <SelectorModal
                             opciones={categoriasOpciones}
                             value={field.value}
                             onChange={field.onChange}
                             placeholder="Sin categoría"
+                            titulo="Elegí una categoría"
                             buscarPlaceholder="Buscar categoría…"
                             cargando={cargandoCategorias}
                           />
@@ -944,11 +1007,12 @@ function ArticuloFormDialog({
                     <FormItem>
                       <FormLabel>Unidad de medida</FormLabel>
                       <FormControl>
-                        <Combobox
+                        <SelectorModal
                           opciones={unidadesOpciones}
                           value={field.value}
                           onChange={field.onChange}
                           placeholder="Sin unidad"
+                          titulo="Elegí una unidad de medida"
                           buscarPlaceholder="Buscar unidad…"
                           cargando={cargandoUnidades}
                         />
@@ -965,11 +1029,12 @@ function ArticuloFormDialog({
                     <FormItem>
                       <FormLabel>Moneda</FormLabel>
                       <FormControl>
-                        <Combobox
+                        <SelectorModal
                           opciones={monedasOpciones}
                           value={field.value}
                           onChange={field.onChange}
                           placeholder="Sin moneda"
+                          titulo="Elegí una moneda"
                           buscarPlaceholder="Buscar moneda…"
                           cargando={cargandoMonedas}
                         />

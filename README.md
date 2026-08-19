@@ -123,6 +123,25 @@ siguen siempre la misma forma:
 (países, departamentos, ciudades, módulos, páginas, personas, IVA, condiciones de
 pago) sigue siendo `/eliminar/:id`.
 
+> **El `PUT` también lo exige, en el body.** No es un dato más a guardar: acota
+> **a cuál fila** se aplica el cambio, igual que en el `DELETE`. Sin él la
+> respuesta es `400 {"error":"idEmpresa es obligatorio"}`.
+>
+> Es fácil de olvidar porque no es un campo del formulario y el alta funciona
+> igual —ahí el `idEmpresa` ya se manda—, así que el 400 aparece sólo al
+> modificar. Pasó en siete pantallas a la vez: se copió el mismo formulario y se
+> arrastró el mismo olvido. Los tipos de `api.ts` ahora lo declaran
+> **obligatorio** en cada `actualizar`, para que el compilador lo atrape en vez
+> de descubrirlo en producción.
+
+**Los listados de tablas que crecen sin techo van paginados** (`?pagina=`,
+`?tamanio=`, con búsqueda y filtros en SQL). No es una optimización: devolver el
+catálogo entero en un solo JSON hace fallar al endpoint con 500 a partir de
+cierta cantidad de filas — le pasó a `/articulos/listar` al cargar el catálogo
+real. Ver el detalle en
+[GUIA-IMPLEMENTACION.md](docs/GUIA-IMPLEMENTACION.md). Los catálogos acotados
+(monedas, unidades, países) no lo necesitan.
+
 `auth.sql` es la única excepción a la regla: no corresponde a una tabla sino a
 una responsabilidad —verificar credenciales y manejar sesiones— que cruza
 `USUARIOS` y `TOKENS`. El ABM de usuarios va aparte, en `usuarios.sql`.

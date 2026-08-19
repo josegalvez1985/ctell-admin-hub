@@ -446,6 +446,13 @@ function CategoriaFormDialog({
 
       return esEdicion
         ? api.categorias.actualizar(categoria.id, {
+            // OBLIGATORIO aunque no sea un campo del formulario: el backend lo
+            // usa en el WHERE para acotar A CUAL fila se aplica el cambio, no
+            // como un dato más a guardar. Sin él responde 400.
+            //
+            // Sale de la fila que se está editando y no de la prop `idEmpresa`:
+            // es el id que efectivamente identifica a ESTA categoría.
+            idEmpresa: categoria.idEmpresa,
             nombreCategoria: v.nombreCategoria,
             ...(descripcion ? { descripcion } : {}),
             activo,

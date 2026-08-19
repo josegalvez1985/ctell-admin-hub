@@ -8,7 +8,8 @@ import { toast } from "sonner";
 import { z } from "zod";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
-import { Combobox } from "@/components/ctell/Combobox";
+import { SelectorModal } from "@/components/ctell/SelectorModal";
+import { SelectorArticulo } from "@/components/ctell/SelectorArticulo";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
 import { useSucursal } from "@/components/ctell/sucursal-provider";
 import { SIN_FILTRO, TableHeadFiltrable } from "@/components/ctell/TableHeadFiltrable";
@@ -99,6 +100,8 @@ type LineaDetalle = {
   /** Sólo para el `key` de React: no viaja al backend. */
   clave: number;
   idArticulo: string;
+  /** Nombre del artículo elegido, para mostrarlo en el selector sin re-buscarlo. */
+  nombreArticulo: string;
   cantidad: string;
   precioUnitario: string;
   idIva: string;
@@ -772,10 +775,10 @@ function FacturaFormDialog({
     queryFn: () => api.monedas.listar({ idEmpresa }),
   });
 
-  const { data: articulos, isPending: cargandoArticulos } = useQuery({
-    queryKey: ["articulos", idEmpresa],
-    queryFn: () => api.articulos.listar({ idEmpresa }),
-  });
+  // No se consultan los artículos acá: cada línea del detalle usa
+  // SelectorArticulo, que va contra el endpoint paginado por su cuenta. Traer
+  // una lista completa para el formulario era imposible desde que ese listado
+  // devuelve 20 filas.
 
   const { data: tasasIva } = useQuery({
     queryKey: ["iva"],
@@ -827,6 +830,7 @@ function FacturaFormDialog({
       completa.detalle.map((d, i) => ({
         clave: i + 1,
         idArticulo: String(d.idArticulo),
+        nombreArticulo: d.nombreArticulo,
         cantidad: String(d.cantidad),
         precioUnitario: String(d.precioUnitario),
         idIva: d.idIva === null ? "" : String(d.idIva),
@@ -838,18 +842,29 @@ function FacturaFormDialog({
   // antes de poder escribir nada.
   if (!esEdicion && idCargado !== null) {
     setIdCargado(null);
-    setLineas([{ clave: 1, idArticulo: "", cantidad: "", precioUnitario: "", idIva: "" }]);
+    setLineas([
+      { clave: 1, idArticulo: "", nombreArticulo: "", cantidad: "", precioUnitario: "", idIva: "" },
+    ]);
     setProximaClave(2);
   }
   if (!esEdicion && lineas.length === 0) {
-    setLineas([{ clave: 1, idArticulo: "", cantidad: "", precioUnitario: "", idIva: "" }]);
+    setLineas([
+      { clave: 1, idArticulo: "", nombreArticulo: "", cantidad: "", precioUnitario: "", idIva: "" },
+    ]);
     setProximaClave(2);
   }
 
   function agregarLinea() {
     setLineas((actuales) => [
       ...actuales,
-      { clave: proximaClave, idArticulo: "", cantidad: "", precioUnitario: "", idIva: "" },
+      {
+        clave: proximaClave,
+        idArticulo: "",
+        nombreArticulo: "",
+        cantidad: "",
+        precioUnitario: "",
+        idIva: "",
+      },
     ]);
     setProximaClave((c) => c + 1);
   }
@@ -863,12 +878,6 @@ function FacturaFormDialog({
       actuales.map((l) => (l.clave === clave ? { ...l, [campo]: valor } : l)),
     );
   }
-
-  const articulosOpciones = (articulos?.items ?? []).map((a) => ({
-    valor: String(a.id),
-    etiqueta: a.nombreArticulo,
-    descripcion: a.codigoArticulo ?? undefined,
-  }));
 
   const personasOpciones = (personas?.items ?? []).map((p) => ({
     valor: String(p.id),
@@ -1008,11 +1017,12 @@ function FacturaFormDialog({
                     <FormItem className="sm:col-span-2">
                       <FormLabel>Proveedor</FormLabel>
                       <FormControl>
-                        <Combobox
+                        <SelectorModal
                           opciones={personasOpciones}
                           value={field.value}
                           onChange={field.onChange}
                           placeholder="Elegí el proveedor"
+                          titulo="Elegí el proveedor"
                           buscarPlaceholder="Buscar por nombre o RUC…"
                         />
                       </FormControl>
@@ -1061,11 +1071,12 @@ function FacturaFormDialog({
                       <div className="flex gap-2">
                         <FormControl>
                           <div className="min-w-0 flex-1">
-                            <Combobox
+                            <SelectorModal
                               opciones={monedasOpciones}
                               value={field.value}
                               onChange={field.onChange}
                               placeholder="Moneda"
+                              titulo="Elegí una moneda"
                               buscarPlaceholder="Buscar moneda…"
                             />
                           </div>
@@ -1092,11 +1103,12 @@ function FacturaFormDialog({
                     <FormItem>
                       <FormLabel>Condición de pago</FormLabel>
                       <FormControl>
-                        <Combobox
+                        <SelectorModal
                           opciones={condicionesOpciones}
                           value={field.value}
                           onChange={field.onChange}
                           placeholder="Sin condición"
+                          titulo="Elegí la condición de pago"
                           buscarPlaceholder="Buscar condición…"
                           cargando={cargandoCondiciones}
                         />
@@ -1153,13 +1165,15 @@ function FacturaFormDialog({
                     >
                       <div className="space-y-1 sm:space-y-0">
                         <label className="text-xs text-muted-foreground sm:hidden">Artículo</label>
-                        <Combobox
-                          opciones={articulosOpciones}
+                        <SelectorArticulo
+                          idEmpresa={idEmpresa}
                           value={linea.idArticulo}
-                          onChange={(v) => cambiarLinea(linea.clave, "idArticulo", v)}
+                          etiquetaSeleccionada={linea.nombreArticulo || undefined}
+                          onChange={(v, etiqueta) => {
+                            cambiarLinea(linea.clave, "idArticulo", v);
+                            cambiarLinea(linea.clave, "nombreArticulo", etiqueta);
+                          }}
                           placeholder="Elegí el artículo"
-                          buscarPlaceholder="Buscar artículo…"
-                          cargando={cargandoArticulos}
                         />
                       </div>
 
@@ -1191,7 +1205,7 @@ function FacturaFormDialog({
 
                       <div className="space-y-1 sm:space-y-0">
                         <label className="text-xs text-muted-foreground sm:hidden">IVA</label>
-                        <Combobox
+                        <SelectorModal
                           opciones={(tasasIva?.items ?? []).map((i) => ({
                             valor: String(i.id),
                             etiqueta: i.descripcion,
@@ -1199,6 +1213,7 @@ function FacturaFormDialog({
                           value={linea.idIva}
                           onChange={(v) => cambiarLinea(linea.clave, "idIva", v)}
                           placeholder="Sin IVA"
+                          titulo="Elegí la tasa de IVA"
                           buscarPlaceholder="Buscar tasa…"
                         />
                       </div>

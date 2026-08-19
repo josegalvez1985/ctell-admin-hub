@@ -246,6 +246,7 @@ export function DetalleMonedasDialog({
       {idMoneda !== null && (creando || editando !== null) && (
         <FormularioDetalle
           idMoneda={idMoneda}
+          idEmpresa={moneda!.idEmpresa}
           detalle={editando}
           onCerrar={() => {
             setCreando(false);
@@ -363,11 +364,17 @@ function FotoDetalle({ detalle, onSubida }: { detalle: DetalleMoneda; onSubida: 
 /** Alta y edición de una denominación. La foto se carga desde el listado. */
 function FormularioDetalle({
   idMoneda,
+  idEmpresa,
   detalle,
   onCerrar,
   onGuardado,
 }: {
   idMoneda: number;
+  /**
+   * Empresa dueña de la moneda padre. No es un campo del formulario: el update
+   * la exige para comprobar que la denominación sea de esta empresa.
+   */
+  idEmpresa: number;
   /** `null` en el alta. */
   detalle: DetalleMoneda | null;
   onCerrar: () => void;
@@ -392,7 +399,10 @@ function FormularioDetalle({
   const guardar = useMutation({
     mutationFn: (v: FormValues) =>
       esEdicion
-        ? api.detalleMonedas.actualizar(detalle.id, { denominacion: v.denominacion })
+        ? api.detalleMonedas.actualizar(detalle.id, {
+            idEmpresa,
+            denominacion: v.denominacion,
+          })
         : api.detalleMonedas.crear({ idMoneda, denominacion: v.denominacion }),
     onSuccess: () => {
       toast.success(esEdicion ? "Denominación actualizada" : "Denominación creada");

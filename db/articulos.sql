@@ -6,7 +6,11 @@
 -- endpoints ORDS. Todo vive dentro del paquete: no hay procedimientos sueltos
 -- ni PL/SQL embebido como texto dentro de los handlers.
 --
---   1. LISTAR      GET    /articulos/listar        (?idEmpresa= opcional)
+--   1. LISTAR      GET    /articulos/listar        (paginado; todos los
+--                                                   parámetros opcionales:
+--                                                   ?idEmpresa= &busqueda=
+--                                                   &idCategoria= &pagina=
+--                                                   &tamanio=)
 --   2. INSERTAR    POST   /articulos/crear
 --   3. ACTUALIZAR  PUT    /articulos/actualizar/:id
 --   4. ELIMINAR    DELETE /articulos/eliminar/:id/:idEmpresa
@@ -180,9 +184,22 @@ CREATE OR REPLACE PACKAGE PKG_ARTICULOS AS
 
   -- p_id_empresa NULL o vacío devuelve los artículos de todas las empresas. En
   -- la app siempre viaja con la empresa de la sesión.
+  --
+  -- EL LISTADO ES PAGINADO Y NO DEVUELVE EL CATALOGO ENTERO. Con un catálogo de
+  -- cientos de artículos, el JSON_ARRAYAGG de todas las filas es lo que hacía
+  -- fallar al endpoint con un 500: la descripción sola llega a 1000 caracteres
+  -- por fila. La paginación es del SERVIDOR, no un recorte de la pantalla.
+  --
+  -- p_busqueda y p_id_categoria filtran EN SQL, antes de paginar. Tienen que
+  -- estar acá y no en el cliente: filtrando en la pantalla, la búsqueda sólo
+  -- miraría las páginas ya traídas y un artículo de la página 5 no aparecería.
   PROCEDURE LISTAR (
     p_authorization IN  VARCHAR2,
     p_id_empresa    IN  VARCHAR2,
+    p_busqueda      IN  VARCHAR2,
+    p_id_categoria  IN  VARCHAR2,
+    p_pagina        IN  VARCHAR2,
+    p_tamanio       IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   );
@@ -327,13 +344,22 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
   PROCEDURE LISTAR (
     p_authorization IN  VARCHAR2,
     p_id_empresa    IN  VARCHAR2,
+    p_busqueda      IN  VARCHAR2,
+    p_id_categoria  IN  VARCHAR2,
+    p_pagina        IN  VARCHAR2,
+    p_tamanio       IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
-    l_sesion     NUMBER;
-    l_id_empresa NUMBER;
-    l_total      NUMBER;
-    l_items      CLOB;
+    l_sesion       NUMBER;
+    l_id_empresa   NUMBER;
+    l_id_categoria NUMBER;
+    l_busqueda     VARCHAR2(4000);
+    l_pagina       NUMBER;
+    l_tamanio      NUMBER;
+    l_offset       NUMBER;
+    l_total        NUMBER;
+    l_items        CLOB;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -346,12 +372,41 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     -- antes de que exista el EXCEPTION y el error escaparía del procedimiento.
     -- NULLIF convierte la cadena vacía del parámetro ausente en NULL antes de
     -- que TO_NUMBER la toque (si no, ORA-01722).
-    l_id_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
+    l_id_empresa   := TO_NUMBER(NULLIF(p_id_empresa, ''));
+    l_id_categoria := TO_NUMBER(NULLIF(p_id_categoria, ''));
 
+    -- En minúsculas una sola vez acá, no por fila: el WHERE compara contra
+    -- LOWER() de cada columna, así que subir el término también dentro del SQL
+    -- haría el trabajo tantas veces como filas tenga la tabla.
+    --
+    -- NULL cuando llega vacío: el WHERE está escrito como "l_busqueda IS NULL
+    -- OR ...", así que una cadena vacía sin normalizar filtraría por '%%' en vez
+    -- de saltear el filtro.
+    l_busqueda := LOWER(TRIM(NULLIF(p_busqueda, '')));
+
+    -- Página 1 y 20 por página son los valores de la app. GREATEST(1) descarta un
+    -- ?pagina=0 o negativo, que daría un OFFSET negativo y ORA-06502.
+    l_pagina  := GREATEST(NVL(TO_NUMBER(NULLIF(p_pagina, '')), 1), 1);
+
+    -- 200 de techo, el mismo que el resto del proyecto: sin límite, un
+    -- ?tamanio=99999 traería el catálogo entero y volvería el 500 que esta
+    -- paginación viene a resolver.
+    l_tamanio := LEAST(GREATEST(NVL(TO_NUMBER(NULLIF(p_tamanio, '')), 20), 1), 200);
+    l_offset  := (l_pagina - 1) * l_tamanio;
+
+    -- El total cuenta las filas que pasan LOS MISMOS filtros, no la tabla
+    -- entera: es lo que la pantalla muestra como "N artículos" y lo que decide
+    -- si queda algo por traer. Contando todo, el botón "Mostrar más" seguiría
+    -- ofreciendo páginas vacías cuando hay una búsqueda activa.
     SELECT COUNT(*)
       INTO l_total
-      FROM ARTICULOS
-     WHERE l_id_empresa IS NULL OR ID_EMPRESA = l_id_empresa;
+      FROM ARTICULOS a
+     WHERE (l_id_empresa   IS NULL OR a.ID_EMPRESA   = l_id_empresa)
+       AND (l_id_categoria IS NULL OR a.ID_CATEGORIA = l_id_categoria)
+       AND (l_busqueda IS NULL
+            OR LOWER(a.NOMBRE_ARTICULO) LIKE '%' || l_busqueda || '%'
+            OR LOWER(a.CODIGO_ARTICULO) LIKE '%' || l_busqueda || '%'
+            OR LOWER(a.DESCRIPCION)     LIKE '%' || l_busqueda || '%');
 
     -- LEFT JOIN en las TRES, no JOIN: las FK son nullables. Con el interno, un
     -- artículo sin categoría (o sin moneda, o sin unidad) desaparecería del
@@ -454,7 +509,21 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
           LEFT JOIN CATEGORIAS      c ON c.ID_CATEGORIA     = a.ID_CATEGORIA
           LEFT JOIN MONEDAS         m ON m.ID_MONEDA        = a.ID_MONEDA
           LEFT JOIN UNIDADES_MEDIDA u ON u.ID_UNIDAD_MEDIDA = a.ID_UNIDAD_MEDIDA
-         WHERE l_id_empresa IS NULL OR a.ID_EMPRESA = l_id_empresa
+         WHERE (l_id_empresa   IS NULL OR a.ID_EMPRESA   = l_id_empresa)
+           AND (l_id_categoria IS NULL OR a.ID_CATEGORIA = l_id_categoria)
+           AND (l_busqueda IS NULL
+                OR LOWER(a.NOMBRE_ARTICULO) LIKE '%' || l_busqueda || '%'
+                OR LOWER(a.CODIGO_ARTICULO) LIKE '%' || l_busqueda || '%'
+                OR LOWER(a.DESCRIPCION)     LIKE '%' || l_busqueda || '%')
+         -- EL ORDER BY VA ACA, EN LA SUBCONSULTA, y no sólo en el
+         -- JSON_ARRAYAGG: es el que decide QUE filas entran en la página. Sin
+         -- él, OFFSET/FETCH recortaría en un orden que Oracle no garantiza y la
+         -- página 2 podría repetir u omitir artículos de la 1.
+         --
+         -- El ORDER BY del agregado ordena lo que ya salió recortado; los dos
+         -- hacen falta y no son redundantes.
+         ORDER BY a.NOMBRE_ARTICULO
+         OFFSET l_offset ROWS FETCH NEXT l_tamanio ROWS ONLY
       );
 
     p_status_code := 200;
@@ -463,9 +532,17 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     --
     -- JSON_ARRAYAGG devuelve NULL cuando no hay filas, no un array vacio: sin
     -- el NVL el frontend recibiria "items":null y reventaria al iterarlo.
+    --
+    -- `total` son las filas que pasan el filtro, NO las de esta página: con
+    -- items.length el frontend no podría saber si quedan más. `pagina` y
+    -- `tamanio` viajan de vuelta para que la pantalla no tenga que asumir el
+    -- tamaño que el backend efectivamente aplicó (que pudo recortarse al techo
+    -- de 200).
     SELECT JSON_OBJECT(
-             'items' VALUE NVL(l_items, TO_CLOB('[]')) FORMAT JSON,
-             'total' VALUE l_total
+             'items'   VALUE NVL(l_items, TO_CLOB('[]')) FORMAT JSON,
+             'total'   VALUE l_total,
+             'pagina'  VALUE l_pagina,
+             'tamanio' VALUE l_tamanio
              RETURNING CLOB
            )
       INTO p_resultado
@@ -883,10 +960,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     );
 
     ----------------------------------------------------------------------------
-    -- GET /articulos/listar?idEmpresa=
+    -- GET /articulos/listar?idEmpresa=&busqueda=&idCategoria=&pagina=&tamanio=
     --
-    -- idEmpresa no se declara con DEFINE_PARAMETER: los query params se
-    -- vinculan solos al bind del mismo nombre.
+    -- Ninguno se declara con DEFINE_PARAMETER: los query params se vinculan
+    -- solos al bind del mismo nombre.
+    --
+    -- Los cinco son opcionales. Ausentes, el listado devuelve la primera página
+    -- de 20 sin filtrar — nunca el catálogo completo.
     ----------------------------------------------------------------------------
     ORDS.DEFINE_TEMPLATE(p_module_name => 'articulos', p_pattern => 'listar');
 
@@ -895,7 +975,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
       p_pattern     => 'listar',
       p_method      => 'GET',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_ARTICULOS.LISTAR(:authorization, :idEmpresa, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_ARTICULOS.LISTAR(:authorization, :idEmpresa, :busqueda, :idCategoria, :pagina, :tamanio, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(

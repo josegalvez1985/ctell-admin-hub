@@ -471,6 +471,7 @@ function MonedaFormDialog({
 
       return esEdicion
         ? api.monedas.actualizar(moneda.id, {
+            idEmpresa: moneda.idEmpresa,
             nombreMoneda: v.nombreMoneda,
             ...(simbolo ? { simbolo } : {}),
             activo,

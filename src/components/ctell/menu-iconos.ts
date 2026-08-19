@@ -13,24 +13,36 @@
  * entero son miles de componentes y el bundle lo nota.
  */
 import {
+  Archive,
   Banknote,
   Boxes,
   Building,
   Building2,
   CalendarClock,
+  CircleDot,
+  ClipboardCheck,
   ClipboardList,
   Cog,
   Coins,
+  Component,
+  Contact,
   CreditCard,
   Database,
   FileBarChart,
+  FileInput,
+  FileOutput,
   FileText,
+  Files,
   Globe,
+  Grid3x3,
+  IdCard,
+  KeyRound,
   Landmark,
   LayoutGrid,
   Map,
   MapPin,
   Package,
+  PackageCheck,
   Percent,
   Receipt,
   Ruler,
@@ -39,11 +51,13 @@ import {
   Sliders,
   Store,
   Tags,
+  TrendingUp,
   Truck,
   UserCog,
   Users,
   Wallet,
   Warehouse,
+  Workflow,
   type LucideIcon,
 } from "lucide-react";
 
@@ -93,15 +107,29 @@ const POR_NOMBRE: Record<string, LucideIcon> = {
   warehouse: Warehouse,
 };
 
-/** Módulos conocidos del negocio. */
+/**
+ * Módulos conocidos del negocio.
+ *
+ * NINGUNO REPITE EL ÍCONO DE UNA PÁGINA. El módulo es el encabezado que agrupa;
+ * si usa el mismo ícono que una de sus páginas, el grupo se confunde con su
+ * propio contenido — que es justo lo que pasaba con ventas/sucursales,
+ * rrhh/personas y stock/ubicaciones.
+ */
 const ICONOS_MODULO: Record<string, LucideIcon> = {
   base: Database,
   compras: ShoppingCart,
-  ventas: Store,
-  stock: Warehouse,
+  // TrendingUp y no Store: Store ya es "sucursales", una página que cuelga de
+  // este mismo módulo. Lo que define a Ventas es el movimiento comercial, no el
+  // local donde ocurre.
+  ventas: TrendingUp,
+  // Archive y no Warehouse: Warehouse ya es "depósito" y "ubicaciones". El
+  // módulo agrupa todo el manejo de existencias, no el edificio.
+  stock: Archive,
   tesoreria: Wallet,
-  rrhh: Users,
-  "recursos humanos": Users,
+  // Users queda para las páginas de personas; el módulo lleva UserCog… que ya
+  // es "usuarios". Contact es la ficha del legajo, que es de lo que trata RRHH.
+  rrhh: Contact,
+  "recursos humanos": Contact,
   administracion: Cog,
   configuracion: Settings,
 };
@@ -125,7 +153,11 @@ const ICONOS_PAGINA: Record<string, LucideIcon> = {
   sucursales: Store,
   sucursal: Store,
   proveedores: Truck,
-  clientes: Users,
+  // IdCard y no Users: Users es el padrón general de personas, y el cliente es
+  // una relación comercial concreta —la cuenta a la que se le vende—, no
+  // simplemente "varias personas". ShoppingCart tampoco sirve acá: ya es el
+  // módulo Compras.
+  clientes: IdCard,
   // Users (varias personas) y no UserCog: el padrón son las personas del
   // negocio; UserCog ya es "usuarios", que son las cuentas del sistema.
   personas: Users,
@@ -146,28 +178,48 @@ const ICONOS_PAGINA: Record<string, LucideIcon> = {
   categorias: Tags,
   categoria: Tags,
   rubros: Tags,
+  // El depósito es el edificio; "ubicaciones" (abajo) es la posición DENTRO de
+  // él, y por eso lleva otro ícono.
   deposito: Warehouse,
   depositos: Warehouse,
   // Boxes (varias cajas) y no Package (una): un lote es una PARTIDA de
   // mercadería, no la unidad — que ya es "artículos".
   lotes: Boxes,
   lote: Boxes,
-  // Warehouse y NO MapPin: la ubicación acá es la posición dentro del depósito
-  // (zona/estante/nivel), y MapPin ya es "ciudades" — el ícono geográfico haría
-  // pensar en una dirección.
-  ubicaciones: Warehouse,
-  ubicacion: Warehouse,
+  // NI MapPin NI Warehouse: MapPin ya es "ciudades" y haría pensar en una
+  // dirección; Warehouse ya es "depósito", el edificio entero. La ubicación es
+  // la posición dentro de él (zona/estante/nivel), que es lo que Grid3x3 —la
+  // grilla de estantes— representa sin pisar a ninguno de los dos.
+  ubicaciones: Grid3x3,
+  ubicacion: Grid3x3,
+  // PÁGINA DISTINTA de "ubicaciones": aquélla define los lugares del depósito,
+  // ésta asigna QUÉ ARTÍCULO va en cada uno. Sin esta entrada caía en el
+  // fallback FileText y quedaba igual a cualquier otra página sin mapear — dos
+  // íconos repetidos en el menú de Stock.
+  //
+  // Se mapean las variantes del nombre porque el menú lo carga una persona desde
+  // el ABM y no hay garantía de cómo lo escriba.
+  "ubicaciones de articulos": PackageCheck,
+  "ubicacion de articulos": PackageCheck,
+  "articulos ubicaciones": PackageCheck,
+  "articulos por ubicacion": PackageCheck,
   // La planilla del conteo, no la mercadería: un inventario es el ACTO de
-  // contar, así que Boxes o Package (que ya son lotes y artículos) apuntarían
-  // a lo contado en vez de a la tarea.
-  inventarios: ClipboardList,
-  inventario: ClipboardList,
+  // contar, así que Boxes o Package (que ya son lotes y artículos) apuntarían a
+  // lo contado en vez de a la tarea.
+  //
+  // ClipboardCheck (la planilla ya verificada) y no ClipboardList: así queda
+  // libre para "órdenes", el pedido pendiente. Antes las dos compartían ícono.
+  inventarios: ClipboardCheck,
+  inventario: ClipboardCheck,
   ordenes: ClipboardList,
   "ordenes de compra": ClipboardList,
+  // COMPRA Y VENTA NO COMPARTEN ÍCONO: son los dos comprobantes que más se
+  // confunden en el menú, y con el mismo Receipt sólo los distinguía el texto.
+  // FileInput es lo que entra (compra), FileOutput lo que sale (venta).
   facturas: Receipt,
-  "facturas de compra": Receipt,
-  "facturas compras": Receipt,
-  "facturas de venta": Receipt,
+  "facturas de compra": FileInput,
+  "facturas compras": FileInput,
+  "facturas de venta": FileOutput,
   // Percent y no Receipt: la tasa es el porcentaje, no el comprobante — con el
   // mismo ícono que "facturas" los dos ítems del menú se confundirían.
   iva: Percent,
@@ -181,12 +233,37 @@ const ICONOS_PAGINA: Record<string, LucideIcon> = {
   cobros: Coins,
   pagos: CreditCard,
   bancos: Landmark,
+  // Las tres páginas de Administración. Sin ellas caían las tres en el fallback
+  // FileText y el módulo entero se veía con el mismo ícono repetido.
+  //
+  // Component y NO LayoutGrid: LayoutGrid es el fallback de módulo, así que un
+  // módulo nuevo sin mapear se vería idéntico a la página "Módulos".
+  modulos: Component,
+  modulo: Component,
+  // Files (varios documentos) y NO FileText: FileText es el fallback de página,
+  // así que "páginas" se vería igual que cualquier página futura sin mapear —
+  // exactamente el problema que estas entradas vienen a cerrar.
+  paginas: Files,
+  pagina: Files,
+  // UserCog ya es "usuarios"; el permiso es la llave, no la cuenta.
+  permisos: KeyRound,
+  permiso: KeyRound,
 };
 
-/** Ícono fijo por tipo de entrada: define la sección, no el contenido. */
+/**
+ * Ícono fijo por tipo de entrada: define la sección, no el contenido.
+ *
+ * Los tres tienen que ser distintos ENTRE SÍ y distintos del fallback: la
+ * entrada es el encabezado que agrupa páginas, así que repetir el ícono de una
+ * de ellas hace que el grupo se confunda con su propio contenido.
+ *
+ * Operaciones usa Workflow y no ClipboardList: la planilla ya es "inventarios"
+ * y "órdenes de compra", dos páginas que cuelgan justo de esta entrada. Lo que
+ * define a la sección es el proceso, no el comprobante que produce.
+ */
 const ICONOS_ENTRADA: Record<string, LucideIcon> = {
   D: Sliders,
-  O: ClipboardList,
+  O: Workflow,
   R: FileBarChart,
 };
 
@@ -205,7 +282,14 @@ export function iconoDePagina(nombre: string): LucideIcon {
   return ICONOS_PAGINA[clave(nombre)] ?? FileText;
 }
 
-/** Ícono de la sección: Definiciones, Operaciones o Reportes. */
+/**
+ * Ícono de la sección: Definiciones, Operaciones o Reportes.
+ *
+ * CircleDot como default y no ClipboardList: el fallback sólo se alcanza con un
+ * código de entrada que no sea ninguno de los tres, y con ClipboardList esa
+ * entrada desconocida se dibujaba idéntica a Operaciones. Un marcador neutro no
+ * afirma nada sobre un contenido que no se conoce.
+ */
 export function iconoDeEntrada(entrada: string): LucideIcon {
-  return ICONOS_ENTRADA[entrada] ?? ClipboardList;
+  return ICONOS_ENTRADA[entrada] ?? CircleDot;
 }

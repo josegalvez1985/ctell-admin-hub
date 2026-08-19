@@ -6,7 +6,7 @@ import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 
-import { Combobox } from "@/components/ctell/Combobox";
+import { SelectorModal } from "@/components/ctell/SelectorModal";
 import { useTablaListado } from "@/hooks/use-tabla-listado";
 import { api, ApiError, esActivo, type Pagina, type Entrada } from "@/lib/api";
 import { RUTAS_APP } from "@/lib/rutas-app";
@@ -370,7 +370,7 @@ function PanelForm({ pagina, onVolver }: { pagina?: Pagina; onVolver: () => void
               <FormItem>
                 <FormLabel>Módulo</FormLabel>
                 <FormControl>
-                  <Combobox
+                  <SelectorModal
                     opciones={(modulos?.items ?? []).map((m) => ({
                       valor: String(m.id),
                       etiqueta: m.nombre,
@@ -378,6 +378,7 @@ function PanelForm({ pagina, onVolver }: { pagina?: Pagina; onVolver: () => void
                     value={field.value}
                     onChange={field.onChange}
                     placeholder="Elegí un módulo"
+                    titulo="Elegí un módulo"
                     buscarPlaceholder="Buscar módulo…"
                     cargando={cargandoModulos}
                   />
@@ -418,7 +419,7 @@ function PanelForm({ pagina, onVolver }: { pagina?: Pagina; onVolver: () => void
                     ninguna pista de qué rutas existen— y el desplegable sólo
                     aparecía al crear otra página desde cero. */}
                 <FormControl>
-                  <Combobox
+                  <SelectorModal
                     opciones={RUTAS_DISPONIBLES.map((ruta) => ({
                       valor: ruta.valor,
                       etiqueta: ruta.label,
@@ -427,6 +428,7 @@ function PanelForm({ pagina, onVolver }: { pagina?: Pagina; onVolver: () => void
                     value={field.value}
                     onChange={field.onChange}
                     placeholder="Elegí una ruta disponible"
+                    titulo="Elegí una ruta disponible"
                     buscarPlaceholder="Buscar ruta…"
                   />
                 </FormControl>

@@ -448,7 +448,13 @@ function UbicacionFormDialog({
         ...(v.descripcion ? { descripcion: v.descripcion } : {}),
       };
       return esEdicion
-        ? api.ubicaciones.actualizar(ubicacion.id, datos)
+        ? // idEmpresa es OBLIGATORIO en el update aunque no sea un campo del
+          // formulario: el backend lo usa en el WHERE para acotar a cuál fila
+          // se aplica el cambio. Sin él responde 400.
+          api.ubicaciones.actualizar(ubicacion.id, {
+            idEmpresa: ubicacion.idEmpresa,
+            ...datos,
+          })
         : api.ubicaciones.crear({ idEmpresa, idSucursal, ...datos });
     },
     onSuccess: () => {

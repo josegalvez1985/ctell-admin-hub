@@ -436,6 +436,7 @@ function UnidadFormDialog({
       // Moneda.
       return esEdicion
         ? api.unidadesMedida.actualizar(unidad.id, {
+            idEmpresa: unidad.idEmpresa,
             nombreUnidad: v.nombreUnidad,
             abreviatura: v.abreviatura,
             activo,

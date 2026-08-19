@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import { z } from "zod";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
-import { Combobox } from "@/components/ctell/Combobox";
+import { SelectorModal } from "@/components/ctell/SelectorModal";
 import { SIN_FILTRO, TableHeadFiltrable } from "@/components/ctell/TableHeadFiltrable";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
 import { useTablaListado } from "@/hooks/use-tabla-listado";
@@ -475,11 +475,12 @@ function CiudadFormDialog({
                 <FormItem>
                   <FormLabel>Departamento</FormLabel>
                   <FormControl>
-                    <Combobox
+                    <SelectorModal
                       opciones={departamentosOpciones}
                       value={field.value}
                       onChange={field.onChange}
                       placeholder="Elegí un departamento"
+                      titulo="Elegí un departamento"
                       buscarPlaceholder="Buscar departamento…"
                       cargando={cargandoDepartamentos}
                     />

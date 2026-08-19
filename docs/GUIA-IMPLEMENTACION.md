@@ -562,6 +562,65 @@ SELECT JSON_ARRAYAGG(fila ORDER BY nombre RETURNING CLOB)
 
 Todos los `db/*.sql` con listado usan esta forma. Copiala tal cual.
 
+#### …y si ya está desanidado y IGUAL da 500, es el volumen
+
+La subconsulta arregla el límite de los 4000 bytes del resultado **intermedio**,
+no el tamaño del CLOB final. Un listado sin paginar devuelve el catálogo entero
+en un solo JSON, y a partir de cierta cantidad de filas vuelve a fallar con el
+mismo 500 genérico.
+
+Pasó de verdad con `/articulos/listar`: andaba con una docena de artículos de
+prueba, se cargó el catálogo real —cientos de filas, con `DESCRIPCION` de hasta
+1000 caracteres cada una— y el endpoint empezó a dar 500 en todas las llamadas.
+
+**Cómo distinguirlo del anidado**, que da el mismo síntoma:
+
+| Señal                                          | Anidado           | Volumen                  |
+| ---------------------------------------------- | ----------------- | ------------------------ |
+| Andaba y dejó de andar tras una carga de datos | No                | **Sí**                   |
+| Falla sin filtro pero anda filtrado            | Sí                | Sí                       |
+| El `JSON_OBJECT` está dentro del `JSON_ARRAYAGG` | Sí              | No                       |
+| Se arregla desanidando                         | Sí                | **No** — hay que paginar |
+
+**La regla:** un listado de una tabla que puede crecer sin techo —artículos,
+personas, facturas, lotes— **se pagina en el servidor desde el principio**, no
+cuando falle. Las tablas de catálogo acotado (monedas, unidades, países) no lo
+necesitan.
+
+La forma, tal como quedó en `db/articulos.sql`:
+
+```sql
+-- Los cuatro parámetros son opcionales y llegan como VARCHAR2 (ver la trampa
+-- del TO_NUMBER más arriba).
+l_pagina  := GREATEST(NVL(TO_NUMBER(NULLIF(p_pagina, '')), 1), 1);
+l_tamanio := LEAST(GREATEST(NVL(TO_NUMBER(NULLIF(p_tamanio, '')), 20), 1), 200);
+l_offset  := (l_pagina - 1) * l_tamanio;
+
+SELECT JSON_ARRAYAGG(fila ORDER BY nombre RETURNING CLOB)
+  INTO l_items
+  FROM (
+    SELECT JSON_OBJECT(...) AS fila, a.NOMBRE_ARTICULO AS nombre
+      FROM ARTICULOS a
+     WHERE (l_id_empresa IS NULL OR a.ID_EMPRESA = l_id_empresa)
+     -- EL ORDER BY VA ACA, no sólo en el JSON_ARRAYAGG: es el que decide QUÉ
+     -- filas entran en la página. Sin él, OFFSET/FETCH recorta en un orden que
+     -- Oracle no garantiza y la página 2 puede repetir u omitir filas de la 1.
+     ORDER BY a.NOMBRE_ARTICULO
+     OFFSET l_offset ROWS FETCH NEXT l_tamanio ROWS ONLY
+  );
+```
+
+Tres detalles que no son opcionales:
+
+1. **Techo al `tamanio`** (200). Sin tope, un `?tamanio=999999` reproduce
+   exactamente el 500 que la paginación viene a evitar.
+2. **`total` cuenta las filas que pasan el filtro**, no las de la página ni la
+   tabla entera: es lo que le dice al frontend si queda algo por traer.
+3. **La búsqueda y los filtros van en el SQL**, antes de paginar. Filtrando en
+   el cliente sólo se mira lo ya traído, y una fila de la página 5 no aparece al
+   buscarla. Ver `db/articulos.sql` y el `useInfiniteQuery` de
+   `src/routes/_auth.articulos.tsx`.
+
 ### Probar un procedimiento sin pasar por ORDS
 
 La ventaja de tener todo en un paquete: cada procedimiento se prueba solo en la

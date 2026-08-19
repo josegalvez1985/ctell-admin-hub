@@ -3,7 +3,7 @@ import { Copy, Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
-import { Combobox } from "@/components/ctell/Combobox";
+import { SelectorModal } from "@/components/ctell/SelectorModal";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
 import { api, ApiError, esActivo, type Pagina, type Usuario } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -89,7 +89,7 @@ function SelectorUsuario({ value, onChange }: { value: string; onChange: (v: str
       <Label>Usuario</Label>
       <div className="flex flex-wrap items-center gap-2">
         <div className="min-w-48 flex-1">
-          <Combobox
+          <SelectorModal
             opciones={usuarios.map((u) => ({
               valor: String(u.id),
               etiqueta: u.nombreApellido,
@@ -98,6 +98,7 @@ function SelectorUsuario({ value, onChange }: { value: string; onChange: (v: str
             value={value}
             onChange={onChange}
             placeholder="Elegí un usuario"
+            titulo="Elegí un usuario"
             buscarPlaceholder="Buscar usuario…"
             cargando={isPending}
           />
@@ -310,7 +311,7 @@ function CopiarPermisosDialog({
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-2">
             <Label>Copiar desde</Label>
-            <Combobox
+            <SelectorModal
               opciones={opcionesOrigen}
               value={idOrigen}
               onChange={setIdOrigen}
@@ -322,7 +323,7 @@ function CopiarPermisosDialog({
 
           <div className="space-y-2">
             <Label>Copiar hacia</Label>
-            <Combobox
+            <SelectorModal
               opciones={opcionesDestino}
               value={destinoQuedoExcluido ? "" : idDestino}
               onChange={setIdDestino}

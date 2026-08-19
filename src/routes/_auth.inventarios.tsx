@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import { z } from "zod";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
-import { Combobox } from "@/components/ctell/Combobox";
+import { SelectorModal } from "@/components/ctell/SelectorModal";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
 import { useSucursal } from "@/components/ctell/sucursal-provider";
 import { SIN_FILTRO, TableHeadFiltrable } from "@/components/ctell/TableHeadFiltrable";
@@ -811,11 +811,12 @@ function InventarioFormDialog({
                   <FormItem>
                     <FormLabel>Lote</FormLabel>
                     <FormControl>
-                      <Combobox
+                      <SelectorModal
                         opciones={lotesOpciones}
                         value={field.value}
                         onChange={field.onChange}
                         placeholder="Elegí el lote a contar"
+                        titulo="Elegí el lote a contar"
                         buscarPlaceholder="Buscar lote…"
                         cargando={cargandoLotes}
                         // En edición el lote no se cambia: sería otro conteo.

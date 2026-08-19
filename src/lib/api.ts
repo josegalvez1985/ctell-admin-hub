@@ -777,9 +777,19 @@ export type Articulo = {
   activo: Estado;
 };
 
+/**
+ * A diferencia del resto de los listados, éste viene PAGINADO del servidor: el
+ * catálogo puede tener cientos de artículos y traerlo entero hacía fallar al
+ * endpoint.
+ *
+ * `total` son las filas que pasan el filtro, no las de esta página: es lo que
+ * permite saber si queda algo por traer.
+ */
 export type ListaArticulos = {
   items: Articulo[];
   total: number;
+  pagina: number;
+  tamanio: number;
 };
 
 export type ListaSucursales = {
@@ -1704,7 +1714,8 @@ export const api = {
     actualizar: (
       id: number,
       datos: {
-        idEmpresa?: number;
+        /** OBLIGATORIO: acota a cuál fila se aplica el cambio, no es un dato a guardar. Sin él, 400. */
+        idEmpresa: number;
         nombreSucursal?: string;
         direccion?: string;
         activo?: Estado;
@@ -1752,7 +1763,8 @@ export const api = {
     actualizar: (
       id: number,
       datos: {
-        idEmpresa?: number;
+        /** OBLIGATORIO: acota a cuál fila se aplica el cambio, no es un dato a guardar. Sin él, 400. */
+        idEmpresa: number;
         idSucursal?: number;
         zona?: string;
         estante?: number;
@@ -1815,7 +1827,8 @@ export const api = {
     actualizar: (
       id: number,
       datos: {
-        idEmpresa?: number;
+        /** OBLIGATORIO: acota a cuál fila se aplica el cambio, no es un dato a guardar. Sin él, 400. */
+        idEmpresa: number;
         idSucursal?: number;
         idArticulo?: number;
         numeroLote?: number;
@@ -1908,7 +1921,8 @@ export const api = {
     actualizar: (
       id: number,
       datos: {
-        idEmpresa?: number;
+        /** OBLIGATORIO: acota a cuál fila se aplica el cambio, no es un dato a guardar. Sin él, 400. */
+        idEmpresa: number;
         nombreMoneda?: string;
         simbolo?: string;
         activo?: Estado;
@@ -1947,7 +1961,15 @@ export const api = {
       }),
 
     /** Los campos ausentes no se modifican. La foto tiene su propio endpoint. */
-    actualizar: (id: number, datos: { idMoneda?: number; denominacion?: string }) =>
+    /**
+     * `idEmpresa` es OBLIGATORIO aunque no sea un campo del formulario: el
+     * backend lo usa para verificar que la denominación pertenezca a la
+     * empresa antes de tocarla. Sin él responde 400.
+     */
+    actualizar: (
+      id: number,
+      datos: { idEmpresa: number; idMoneda?: number; denominacion?: string },
+    ) =>
       request<{ ok: boolean }>(`/detalle-monedas/actualizar/${id}`, {
         method: "PUT",
         body: JSON.stringify(datos),
@@ -1994,7 +2016,8 @@ export const api = {
     actualizar: (
       id: number,
       datos: {
-        idEmpresa?: number;
+        /** OBLIGATORIO: acota a cuál fila se aplica el cambio, no es un dato a guardar. Sin él, 400. */
+        idEmpresa: number;
         nombreUnidad?: string;
         abreviatura?: string;
         activo?: Estado;
@@ -2034,7 +2057,8 @@ export const api = {
     actualizar: (
       id: number,
       datos: {
-        idEmpresa?: number;
+        /** OBLIGATORIO: acota a cuál fila se aplica el cambio, no es un dato a guardar. Sin él, 400. */
+        idEmpresa: number;
         nombreCategoria?: string;
         descripcion?: string;
         activo?: Estado;
@@ -2053,9 +2077,34 @@ export const api = {
     /**
      * Artículos de una empresa. `idEmpresa` sale de la empresa activa de la
      * sesión (`useEmpresa()`), no de un filtro de la pantalla.
+     *
+     * PAGINADO EN EL SERVIDOR, 20 por página. `busqueda` e `idCategoria` van al
+     * backend y filtran en SQL: filtrando en el cliente sólo se miraría lo ya
+     * traído, y un artículo de la página 5 no aparecería al buscarlo.
+     *
+     * `encodeURIComponent` en la búsqueda: un código como "LYP/GLD-6085" lleva
+     * barras, y sin escapar romperían el query string.
      */
-    listar: (params: { idEmpresa?: number } = {}) => {
-      const q = params.idEmpresa ? `?idEmpresa=${params.idEmpresa}` : "";
+    listar: (
+      // `| undefined` explícito y no sólo `?`: con exactOptionalPropertyTypes
+      // pasar `idCategoria: undefined` —que es como la pantalla expresa "sin
+      // filtro"— no compilaría contra una propiedad meramente opcional.
+      params: {
+        idEmpresa?: number | undefined;
+        busqueda?: string | undefined;
+        idCategoria?: number | undefined;
+        pagina?: number | undefined;
+        tamanio?: number | undefined;
+      } = {},
+    ) => {
+      const partes: string[] = [];
+      if (params.idEmpresa) partes.push(`idEmpresa=${params.idEmpresa}`);
+      if (params.busqueda?.trim())
+        partes.push(`busqueda=${encodeURIComponent(params.busqueda.trim())}`);
+      if (params.idCategoria) partes.push(`idCategoria=${params.idCategoria}`);
+      if (params.pagina) partes.push(`pagina=${params.pagina}`);
+      if (params.tamanio) partes.push(`tamanio=${params.tamanio}`);
+      const q = partes.length > 0 ? `?${partes.join("&")}` : "";
       return request<ListaArticulos>(`/articulos/listar${q}`);
     },
 
@@ -2090,7 +2139,8 @@ export const api = {
     actualizar: (
       id: number,
       datos: {
-        idEmpresa?: number;
+        /** OBLIGATORIO: acota a cuál fila se aplica el cambio, no es un dato a guardar. Sin él, 400. */
+        idEmpresa: number;
         idCategoria?: number;
         idMoneda?: number;
         idUnidadMedida?: number;

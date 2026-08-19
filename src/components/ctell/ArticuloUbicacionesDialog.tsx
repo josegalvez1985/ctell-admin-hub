@@ -3,7 +3,7 @@ import { Loader2, MapPin, Plus, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
-import { Combobox } from "@/components/ctell/Combobox";
+import { SelectorModal } from "@/components/ctell/SelectorModal";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
 import { Button } from "@/components/ui/button";
 import {
@@ -132,7 +132,7 @@ export function ArticuloUbicacionesDialog({
               cuando la lista está vacía, que es el caso inicial. */}
           <div className="flex items-end gap-2">
             <div className="min-w-0 flex-1">
-              <Combobox
+              <SelectorModal
                 opciones={opciones}
                 value={aAsignar}
                 onChange={setAAsignar}

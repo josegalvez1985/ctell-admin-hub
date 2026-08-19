@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import { z } from "zod";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
-import { Combobox } from "@/components/ctell/Combobox";
+import { SelectorModal } from "@/components/ctell/SelectorModal";
 import { SIN_FILTRO, TableHeadFiltrable } from "@/components/ctell/TableHeadFiltrable";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
 import { useTablaListado } from "@/hooks/use-tabla-listado";
@@ -472,11 +472,12 @@ function DepartamentoFormDialog({
                 <FormItem>
                   <FormLabel>País</FormLabel>
                   <FormControl>
-                    <Combobox
+                    <SelectorModal
                       opciones={paisesOpciones}
                       value={field.value}
                       onChange={field.onChange}
                       placeholder="Elegí un país"
+                      titulo="Elegí un país"
                       buscarPlaceholder="Buscar país…"
                       cargando={cargandoPaises}
                     />

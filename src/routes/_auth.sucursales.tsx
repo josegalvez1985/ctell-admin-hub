@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import { z } from "zod";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
-import { Combobox } from "@/components/ctell/Combobox";
+import { SelectorModal } from "@/components/ctell/SelectorModal";
 import { SIN_FILTRO, TableHeadFiltrable } from "@/components/ctell/TableHeadFiltrable";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
 import { useTablaListado } from "@/hooks/use-tabla-listado";
@@ -479,11 +479,12 @@ function SucursalFormDialog({
                 <FormItem>
                   <FormLabel>Empresa</FormLabel>
                   <FormControl>
-                    <Combobox
+                    <SelectorModal
                       opciones={empresasOpciones}
                       value={field.value}
                       onChange={field.onChange}
                       placeholder="Elegí una empresa"
+                      titulo="Elegí una empresa"
                       buscarPlaceholder="Buscar empresa…"
                       cargando={cargandoEmpresas}
                     />
