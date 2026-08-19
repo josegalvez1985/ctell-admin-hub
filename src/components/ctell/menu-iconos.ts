@@ -149,6 +149,11 @@ const ICONOS_PAGINA: Record<string, LucideIcon> = {
   // pensar en una dirección.
   ubicaciones: Warehouse,
   ubicacion: Warehouse,
+  // La planilla del conteo, no la mercadería: un inventario es el ACTO de
+  // contar, así que Boxes o Package (que ya son lotes y artículos) apuntarían
+  // a lo contado en vez de a la tarea.
+  inventarios: ClipboardList,
+  inventario: ClipboardList,
   ordenes: ClipboardList,
   "ordenes de compra": ClipboardList,
   facturas: Receipt,

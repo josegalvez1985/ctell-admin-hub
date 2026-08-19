@@ -54,6 +54,19 @@ export function esAdmin(rol: Rol | undefined): boolean {
   return rol === "S";
 }
 
+/**
+ * `true` si el artículo es un gasto y no un bien de stock.
+ *
+ * Reusa el tipo `Rol` porque la columna `ARTICULOS.ES_GASTO` es el mismo
+ * `VARCHAR2(1)` con `'S'`/`'N'` que `USUARIOS.ES_ADMIN`. El helper existe
+ * aparte para que la pregunta se lea en el idioma de quien la hace —
+ * `esGasto(a.esGasto)` y no `esAdmin(a.esGasto)`, que confundiría a cualquiera
+ * leyendo la pantalla de artículos.
+ */
+export function esGasto(marca: Rol | undefined): boolean {
+  return marca === "S";
+}
+
 export type Usuario = {
   id: number;
   usuario: string;
@@ -312,6 +325,84 @@ export type Lote = {
   observaciones: string | null;
 };
 
+/**
+ * Estado de un conteo físico. **No** usa el `'A'`/`'I'` del resto del proyecto:
+ * acá no son dos estados sino tres, y la columna guarda la palabra entera.
+ *
+ * - `ABIERTO` — editable, todavía no aplicado. Todo conteo nace así.
+ * - `PROCESADO` — aplicado al lote. Terminal.
+ * - `ANULADO` — descartado sin aplicar. Terminal.
+ *
+ * Las únicas transiciones posibles son `ABIERTO → PROCESADO` y
+ * `ABIERTO → ANULADO`, y las impone un trigger de la base: desde un estado
+ * terminal no se sale.
+ */
+export type EstadoInventario = "ABIERTO" | "PROCESADO" | "ANULADO";
+
+/** `true` si el conteo todavía se puede editar, procesar o anular. */
+export function inventarioAbierto(estado: EstadoInventario | undefined): boolean {
+  return estado === "ABIERTO";
+}
+
+/**
+ * Conteo físico de un lote: cuánto decía el sistema y cuánto se contó de verdad.
+ *
+ * **Una fila por lote contado**, no una cabecera con líneas. Por eso la relación
+ * con `LOTES` es obligatoria y de ahí salen la sucursal y el artículo.
+ */
+export type Inventario = {
+  id: number;
+  idEmpresa: number;
+  idSucursal: number;
+  idLote: number;
+  idArticulo: number;
+  /** Del JOIN contra ARTICULOS, LOTES y SUCURSALES. */
+  nombreArticulo: string;
+  codigoArticulo: string | null;
+  numeroLote: number | null;
+  nombreSucursal: string;
+  /**
+   * Lo que el sistema creía que había **al momento de contar**. Es una foto: se
+   * copia del lote al crear el conteo y no se recalcula, para que la diferencia
+   * no se mueva sola entre que se cuenta y se procesa.
+   */
+  cantidadSistema: number | null;
+  /** Lo que se contó con las manos. El único dato que aporta la persona. */
+  cantidadFisica: number | null;
+  /**
+   * `cantidadFisica - cantidadSistema`. La calcula el backend en cada listado y
+   * **no se guarda**: tres columnas derivables entre sí son tres columnas que
+   * pueden contradecirse.
+   */
+  diferencia: number;
+  /**
+   * Lo que queda en el lote **hoy**. Si difiere de `cantidadSistema`, el lote se
+   * movió después del conteo y la diferencia ya no es sólo el ajuste.
+   */
+  cantidadLoteHoy: number;
+  estado: EstadoInventario;
+  /**
+   * Quién **procesó** el conteo. Los tres son null mientras esté abierto y
+   * también en los anulados: ahí nadie aplicó nada.
+   *
+   * El nombre y el login vienen del JOIN contra `USUARIOS`, no de una copia
+   * guardada en la fila: si alguien corrige su nombre, el histórico lo refleja.
+   */
+  idUsuario: number | null;
+  /** Login (`USUARIOS.USUARIO`), corto y estable. */
+  usuarioProcesa: string | null;
+  /** Nombre completo, para mostrar. */
+  nombreProcesa: string | null;
+  /** ISO ("2026-08-18T14:30:00"). Cuándo se hizo el conteo físico. */
+  fechaInventario: string | null;
+  observaciones: string | null;
+};
+
+export type ListaInventarios = {
+  items: Inventario[];
+  total: number;
+};
+
 export type ListaLotes = {
   items: Lote[];
   total: number;
@@ -444,6 +535,18 @@ export type Articulo = {
    * real. Hoy llega null en todas las filas.
    */
   fechaUltimoInventario: string | null;
+  /**
+   * `"S"` si es un gasto (servicios, alquiler, honorarios: se compran y se
+   * consumen, no se depositan); `"N"` si es un artículo que lleva stock.
+   *
+   * Mismo código de una letra que `esAdmin`, y llega normalizado: el backend
+   * traduce a `"N"` tanto el null de las filas anteriores a la columna como
+   * cualquier valor inesperado, así que acá nunca hay un tercer estado.
+   *
+   * **Es descriptivo, no restrictivo**: hoy un gasto acepta lotes y suma stock
+   * igual que cualquier otro artículo. Preguntá con `esGasto(a.esGasto)`.
+   */
+  esGasto: Rol;
   activo: Estado;
 };
 
@@ -1745,6 +1848,8 @@ export const api = {
       codigoArticulo?: string;
       descripcion?: string;
       cantidadMinima?: number;
+      /** Omitirlo crea un artículo de stock: el backend lo entra como `"N"`. */
+      esGasto?: Rol;
     }) =>
       request<{ id: number; ok: boolean }>("/articulos/crear", {
         method: "POST",
@@ -1766,6 +1871,12 @@ export const api = {
         nombreArticulo?: string;
         descripcion?: string;
         cantidadMinima?: number;
+        /**
+         * Acá el ausente **conserva** la marca actual, al revés que en `crear`,
+         * donde cae en `"N"`. Sin esa diferencia, un PUT que sólo cambiara el
+         * nombre convertiría un gasto en artículo de stock.
+         */
+        esGasto?: Rol;
         activo?: Estado;
       },
     ) =>
@@ -1788,5 +1899,97 @@ export const api = {
         headers: { "Content-Type": archivo.type },
         body: archivo,
       }),
+  },
+
+  /**
+   * Conteos físicos de stock.
+   *
+   * Es el único módulo **sin `eliminar`**: un trigger de la base prohíbe el
+   * DELETE, porque un conteo es evidencia de que alguien fue al depósito y
+   * contó. `anular` ocupa su lugar y deja el registro asentado.
+   */
+  inventarios: {
+    /**
+     * Los cuatro filtros se combinan. En la app siempre viajan `idEmpresa` e
+     * `idSucursal`, que salen de los providers de la sesión.
+     */
+    listar: (
+      params: {
+        idEmpresa?: number;
+        idSucursal?: number;
+        idArticulo?: number;
+        estado?: EstadoInventario;
+      } = {},
+    ) => {
+      const q = new URLSearchParams();
+      if (params.idEmpresa) q.set("idEmpresa", String(params.idEmpresa));
+      if (params.idSucursal) q.set("idSucursal", String(params.idSucursal));
+      if (params.idArticulo) q.set("idArticulo", String(params.idArticulo));
+      if (params.estado) q.set("estado", params.estado);
+      const query = q.toString();
+      return request<ListaInventarios>(`/inventarios/listar${query ? `?${query}` : ""}`);
+    },
+
+    /**
+     * Abre un conteo sobre un lote. Nace siempre `ABIERTO`.
+     *
+     * **No recibe `idSucursal`, `idArticulo` ni `cantidadSistema`**: los tres
+     * salen del lote, que ya los tiene resueltos. Pedirlos abriría la puerta a
+     * que lleguen inconsistentes entre sí.
+     *
+     * Devuelve la foto del sistema y la diferencia, para poder mostrarlas sin
+     * volver a pedir el listado. Da 409 si ese lote ya tiene un conteo abierto.
+     */
+    crear: (datos: {
+      idEmpresa: number;
+      idLote: number;
+      /** Obligatoria. Un 0 es un dato válido: el lote se agotó. */
+      cantidadFisica: number;
+      /** ISO, día o día y hora. Ausente = ahora. */
+      fechaInventario?: string;
+      observaciones?: string;
+    }) =>
+      request<{ id: number; cantidadSistema: number; diferencia: number; ok: boolean }>(
+        "/inventarios/crear",
+        { method: "POST", body: JSON.stringify(datos) },
+      ),
+
+    /**
+     * Corrige un conteo **todavía abierto**; los campos ausentes no se
+     * modifican. Da 409 si ya fue procesado o anulado.
+     *
+     * Los ids no se pueden cambiar: mover un conteo a otro lote lo convertiría
+     * en un conteo distinto. Si el lote estaba mal, se anula y se carga otro.
+     */
+    actualizar: (
+      id: number,
+      datos: {
+        idEmpresa: number;
+        cantidadFisica?: number;
+        fechaInventario?: string;
+        observaciones?: string;
+      },
+    ) =>
+      request<{ ok: boolean }>(`/inventarios/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    /**
+     * `ABIERTO → PROCESADO`: aplica lo contado al lote y sella quién lo hizo.
+     *
+     * **Es irreversible** — no hay vuelta a abierto. El ajuste lo hace un
+     * trigger sobre `LOTES.CANTIDAD_DISPON`, que es lo que suma el stock del
+     * artículo.
+     */
+    procesar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/inventarios/procesar/${id}/${idEmpresa}`, { method: "POST" }),
+
+    /**
+     * `ABIERTO → ANULADO`: descarta el conteo **sin tocar el lote**. También
+     * irreversible.
+     */
+    anular: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/inventarios/anular/${id}/${idEmpresa}`, { method: "POST" }),
   },
 };

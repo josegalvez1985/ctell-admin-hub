@@ -20,6 +20,7 @@ import { Route as AuthConfiguracionRouteImport } from './routes/_auth.configurac
 import { Route as AuthDepartamentosRouteImport } from './routes/_auth.departamentos'
 import { Route as AuthEmpresasRouteImport } from './routes/_auth.empresas'
 import { Route as AuthHomeRouteImport } from './routes/_auth.home'
+import { Route as AuthInventariosRouteImport } from './routes/_auth.inventarios'
 import { Route as AuthLotesRouteImport } from './routes/_auth.lotes'
 import { Route as AuthMenuRouteImport } from './routes/_auth.menu'
 import { Route as AuthMonedasRouteImport } from './routes/_auth.monedas'
@@ -83,6 +84,11 @@ const AuthHomeRoute = AuthHomeRouteImport.update({
   path: '/home',
   getParentRoute: () => AuthRoute,
 } as any)
+const AuthInventariosRoute = AuthInventariosRouteImport.update({
+  id: '/inventarios',
+  path: '/inventarios',
+  getParentRoute: () => AuthRoute,
+} as any)
 const AuthLotesRoute = AuthLotesRouteImport.update({
   id: '/lotes',
   path: '/lotes',
@@ -130,6 +136,7 @@ export interface FileRoutesByFullPath {
   '/departamentos': typeof AuthDepartamentosRoute
   '/empresas': typeof AuthEmpresasRoute
   '/home': typeof AuthHomeRoute
+  '/inventarios': typeof AuthInventariosRoute
   '/lotes': typeof AuthLotesRoute
   '/menu': typeof AuthMenuRoute
   '/monedas': typeof AuthMonedasRoute
@@ -149,6 +156,7 @@ export interface FileRoutesByTo {
   '/departamentos': typeof AuthDepartamentosRoute
   '/empresas': typeof AuthEmpresasRoute
   '/home': typeof AuthHomeRoute
+  '/inventarios': typeof AuthInventariosRoute
   '/lotes': typeof AuthLotesRoute
   '/menu': typeof AuthMenuRoute
   '/monedas': typeof AuthMonedasRoute
@@ -170,6 +178,7 @@ export interface FileRoutesById {
   '/_auth/departamentos': typeof AuthDepartamentosRoute
   '/_auth/empresas': typeof AuthEmpresasRoute
   '/_auth/home': typeof AuthHomeRoute
+  '/_auth/inventarios': typeof AuthInventariosRoute
   '/_auth/lotes': typeof AuthLotesRoute
   '/_auth/menu': typeof AuthMenuRoute
   '/_auth/monedas': typeof AuthMonedasRoute
@@ -191,6 +200,7 @@ export interface FileRouteTypes {
     | '/departamentos'
     | '/empresas'
     | '/home'
+    | '/inventarios'
     | '/lotes'
     | '/menu'
     | '/monedas'
@@ -210,6 +220,7 @@ export interface FileRouteTypes {
     | '/departamentos'
     | '/empresas'
     | '/home'
+    | '/inventarios'
     | '/lotes'
     | '/menu'
     | '/monedas'
@@ -230,6 +241,7 @@ export interface FileRouteTypes {
     | '/_auth/departamentos'
     | '/_auth/empresas'
     | '/_auth/home'
+    | '/_auth/inventarios'
     | '/_auth/lotes'
     | '/_auth/menu'
     | '/_auth/monedas'
@@ -323,6 +335,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthHomeRouteImport
       parentRoute: typeof AuthRoute
     }
+    '/_auth/inventarios': {
+      id: '/_auth/inventarios'
+      path: '/inventarios'
+      fullPath: '/inventarios'
+      preLoaderRoute: typeof AuthInventariosRouteImport
+      parentRoute: typeof AuthRoute
+    }
     '/_auth/lotes': {
       id: '/_auth/lotes'
       path: '/lotes'
@@ -385,6 +404,7 @@ interface AuthRouteChildren {
   AuthDepartamentosRoute: typeof AuthDepartamentosRoute
   AuthEmpresasRoute: typeof AuthEmpresasRoute
   AuthHomeRoute: typeof AuthHomeRoute
+  AuthInventariosRoute: typeof AuthInventariosRoute
   AuthLotesRoute: typeof AuthLotesRoute
   AuthMenuRoute: typeof AuthMenuRoute
   AuthMonedasRoute: typeof AuthMonedasRoute
@@ -404,6 +424,7 @@ const AuthRouteChildren: AuthRouteChildren = {
   AuthDepartamentosRoute: AuthDepartamentosRoute,
   AuthEmpresasRoute: AuthEmpresasRoute,
   AuthHomeRoute: AuthHomeRoute,
+  AuthInventariosRoute: AuthInventariosRoute,
   AuthLotesRoute: AuthLotesRoute,
   AuthMenuRoute: AuthMenuRoute,
   AuthMonedasRoute: AuthMonedasRoute,

@@ -24,7 +24,7 @@
 --              ID_UNIDAD_MEDIDA, CODIGO_ARTICULO, NOMBRE_ARTICULO,
 --              DESCRIPCION, CANTIDAD_MINIMA, ACTIVO,
 --              FECHA_CREACION, FECHA_ACTUALIZACION, IMAGEN,
---              IMAGEN_MIME, FEC_ULTIMO_INVENTARIO
+--              IMAGEN_MIME, FEC_ULTIMO_INVENTARIO, ES_GASTO
 --
 -- EL ARTICULO YA NO GUARDA PRECIOS NI STOCK. Se eliminaron del DDL
 -- PRECIO_ULTIMA_COMPRA, PRECIO_VENTA y CANTIDAD_STOCK: esos datos viven ahora
@@ -54,6 +54,22 @@
 --
 -- Cuando se implemente el inventario, lo que corresponde es un procedimiento
 -- propio (MARCAR_INVENTARIADO, con SYSTIMESTAMP) y no agregarla a ACTUALIZAR.
+--
+-- ES_GASTO DISTINGUE EL GASTO DEL ARTICULO DE STOCK: 'S' es un gasto (servicios,
+-- alquiler, honorarios: se compra y se consume, no se deposita) y 'N' un
+-- articulo que si lleva stock. Es el mismo codigo de una letra que
+-- USUARIOS.ES_ADMIN, y viaja al JSON sin traducirse a booleano, igual que ACTIVO
+-- con 'A'/'I'.
+--
+-- HOY LA MARCA ES SOLO DESCRIPTIVA: no cambia ninguna regla del backend. Un
+-- articulo de gasto acepta lotes y suma stock como cualquier otro. Si mas
+-- adelante se decide que un gasto NO puede tener lotes, el lugar de ese control
+-- es PKG_LOTES.INSERTAR, no este archivo.
+--
+-- EL DDL NO DECLARA DEFAULT en esta columna, asi que lo fija INSERTAR: un alta
+-- sin el campo entra como 'N'. Y las filas cargadas antes de que la columna
+-- existiera la tienen en NULL: el listado las normaliza a 'N' con el mismo CASE
+-- que ya usa ACTIVO, para que el frontend nunca reciba un tercer valor.
 --
 -- EL ARTICULO ES POR EMPRESA. El idEmpresa sale de la empresa que se eligió al
 -- iniciar sesión, no de un combobox. Mismo criterio que db/monedas.sql,
@@ -171,6 +187,8 @@ CREATE OR REPLACE PACKAGE PKG_ARTICULOS AS
     p_resultado     OUT CLOB
   );
 
+  -- p_es_gasto ausente entra como 'N': un artículo es de stock salvo que se
+  -- diga lo contrario. El DDL no tiene DEFAULT en esa columna.
   PROCEDURE INSERTAR (
     p_authorization        IN  VARCHAR2,
     p_id_empresa           IN  VARCHAR2,
@@ -181,6 +199,7 @@ CREATE OR REPLACE PACKAGE PKG_ARTICULOS AS
     p_nombre_articulo      IN  VARCHAR2,
     p_descripcion          IN  VARCHAR2,
     p_cantidad_minima      IN  VARCHAR2,
+    p_es_gasto             IN  VARCHAR2,
     p_status_code          OUT NUMBER,
     p_resultado            OUT CLOB
   );
@@ -197,6 +216,7 @@ CREATE OR REPLACE PACKAGE PKG_ARTICULOS AS
     p_nombre_articulo      IN  VARCHAR2,
     p_descripcion          IN  VARCHAR2,
     p_cantidad_minima      IN  VARCHAR2,
+    p_es_gasto             IN  VARCHAR2,
     p_activo               IN  VARCHAR2,
     p_status_code          OUT NUMBER,
     p_resultado            OUT CLOB
@@ -410,6 +430,18 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
                                                  AND DBMS_LOB.GETLENGTH(a.IMAGEN) > 0
                                                 THEN 'true' ELSE 'false'
                                               END FORMAT JSON,
+                 -- 'S' gasto, 'N' articulo de stock. El ELSE cubre dos casos con
+                 -- la misma regla: las filas anteriores a la columna, que la
+                 -- tienen en NULL, y cualquier valor raro que haya entrado por
+                 -- fuera de la app. Las dos se leen como 'N', asi el frontend
+                 -- solo maneja dos valores y no un tercero "sin definir".
+                 --
+                 -- Mismo criterio que ACTIVO justo abajo: normalizar acá y no en
+                 -- el cliente, para que el codigo de la columna sea el que viaja.
+                 'esGasto'              VALUE CASE UPPER(TRIM(a.ES_GASTO))
+                                                WHEN 'S' THEN 'S'
+                                                ELSE 'N'
+                                              END,
                  'activo'               VALUE CASE UPPER(TRIM(a.ACTIVO))
                                                 WHEN 'I' THEN 'I'
                                                 WHEN '0' THEN 'I'
@@ -456,6 +488,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     p_nombre_articulo      IN  VARCHAR2,
     p_descripcion          IN  VARCHAR2,
     p_cantidad_minima      IN  VARCHAR2,
+    p_es_gasto             IN  VARCHAR2,
     p_status_code          OUT NUMBER,
     p_resultado            OUT CLOB
   ) IS
@@ -465,6 +498,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     l_id_moneda      NUMBER;
     l_id_unidad      NUMBER;
     l_minima         NUMBER;
+    l_es_gasto       VARCHAR2(1);
     l_id             NUMBER;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
@@ -498,6 +532,12 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
       RETURN;
     END IF;
 
+    -- 'S' solo si llego 'S'; todo lo demas —ausente, vacio o un valor invalido—
+    -- entra como 'N'. Se resuelve acá y no con un DEFAULT del DDL, que esa
+    -- columna no tiene: sin esto un alta sin el campo dejaria NULL en la base y
+    -- la marca quedaria en un tercer estado que la app no sabe mostrar.
+    l_es_gasto := CASE UPPER(TRIM(p_es_gasto)) WHEN 'S' THEN 'S' ELSE 'N' END;
+
     -- 'A' explícito aunque el DEFAULT ya sea 'A': es el criterio del proyecto,
     -- para no depender de un default que puede cambiar en el DDL.
     --
@@ -507,7 +547,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     INSERT INTO ARTICULOS (
       ID_EMPRESA, ID_CATEGORIA, ID_MONEDA, ID_UNIDAD_MEDIDA,
       CODIGO_ARTICULO, NOMBRE_ARTICULO, DESCRIPCION,
-      CANTIDAD_MINIMA,
+      CANTIDAD_MINIMA, ES_GASTO,
       ACTIVO, FECHA_CREACION, FECHA_ACTUALIZACION
     ) VALUES (
       l_id_empresa,
@@ -518,6 +558,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
       TRIM(p_nombre_articulo),
       TRIM(p_descripcion),
       NVL(l_minima, 0),
+      l_es_gasto,
       'A',
       SYSTIMESTAMP,
       SYSTIMESTAMP
@@ -563,6 +604,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     p_nombre_articulo      IN  VARCHAR2,
     p_descripcion          IN  VARCHAR2,
     p_cantidad_minima      IN  VARCHAR2,
+    p_es_gasto             IN  VARCHAR2,
     p_activo               IN  VARCHAR2,
     p_status_code          OUT NUMBER,
     p_resultado            OUT CLOB
@@ -574,6 +616,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     l_id_moneda      NUMBER;
     l_id_unidad      NUMBER;
     l_minima         NUMBER;
+    l_es_gasto       VARCHAR2(1);
     l_estado         VARCHAR2(1);
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
@@ -604,6 +647,18 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
                   ELSE NULL
                 END;
 
+    -- Mismo criterio que el estado, y OPUESTO al de INSERTAR: acá un parámetro
+    -- ausente deja NULL para que el NVL del UPDATE conserve el valor actual. En
+    -- el alta no hay valor previo que conservar, así que ahí el ausente cae en
+    -- 'N'. Si acá se aplicara el default del alta, cualquier PUT que no mandara
+    -- el campo —cambiar sólo el nombre, por ejemplo— convertiría un gasto en
+    -- artículo de stock sin que nadie lo pidiera.
+    l_es_gasto := CASE UPPER(TRIM(p_es_gasto))
+                    WHEN 'S' THEN 'S'
+                    WHEN 'N' THEN 'N'
+                    ELSE NULL
+                  END;
+
     -- NVL en cada columna: un parámetro ausente conserva el valor actual.
     --
     -- Consecuencia en las tres FK: mandarlas vacías significa "no cambiar", NO
@@ -631,6 +686,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
            NOMBRE_ARTICULO      = NVL(TRIM(p_nombre_articulo), NOMBRE_ARTICULO),
            DESCRIPCION          = NVL(TRIM(p_descripcion), DESCRIPCION),
            CANTIDAD_MINIMA      = NVL(l_minima, CANTIDAD_MINIMA),
+           ES_GASTO             = NVL(l_es_gasto, ES_GASTO),
            ACTIVO               = NVL(l_estado, ACTIVO),
            FECHA_ACTUALIZACION  = SYSTIMESTAMP
      WHERE ID_ARTICULO = l_id
@@ -870,7 +926,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
       p_pattern     => 'crear',
       p_method      => 'POST',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_ARTICULOS.INSERTAR(:authorization, :idEmpresa, :idCategoria, :idMoneda, :idUnidadMedida, :codigoArticulo, :nombreArticulo, :descripcion, :cantidadMinima, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_ARTICULOS.INSERTAR(:authorization, :idEmpresa, :idCategoria, :idMoneda, :idUnidadMedida, :codigoArticulo, :nombreArticulo, :descripcion, :cantidadMinima, :esGasto, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
@@ -900,7 +956,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
       p_pattern     => 'actualizar/:id',
       p_method      => 'PUT',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_ARTICULOS.ACTUALIZAR(:authorization, :id, :idEmpresa, :idCategoria, :idMoneda, :idUnidadMedida, :codigoArticulo, :nombreArticulo, :descripcion, :cantidadMinima, :activo, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_ARTICULOS.ACTUALIZAR(:authorization, :id, :idEmpresa, :idCategoria, :idMoneda, :idUnidadMedida, :codigoArticulo, :nombreArticulo, :descripcion, :cantidadMinima, :esGasto, :activo, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
@@ -1071,7 +1127,7 @@ SELECT t.URI_TEMPLATE, h.METHOD
 -- desaparecería de esta verificación con un JOIN interno.
 SELECT a.ID_ARTICULO, a.CODIGO_ARTICULO, a.NOMBRE_ARTICULO,
        e.NOMBRE_EMPRESA, c.NOMBRE_CATEGORIA, m.NOMBRE_MONEDA, u.ABREVIATURA,
-       a.CANTIDAD_MINIMA, a.ACTIVO
+       a.CANTIDAD_MINIMA, NVL(a.ES_GASTO, 'N') AS ES_GASTO, a.ACTIVO
   FROM ARTICULOS a
   JOIN EMPRESAS          e ON e.ID_EMPRESA       = a.ID_EMPRESA
   LEFT JOIN CATEGORIAS      c ON c.ID_CATEGORIA     = a.ID_CATEGORIA
@@ -1107,6 +1163,13 @@ SELECT a.ID_ARTICULO,
  ORDER BY a.NOMBRE_ARTICULO;
 
 -- Solo los que estan por debajo del minimo: lo que hay que reponer.
+--
+-- Excluye los gastos, que es lo unico que ES_GASTO cambia en este archivo: un
+-- servicio o un alquiler no se repone ni tiene deposito, asi que apareceria
+-- siempre en cero y ensuciaria la lista de lo que falta comprar.
+--
+-- Es solo esta consulta de diagnostico: el endpoint /articulos/listar SI
+-- devuelve los gastos, con su marca, y la pantalla decide como mostrarlos.
 SELECT a.ID_ARTICULO,
        a.NOMBRE_ARTICULO,
        NVL(SUM(NVL(l.CANTIDAD_DISPON, l.CANTIDAD)), 0) AS STOCK,
@@ -1114,6 +1177,7 @@ SELECT a.ID_ARTICULO,
   FROM ARTICULOS a
   LEFT JOIN LOTES l ON l.ID_ARTICULO = a.ID_ARTICULO
  WHERE UPPER(TRIM(a.ACTIVO)) != 'I'
+   AND NVL(UPPER(TRIM(a.ES_GASTO)), 'N') != 'S'
  GROUP BY a.ID_ARTICULO, a.NOMBRE_ARTICULO, a.CANTIDAD_MINIMA
 HAVING NVL(SUM(NVL(l.CANTIDAD_DISPON, l.CANTIDAD)), 0) < NVL(a.CANTIDAD_MINIMA, 0)
  ORDER BY a.NOMBRE_ARTICULO;

@@ -15,7 +15,17 @@ import { ImagenArticulo } from "@/components/ctell/ImagenArticulo";
 import { SIN_FILTRO, TableHeadFiltrable } from "@/components/ctell/TableHeadFiltrable";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
 import { useTablaListado } from "@/hooks/use-tabla-listado";
-import { api, ApiError, esActivo, type Articulo, type Estado } from "@/lib/api";
+// El helper entra con alias: `esGasto` a secas chocaría con el campo del
+// formulario y con la variable de cada fila, que se llaman igual que la columna.
+import {
+  api,
+  ApiError,
+  esActivo,
+  esGasto as esGastoArticulo,
+  type Articulo,
+  type Estado,
+  type Rol,
+} from "@/lib/api";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -87,6 +97,9 @@ const schema = z.object({
   // tabla: el costo va en cada lote y el stock es la suma de sus cantidades.
   // La mínima queda porque es una política del negocio, no una medición.
   cantidadMinima: decimal("La cantidad mínima"),
+  // Booleano en el formulario, "S"/"N" en la API: el Switch trabaja con
+  // booleanos y la traducción se hace una sola vez, al armar la mutación.
+  esGasto: z.boolean(),
   activo: z.boolean(),
 });
 
@@ -183,6 +196,10 @@ function ArticulosPage() {
       a.categoria,
       a.descripcion,
       esActivo(a.activo) ? "Activo" : "Inactivo",
+      // Sólo el gasto aporta un término buscable. "Stock" haría que buscar esa
+      // palabra devolviera todo el listado menos los gastos, que no es lo que
+      // nadie espera al tipearla.
+      esGastoArticulo(a.esGasto) ? "Gasto" : "",
       // El texto que se ve, no el ISO crudo: en pantalla dice "17 ago 2026", y
       // buscar "2026-08" no encontraría nada de lo que el usuario está leyendo.
       // "Sin inventariar" también entra, y sirve para juntar los pendientes.
@@ -285,6 +302,7 @@ function ArticulosPage() {
           <ul className="space-y-3 sm:hidden">
             {mostrados.map((articulo) => {
               const activo = esActivo(articulo.activo);
+              const gasto = esGastoArticulo(articulo.esGasto);
               const bajoMinimo = articulo.cantidadStock < articulo.cantidadMinima;
 
               return (
@@ -298,6 +316,10 @@ function ArticulosPage() {
                       <p className="mt-0.5 text-xs text-muted-foreground">
                         {articulo.codigoArticulo ? `${articulo.codigoArticulo} · ` : ""}
                         {articulo.categoria ?? "Sin categoría"}
+                        {/* Texto y no un Badge: la tarjeta ya tiene el de estado
+                            arriba, y dos badges compitiendo en 360px se leen
+                            como si fueran lo mismo. */}
+                        {gasto ? " · Gasto" : ""}
                       </p>
                     </div>
                     <Badge variant={activo ? "secondary" : "outline"} className="shrink-0">
@@ -398,6 +420,7 @@ function ArticulosPage() {
               <TableBody>
                 {mostrados.map((articulo) => {
                   const activo = esActivo(articulo.activo);
+                  const gasto = esGastoArticulo(articulo.esGasto);
                   // El stock bajo el mínimo se pinta en rojo: es el dato que
                   // justifica mirar esta tabla, y en gris pasa desapercibido.
                   const bajoMinimo = articulo.cantidadStock < articulo.cantidadMinima;
@@ -408,7 +431,18 @@ function ArticulosPage() {
                         <ImagenArticulo id={articulo.id} tieneImagen={articulo.tieneImagen} />
                       </TableCell>
                       <TableCell className="font-medium text-foreground">
-                        {articulo.nombreArticulo}
+                        <span className="flex items-center gap-2">
+                          {articulo.nombreArticulo}
+                          {/* Sólo se marca el gasto, que es la excepción: poner
+                              también "Stock" en todas las demás filas repetiría
+                              lo mismo decenas de veces y taparía justo lo que la
+                              marca quiere destacar. */}
+                          {gasto && (
+                            <Badge variant="outline" className="shrink-0 font-normal">
+                              Gasto
+                            </Badge>
+                          )}
+                        </span>
                         {articulo.codigoArticulo && (
                           <span className="block text-xs font-normal text-muted-foreground">
                             {articulo.codigoArticulo}
@@ -691,6 +725,9 @@ function ArticuloFormDialog({
       idMoneda: articulo?.idMoneda ? String(articulo.idMoneda) : "",
       idUnidadMedida: articulo?.idUnidadMedida ? String(articulo.idUnidadMedida) : "",
       cantidadMinima: articulo ? String(articulo.cantidadMinima) : "0",
+      // Un alta nace como artículo de stock, que es el caso habitual y el mismo
+      // default que aplica el backend si el campo no viaja.
+      esGasto: articulo ? esGastoArticulo(articulo.esGasto) : false,
       activo: articulo ? esActivo(articulo.activo) : true,
     },
   });
@@ -698,6 +735,10 @@ function ArticuloFormDialog({
   const guardar = useMutation({
     mutationFn: (v: FormValues) => {
       const activo: Estado = v.activo ? "A" : "I";
+      // Va SIEMPRE, también en el alta y también cuando es false: al revés que
+      // los opcionales de abajo, acá "no mandarlo" no significa "sin dato" sino
+      // "dejarlo como estaba", y destildar la casilla no llegaría nunca.
+      const esGasto: Rol = v.esGasto ? "S" : "N";
 
       // Los campos vacíos se omiten en vez de mandarse como "" o 0: el backend
       // trata lo ausente como "no cambiar", y un 0 explícito pisaría el valor
@@ -719,12 +760,14 @@ function ArticuloFormDialog({
         ? api.articulos.actualizar(articulo.id, {
             nombreArticulo: v.nombreArticulo,
             ...opcionales,
+            esGasto,
             activo,
           })
         : api.articulos.crear({
             idEmpresa,
             nombreArticulo: v.nombreArticulo,
             ...opcionales,
+            esGasto,
           });
     },
     onSuccess: () => {
@@ -825,6 +868,30 @@ function ArticuloFormDialog({
                           />
                         </FormControl>
                         <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  {/* Va acá y no en "Stock y medida" porque dice QUÉ ES el
+                      artículo, no cuánto hay. Y está también en el alta —al
+                      revés que el toggle de activo—: si un gasto se creara
+                      siempre como artículo de stock, habría que entrar a
+                      editarlo de inmediato para corregirlo. */}
+                  <FormField
+                    control={form.control}
+                    name="esGasto"
+                    render={({ field }) => (
+                      <FormItem className="flex h-fit items-center justify-between rounded-lg border border-border p-3 sm:col-span-2">
+                        <div className="space-y-0.5">
+                          <FormLabel>Es un gasto</FormLabel>
+                          <FormDescription>
+                            Servicios, alquileres u honorarios: se compran y se consumen, no se
+                            guardan en depósito.
+                          </FormDescription>
+                        </div>
+                        <FormControl>
+                          <Switch checked={field.value} onCheckedChange={field.onChange} />
+                        </FormControl>
                       </FormItem>
                     )}
                   />
