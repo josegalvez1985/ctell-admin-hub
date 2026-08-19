@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { z } from "zod";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
+import { SelectorArticulo } from "@/components/ctell/SelectorArticulo";
 import { SelectorModal } from "@/components/ctell/SelectorModal";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
 import { useSucursal } from "@/components/ctell/sucursal-provider";
@@ -55,6 +56,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { tituloPagina } from "@/lib/marca";
+import { cn } from "@/lib/utils";
 import {
   Table,
   TableBody,
@@ -180,11 +182,18 @@ function InventariosPage() {
     enabled: empresa !== null && sucursal !== null,
   });
 
-  // Los lotes alimentan el formulario. Misma queryKey que usa la página de
-  // Lotes, así se comparte la respuesta en vez de pedirla de nuevo.
+  // Los lotes alimentan el selector del formulario.
+  //
+  // `tamanio: 200` —el techo del backend— y NO el default: /lotes/listar quedó
+  // paginado de a 20, y sin esto el selector del formulario ofrecería sólo los
+  // primeros 20 lotes de la sucursal, sin ningún aviso de que faltan los demás.
+  //
+  // La queryKey lleva "todos" para no pisar en caché la del listado paginado de
+  // la pantalla de Lotes, que tiene la misma raíz pero otra forma de respuesta.
   const { data: lotes, isPending: cargandoLotes } = useQuery({
-    queryKey: ["lotes", empresa?.id ?? null, sucursal?.id ?? null],
-    queryFn: () => api.lotes.listar({ idEmpresa: empresa!.id, idSucursal: sucursal!.id }),
+    queryKey: ["lotes", "todos", empresa?.id ?? null, sucursal?.id ?? null],
+    queryFn: () =>
+      api.lotes.listar({ idEmpresa: empresa!.id, idSucursal: sucursal!.id, tamanio: 200 }),
     enabled: empresa !== null && sucursal !== null,
   });
 
@@ -375,13 +384,16 @@ function InventariosPage() {
                       <li key={inv.id} className="surface-card p-4">
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0 flex-1">
-                            <p className="truncate font-semibold text-foreground">
+                            {/* Sin truncar: en un teléfono el nombre del
+                                artículo es lo que identifica la fila, y cortado
+                                deja dos conteos distintos con el mismo texto. */}
+                            <p className="font-semibold leading-snug text-foreground">
                               {inv.nombreArticulo}
                             </p>
                             <p className="mt-0.5 text-xs text-muted-foreground">
                               {inv.numeroLote === null
-                                ? "Sin número de lote"
-                                : `Lote ${inv.numeroLote}`}
+                                ? `Sin número · ID ${inv.idLote}`
+                                : `Lote ${inv.numeroLote} · ID ${inv.idLote}`}
                               {" · "}
                               {formatearFecha(inv.fechaInventario)}
                             </p>
@@ -391,11 +403,40 @@ function InventariosPage() {
                           </Badge>
                         </div>
 
-                        <p className="mt-2 text-xs text-muted-foreground">
-                          Sistema: {inv.cantidadSistema ?? "—"} · Contado:{" "}
-                          {inv.cantidadFisica ?? "—"} · Diferencia:{" "}
-                          <span className={diferencia.clase}>{diferencia.texto}</span>
-                        </p>
+                        {/* Los tres números en columnas, no en una línea
+                            corrida: en móvil "Sistema: 12 · Contado: 10 ·
+                            Diferencia: -2" se parte donde caiga y hay que
+                            releerlo para saber qué número es cuál. La grilla los
+                            alinea y deja la diferencia —el dato que se mira— en
+                            grande y con su color. */}
+                        <dl className="mt-3 grid grid-cols-3 gap-2 rounded-lg bg-muted/50 p-2 text-center">
+                          <div>
+                            <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                              Sistema
+                            </dt>
+                            <dd className="tabular-nums text-sm text-foreground">
+                              {inv.cantidadSistema ?? "—"}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                              Contado
+                            </dt>
+                            <dd className="tabular-nums text-sm font-medium text-foreground">
+                              {inv.cantidadFisica ?? "—"}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                              Diferencia
+                            </dt>
+                            <dd
+                              className={cn("tabular-nums text-sm font-semibold", diferencia.clase)}
+                            >
+                              {diferencia.texto}
+                            </dd>
+                          </div>
+                        </dl>
                         {/* El nombre completo, con el login de respaldo: el
                             JOIN puede traer el usuario sin nombre cargado. */}
                         {(inv.nombreProcesa ?? inv.usuarioProcesa) && (
@@ -599,6 +640,7 @@ function InventariosPage() {
             open={creando || editando !== null}
             inventario={editando}
             idEmpresa={empresa.id}
+            idSucursal={sucursal.id}
             lotes={lotes?.items ?? []}
             cargandoLotes={cargandoLotes}
             conteosAbiertos={items.filter((i) => inventarioAbierto(i.estado))}
@@ -682,6 +724,7 @@ function InventarioFormDialog({
   open,
   inventario,
   idEmpresa,
+  idSucursal,
   lotes,
   cargandoLotes,
   conteosAbiertos,
@@ -690,6 +733,8 @@ function InventarioFormDialog({
   open: boolean;
   inventario: Inventario | null;
   idEmpresa: number;
+  /** Sucursal activa. Hace falta para crear un lote desde acá. */
+  idSucursal: number;
   lotes: Lote[];
   cargandoLotes: boolean;
   /** Para no ofrecer lotes que ya tienen un conteo abierto (daría 409). */
@@ -698,6 +743,15 @@ function InventarioFormDialog({
 }) {
   const queryClient = useQueryClient();
   const esEdicion = inventario !== null;
+
+  /**
+   * Alta de lote desde el conteo, para el caso en que el artículo existe pero
+   * todavía no tiene ninguna partida cargada en la sucursal.
+   *
+   * Sin esto había que salir a la pantalla de Lotes, crearlo y volver — y Lotes
+   * está en SOLO_CONSULTA, así que directamente no se podía.
+   */
+  const [creandoLote, setCreandoLote] = useState(false);
 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -776,17 +830,24 @@ function InventarioFormDialog({
     .map((l) => ({
       valor: String(l.id),
       etiqueta: l.nombreArticulo,
+      // Con el ID: varias partidas del mismo artículo pueden no tener número, y
+      // ahí todas las opciones decían "Sin número" y no había forma de saber
+      // cuál se estaba eligiendo. El ID es lo único que siempre las distingue.
       descripcion:
         l.numeroLote === null
-          ? `Sin número · ${l.cantidadDispon} en sistema`
-          : `Lote ${l.numeroLote} · ${l.cantidadDispon} en sistema`,
+          ? `Sin número · ID ${l.id} · ${l.cantidadDispon} en sistema`
+          : `Lote ${l.numeroLote} · ID ${l.id} · ${l.cantidadDispon} en sistema`,
     }));
 
   const sinLotesDisponibles = !esEdicion && !cargandoLotes && lotesOpciones.length === 0;
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="scrollbar-fino max-h-[92vh] overflow-y-auto">
+      {/* Más ancho que el `max-w-lg` por defecto: la etiqueta del lote es el
+          nombre del artículo, y los nombres largos quedaban truncados en el
+          selector con la mitad del diálogo vacía al lado. `max-w-[95vw]` lo
+          mantiene dentro de la pantalla en móvil, donde 42rem no entran. */}
+      <DialogContent className="scrollbar-fino max-h-[92vh] max-w-[95vw] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{esEdicion ? "Corregir conteo" : "Nuevo conteo"}</DialogTitle>
           <DialogDescription>
@@ -797,10 +858,23 @@ function InventarioFormDialog({
         </DialogHeader>
 
         {sinLotesDisponibles ? (
-          <p className="rounded-lg border border-border bg-muted px-4 py-6 text-center text-sm text-muted-foreground">
-            Todos los lotes de esta sucursal ya tienen un conteo abierto. Procesá o anulá alguno
-            antes de cargar otro.
-          </p>
+          <div className="rounded-lg border border-border bg-muted px-4 py-6 text-center">
+            <p className="text-sm text-muted-foreground">
+              Todos los lotes de esta sucursal ya tienen un conteo abierto. Procesá o anulá alguno
+              antes de cargar otro.
+            </p>
+            {/* Antes esto era un callejón sin salida: si el artículo no tenía
+                ninguna partida, no había forma de contarlo desde acá. */}
+            <Button
+              type="button"
+              variant="outline"
+              className="mt-4 h-11 w-full sm:h-9 sm:w-auto"
+              onClick={() => setCreandoLote(true)}
+            >
+              <Plus className="size-4" />
+              Crear un lote nuevo
+            </Button>
+          </div>
         ) : (
           <Form {...form}>
             <form onSubmit={form.handleSubmit((v) => guardar.mutate(v))} className="space-y-4">
@@ -829,6 +903,21 @@ function InventarioFormDialog({
                         ? "El lote no se puede cambiar. Si está mal, anulá el conteo y cargá otro."
                         : "Sólo aparecen los lotes sin un conteo abierto."}
                     </FormDescription>
+                    {/* La salida para el caso "el artículo existe pero no tiene
+                        ninguna partida cargada": sin esto había que ir a la
+                        pantalla de Lotes —que está en sólo consulta— y volver. */}
+                    {!esEdicion && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-11 w-full sm:h-9 sm:w-auto"
+                        onClick={() => setCreandoLote(true)}
+                      >
+                        <Plus className="size-4" />
+                        No encuentro el lote: crear uno
+                      </Button>
+                    )}
                     <FormMessage />
                   </FormItem>
                 )}
@@ -843,13 +932,19 @@ function InventarioFormDialog({
                       <FormLabel>Cantidad contada</FormLabel>
                       <FormControl>
                         {/* inputMode decimal abre el teclado numérico en móvil
-                            sin las flechas de un type="number". */}
+                            sin las flechas de un type="number".
+
+                            Texto grande y alto holgado: es EL campo de esta
+                            pantalla —el único dato que aporta la persona— y en
+                            el depósito se carga de pie, con una mano y mirando
+                            el estante. Con el tamaño normal se erraba el toque. */}
                         <Input
                           {...field}
                           inputMode="decimal"
                           placeholder="0"
                           autoComplete="off"
-                          className="tabular-nums"
+                          autoFocus={!esEdicion}
+                          className="h-12 text-center text-lg font-semibold tabular-nums sm:h-10 sm:text-left sm:text-base sm:font-normal"
                         />
                       </FormControl>
                       <FormDescription>
@@ -877,6 +972,25 @@ function InventarioFormDialog({
                   )}
                 />
               </div>
+
+              {/* El costo del lote elegido. Se MUESTRA acá para no tener que
+                  salir a la pantalla de Lotes a verlo, pero es de sólo lectura:
+                  el ajuste al lote lo aplica TRG_INVENTARIOS_AU al procesar, y
+                  escribir el costo desde este formulario lo pisaría por fuera de
+                  esa transacción. Para editarlo hace falta la columna nueva en
+                  INVENTARIOS — ver la conversación del pendiente. */}
+              {!esEdicion && loteElegido !== null && (
+                <p className="rounded-lg border border-border bg-muted/50 px-3 py-2 text-sm text-muted-foreground">
+                  Costo del lote:{" "}
+                  <span className="font-medium tabular-nums text-foreground">
+                    {loteElegido.costo === null
+                      ? "sin cargar"
+                      : new Intl.NumberFormat("es-PY", { maximumFractionDigits: 2 }).format(
+                          loteElegido.costo,
+                        )}
+                  </span>
+                </p>
+              )}
 
               {/* La diferencia en vivo: es el dato que dice si vale la pena
                   seguir. Se muestra sólo cuando hay algo que comparar. */}
@@ -919,11 +1033,16 @@ function InventarioFormDialog({
                 )}
               />
 
-              <DialogFooter>
-                <Button type="button" variant="outline" onClick={onClose}>
-                  Cancelar
-                </Button>
-                <Button type="submit" disabled={guardar.isPending}>
+              {/* En móvil el botón de guardar va PRIMERO y ancho completo:
+                  `DialogFooter` apila en columna inversa, así que el submit
+                  queda arriba y al alcance del pulgar, con Cancelar debajo
+                  donde no se toca por error. */}
+              <DialogFooter className="gap-2">
+                <Button
+                  type="submit"
+                  disabled={guardar.isPending}
+                  className="h-11 w-full sm:h-10 sm:w-auto"
+                >
                   {guardar.isPending && <Loader2 className="size-4 animate-spin" />}
                   {guardar.isPending
                     ? "Guardando…"
@@ -931,10 +1050,216 @@ function InventarioFormDialog({
                       ? "Guardar cambios"
                       : "Registrar conteo"}
                 </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={onClose}
+                  className="h-11 w-full sm:h-10 sm:w-auto"
+                >
+                  Cancelar
+                </Button>
               </DialogFooter>
             </form>
           </Form>
         )}
+
+        {/* Alta de lote sin salir del conteo. Al crearlo queda elegido en el
+            selector, así que se sigue contando sin volver a buscarlo. */}
+        <LoteRapidoDialog
+          open={creandoLote}
+          idEmpresa={idEmpresa}
+          idSucursal={idSucursal}
+          onClose={() => setCreandoLote(false)}
+          onCreado={(id) => {
+            setCreandoLote(false);
+            form.setValue("idLote", String(id), { shouldValidate: true });
+          }}
+        />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Alta rápida de lote                                                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Crea un lote desde el conteo, para el artículo que todavía no tiene ninguna
+ * partida cargada en la sucursal.
+ *
+ * NACE EN CERO. La cantidad no se pide acá a propósito: el conteo que se está
+ * cargando es el que va a meter el stock, y hacerlo por este camino saltearía el
+ * circuito —el lote entraría con mercadería sin que nadie la haya contado ni
+ * procesado, y la diferencia del conteo daría 0 sin dejar rastro del ajuste.
+ *
+ * Con el lote en 0, el conteo queda con `sistema = 0` y `contado = N`, o sea una
+ * diferencia de +N que al PROCESAR aplica la entrada. El movimiento queda
+ * asentado como lo que es.
+ */
+function LoteRapidoDialog({
+  open,
+  idEmpresa,
+  idSucursal,
+  onClose,
+  onCreado,
+}: {
+  open: boolean;
+  idEmpresa: number;
+  idSucursal: number;
+  onClose: () => void;
+  /** Recibe el id del lote recién creado, para dejarlo elegido en el conteo. */
+  onCreado: (id: number) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [idArticulo, setIdArticulo] = useState("");
+  const [nombreArticulo, setNombreArticulo] = useState("");
+  const [costo, setCosto] = useState("");
+  const [fechaVencimiento, setFechaVencimiento] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  // El diálogo se desmonta al cerrarse, pero no cuando se reabre tras un
+  // cancelar: sin esto la segunda alta arranca con los datos de la primera.
+  function limpiar() {
+    setIdArticulo("");
+    setNombreArticulo("");
+    setCosto("");
+    setFechaVencimiento("");
+    setError(null);
+  }
+
+  const crear = useMutation({
+    mutationFn: () =>
+      api.lotes.crear({
+        idEmpresa,
+        idSucursal,
+        idArticulo: Number(idArticulo),
+        // Explícito en 0: `lotes.crear` omite el campo si no se manda y el
+        // backend lo resuelve igual, pero dejarlo escrito acá es lo que
+        // documenta que el lote nace vacío a propósito.
+        cantidad: 0,
+        cantidadDispon: 0,
+        ...(costo.trim() ? { costo: Number(costo) } : {}),
+        ...(fechaVencimiento ? { fechaVencimiento } : {}),
+      }),
+    onSuccess: (r) => {
+      // Los dos listados que cambian: el de lotes —de donde sale el selector— y
+      // el de artículos con lotes, que alimenta el filtro de la otra pantalla.
+      queryClient.invalidateQueries({ queryKey: ["lotes"] });
+      toast.success("Lote creado. Ya podés contarlo.");
+      limpiar();
+      onCreado(r.id);
+    },
+    onError: (e) => setError(MENSAJE_ERROR(e, "No se pudo crear el lote")),
+  });
+
+  function enviar() {
+    setError(null);
+    if (!idArticulo) {
+      setError("Elegí un artículo.");
+      return;
+    }
+    if (costo.trim() && (Number.isNaN(Number(costo)) || Number(costo) < 0)) {
+      setError("El costo tiene que ser un número no negativo.");
+      return;
+    }
+    crear.mutate();
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) {
+          limpiar();
+          onClose();
+        }
+      }}
+    >
+      <DialogContent className="max-w-[95vw] sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Nuevo lote</DialogTitle>
+          <DialogDescription>
+            Para un artículo que todavía no tiene ninguna partida en esta sucursal. Nace en 0: el
+            conteo que estás cargando es el que va a ingresar el stock.
+          </DialogDescription>
+        </DialogHeader>
+
+        {/* Sin react-hook-form: son cuatro campos y uno solo obligatorio.
+            Montar un segundo formulario anidado dentro del de conteo traía más
+            problemas (submits que se propagan) que los que resolvía. */}
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Artículo</label>
+            <SelectorArticulo
+              idEmpresa={idEmpresa}
+              value={idArticulo}
+              etiquetaSeleccionada={nombreArticulo}
+              onChange={(valor, etiqueta) => {
+                setIdArticulo(valor);
+                setNombreArticulo(etiqueta);
+              }}
+            />
+            <p className="text-xs text-muted-foreground">
+              Buscá en todo el catálogo, no sólo en lo que ya tiene lotes.
+            </p>
+          </div>
+
+          {/* Sin campo "N° de lote": la partida se identifica por su ID, que la
+              base genera sola. NUMERO_LOTE sigue en la tabla pero no se usa por
+              ahora, y pedirlo acá era un dato más que nadie iba a completar. */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Costo</label>
+            <Input
+              value={costo}
+              onChange={(e) => setCosto(e.target.value)}
+              inputMode="decimal"
+              placeholder="Opcional"
+              autoComplete="off"
+              className="h-11 tabular-nums sm:h-10"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Vencimiento</label>
+            <Input
+              type="date"
+              value={fechaVencimiento}
+              onChange={(e) => setFechaVencimiento(e.target.value)}
+              className="h-11 tabular-nums sm:h-10"
+            />
+            <p className="text-xs text-muted-foreground">Opcional: no toda la mercadería vence.</p>
+          </div>
+
+          {error && (
+            <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {error}
+            </p>
+          )}
+        </div>
+
+        <DialogFooter className="gap-2">
+          <Button
+            type="button"
+            onClick={enviar}
+            disabled={crear.isPending}
+            className="h-11 w-full sm:h-10 sm:w-auto"
+          >
+            {crear.isPending && <Loader2 className="size-4 animate-spin" />}
+            {crear.isPending ? "Creando…" : "Crear lote"}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => {
+              limpiar();
+              onClose();
+            }}
+            className="h-11 w-full sm:h-10 sm:w-auto"
+          >
+            Cancelar
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

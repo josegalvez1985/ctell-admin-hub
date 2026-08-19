@@ -50,6 +50,7 @@ import {
   ShoppingCart,
   Sliders,
   Store,
+  Tag,
   Tags,
   TrendingUp,
   Truck,
@@ -173,6 +174,28 @@ const ICONOS_PAGINA: Record<string, LucideIcon> = {
   "unidades de medida": Ruler,
   "unidad de medida": Ruler,
   unidades: Ruler,
+  // Tag (UNA etiqueta, la de la oferta) y no Tags (VARIAS), que ya es
+  // "categorías": lo que define a la lista es el descuento que le cuelga al
+  // artículo, no la agrupación.
+  //
+  // NI Percent NI Banknote: Percent ya es "IVA" —la otra página del menú que
+  // habla de porcentajes, y son justo las dos que más se confundirían— y
+  // Banknote ya es "monedas". La lista no es la tasa ni la divisa: es la
+  // etiqueta con la que sale el artículo.
+  //
+  // Se mapean las variantes del nombre porque el menú lo carga una persona
+  // desde el ABM y no hay garantía de cómo lo escriba. Se dejan también las
+  // de "precios": la tabla se llamó LISTAS_PRECIOS y el ítem puede haber
+  // quedado cargado con ese nombre.
+  "listas de descuentos": Tag,
+  "lista de descuentos": Tag,
+  "listas descuentos": Tag,
+  descuentos: Tag,
+  "listas de precios": Tag,
+  "lista de precios": Tag,
+  "listas precios": Tag,
+  listas: Tag,
+  precios: Tag,
   // Las etiquetas agrupan artículos; Boxes o Package los representarían a
   // ellos, no a la agrupación.
   categorias: Tags,

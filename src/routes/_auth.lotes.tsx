@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { createFileRoute } from "@tanstack/react-router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
@@ -13,7 +13,6 @@ import { useEmpresa } from "@/components/ctell/empresa-provider";
 import { useSucursal } from "@/components/ctell/sucursal-provider";
 import { TableHeadFiltrable, SIN_FILTRO } from "@/components/ctell/TableHeadFiltrable";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
-import { useTablaListado } from "@/hooks/use-tabla-listado";
 import { api, ApiError, type Lote } from "@/lib/api";
 import {
   AlertDialog,
@@ -88,8 +87,17 @@ const MENSAJE_ERROR = (error: unknown, fallback: string) =>
  */
 const SOLO_CONSULTA = true;
 
-/** Cuántas filas se muestran de entrada, y cuántas suma cada "Mostrar más". */
+/**
+ * Cuántas filas trae cada página DEL SERVIDOR, y cuántas suma "Mostrar más".
+ *
+ * Antes el endpoint devolvía la tabla entera y esto era un recorte en el
+ * navegador: se pagaba el tráfico y el parseo de todos los lotes de la sucursal
+ * para dibujar 20 filas. Ahora el corte lo hace el SQL con OFFSET/FETCH.
+ */
 const POR_PAGINA = 20;
+
+/** Lo que se espera entre teclas antes de mandar la búsqueda al servidor. */
+const ESPERA_BUSQUEDA_MS = 350;
 
 /** Días antes del vencimiento a partir de los cuales el lote se marca. */
 const DIAS_AVISO = 30;
@@ -192,8 +200,9 @@ function estadoVencimiento(lote: Lote): {
   const dias = diasParaVencer(lote.fechaVencimiento);
   if (dias === null) return null;
   if (dias < 0) return { texto: "Vencido", variante: "destructive" };
-  if (dias === 0) return { texto: "Vence hoy", variante: "destructive" };
-  if (dias <= DIAS_AVISO) return { texto: `${dias} d`, variante: "secondary" };
+  // El aviso arranca en 1 día, no en 0: el que vence hoy todavía no está
+  // vencido y no se le muestra insignia. Con `dias >= 1` el "0 d" queda fuera.
+  if (dias >= 1 && dias <= DIAS_AVISO) return { texto: `${dias} d`, variante: "secondary" };
   return null;
 }
 
@@ -213,20 +222,59 @@ function LotesPage() {
   const [creando, setCreando] = useState(false);
   const [aEliminar, setAEliminar] = useState<Lote | null>(null);
   const [filtroArticulo, setFiltroArticulo] = useState<string>(SIN_FILTRO);
-  const [visibles, setVisibles] = useState(POR_PAGINA);
+
+  // Dos estados para la búsqueda: `busqueda` es lo que se ve en el input
+  // (inmediato, sin lag al tipear) y `busquedaEnvio` lo que entra en la
+  // queryKey, para no disparar una consulta por tecla.
+  const [busqueda, setBusqueda] = useState("");
+  const [busquedaEnvio, setBusquedaEnvio] = useState("");
+
+  useEffect(() => {
+    const id = setTimeout(() => setBusquedaEnvio(busqueda), ESPERA_BUSQUEDA_MS);
+    return () => clearTimeout(id);
+  }, [busqueda]);
 
   const { empresa } = useEmpresa();
   const { sucursal, cargando: cargandoSucursal } = useSucursal();
 
-  // Las dos entran en la queryKey: al cambiar cualquiera, TanStack Query trata
-  // el listado como otra consulta en vez de mostrar en caché el de la anterior.
-  const { data, isPending, isError } = useQuery({
-    queryKey: ["lotes", empresa?.id ?? null, sucursal?.id ?? null],
-    queryFn: () => api.lotes.listar({ idEmpresa: empresa!.id, idSucursal: sucursal!.id }),
-    // Los providers hidratan después de montar: sin esto la primera petición
-    // saldría sin filtros y traería los lotes de todas las sucursales.
-    enabled: empresa !== null && sucursal !== null,
-  });
+  // Empresa, sucursal, búsqueda y filtro entran en la queryKey: al cambiar
+  // cualquiera, TanStack Query trata el listado como otra consulta —y descarta
+  // las páginas ya traídas, que eran de otro filtro— en vez de mostrar la caché
+  // anterior.
+  //
+  // useInfiniteQuery y no useQuery: "Mostrar más" ACUMULA páginas del servidor.
+  // Con useQuery cada página reemplazaría a la anterior y el botón navegaría en
+  // vez de agregar filas.
+  const { data, isPending, isError, fetchNextPage, hasNextPage, isFetchingNextPage } =
+    useInfiniteQuery({
+      queryKey: [
+        "lotes",
+        empresa?.id ?? null,
+        sucursal?.id ?? null,
+        busquedaEnvio.trim(),
+        filtroArticulo,
+      ],
+      queryFn: ({ pageParam }) =>
+        api.lotes.listar({
+          idEmpresa: empresa!.id,
+          idSucursal: sucursal!.id,
+          idArticulo: filtroArticulo === SIN_FILTRO ? undefined : Number(filtroArticulo),
+          busqueda: busquedaEnvio,
+          pagina: pageParam,
+          tamanio: POR_PAGINA,
+        }),
+      // Los providers hidratan después de montar: sin esto la primera petición
+      // saldría sin filtros y traería los lotes de todas las sucursales.
+      enabled: empresa !== null && sucursal !== null,
+      initialPageParam: 1,
+      // `total` es el de las filas que pasan el filtro, así que sumar lo ya
+      // traído y compararlo dice si queda otra página. Devolver undefined es lo
+      // que apaga `hasNextPage` y esconde el botón.
+      getNextPageParam: (ultima, paginas) => {
+        const traidos = paginas.reduce((suma, p) => suma + p.items.length, 0);
+        return traidos < ultima.total ? paginas.length + 1 : undefined;
+      },
+    });
 
   // Los artículos alimentan el filtro de la columna y el formulario. Misma
   // queryKey que usa la página de Artículos, así se comparte la respuesta.
@@ -243,42 +291,45 @@ function LotesPage() {
     enabled: empresa !== null,
   });
 
-  const items = data?.items ?? [];
-
-  // El endpoint acepta ?idArticulo=, pero el filtro se aplica en el cliente: el
-  // listado ya vino entero, así que cambiar de artículo es instantáneo.
-  const filtrados = items.filter(
-    (l) => filtroArticulo === SIN_FILTRO || String(l.idArticulo) === filtroArticulo,
-  );
-
-  const { busqueda, setBusqueda, orden, alternarOrden, resultado, termino } = useTablaListado(
-    filtrados,
-    (l) => [
-      l.nombreArticulo,
-      l.codigoArticulo,
-      l.numeroLote === null ? "Sin número" : String(l.numeroLote),
-      l.observaciones,
-      // El texto que se ve, no el ISO: en pantalla dice "3 abr 2026".
-      formatearFecha(l.fechaVencimiento),
-      estadoVencimiento(l)?.texto,
-    ],
-  );
+  // Todas las páginas traídas hasta ahora, aplanadas. Es lo que la tabla pinta:
+  // NO hay recorte en el cliente, porque cada fila que llegó ya la eligió el
+  // servidor.
+  const cargados = (data?.pages ?? []).flatMap((p) => p.items);
 
   /**
-   * `useTablaListado` ordena con `localeCompare` sobre texto, y varias columnas
-   * de acá son numéricas o fechas: como texto, la cantidad 10 iría antes que la
-   * 2. Esas se reordenan a mano; el resto usa el orden del hook.
+   * El orden por click en el header ORDENA SOLO LO YA CARGADO, no la sucursal
+   * entera. Es la misma diferencia que en Artículos: con 40 de 300 lotes
+   * traídos, "ordenar por cantidad descendente" muestra el mayor de esos 40.
    *
-   * Las fechas en ISO ordenan bien como texto (por eso no están acá), pero los
-   * nulos tienen que ir al final igual que en el SQL.
+   * Se mantiene así porque el uso es reordenar lo que se está mirando; para
+   * encontrar un lote puntual está la búsqueda, que sí va al servidor.
+   *
+   * `useTablaListado` ya no sirve: su filtrado por término era en memoria y
+   * ahora esa parte la hace el SQL. Sólo se conserva el orden, y con los
+   * comparadores propios que esta tabla necesitaba —varias columnas son
+   * numéricas o fechas, y como texto la cantidad 10 iría antes que la 2.
    */
+  const [orden, setOrden] = useState<{
+    campo: keyof Lote;
+    direccion: "asc" | "desc";
+  } | null>(null);
+
+  function alternarOrden(campo: keyof Lote) {
+    setOrden((actual) => {
+      if (!actual || actual.campo !== campo) return { campo, direccion: "asc" };
+      if (actual.direccion === "asc") return { campo, direccion: "desc" };
+      return null; // Tercer click: vuelve al orden del backend (por vencimiento).
+    });
+  }
+
   const mostrados = useMemo(() => {
-    const numericas = ["numeroLote", "cantidad", "cantidadDispon", "costo"] as const;
+    // `id` entra acá y no en el comparador de texto: como string, el lote 10
+    // iría antes que el 2. `numeroLote` salió de la lista junto con su columna:
+    // ningún header lo ordena ya.
+    const numericas = ["id", "cantidad", "cantidadDispon", "costo"] as const;
     type CampoNumerico = (typeof numericas)[number];
     const esNumerica = (campo: string): campo is CampoNumerico =>
       (numericas as readonly string[]).includes(campo);
-
-    let lista = resultado;
 
     if (orden && esNumerica(orden.campo)) {
       const factor = orden.direccion === "asc" ? 1 : -1;
@@ -286,7 +337,7 @@ function LotesPage() {
       // del sort deja el tipo como la unión de las tres columnas y TypeScript no
       // lo estrecha a number.
       const campo: CampoNumerico = orden.campo;
-      lista = [...resultado].sort((a, b) => {
+      return [...cargados].sort((a, b) => {
         const va = a[campo];
         const vb = b[campo];
         // Los nulos al final en las dos direcciones: "sin costo" no es ni el
@@ -296,9 +347,13 @@ function LotesPage() {
         if (vb === null) return -1;
         return factor * (va - vb);
       });
-    } else if (orden?.campo === "fechaVencimiento") {
+    }
+
+    if (orden?.campo === "fechaVencimiento") {
       const factor = orden.direccion === "asc" ? 1 : -1;
-      lista = [...resultado].sort((a, b) => {
+      // Las fechas en ISO ordenan bien como texto, pero los nulos tienen que ir
+      // al final igual que en el SQL.
+      return [...cargados].sort((a, b) => {
         if (a.fechaVencimiento === null && b.fechaVencimiento === null) return 0;
         if (a.fechaVencimiento === null) return 1;
         if (b.fechaVencimiento === null) return -1;
@@ -306,30 +361,48 @@ function LotesPage() {
       });
     }
 
-    return lista.slice(0, visibles);
-  }, [resultado, orden, visibles]);
+    if (orden) {
+      const factor = orden.direccion === "asc" ? 1 : -1;
+      const campo = orden.campo;
+      return [...cargados].sort(
+        (a, b) => factor * String(a[campo] ?? "").localeCompare(String(b[campo] ?? ""), "es"),
+      );
+    }
 
-  // Se resetea al cambiar filtro o búsqueda: seguir en "80 de 90" después de
-  // filtrar a 12 resultados mostraría todo de golpe. Ajuste en render, no
-  // useEffect: React re-renderiza antes de pintar.
-  const claveVista = `${filtroArticulo}|${termino}`;
-  const [claveAnterior, setClaveAnterior] = useState(claveVista);
-  if (claveVista !== claveAnterior) {
-    setClaveAnterior(claveVista);
-    setVisibles(POR_PAGINA);
-  }
+    return cargados;
+  }, [cargados, orden]);
 
-  // Las opciones del FILTRO de la columna salen de los lotes ya listados, no de
-  // /articulos/listar: ese endpoint viene paginado y daría sólo 20 artículos.
+  // El total del backend son las filas que pasan el filtro, no las traídas.
+  const total = data?.pages[0]?.total ?? 0;
+  const quedan = total - cargados.length;
+
+  // El término que el servidor está respondiendo, no el que se está tipeando:
+  // los mensajes de "sin resultados" tienen que nombrar lo que se buscó de
+  // verdad, no lo que quedó a medio escribir.
+  const termino = busquedaEnvio.trim();
+
+  // Las opciones del FILTRO de la columna salen de un endpoint propio, no de
+  // los lotes ya listados: con el listado paginado, esas 20 filas darían un
+  // desplegable a medias que empeoraría al filtrar.
   //
-  // Además es lo correcto: filtrar por un artículo que no tiene ningún lote
-  // vaciaría la tabla, así que las únicas opciones útiles son las que de verdad
-  // aparecen. Mismo criterio que las sucursales en Artículos-Ubicaciones.
-  const articulosDelListado = Array.from(
-    new Map(items.map((l) => [l.idArticulo, l.nombreArticulo])).entries(),
-  )
-    .sort((a, b) => a[1].localeCompare(b[1], "es"))
-    .map(([id, nombre]) => ({ valor: String(id), etiqueta: nombre }));
+  // Tampoco de /articulos/listar: ese ofrece artículos sin ningún lote, y
+  // elegirlos vaciaría la tabla. Las únicas opciones útiles son las que de
+  // verdad tienen mercadería, que es lo que /lotes/articulos devuelve.
+  //
+  // NO lleva la búsqueda ni el filtro en la queryKey a propósito: las opciones
+  // tienen que seguir completas mientras se filtra, si no elegir un artículo
+  // vaciaría el desplegable del que se acaba de elegir.
+  const { data: articulosConLotes } = useQuery({
+    queryKey: ["lotes", "articulos", empresa?.id ?? null, sucursal?.id ?? null],
+    queryFn: () => api.lotes.articulos({ idEmpresa: empresa!.id, idSucursal: sucursal!.id }),
+    enabled: empresa !== null && sucursal !== null,
+  });
+
+  const articulosDelListado = (articulosConLotes?.items ?? []).map((a) => ({
+    valor: String(a.id),
+    etiqueta: a.nombreArticulo,
+  }));
+
   const eliminar = useMutation({
     mutationFn: (lote: Lote) => api.lotes.eliminar(lote.id, lote.idEmpresa),
     onSuccess: () => {
@@ -409,7 +482,7 @@ function LotesPage() {
               <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
                 No se pudieron cargar los lotes.
               </p>
-            ) : resultado.length === 0 ? (
+            ) : mostrados.length === 0 ? (
               <div className="surface-card px-3 py-16 text-center">
                 <p className="text-sm text-muted-foreground">
                   {termino || filtroArticulo !== SIN_FILTRO
@@ -437,10 +510,11 @@ function LotesPage() {
                             <p className="truncate font-semibold text-foreground">
                               {lote.nombreArticulo}
                             </p>
+                            {/* El ID y el código del artículo: el número de
+                                partida se ocultó de esta pantalla. */}
                             <p className="mt-0.5 text-xs text-muted-foreground">
-                              {lote.numeroLote === null
-                                ? "Sin número de lote"
-                                : `Lote ${lote.numeroLote}`}
+                              ID {lote.id}
+                              {lote.codigoArticulo ? ` · ${lote.codigoArticulo}` : ""}
                             </p>
                           </div>
                           {estado && (
@@ -455,9 +529,8 @@ function LotesPage() {
                             <dt className="inline text-muted-foreground">Disponible: </dt>
                             <dd className="inline tabular-nums text-foreground">
                               {lote.cantidadDispon}
-                              {lote.cantidadDispon !== lote.cantidad && (
-                                <span className="text-muted-foreground"> de {lote.cantidad}</span>
-                              )}
+                              {/* Siempre, igual que en la tabla de escritorio. */}
+                              <span className="text-muted-foreground"> de {lote.cantidad}</span>
                             </dd>
                           </div>
                           <div>
@@ -466,12 +539,8 @@ function LotesPage() {
                               {formatearImporte(lote.costo)}
                             </dd>
                           </div>
-                          <div>
-                            <dt className="inline text-muted-foreground">Entrada: </dt>
-                            <dd className="inline tabular-nums text-foreground">
-                              {formatearFecha(lote.fechaEntrada)}
-                            </dd>
-                          </div>
+                          {/* Sin "Entrada": una sola fecha, igual que en la
+                              tabla de escritorio. */}
                           <div>
                             <dt className="inline text-muted-foreground">Vence: </dt>
                             <dd className="inline tabular-nums text-foreground">
@@ -521,11 +590,15 @@ function LotesPage() {
                         >
                           Artículo
                         </TableHeadFiltrable>
+                        {/* El ID_LOTE de la base, no el NUMERO_LOTE: el número
+                            de partida se ocultó y lo que se necesita ver es el
+                            identificador con el que el lote se referencia desde
+                            el resto del sistema. */}
                         <TableHeadOrdenable
-                          direccion={orden?.campo === "numeroLote" ? orden.direccion : null}
-                          onClick={() => alternarOrden("numeroLote")}
+                          direccion={orden?.campo === "id" ? orden.direccion : null}
+                          onClick={() => alternarOrden("id")}
                         >
-                          Lote
+                          ID
                         </TableHeadOrdenable>
                         {/* Ordena por lo DISPONIBLE, que es lo que la columna
                             muestra primero. */}
@@ -533,7 +606,7 @@ function LotesPage() {
                           direccion={orden?.campo === "cantidadDispon" ? orden.direccion : null}
                           onClick={() => alternarOrden("cantidadDispon")}
                         >
-                          Disponible
+                          Disponible / Entró
                         </TableHeadOrdenable>
                         <TableHeadOrdenable
                           direccion={orden?.campo === "costo" ? orden.direccion : null}
@@ -565,7 +638,7 @@ function LotesPage() {
                               )}
                             </TableCell>
                             <TableCell className="tabular-nums text-muted-foreground">
-                              {lote.numeroLote ?? "—"}
+                              {lote.id}
                             </TableCell>
                             {/* "queda / entró": lo primero es el dato operativo
                                 —cuánto hay— y lo segundo el contexto. Cuando el
@@ -581,16 +654,23 @@ function LotesPage() {
                               >
                                 {lote.cantidadDispon}
                               </span>
-                              {lote.cantidadDispon !== lote.cantidad && (
-                                <span className="text-xs text-muted-foreground">
-                                  {" "}
-                                  / {lote.cantidad}
-                                </span>
-                              )}
+                              {/* El "/ entró" se muestra SIEMPRE, también con el
+                                  lote entero: ocultarlo cuando los dos números
+                                  coinciden dejaba la celda con un valor suelto y
+                                  no se sabía si era lo que queda o lo que entró. */}
+                              <span className="text-xs text-muted-foreground">
+                                {" "}
+                                / {lote.cantidad}
+                              </span>
                             </TableCell>
                             <TableCell className="tabular-nums text-muted-foreground">
                               {formatearImporte(lote.costo)}
                             </TableCell>
+                            {/* Sólo el vencimiento: la fecha de entrada iba
+                                debajo y, cuando coinciden, la fila repetía dos
+                                veces el mismo día sin que se notara que eran
+                                cosas distintas. La entrada sigue en el detalle
+                                del formulario. */}
                             <TableCell>
                               <div className="flex items-center gap-2">
                                 <span className="tabular-nums text-muted-foreground">
@@ -602,9 +682,6 @@ function LotesPage() {
                                   </Badge>
                                 )}
                               </div>
-                              <span className="block text-xs text-muted-foreground">
-                                Entró {formatearFecha(lote.fechaEntrada)}
-                              </span>
                             </TableCell>
                             {!SOLO_CONSULTA && (
                               <TableCell className="text-right">
@@ -637,10 +714,20 @@ function LotesPage() {
                   </Table>
                 </div>
 
-                {resultado.length > mostrados.length && (
+                {/* Trae la página siguiente DEL SERVIDOR y la acumula; antes
+                    sólo levantaba el corte de un listado que ya estaba entero
+                    en memoria. */}
+                {hasNextPage && (
                   <div className="flex justify-center">
-                    <Button variant="outline" onClick={() => setVisibles((v) => v + POR_PAGINA)}>
-                      Mostrar más ({resultado.length - mostrados.length} restantes)
+                    <Button
+                      variant="outline"
+                      onClick={() => fetchNextPage()}
+                      disabled={isFetchingNextPage}
+                    >
+                      {isFetchingNextPage && <Loader2 className="size-4 animate-spin" />}
+                      {isFetchingNextPage
+                        ? "Cargando…"
+                        : `Mostrar más (${quedan} ${quedan === 1 ? "restante" : "restantes"})`}
                     </Button>
                   </div>
                 )}
@@ -674,10 +761,8 @@ function LotesPage() {
               <AlertDialogTitle>¿Eliminar el lote?</AlertDialogTitle>
               <AlertDialogDescription>
                 Se va a eliminar la partida de {aEliminar?.nombreArticulo}
-                {aEliminar?.numeroLote !== null && aEliminar !== null
-                  ? ` (lote ${aEliminar.numeroLote})`
-                  : ""}
-                . Esta acción no se puede deshacer.
+                {aEliminar !== null ? ` (ID ${aEliminar.id})` : ""}. Esta acción no se puede
+                deshacer.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>

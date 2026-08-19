@@ -160,6 +160,58 @@ export type ListaCiudades = {
   total: number;
 };
 
+/**
+ * Institución de una empresa: un colegio, un hospital, una municipalidad.
+ *
+ * **No tiene columna `activo`**: el DDL no la trae, así que la baja es física,
+ * como en `DetalleMoneda` y `ListaDescuentos`.
+ *
+ * LA GEOGRAFÍA VIENE DESNORMALIZADA: guarda país, departamento y ciudad aunque
+ * el país se deduzca del departamento. El backend valida que la cadena sea
+ * coherente (`PAISES ← DEPARTAMENTOS ← CIUDADES`) antes de escribir, porque las
+ * FK sólo garantizan que cada fila exista, no que tengan que ver entre sí.
+ */
+export type Institucion = {
+  id: number;
+  /**
+   * Empresa dueña de la institución. Sale de la empresa activa de la sesión, no
+   * de un combobox.
+   *
+   * No hay campo `empresa` con el nombre: el listado siempre viene filtrado por
+   * una sola empresa, así que sería la misma constante en todas las filas.
+   */
+  idEmpresa: number;
+  /** Obligatorio. El nombre viene del JOIN contra PAISES. */
+  idPais: number;
+  pais: string;
+  /** Obligatorio. El nombre viene del JOIN contra DEPARTAMENTOS. */
+  idDepartamento: number;
+  departamento: string;
+  /**
+   * **Opcional**: el DDL la deja nullable. Una institución rural puede no tener
+   * ciudad asignada. Por eso el JOIN contra CIUDADES es LEFT y `ciudad` llega
+   * null cuando no hay.
+   */
+  idCiudad: number | null;
+  ciudad: string | null;
+  nombreInstitucion: string;
+  direccion: string | null;
+  director: string | null;
+  contacto: string | null;
+  correo: string | null;
+  /**
+   * Ubicación geográfica en **texto libre** — coordenadas, un link de mapa, una
+   * referencia. No tiene relación con la tabla `UBICACIONES`, que son
+   * posiciones dentro de un depósito.
+   */
+  ubicacion: string | null;
+};
+
+export type ListaInstituciones = {
+  items: Institucion[];
+  total: number;
+};
+
 export type Empresa = {
   id: number;
   nombreEmpresa: string;
@@ -323,6 +375,56 @@ export type Lote = {
   fechaVencimiento: string | null;
   fechaEntrada: string | null;
   observaciones: string | null;
+};
+
+/**
+ * Lista de descuentos de una empresa: "Lista Mayorista", "Lista Verano 2024".
+ *
+ * **No tiene columna `activo`**, y eso cambia cómo se la da de baja: acá la
+ * vigencia la determinan las FECHAS. Una lista no se inactiva, se le pone
+ * `fechaVigenciaHasta`. El borrado, como en `DetalleMoneda`, es físico.
+ */
+export type ListaDescuentos = {
+  id: number;
+  /**
+   * Empresa dueña de la lista. Sale de la empresa activa de la sesión, no de un
+   * combobox: cada empresa tiene su propio juego de listas.
+   *
+   * No hay campo `empresa` con el nombre: el listado siempre viene filtrado por
+   * una sola empresa, así que sería la misma constante en todas las filas.
+   */
+  idEmpresa: number;
+  /** Único dentro de la empresa. Dos empresas sí pueden repetirlo. */
+  nombreLista: string;
+  /**
+   * Descuento general de la lista, en **porcentaje**: `10` es 10%, no 0.10.
+   * Nunca llega null — el backend lo resuelve a 0, que es lo que "sin
+   * descuento" significa.
+   */
+  porcentajeDescuento: number;
+  /**
+   * Fechas en ISO **sólo día** ("2026-04-03"), sin hora: una vigencia es un día
+   * del calendario. `fechaVigenciaHasta` es null cuando la lista rige
+   * indefinidamente.
+   */
+  fechaVigenciaDesde: string;
+  fechaVigenciaHasta: string | null;
+  /**
+   * Si la lista rige **hoy**, resuelto por el backend contra las dos fechas
+   * (ambos extremos inclusive).
+   *
+   * **Calculado, no guardado:** no existe como columna. Viene con el mismo
+   * código `'A'`/`'I'` del resto del proyecto para poder tratarlo igual que
+   * cualquier otro estado —`esActivo(x.vigente)`— aunque no salga de un
+   * `ACTIVO`. No se manda al crear ni al actualizar: cambiarlo significa mover
+   * las fechas.
+   */
+  vigente: Estado;
+};
+
+export type ListaListasDescuentos = {
+  items: ListaDescuentos[];
+  total: number;
 };
 
 /**
@@ -632,7 +734,28 @@ export type ListaFacturasCompras = {
 
 export type ListaLotes = {
   items: Lote[];
+  /** Las filas que pasan el filtro, **no** las de esta página. */
   total: number;
+  pagina: number;
+  /** El que el backend aplicó, que pudo recortarse al techo de 200. */
+  tamanio: number;
+};
+
+/**
+ * Un artículo que tiene al menos un lote, para el desplegable del filtro de la
+ * columna Artículo.
+ *
+ * Sólo id y nombre: es lo único que el filtro necesita. Viene de
+ * `/lotes/articulos` y no de `/articulos/listar` porque ese ofrecería artículos
+ * sin ningún lote —elegirlos daría una lista vacía— y además viene paginado.
+ */
+export type ArticuloConLotes = {
+  id: number;
+  nombreArticulo: string;
+};
+
+export type ListaArticulosConLotes = {
+  items: ArticuloConLotes[];
 };
 
 /**
@@ -1621,6 +1744,91 @@ export const api = {
       request<{ ok: boolean }>(`/ciudades/eliminar/${id}`, { method: "DELETE" }),
   },
 
+  /**
+   * Instituciones por empresa, con su ubicación geográfica.
+   *
+   * **No hay `inactivar`/`activar`**: la tabla no tiene columna de estado, así
+   * que `eliminar` es baja física.
+   */
+  instituciones: {
+    /**
+     * Instituciones de una empresa. `idEmpresa` sale de la empresa activa de la
+     * sesión (`useEmpresa()`), no de un filtro de la pantalla.
+     *
+     * Los filtros geográficos son opcionales y se acumulan.
+     */
+    listar: (
+      // `| undefined` explícito y no sólo `?`: con exactOptionalPropertyTypes
+      // pasar `idCiudad: undefined` —que es como la pantalla expresa "sin
+      // filtro"— no compilaría contra una propiedad meramente opcional.
+      params: {
+        idEmpresa?: number | undefined;
+        idPais?: number | undefined;
+        idDepartamento?: number | undefined;
+        idCiudad?: number | undefined;
+      } = {},
+    ) => {
+      const q = new URLSearchParams();
+      if (params.idEmpresa) q.set("idEmpresa", String(params.idEmpresa));
+      if (params.idPais) q.set("idPais", String(params.idPais));
+      if (params.idDepartamento) q.set("idDepartamento", String(params.idDepartamento));
+      if (params.idCiudad) q.set("idCiudad", String(params.idCiudad));
+      const query = q.toString();
+      return request<ListaInstituciones>(`/instituciones/listar${query ? `?${query}` : ""}`);
+    },
+
+    crear: (datos: {
+      idEmpresa: number;
+      idPais: number;
+      idDepartamento: number;
+      /** Opcional: el DDL la deja nullable. */
+      idCiudad?: number;
+      nombreInstitucion: string;
+      direccion?: string;
+      director?: string;
+      contacto?: string;
+      correo?: string;
+      ubicacion?: string;
+    }) =>
+      request<{ id: number; ok: boolean }>("/instituciones/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Los campos ausentes no se modifican. */
+    actualizar: (
+      id: number,
+      datos: {
+        /** OBLIGATORIO: acota a cuál fila se aplica el cambio, no es un dato a guardar. Sin él, 400. */
+        idEmpresa: number;
+        idPais?: number;
+        idDepartamento?: number;
+        /**
+         * Ausente significa **no cambiar**, no "quitarle la ciudad". Para dejar
+         * la institución sin ciudad se manda el literal `"null"` — sin ese valor
+         * distinto no habría forma de borrarla.
+         */
+        idCiudad?: number | "null";
+        nombreInstitucion?: string;
+        direccion?: string;
+        director?: string;
+        contacto?: string;
+        correo?: string;
+        ubicacion?: string;
+      },
+    ) =>
+      request<{ ok: boolean }>(`/instituciones/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Baja **física**: no hay estado que apagar. */
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/instituciones/eliminar/${id}/${idEmpresa}`, {
+        method: "DELETE",
+      }),
+  },
+
   empresas: {
     /** Sin `idCiudad` devuelve las empresas de todas las ciudades. */
     listar: (params: { idCiudad?: number } = {}) => {
@@ -1791,13 +1999,51 @@ export const api = {
    * las convierte con formato explícito: mandar otro formato da 400.
    */
   lotes: {
-    listar: (params: { idEmpresa?: number; idSucursal?: number; idArticulo?: number } = {}) => {
+    /**
+     * Lotes de una empresa y sucursal. Las dos salen de los providers globales
+     * (`useEmpresa()` / `useSucursal()`), no de filtros de la pantalla.
+     *
+     * PAGINADO EN EL SERVIDOR, 20 por página. `busqueda` e `idArticulo` van al
+     * backend y filtran en SQL: filtrando en el cliente sólo se miraría lo ya
+     * traído, y un lote de la página 5 no aparecería al buscarlo.
+     *
+     * `URLSearchParams` escapa los valores solo — hace falta porque un código de
+     * artículo puede llevar barras.
+     */
+    listar: (
+      // `| undefined` explícito y no sólo `?`: con exactOptionalPropertyTypes
+      // pasar `idArticulo: undefined` —que es como la pantalla expresa "sin
+      // filtro"— no compilaría contra una propiedad meramente opcional.
+      params: {
+        idEmpresa?: number | undefined;
+        idSucursal?: number | undefined;
+        idArticulo?: number | undefined;
+        busqueda?: string | undefined;
+        pagina?: number | undefined;
+        tamanio?: number | undefined;
+      } = {},
+    ) => {
       const q = new URLSearchParams();
       if (params.idEmpresa) q.set("idEmpresa", String(params.idEmpresa));
       if (params.idSucursal) q.set("idSucursal", String(params.idSucursal));
       if (params.idArticulo) q.set("idArticulo", String(params.idArticulo));
+      if (params.busqueda?.trim()) q.set("busqueda", params.busqueda.trim());
+      if (params.pagina) q.set("pagina", String(params.pagina));
+      if (params.tamanio) q.set("tamanio", String(params.tamanio));
       const query = q.toString();
       return request<ListaLotes>(`/lotes/listar${query ? `?${query}` : ""}`);
+    },
+
+    /**
+     * Los artículos que tienen al menos un lote, para el desplegable del filtro
+     * de la columna. Sin paginar: son los artículos con stock en UNA sucursal.
+     */
+    articulos: (params: { idEmpresa?: number; idSucursal?: number } = {}) => {
+      const q = new URLSearchParams();
+      if (params.idEmpresa) q.set("idEmpresa", String(params.idEmpresa));
+      if (params.idSucursal) q.set("idSucursal", String(params.idSucursal));
+      const query = q.toString();
+      return request<ListaArticulosConLotes>(`/lotes/articulos${query ? `?${query}` : ""}`);
     },
 
     crear: (datos: {
@@ -1935,6 +2181,72 @@ export const api = {
 
     eliminar: (id: number, idEmpresa: number) =>
       request<{ ok: boolean }>(`/monedas/eliminar/${id}/${idEmpresa}`, { method: "DELETE" }),
+  },
+
+  /**
+   * Listas de descuentos por empresa, con vigencia por fechas.
+   *
+   * **No hay `inactivar`/`activar`**: la tabla no tiene columna de estado. Para
+   * retirar una lista se le pone `fechaVigenciaHasta`; para borrarla de verdad,
+   * `eliminar` (baja física).
+   */
+  listasDescuentos: {
+    /**
+     * Listas de una empresa. `idEmpresa` sale de la empresa activa de la sesión
+     * (`useEmpresa()`), no de un filtro de la pantalla.
+     *
+     * Vienen ordenadas por vigencia descendente: lo que rige hoy primero.
+     *
+     * Sin `idEmpresa` devuelve las de todas las empresas — no se usa desde la
+     * app, pero el endpoint lo permite para poder inspeccionarlo.
+     */
+    listar: (params: { idEmpresa?: number } = {}) => {
+      const q = params.idEmpresa ? `?idEmpresa=${params.idEmpresa}` : "";
+      return request<ListaListasDescuentos>(`/listas-descuentos/listar${q}`);
+    },
+
+    crear: (datos: {
+      idEmpresa: number;
+      nombreLista: string;
+      /** Porcentaje: 10 es 10%. Entre 0 y 100. Omitido = 0. */
+      porcentajeDescuento?: number;
+      /** ISO sólo día ("2026-04-03"). Obligatoria. */
+      fechaVigenciaDesde: string;
+      /** ISO sólo día. Omitida = la lista rige indefinidamente. */
+      fechaVigenciaHasta?: string;
+    }) =>
+      request<{ id: number; ok: boolean }>("/listas-descuentos/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Los campos ausentes no se modifican. */
+    actualizar: (
+      id: number,
+      datos: {
+        /** OBLIGATORIO: acota a cuál fila se aplica el cambio, no es un dato a guardar. Sin él, 400. */
+        idEmpresa: number;
+        nombreLista?: string;
+        porcentajeDescuento?: number;
+        fechaVigenciaDesde?: string;
+        /**
+         * Ausente significa **no cambiar**, no "quitarle el vencimiento". Para
+         * volver a dejar la lista sin fin de vigencia se manda el literal
+         * `"null"` — sin ese valor distinto no habría forma de borrarla.
+         */
+        fechaVigenciaHasta?: string | "null";
+      },
+    ) =>
+      request<{ ok: boolean }>(`/listas-descuentos/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Baja **física**: no hay estado que apagar. */
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/listas-descuentos/eliminar/${id}/${idEmpresa}`, {
+        method: "DELETE",
+      }),
   },
 
   /**

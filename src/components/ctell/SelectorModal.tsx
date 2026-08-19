@@ -83,6 +83,10 @@ export function SelectorModal({
         disabled={disabled || cargando}
         onClick={() => setAbierto(true)}
         className={cn("w-full justify-between font-normal", className)}
+        // El disparador es de una sola línea, así que la etiqueta sigue
+        // truncada acá. El `title` deja leer el nombre completo al pasar el
+        // mouse sin tener que abrir el modal.
+        {...(seleccionada ? { title: seleccionada.etiqueta } : {})}
       >
         <span className={cn("truncate", !seleccionada && "text-muted-foreground")}>
           {cargando ? "Cargando…" : (seleccionada?.etiqueta ?? placeholder)}
@@ -155,7 +159,10 @@ export function ListaEnModal({
 
   return (
     <Dialog open={abierto} onOpenChange={(a) => !a && onCerrar()}>
-      <DialogContent className="flex max-h-[85vh] max-w-md flex-col">
+      {/* `max-w-lg` y no `max-w-md`: las opciones suelen ser nombres de
+          artículo, que con 28rem se cortaban a mitad de palabra. `max-w-[95vw]`
+          lo mantiene dentro de la pantalla en móvil. */}
+      <DialogContent className="flex max-h-[85vh] max-w-[95vw] flex-col sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{titulo}</DialogTitle>
           {descripcion && <DialogDescription>{descripcion}</DialogDescription>}
@@ -193,8 +200,13 @@ export function ListaEnModal({
                   )}
                 >
                   <Check className={cn("size-4 shrink-0", elegida ? "opacity-100" : "opacity-0")} />
+                  {/* La etiqueta se PARTE en varias líneas en vez de truncarse:
+                      acá es donde hay que poder leer el nombre entero para
+                      elegir, y dos artículos con el mismo prefijo largo se
+                      veían idénticos cortados. La descripción sí sigue en una
+                      línea: es corta y de apoyo. */}
                   <span className="flex min-w-0 flex-1 flex-col">
-                    <span className="truncate">{opcion.etiqueta}</span>
+                    <span className="break-words">{opcion.etiqueta}</span>
                     {opcion.descripcion && (
                       <span className="truncate text-xs text-muted-foreground">
                         {opcion.descripcion}

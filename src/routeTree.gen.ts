@@ -22,8 +22,10 @@ import { Route as AuthDepartamentosRouteImport } from './routes/_auth.departamen
 import { Route as AuthEmpresasRouteImport } from './routes/_auth.empresas'
 import { Route as AuthFacturasComprasRouteImport } from './routes/_auth.facturas-compras'
 import { Route as AuthHomeRouteImport } from './routes/_auth.home'
+import { Route as AuthInstitucionesRouteImport } from './routes/_auth.instituciones'
 import { Route as AuthInventariosRouteImport } from './routes/_auth.inventarios'
 import { Route as AuthIvaRouteImport } from './routes/_auth.iva'
+import { Route as AuthListasDescuentosRouteImport } from './routes/_auth.listas-descuentos'
 import { Route as AuthLotesRouteImport } from './routes/_auth.lotes'
 import { Route as AuthMenuRouteImport } from './routes/_auth.menu'
 import { Route as AuthMonedasRouteImport } from './routes/_auth.monedas'
@@ -98,6 +100,11 @@ const AuthHomeRoute = AuthHomeRouteImport.update({
   path: '/home',
   getParentRoute: () => AuthRoute,
 } as any)
+const AuthInstitucionesRoute = AuthInstitucionesRouteImport.update({
+  id: '/instituciones',
+  path: '/instituciones',
+  getParentRoute: () => AuthRoute,
+} as any)
 const AuthInventariosRoute = AuthInventariosRouteImport.update({
   id: '/inventarios',
   path: '/inventarios',
@@ -106,6 +113,11 @@ const AuthInventariosRoute = AuthInventariosRouteImport.update({
 const AuthIvaRoute = AuthIvaRouteImport.update({
   id: '/iva',
   path: '/iva',
+  getParentRoute: () => AuthRoute,
+} as any)
+const AuthListasDescuentosRoute = AuthListasDescuentosRouteImport.update({
+  id: '/listas-descuentos',
+  path: '/listas-descuentos',
   getParentRoute: () => AuthRoute,
 } as any)
 const AuthLotesRoute = AuthLotesRouteImport.update({
@@ -162,8 +174,10 @@ export interface FileRoutesByFullPath {
   '/empresas': typeof AuthEmpresasRoute
   '/facturas-compras': typeof AuthFacturasComprasRoute
   '/home': typeof AuthHomeRoute
+  '/instituciones': typeof AuthInstitucionesRoute
   '/inventarios': typeof AuthInventariosRoute
   '/iva': typeof AuthIvaRoute
+  '/listas-descuentos': typeof AuthListasDescuentosRoute
   '/lotes': typeof AuthLotesRoute
   '/menu': typeof AuthMenuRoute
   '/monedas': typeof AuthMonedasRoute
@@ -186,8 +200,10 @@ export interface FileRoutesByTo {
   '/empresas': typeof AuthEmpresasRoute
   '/facturas-compras': typeof AuthFacturasComprasRoute
   '/home': typeof AuthHomeRoute
+  '/instituciones': typeof AuthInstitucionesRoute
   '/inventarios': typeof AuthInventariosRoute
   '/iva': typeof AuthIvaRoute
+  '/listas-descuentos': typeof AuthListasDescuentosRoute
   '/lotes': typeof AuthLotesRoute
   '/menu': typeof AuthMenuRoute
   '/monedas': typeof AuthMonedasRoute
@@ -212,8 +228,10 @@ export interface FileRoutesById {
   '/_auth/empresas': typeof AuthEmpresasRoute
   '/_auth/facturas-compras': typeof AuthFacturasComprasRoute
   '/_auth/home': typeof AuthHomeRoute
+  '/_auth/instituciones': typeof AuthInstitucionesRoute
   '/_auth/inventarios': typeof AuthInventariosRoute
   '/_auth/iva': typeof AuthIvaRoute
+  '/_auth/listas-descuentos': typeof AuthListasDescuentosRoute
   '/_auth/lotes': typeof AuthLotesRoute
   '/_auth/menu': typeof AuthMenuRoute
   '/_auth/monedas': typeof AuthMonedasRoute
@@ -238,8 +256,10 @@ export interface FileRouteTypes {
     | '/empresas'
     | '/facturas-compras'
     | '/home'
+    | '/instituciones'
     | '/inventarios'
     | '/iva'
+    | '/listas-descuentos'
     | '/lotes'
     | '/menu'
     | '/monedas'
@@ -262,8 +282,10 @@ export interface FileRouteTypes {
     | '/empresas'
     | '/facturas-compras'
     | '/home'
+    | '/instituciones'
     | '/inventarios'
     | '/iva'
+    | '/listas-descuentos'
     | '/lotes'
     | '/menu'
     | '/monedas'
@@ -287,8 +309,10 @@ export interface FileRouteTypes {
     | '/_auth/empresas'
     | '/_auth/facturas-compras'
     | '/_auth/home'
+    | '/_auth/instituciones'
     | '/_auth/inventarios'
     | '/_auth/iva'
+    | '/_auth/listas-descuentos'
     | '/_auth/lotes'
     | '/_auth/menu'
     | '/_auth/monedas'
@@ -397,6 +421,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthHomeRouteImport
       parentRoute: typeof AuthRoute
     }
+    '/_auth/instituciones': {
+      id: '/_auth/instituciones'
+      path: '/instituciones'
+      fullPath: '/instituciones'
+      preLoaderRoute: typeof AuthInstitucionesRouteImport
+      parentRoute: typeof AuthRoute
+    }
     '/_auth/inventarios': {
       id: '/_auth/inventarios'
       path: '/inventarios'
@@ -409,6 +440,13 @@ declare module '@tanstack/react-router' {
       path: '/iva'
       fullPath: '/iva'
       preLoaderRoute: typeof AuthIvaRouteImport
+      parentRoute: typeof AuthRoute
+    }
+    '/_auth/listas-descuentos': {
+      id: '/_auth/listas-descuentos'
+      path: '/listas-descuentos'
+      fullPath: '/listas-descuentos'
+      preLoaderRoute: typeof AuthListasDescuentosRouteImport
       parentRoute: typeof AuthRoute
     }
     '/_auth/lotes': {
@@ -482,8 +520,10 @@ interface AuthRouteChildren {
   AuthEmpresasRoute: typeof AuthEmpresasRoute
   AuthFacturasComprasRoute: typeof AuthFacturasComprasRoute
   AuthHomeRoute: typeof AuthHomeRoute
+  AuthInstitucionesRoute: typeof AuthInstitucionesRoute
   AuthInventariosRoute: typeof AuthInventariosRoute
   AuthIvaRoute: typeof AuthIvaRoute
+  AuthListasDescuentosRoute: typeof AuthListasDescuentosRoute
   AuthLotesRoute: typeof AuthLotesRoute
   AuthMenuRoute: typeof AuthMenuRoute
   AuthMonedasRoute: typeof AuthMonedasRoute
@@ -506,8 +546,10 @@ const AuthRouteChildren: AuthRouteChildren = {
   AuthEmpresasRoute: AuthEmpresasRoute,
   AuthFacturasComprasRoute: AuthFacturasComprasRoute,
   AuthHomeRoute: AuthHomeRoute,
+  AuthInstitucionesRoute: AuthInstitucionesRoute,
   AuthInventariosRoute: AuthInventariosRoute,
   AuthIvaRoute: AuthIvaRoute,
+  AuthListasDescuentosRoute: AuthListasDescuentosRoute,
   AuthLotesRoute: AuthLotesRoute,
   AuthMenuRoute: AuthMenuRoute,
   AuthMonedasRoute: AuthMonedasRoute,

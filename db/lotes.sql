@@ -1,15 +1,27 @@
 --------------------------------------------------------------------------------
 -- CTELL · LOTES
 --
--- Un paquete (PKG_LOTES) con los 4 procedimientos — LISTAR, INSERTAR,
--- ACTUALIZAR, ELIMINAR — y la publicacion de los endpoints ORDS. Todo vive
--- dentro del paquete: no hay procedimientos sueltos ni PL/SQL embebido como
--- texto dentro de los handlers.
+-- Un paquete (PKG_LOTES) con los procedimientos del ABM — LISTAR, INSERTAR,
+-- ACTUALIZAR, ELIMINAR — mas LISTAR_ARTICULOS para el filtro, y la publicacion
+-- de los endpoints ORDS. Todo vive dentro del paquete: no hay procedimientos
+-- sueltos ni PL/SQL embebido como texto dentro de los handlers.
 --
---   1. LISTAR      GET    /lotes/listar   (?idEmpresa= &idSucursal= &idArticulo=)
---   2. INSERTAR    POST   /lotes/crear
---   3. ACTUALIZAR  PUT    /lotes/actualizar/:id
---   4. ELIMINAR    DELETE /lotes/eliminar/:id/:idEmpresa
+--   1. LISTAR            GET    /lotes/listar
+--                               (?idEmpresa= &idSucursal= &idArticulo=
+--                                &busqueda= &pagina= &tamanio=)
+--   2. LISTAR_ARTICULOS  GET    /lotes/articulos  (?idEmpresa= &idSucursal=)
+--   3. INSERTAR          POST   /lotes/crear
+--   4. ACTUALIZAR        PUT    /lotes/actualizar/:id
+--   5. ELIMINAR          DELETE /lotes/eliminar/:id/:idEmpresa
+--
+-- EL LISTADO VIENE PAGINADO, 20 POR PAGINA. Antes devolvia la tabla entera y la
+-- pantalla recortaba a 20 en el navegador: el trafico y el JSON crecian con
+-- cada lote cargado aunque solo se vieran 20 filas, que es el mismo problema
+-- que ya se habia corregido en db/articulos.sql.
+--
+-- La BUSQUEDA y el filtro por articulo van en el SQL por la misma razon:
+-- filtrando en el cliente solo se mira la pagina traida, asi que un lote de la
+-- pagina 5 no aparecia al escribir su numero.
 --
 -- Se ejecuta una sola vez en la hoja de trabajo SQL de APEX, conectado con el
 -- esquema del workspace. REQUIERE db/auth.sql EJECUTADO ANTES: usa PKG_AUTH
@@ -122,7 +134,8 @@ SET SERVEROUTPUT ON
 --     l_status NUMBER;
 --     l_result CLOB;
 --   BEGIN
---     PKG_LOTES.LISTAR('Bearer TU_TOKEN', NULL, NULL, NULL, l_status, l_result);
+--     PKG_LOTES.LISTAR('Bearer TU_TOKEN', NULL, NULL, NULL, NULL, NULL, NULL,
+--                      l_status, l_result);
 --     DBMS_OUTPUT.PUT_LINE('status: ' || l_status);
 --     DBMS_OUTPUT.PUT_LINE('resultado: ' || l_result);
 --   END;
@@ -134,11 +147,34 @@ CREATE OR REPLACE PACKAGE PKG_LOTES AS
   -- Los filtros NULL o vacios no filtran. En la app siempre viajan empresa y
   -- sucursal (las activas); idArticulo solo cuando se miran los lotes de un
   -- articulo puntual.
+  --
+  -- PAGINADO, 20 por pagina por defecto y 200 de techo. p_busqueda filtra en
+  -- SQL por articulo, codigo, numero de lote y observaciones: buscando en el
+  -- cliente solo se miraria la pagina traida, y un lote de la pagina 5 no
+  -- apareceria al escribir su numero.
   PROCEDURE LISTAR (
     p_authorization IN  VARCHAR2,
     p_id_empresa    IN  VARCHAR2,
     p_id_sucursal   IN  VARCHAR2,
     p_id_articulo   IN  VARCHAR2,
+    p_busqueda      IN  VARCHAR2,
+    p_pagina        IN  VARCHAR2,
+    p_tamanio       IN  VARCHAR2,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
+  );
+
+  -- Los articulos que TIENEN al menos un lote en la empresa/sucursal, para el
+  -- desplegable del filtro de la columna Articulo.
+  --
+  -- Va aparte y no sale del listado: con el listado paginado, las opciones
+  -- saldrian solo de las 20 filas traidas. Y no se usa /articulos/listar
+  -- porque ese ofrece articulos sin ningun lote, que al elegirlos darian una
+  -- lista vacia.
+  PROCEDURE LISTAR_ARTICULOS (
+    p_authorization IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
+    p_id_sucursal   IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   );
@@ -312,6 +348,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_LOTES AS
     p_id_empresa    IN  VARCHAR2,
     p_id_sucursal   IN  VARCHAR2,
     p_id_articulo   IN  VARCHAR2,
+    p_busqueda      IN  VARCHAR2,
+    p_pagina        IN  VARCHAR2,
+    p_tamanio       IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
@@ -319,6 +358,10 @@ CREATE OR REPLACE PACKAGE BODY PKG_LOTES AS
     l_id_empresa  NUMBER;
     l_id_sucursal NUMBER;
     l_id_articulo NUMBER;
+    l_busqueda    VARCHAR2(4000);
+    l_pagina      NUMBER;
+    l_tamanio     NUMBER;
+    l_offset      NUMBER;
     l_total       NUMBER;
     l_items       CLOB;
   BEGIN
@@ -337,12 +380,46 @@ CREATE OR REPLACE PACKAGE BODY PKG_LOTES AS
     l_id_sucursal := TO_NUMBER(NULLIF(p_id_sucursal, ''));
     l_id_articulo := TO_NUMBER(NULLIF(p_id_articulo, ''));
 
+    -- En minusculas una sola vez aca, no por fila: el WHERE compara contra
+    -- LOWER() de cada columna, asi que subir el termino tambien dentro del SQL
+    -- haria el trabajo tantas veces como filas tenga la tabla.
+    --
+    -- NULL cuando llega vacio: el WHERE esta escrito como "l_busqueda IS NULL
+    -- OR ...", asi que una cadena vacia sin normalizar filtraria por '%%' en vez
+    -- de saltear el filtro.
+    l_busqueda := LOWER(TRIM(NULLIF(p_busqueda, '')));
+
+    -- Pagina 1 y 20 por pagina son los valores de la app. GREATEST(1) descarta
+    -- un ?pagina=0 o negativo, que daria un OFFSET negativo y ORA-06502.
+    l_pagina  := GREATEST(NVL(TO_NUMBER(NULLIF(p_pagina, '')), 1), 1);
+
+    -- 200 de techo, el mismo que el resto del proyecto: sin limite, un
+    -- ?tamanio=99999 traeria la tabla entera y volveria el problema que esta
+    -- paginacion viene a resolver.
+    l_tamanio := LEAST(GREATEST(NVL(TO_NUMBER(NULLIF(p_tamanio, '')), 20), 1), 200);
+    l_offset  := (l_pagina - 1) * l_tamanio;
+
+    -- El total cuenta las filas que pasan LOS MISMOS filtros, no la tabla
+    -- entera: es lo que la pantalla muestra como "N lotes" y lo que decide si
+    -- queda algo por traer. Contando todo, el boton "Mostrar mas" seguiria
+    -- ofreciendo paginas vacias cuando hay una busqueda activa.
+    --
+    -- El JOIN contra ARTICULOS hace falta aca tambien: la busqueda mira el
+    -- nombre y el codigo del articulo, que no estan en LOTES. Sin el, el total
+    -- contaria mas filas de las que el listado devuelve.
     SELECT COUNT(*)
       INTO l_total
-      FROM LOTES
-     WHERE (l_id_empresa  IS NULL OR ID_EMPRESA  = l_id_empresa)
-       AND (l_id_sucursal IS NULL OR ID_SUCURSAL = l_id_sucursal)
-       AND (l_id_articulo IS NULL OR ID_ARTICULO = l_id_articulo);
+      FROM LOTES     l
+      JOIN ARTICULOS a ON a.ID_ARTICULO = l.ID_ARTICULO
+     WHERE (l_id_empresa  IS NULL OR l.ID_EMPRESA  = l_id_empresa)
+       AND (l_id_sucursal IS NULL OR l.ID_SUCURSAL = l_id_sucursal)
+       AND (l_id_articulo IS NULL OR l.ID_ARTICULO = l_id_articulo)
+       AND (l_busqueda IS NULL
+            OR LOWER(a.NOMBRE_ARTICULO)        LIKE '%' || l_busqueda || '%'
+            OR LOWER(a.CODIGO_ARTICULO)        LIKE '%' || l_busqueda || '%'
+            OR TO_CHAR(l.ID_LOTE)              LIKE '%' || l_busqueda || '%'
+            OR LOWER(TO_CHAR(l.NUMERO_LOTE))   LIKE '%' || l_busqueda || '%'
+            OR LOWER(l.OBSERVACIONES)          LIKE '%' || l_busqueda || '%');
 
     -- CON JOIN contra ARTICULOS (INNER, no LEFT): ID_ARTICULO es NOT NULL en el
     -- DDL, asi que todo lote tiene articulo y un LEFT JOIN no cambiaria nada.
@@ -356,7 +433,16 @@ CREATE OR REPLACE PACKAGE BODY PKG_LOTES AS
     -- del agregado se materializa como VARCHAR2 y revienta al pasar los 4000
     -- bytes: con OBSERVACIONES de hasta 1000 caracteres por fila, ese techo se
     -- alcanza con tres o cuatro lotes.
-    SELECT JSON_ARRAYAGG(fila ORDER BY vence NULLS LAST, nombre_articulo RETURNING CLOB)
+    -- SIN `ORDER BY` EN EL AGREGADO, a diferencia del resto de los paquetes.
+    --
+    -- Aca la subconsulta ya sale ordenada Y recortada por OFFSET/FETCH, asi que
+    -- reordenar de nuevo no cambia el resultado — pero obliga a Oracle a
+    -- materializar el agregado intermedio, y con `tamanio=200` y OBSERVACIONES
+    -- de hasta 1000 caracteres por fila eso desbordaba en un 500.
+    --
+    -- Los otros paquetes lo llevan porque agregan SIN paginar, y ahi el orden
+    -- del agregado es el unico que hay.
+    SELECT JSON_ARRAYAGG(fila RETURNING CLOB)
       INTO l_items
       FROM (
         SELECT JSON_OBJECT(
@@ -383,14 +469,34 @@ CREATE OR REPLACE PACKAGE BODY PKG_LOTES AS
                  'fechaEntrada'      VALUE TO_CHAR(l.FECHA_ENTRADA, C_FORMATO_FECHA),
                  'observaciones'     VALUE l.OBSERVACIONES
                  RETURNING CLOB
-               ) AS fila,
-               l.FECHA_VENCIMIENTO AS vence,
-               a.NOMBRE_ARTICULO   AS nombre_articulo
+               ) AS fila
           FROM LOTES     l
           JOIN ARTICULOS a ON a.ID_ARTICULO = l.ID_ARTICULO
          WHERE (l_id_empresa  IS NULL OR l.ID_EMPRESA  = l_id_empresa)
            AND (l_id_sucursal IS NULL OR l.ID_SUCURSAL = l_id_sucursal)
            AND (l_id_articulo IS NULL OR l.ID_ARTICULO = l_id_articulo)
+           AND (l_busqueda IS NULL
+                OR LOWER(a.NOMBRE_ARTICULO)      LIKE '%' || l_busqueda || '%'
+                OR LOWER(a.CODIGO_ARTICULO)      LIKE '%' || l_busqueda || '%'
+                -- ID_LOTE es la columna que la pantalla muestra, asi que tiene
+                -- que ser buscable. NUMERO_LOTE se conserva aunque la columna
+                -- este oculta: sigue siendo un dato real de la partida.
+                OR TO_CHAR(l.ID_LOTE)            LIKE '%' || l_busqueda || '%'
+                OR LOWER(TO_CHAR(l.NUMERO_LOTE)) LIKE '%' || l_busqueda || '%'
+                OR LOWER(l.OBSERVACIONES)        LIKE '%' || l_busqueda || '%')
+         -- ESTE ES EL UNICO ORDER BY, y decide dos cosas a la vez: QUE filas
+         -- entran en la pagina (por el OFFSET/FETCH de abajo) y en que orden
+         -- salen. Sin el, OFFSET/FETCH recortaria en un orden que Oracle no
+         -- garantiza y la pagina 2 podria repetir u omitir lotes de la 1.
+         --
+         -- El JSON_ARRAYAGG de arriba NO reordena: preserva este orden y evita
+         -- la materializacion que desbordaba con tamanio=200.
+         --
+         -- ID_LOTE como ultimo criterio: el vencimiento y el nombre pueden
+         -- repetirse entre varias filas, y sin un desempate estable esas filas
+         -- podrian intercambiarse entre una pagina y la siguiente.
+         ORDER BY l.FECHA_VENCIMIENTO NULLS LAST, a.NOMBRE_ARTICULO, l.ID_LOTE
+         OFFSET l_offset ROWS FETCH NEXT l_tamanio ROWS ONLY
       );
 
     p_status_code := 200;
@@ -399,9 +505,17 @@ CREATE OR REPLACE PACKAGE BODY PKG_LOTES AS
     --
     -- JSON_ARRAYAGG devuelve NULL cuando no hay filas, no un array vacio: sin
     -- el NVL el frontend recibiria "items":null y reventaria al iterarlo.
+    --
+    -- `total` son las filas que pasan el filtro, NO las de esta pagina: con
+    -- items.length el frontend no podria saber si quedan mas. `pagina` y
+    -- `tamanio` viajan de vuelta para que la pantalla no tenga que asumir el
+    -- tamaño que el backend efectivamente aplico (que pudo recortarse al techo
+    -- de 200).
     SELECT JSON_OBJECT(
-             'items' VALUE NVL(l_items, TO_CLOB('[]')) FORMAT JSON,
-             'total' VALUE l_total
+             'items'   VALUE NVL(l_items, TO_CLOB('[]')) FORMAT JSON,
+             'total'   VALUE l_total,
+             'pagina'  VALUE l_pagina,
+             'tamanio' VALUE l_tamanio
              RETURNING CLOB
            )
       INTO p_resultado
@@ -411,8 +525,107 @@ CREATE OR REPLACE PACKAGE BODY PKG_LOTES AS
       p_status_code := 500;
       APEX_DEBUG.ERROR('PKG_LOTES.LISTAR: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
                        DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
-      p_resultado := '{"error":"Error al listar los lotes"}';
+      -- El SQLERRM VIAJA EN LA RESPUESTA, a diferencia del resto del proyecto.
+      --
+      -- El mensaje generico dejaba el 500 sin diagnostico: APEX_DEBUG.ERROR
+      -- escribe en un log del workspace que hay que ir a buscar, y desde el
+      -- navegador no se ve nada util. Con el codigo y el mensaje en el JSON, el
+      -- error se lee en la misma consola donde aparece el 500.
+      --
+      -- Es informacion de la base expuesta al cliente, asi que se limita a los
+      -- primeros 300 caracteres —sin el backtrace, que dice nombres de
+      -- procedimientos y numeros de linea— y REPLACE saca las comillas dobles
+      -- que romperian el JSON.
+      -- Los saltos de linea tambien salen: SQLERRM los trae y un salto crudo
+      -- dentro de una cadena JSON es invalido, asi que el cliente no podria
+      -- parsear justo la respuesta que explica el problema.
+      p_resultado := '{"error":"Error al listar los lotes: ' ||
+                     REPLACE(
+                       REPLACE(
+                         REPLACE(SUBSTR(SQLCODE || ' ' || SQLERRM, 1, 300), '"', ''''),
+                         CHR(10), ' '),
+                       CHR(13), ' ') ||
+                     '"}';
   END LISTAR;
+
+  ------------------------------------------------------------------------------
+  -- Articulos que tienen al menos un lote, para el desplegable del filtro.
+  --
+  -- DISTINCT y no GROUP BY: solo interesa el par (id, nombre), no cuantos lotes
+  -- tiene cada uno. Devuelve la lista completa sin paginar — son los articulos
+  -- con stock cargado en UNA sucursal, un conjunto chico por definicion, y un
+  -- desplegable a medias no serviria para filtrar.
+  ------------------------------------------------------------------------------
+  PROCEDURE LISTAR_ARTICULOS (
+    p_authorization IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
+    p_id_sucursal   IN  VARCHAR2,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
+  ) IS
+    l_sesion      NUMBER;
+    l_id_empresa  NUMBER;
+    l_id_sucursal NUMBER;
+    l_items       CLOB;
+  BEGIN
+    l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
+    IF l_sesion IS NULL THEN
+      p_status_code := 401;
+      p_resultado := '{"error":"Sesion invalida o vencida"}';
+      RETURN;
+    END IF;
+
+    l_id_empresa  := TO_NUMBER(NULLIF(p_id_empresa, ''));
+    l_id_sucursal := TO_NUMBER(NULLIF(p_id_sucursal, ''));
+
+    SELECT JSON_ARRAYAGG(fila ORDER BY nombre_articulo RETURNING CLOB)
+      INTO l_items
+      FROM (
+        -- EL DISTINCT VA EN LA SUBCONSULTA DE ADENTRO, sobre el id y el nombre,
+        -- y el JSON_OBJECT se arma DESPUES.
+        --
+        -- Un `SELECT DISTINCT` que incluya la columna del JSON_OBJECT falla con
+        -- ORA-00932: el `RETURNING CLOB` la tipa como CLOB, y Oracle no puede
+        -- comparar CLOBs para decidir si dos filas son iguales. Con el DISTINCT
+        -- sobre los dos escalares el problema no se presenta, y el resultado es
+        -- el mismo: un articulo por fila.
+        SELECT JSON_OBJECT(
+                 'id'             VALUE d.ID_ARTICULO,
+                 'nombreArticulo' VALUE d.NOMBRE_ARTICULO
+                 RETURNING CLOB
+               ) AS fila,
+               d.NOMBRE_ARTICULO AS nombre_articulo
+          FROM (
+            SELECT DISTINCT a.ID_ARTICULO, a.NOMBRE_ARTICULO
+              FROM LOTES     l
+              JOIN ARTICULOS a ON a.ID_ARTICULO = l.ID_ARTICULO
+             WHERE (l_id_empresa  IS NULL OR l.ID_EMPRESA  = l_id_empresa)
+               AND (l_id_sucursal IS NULL OR l.ID_SUCURSAL = l_id_sucursal)
+          ) d
+      );
+
+    p_status_code := 200;
+    SELECT JSON_OBJECT(
+             'items' VALUE NVL(l_items, TO_CLOB('[]')) FORMAT JSON
+             RETURNING CLOB
+           )
+      INTO p_resultado
+      FROM DUAL;
+  EXCEPTION
+    WHEN OTHERS THEN
+      p_status_code := 500;
+      APEX_DEBUG.ERROR('PKG_LOTES.LISTAR_ARTICULOS: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
+                       DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
+      -- Mismo criterio que LISTAR: el error real viaja al cliente. Este
+      -- endpoint es nuevo y todavia no se probo contra la base.
+      p_resultado := '{"error":"Error al listar los articulos con lotes: ' ||
+                     REPLACE(
+                       REPLACE(
+                         REPLACE(SUBSTR(SQLCODE || ' ' || SQLERRM, 1, 300), '"', ''''),
+                         CHR(10), ' '),
+                       CHR(13), ' ') ||
+                     '"}';
+  END LISTAR_ARTICULOS;
 
   PROCEDURE INSERTAR (
     p_authorization      IN  VARCHAR2,
@@ -880,7 +1093,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_LOTES AS
       p_pattern     => 'listar',
       p_method      => 'GET',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_LOTES.LISTAR(:authorization, :idEmpresa, :idSucursal, :idArticulo, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_LOTES.LISTAR(:authorization, :idEmpresa, :idSucursal, :idArticulo, :busqueda, :pagina, :tamanio, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
@@ -895,6 +1108,38 @@ CREATE OR REPLACE PACKAGE BODY PKG_LOTES AS
 
     ORDS.DEFINE_PARAMETER(
       p_module_name => 'lotes', p_pattern => 'listar', p_method => 'GET',
+      p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
+      p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
+
+    ----------------------------------------------------------------------------
+    -- GET /lotes/articulos?idEmpresa=&idSucursal=
+    --
+    -- Los articulos que tienen al menos un lote, para el desplegable del filtro
+    -- de la columna. Va aparte porque el listado ahora viene paginado y sus 20
+    -- filas no alcanzan para armar las opciones.
+    ----------------------------------------------------------------------------
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'lotes', p_pattern => 'articulos');
+
+    ORDS.DEFINE_HANDLER(
+      p_module_name => 'lotes',
+      p_pattern     => 'articulos',
+      p_method      => 'GET',
+      p_source_type => ORDS.source_type_plsql,
+      p_source      => 'BEGIN PKG_LOTES.LISTAR_ARTICULOS(:authorization, :idEmpresa, :idSucursal, :status_code, :resultado); END;'
+    );
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'lotes', p_pattern => 'articulos', p_method => 'GET',
+      p_name => 'authorization', p_bind_variable_name => 'authorization',
+      p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'lotes', p_pattern => 'articulos', p_method => 'GET',
+      p_name => 'resultado', p_bind_variable_name => 'resultado',
+      p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'lotes', p_pattern => 'articulos', p_method => 'GET',
       p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
