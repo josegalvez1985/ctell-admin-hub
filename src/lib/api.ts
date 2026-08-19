@@ -403,6 +403,233 @@ export type ListaInventarios = {
   total: number;
 };
 
+/**
+ * Tipo de persona, con el mismo código de una letra que guarda la columna:
+ * `"F"` física, `"J"` jurídica. Sigue el criterio de `Estado` y `Rol` — el
+ * código viaja igual de punta a punta, sin traducirse.
+ */
+export type TipoPersona = "F" | "J";
+
+/** `true` si es una persona jurídica (empresa). */
+export function esJuridica(tipo: TipoPersona | undefined): boolean {
+  return tipo === "J";
+}
+
+/**
+ * Una persona del padrón: física o jurídica.
+ *
+ * **Es un catálogo global**, sin `idEmpresa`: el padrón es uno solo y lo
+ * comparten todas las empresas, igual que países o ciudades. La misma persona
+ * puede ser cliente de una y proveedor de otra sin cargarse dos veces.
+ *
+ * **No tiene `activo`**: la tabla no lleva esa columna, así que la única baja es
+ * física. Cuando existan compras o ventas apuntando acá, borrar a alguien con
+ * movimientos va a dar 409.
+ */
+export type Persona = {
+  id: number;
+  tipoPersona: TipoPersona;
+  /**
+   * En una física, el nombre de pila. En una jurídica llega **una copia de la
+   * razón social**: la columna es NOT NULL en la base y una empresa no tiene
+   * nombre de pila. Para mostrar, usá `nombreCompleto`.
+   */
+  nombre: string;
+  /** Null en las jurídicas: el backend filtra el relleno que guarda la base. */
+  apellido: string | null;
+  /** Sólo en las jurídicas. Null en las físicas. */
+  razonSocial: string | null;
+  /**
+   * El nombre que se muestra, ya resuelto por el backend: razón social si es
+   * jurídica, "Nombre Apellido" si es física.
+   *
+   * **Usá este y no armes la concatenación en la pantalla** — la regla de qué
+   * campo corresponde según el tipo vive en un solo lugar.
+   */
+  nombreCompleto: string;
+  /** Únicos si están cargados, pero los dos pueden ser null. */
+  numeroCi: string | null;
+  ruc: string | null;
+  email: string | null;
+  telefono: string | null;
+  direccion: string | null;
+};
+
+export type ListaPersonas = {
+  items: Persona[];
+  total: number;
+};
+
+/**
+ * Una tasa de IVA.
+ *
+ * **Editar una tasa en uso cambia facturas ya emitidas**: el impuesto de cada
+ * línea no se guarda, se calcula como `subtotal / ivaDivision` en cada consulta.
+ * Cambiar el porcentaje o el divisor altera el desglose de todo lo que ya la
+ * usaba, incluidos períodos ya declarados. Por eso `usos` viaja en el listado.
+ */
+export type Iva = {
+  id: number;
+  /** La tasa nominal: 10, 5, 0. Es lo que se muestra. */
+  porcentaje: number;
+  /**
+   * El **divisor** para desglosar el impuesto de un precio que ya lo incluye:
+   * 11 para el 10%, 21 para el 5%, y **0 en la exenta**.
+   *
+   * Los precios de este sistema incluyen IVA, así que el impuesto de un monto
+   * es `subtotal / ivaDivision` — **no** `subtotal * porcentaje / 100`, que
+   * cobraría impuesto sobre impuesto.
+   *
+   * Cuidado al dividir: en la exenta vale 0.
+   */
+  ivaDivision: number;
+  /**
+   * El divisor de la **base imponible**: 1,1 para el 10%, 1,05 para el 5%, y
+   * **1 en la exenta** (el monto entero es gravado).
+   *
+   * Es `1 + porcentaje/100`, el complemento de `ivaDivision`. Cuando está
+   * cargado, el desglose se hace `gravado = subtotal / gravadaDivision` y el IVA
+   * sale por resta — así `gravado + iva` da el total exacto, sin diferencias de
+   * redondeo.
+   *
+   * **`null` en las tasas cargadas antes de que existiera la columna**: ahí el
+   * backend cae al método anterior. Ojo con el criterio opuesto de la exenta
+   * frente a `ivaDivision`, que en ese caso vale 0.
+   */
+  gravadaDivision: number | null;
+  descripcion: string;
+  /**
+   * Cuántas líneas de factura la usan.
+   *
+   * Con `usos > 0`, editarla cambia esas facturas y borrarla da 409. La pantalla
+   * lo muestra antes de dejar editar, para que la decisión sea informada.
+   */
+  usos: number;
+};
+
+export type ListaIva = {
+  items: Iva[];
+  total: number;
+};
+
+/**
+ * Una condición de pago: contado, 30 días, 3 cuotas.
+ *
+ * **Catálogo global**, sin `idEmpresa`: las condiciones son las mismas para
+ * todas las empresas.
+ */
+export type CondicionPago = {
+  id: number;
+  nombreCondicion: string;
+  /** Días para pagar desde la fecha de la factura. **0 es contado.** */
+  diasPago: number;
+  /** En cuántas veces se paga. **1 es pago único.** */
+  cantidadCuotas: number;
+  /**
+   * Cuántas facturas la usan. Con `usos > 0` no se puede borrar: lo impide la
+   * FK, y el backend devuelve 409 con la cantidad en el mensaje.
+   */
+  usos: number;
+};
+
+export type ListaCondicionesPago = {
+  items: CondicionPago[];
+  total: number;
+};
+
+/** Una línea del detalle de una factura de compra. */
+export type FacturaCompraDetalle = {
+  id: number;
+  idArticulo: number;
+  /** Del JOIN contra ARTICULOS. */
+  nombreArticulo: string;
+  codigoArticulo: string | null;
+  cantidad: number;
+  /** **Incluye IVA**: es el precio final de la línea. */
+  precioUnitario: number;
+  /**
+   * `cantidad * precioUnitario`. Es una **columna virtual** en la base: la
+   * calcula Oracle y no se puede escribir, así que nunca queda desincronizada.
+   */
+  subtotal: number;
+  idIva: number | null;
+  porcentajeIva: number | null;
+  descripcionIva: string | null;
+  /** El impuesto **contenido** en el subtotal, ya calculado por el backend. */
+  montoIva: number;
+  /** El subtotal menos su impuesto. */
+  montoGravado: number;
+};
+
+/**
+ * La cabecera de una factura de compra, como la devuelve el listado.
+ *
+ * **No trae el detalle**: cien facturas con todas sus líneas serían un JSON
+ * enorme para dibujar una tabla que sólo muestra encabezados. Para las líneas
+ * está `api.facturasCompras.obtener()`.
+ */
+export type FacturaCompra = {
+  id: number;
+  idEmpresa: number;
+  idSucursal: number;
+  nombreSucursal: string;
+  idProveedor: number;
+  /** Ya resuelto según el tipo de persona, igual que `Persona.nombreCompleto`. */
+  proveedor: string;
+  rucProveedor: string | null;
+  numeroFactura: string;
+  /** ISO de sólo día ("2026-08-19"). */
+  fechaFactura: string;
+  idMoneda: number;
+  moneda: string;
+  simboloMoneda: string | null;
+  tipoCambio: number;
+  /**
+   * Cómo se paga. **Opcional**: una factura sin condición cargada es válida, y
+   * lo son todas las anteriores a que existiera la columna. Los tres campos
+   * siguientes son null cuando no hay condición.
+   */
+  idCondicion: number | null;
+  condicionPago: string | null;
+  diasPago: number | null;
+  /**
+   * `fechaFactura + diasPago`, en ISO. **Lo calcula el backend**: guardarlo
+   * dejaría un dato que queda desfasado si se corrige la fecha o la condición.
+   *
+   * `null` sin condición — "no se sabe cuándo vence" no es lo mismo que "vence
+   * el mismo día".
+   */
+  fechaVencimiento: string | null;
+  observacion: string | null;
+  /**
+   * La suma del detalle, **calculada por el backend en cada consulta**. No es
+   * una columna: guardarla permitiría que la cabecera diga un número y sus
+   * líneas sumen otro.
+   *
+   * Los precios ya incluyen IVA, así que este es el total a pagar — no hay que
+   * sumarle el impuesto aparte.
+   */
+  total: number;
+  /** Cuántas líneas tiene, para mostrarlo sin traer el detalle. */
+  lineas: number;
+};
+
+/** La factura completa: cabecera, totales desglosados y sus líneas. */
+export type FacturaCompraCompleta = Omit<FacturaCompra, "lineas"> & {
+  /** Sólo en el detalle: el listado no lo trae. Null sin condición. */
+  cantidadCuotas: number | null;
+  /** El IVA contenido en el total. Para el libro de compras. */
+  totalIva: number;
+  /** El total menos el IVA. */
+  totalGravado: number;
+  detalle: FacturaCompraDetalle[];
+};
+
+export type ListaFacturasCompras = {
+  items: FacturaCompra[];
+  total: number;
+};
+
 export type ListaLotes = {
   items: Lote[];
   total: number;
@@ -1991,5 +2218,274 @@ export const api = {
      */
     anular: (id: number, idEmpresa: number) =>
       request<{ ok: boolean }>(`/inventarios/anular/${id}/${idEmpresa}`, { method: "POST" }),
+  },
+
+  /**
+   * Padrón de personas, físicas y jurídicas.
+   *
+   * **Catálogo global**: ninguna operación lleva `idEmpresa`, y el borrado es
+   * `/eliminar/:id` a secas — no el `/:id/:idEmpresa` de las tablas por empresa.
+   */
+  personas: {
+    /**
+     * `busqueda` filtra por nombre, apellido, razón social, CI o RUC; `tipo`
+     * acota a físicas o jurídicas. Los dos son opcionales y se combinan.
+     */
+    listar: (params: { busqueda?: string; tipo?: TipoPersona } = {}) => {
+      const q = new URLSearchParams();
+      if (params.busqueda) q.set("busqueda", params.busqueda);
+      if (params.tipo) q.set("tipo", params.tipo);
+      const query = q.toString();
+      return request<ListaPersonas>(`/personas/listar${query ? `?${query}` : ""}`);
+    },
+
+    /**
+     * **Qué es obligatorio depende del tipo**, y el backend lo rechaza con 400
+     * si falta:
+     * - `"F"` → `nombre` y `apellido`.
+     * - `"J"` → `razonSocial` (el backend completa `nombre` por su cuenta).
+     *
+     * `numeroCi` y `ruc` dan 409 si ya están usados por otra persona.
+     */
+    crear: (datos: {
+      tipoPersona: TipoPersona;
+      nombre?: string;
+      apellido?: string;
+      razonSocial?: string;
+      numeroCi?: string;
+      ruc?: string;
+      email?: string;
+      telefono?: string;
+      direccion?: string;
+    }) =>
+      request<{ id: number; ok: boolean }>("/personas/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /**
+     * Los campos ausentes no se modifican.
+     *
+     * `tipoPersona` **sí** se puede cambiar, pero el backend valida cómo va a
+     * quedar la fila: pasar a jurídica sin razón social —ni cargada de antes ni
+     * en esta llamada— da 400 en vez de dejar el registro a medio armar.
+     */
+    actualizar: (
+      id: number,
+      datos: {
+        tipoPersona?: TipoPersona;
+        nombre?: string;
+        apellido?: string;
+        razonSocial?: string;
+        numeroCi?: string;
+        ruc?: string;
+        email?: string;
+        telefono?: string;
+        direccion?: string;
+      },
+    ) =>
+      request<{ ok: boolean }>(`/personas/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Baja **física**: la tabla no tiene estado. 409 si tiene dependencias. */
+    eliminar: (id: number) =>
+      request<{ ok: boolean }>(`/personas/eliminar/${id}`, { method: "DELETE" }),
+  },
+
+  /** Tasas de IVA. Catálogo global: ninguna operación lleva `idEmpresa`. */
+  iva: {
+    listar: () => request<ListaIva>("/iva/listar"),
+
+    /**
+     * Agrega una tasa. **Los dos divisores son opcionales**: si no se mandan, el
+     * backend los calcula (`100/p + 1` el del IVA, `1 + p/100` el del gravado).
+     * Mandarlos mal se rechaza con 400 en vez de guardarse.
+     *
+     * 409 si ya existe una tasa con ese porcentaje: la columna es única.
+     */
+    crear: (datos: {
+      porcentaje: number;
+      ivaDivision?: number;
+      gravadaDivision?: number;
+      descripcion?: string;
+    }) =>
+      request<{ id: number; ivaDivision: number; gravadaDivision: number; ok: boolean }>(
+        "/iva/crear",
+        { method: "POST", body: JSON.stringify(datos) },
+      ),
+
+    /**
+     * Los campos ausentes no se modifican, **con una excepción importante**:
+     * cambiar `porcentaje` sin mandar los divisores los **recalcula solos**.
+     *
+     * Sin eso, pasar una tasa de 10% a 5% dejaría el divisor en 11 —el del 10%—
+     * y todas sus facturas desglosarían mal sin ningún error visible.
+     *
+     * Guardar una tasa con `gravadaDivision` en null también la completa, así
+     * que editar las tasas viejas las migra al método nuevo sin trabajo extra.
+     *
+     * Devuelve los divisores con los que quedó.
+     */
+    actualizar: (
+      id: number,
+      datos: {
+        porcentaje?: number;
+        ivaDivision?: number;
+        gravadaDivision?: number;
+        descripcion?: string;
+      },
+    ) =>
+      request<{ ivaDivision: number; gravadaDivision: number; ok: boolean }>(
+        `/iva/actualizar/${id}`,
+        { method: "PUT", body: JSON.stringify(datos) },
+      ),
+
+    /** 409 si alguna línea de factura la usa, con la cantidad en el mensaje. */
+    eliminar: (id: number) => request<{ ok: boolean }>(`/iva/eliminar/${id}`, { method: "DELETE" }),
+  },
+
+  /**
+   * Condiciones de pago. **Catálogo global**: ninguna operación lleva
+   * `idEmpresa`, y el borrado es `/eliminar/:id` a secas.
+   */
+  condicionesPago: {
+    listar: () => request<ListaCondicionesPago>("/condiciones-pago/listar"),
+
+    /**
+     * Sólo el nombre es obligatorio. Sin `diasPago` ni `cantidadCuotas`, entra
+     * como contado (0 días) y pago único (1 cuota).
+     *
+     * 400 si los valores no son coherentes — contado no admite varias cuotas —
+     * y 409 si el nombre ya existe (ignorando mayúsculas).
+     */
+    crear: (datos: { nombreCondicion: string; diasPago?: number; cantidadCuotas?: number }) =>
+      request<{ id: number; ok: boolean }>("/condiciones-pago/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Los campos ausentes no se modifican. */
+    actualizar: (
+      id: number,
+      datos: { nombreCondicion?: string; diasPago?: number; cantidadCuotas?: number },
+    ) =>
+      request<{ ok: boolean }>(`/condiciones-pago/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    /** 409 si alguna factura la usa, con la cantidad en el mensaje. */
+    eliminar: (id: number) =>
+      request<{ ok: boolean }>(`/condiciones-pago/eliminar/${id}`, { method: "DELETE" }),
+  },
+
+  /**
+   * Facturas de compra: cabecera y detalle.
+   *
+   * Es la primera **transacción** del proyecto — la cabecera y sus líneas viajan
+   * en el mismo request y entran juntas o no entra ninguna. Guardar una factura
+   * **no mueve stock**: es el documento, y el ingreso al depósito se carga
+   * aparte en Lotes.
+   */
+  facturasCompras: {
+    /**
+     * Devuelve las **cabeceras** con su total calculado, sin el detalle. Los
+     * filtros se combinan; `desde`/`hasta` van en ISO e incluyen ambos extremos.
+     */
+    listar: (
+      params: {
+        idEmpresa?: number;
+        idSucursal?: number;
+        idProveedor?: number;
+        desde?: string;
+        hasta?: string;
+      } = {},
+    ) => {
+      const q = new URLSearchParams();
+      if (params.idEmpresa) q.set("idEmpresa", String(params.idEmpresa));
+      if (params.idSucursal) q.set("idSucursal", String(params.idSucursal));
+      if (params.idProveedor) q.set("idProveedor", String(params.idProveedor));
+      if (params.desde) q.set("desde", params.desde);
+      if (params.hasta) q.set("hasta", params.hasta);
+      const query = q.toString();
+      return request<ListaFacturasCompras>(`/facturas-compras/listar${query ? `?${query}` : ""}`);
+    },
+
+    /** Una factura **con** su detalle y sus totales desglosados. */
+    obtener: (id: number, idEmpresa: number) =>
+      request<FacturaCompraCompleta>(`/facturas-compras/obtener/${id}/${idEmpresa}`),
+
+    /**
+     * Crea la cabecera y su detalle en una sola transacción.
+     *
+     * `detalle` no puede venir vacío: una factura sin líneas se rechaza con 400.
+     * Y el mismo artículo no puede repetirse (409) — para comprar dos veces lo
+     * mismo, se suma la cantidad en una línea.
+     */
+    crear: (datos: {
+      idEmpresa: number;
+      idSucursal: number;
+      idProveedor: number;
+      numeroFactura: string;
+      /** ISO de sólo día. */
+      fechaFactura: string;
+      idMoneda: number;
+      /** Ausente = 1, que es lo correcto en moneda local. */
+      tipoCambio?: number;
+      /** Opcional: sin ella la factura queda sin plazo ni vencimiento. */
+      idCondicion?: number;
+      observacion?: string;
+      detalle: Array<{
+        idArticulo: number;
+        cantidad: number;
+        /** **Con IVA incluido.** */
+        precioUnitario: number;
+        idIva?: number;
+      }>;
+    }) =>
+      request<{ id: number; lineas: number; ok: boolean }>("/facturas-compras/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /**
+     * Los campos ausentes de la cabecera no se modifican.
+     *
+     * **`detalle` presente REEMPLAZA las líneas por completo**; ausente las deja
+     * como estaban. No hay forma de editar una sola línea: se manda el detalle
+     * entero como quedó.
+     */
+    actualizar: (
+      id: number,
+      datos: {
+        idEmpresa: number;
+        idSucursal?: number;
+        idProveedor?: number;
+        numeroFactura?: string;
+        fechaFactura?: string;
+        idMoneda?: number;
+        tipoCambio?: number;
+        idCondicion?: number;
+        observacion?: string;
+        detalle?: Array<{
+          idArticulo: number;
+          cantidad: number;
+          precioUnitario: number;
+          idIva?: number;
+        }>;
+      },
+    ) =>
+      request<{ ok: boolean }>(`/facturas-compras/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Borra la factura **y su detalle**. Baja física: no hay estado. */
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/facturas-compras/eliminar/${id}/${idEmpresa}`, {
+        method: "DELETE",
+      }),
   },
 };

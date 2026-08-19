@@ -55,6 +55,9 @@ db/                      Backend: un archivo SQL por tabla
 ├── paises.sql           ─┐
 ├── departamentos.sql     │ Jerarquía geográfica (catálogos globales)
 ├── ciudades.sql         ─┘
+├── personas.sql         Padrón de físicas y jurídicas (catálogo GLOBAL)
+├── iva.sql              Tasas de IVA (catálogo global)
+├── condiciones-pago.sql Contado, plazos y cuotas (catálogo global)
 ├── empresas.sql         Empresas + logo (BLOB) + listado público del login
 ├── sucursales.sql       Sucursales de cada empresa
 ├── monedas.sql          ─┐
@@ -64,7 +67,10 @@ db/                      Backend: un archivo SQL por tabla
 ├── ubicaciones.sql      Zona/estante/nivel del depósito, POR EMPRESA Y SUCURSAL
 ├── lotes.sql            Partidas: cantidad, costo y vencimiento  ← ANTES que articulos
 ├── articulos.sql        Artículos + imagen (BLOB). Su stock SUMA los lotes
-└── articulos-ubicaciones.sql  Cruce: en qué ubicaciones está cada artículo
+├── articulos-ubicaciones.sql  Cruce: en qué ubicaciones está cada artículo
+├── inventarios-triggers-ddl.sql  DDL aparte: corrige los triggers de INVENTARIOS
+├── inventarios.sql      Conteos físicos con máquina de estados
+└── facturas-compras.sql Cabecera + detalle. La primera TRANSACCIÓN del proyecto
 
 src/
 ├── routes/              Rutas (el archivo define la URL)
@@ -114,20 +120,36 @@ siguen siempre la misma forma:
 
 \* En las tablas por empresa el borrado lleva **también el `idEmpresa`** — ver
 [Aislamiento por empresa](#aislamiento-por-empresa). En los catálogos globales
-(países, departamentos, ciudades, módulos, páginas) sigue siendo
-`/eliminar/:id`.
+(países, departamentos, ciudades, módulos, páginas, personas, IVA, condiciones de
+pago) sigue siendo `/eliminar/:id`.
 
 `auth.sql` es la única excepción a la regla: no corresponde a una tabla sino a
 una responsabilidad —verificar credenciales y manejar sesiones— que cruza
 `USUARIOS` y `TOKENS`. El ABM de usuarios va aparte, en `usuarios.sql`.
 
+#### Los que se salen del patrón
+
+Cuatro módulos publican endpoints que no son los cuatro de arriba, y en todos los
+casos porque la tabla no se comporta como una ficha:
+
+| Endpoint                                       | Por qué existe                                                                                                                                       |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /facturas-compras/obtener/:id/:idEmpresa` | La factura **con su detalle**. El listado no lo trae: cien facturas con todas sus líneas serían un CLOB enorme para dibujar una tabla de encabezados |
+| `POST /inventarios/procesar/:id/:idEmpresa`    | `ABIERTO → PROCESADO`. Dispara una acción con efectos sobre `LOTES`, no reemplaza un recurso — por eso `POST` y no `PUT`                             |
+| `POST /inventarios/anular/:id/:idEmpresa`      | `ABIERTO → ANULADO`. **Ocupa el lugar del `/eliminar`**: un trigger prohíbe el `DELETE`                                                              |
+| `GET /empresas/publicas`                       | El único endpoint **sin token**: alimenta el selector de empresa del login, donde todavía no hay sesión                                              |
+| `GET /<tabla>/<imagen>/:id`                    | Los BLOB, también públicos: los consume un `<img>`, que no manda el header `Authorization`                                                           |
+
+E `INVENTARIOS` **no tiene `/eliminar`** en absoluto — ver
+[Máquina de estados](#máquina-de-estados-inventarios).
+
 ### Tablas por empresa
 
 `SUCURSALES`, `MONEDAS`, `UNIDADES_MEDIDA`, `CATEGORIAS`, `ARTICULOS`,
-`UBICACIONES` y `LOTES` **cuelgan de `EMPRESAS`**: cada empresa tiene su propio
-juego. El `idEmpresa` no sale de un combobox del formulario sino de la **empresa
-activa de la sesión**, que se elige al iniciar sesión (ver
-[Empresa activa](#empresa-activa)).
+`UBICACIONES`, `LOTES`, `INVENTARIOS` y `FACTURAS_COMPRAS_CAB` **cuelgan de
+`EMPRESAS`**: cada empresa tiene su propio juego. El `idEmpresa` no sale de un
+combobox del formulario sino de la **empresa activa de la sesión**, que se elige
+al iniciar sesión (ver [Empresa activa](#empresa-activa)).
 
 Consecuencia en el listado: **no hacen JOIN contra `EMPRESAS`**. Como ya vienen
 filtradas por una sola empresa, su nombre sería la misma constante repetida en
@@ -176,8 +198,14 @@ validan con un `JOIN` antes de escribir:
 | `USUARIO_PAGINAS`       | la empresa está en la PK |
 
 > Los catálogos globales —`PAISES`, `DEPARTAMENTOS`, `CIUDADES`, `MODULOS`,
-> `PAGINAS`, `USUARIOS`— **no** llevan este control: no cuelgan de ninguna
-> empresa. `EMPRESAS` tampoco, porque ahí `ID_EMPRESA` es la PK.
+> `PAGINAS`, `USUARIOS`, `PERSONAS`, `IVA`, `CONDICIONES_PAGO`— **no** llevan
+> este control: no cuelgan de ninguna empresa. `EMPRESAS` tampoco, porque ahí
+> `ID_EMPRESA` es la PK.
+>
+> Ojo con los tres últimos, que son los más recientes: un proveedor, una tasa de
+> IVA o una condición de pago **se comparten entre todas las empresas**. La misma
+> persona puede ser cliente de una y proveedor de otra sin cargarse dos veces, y
+> por eso sus endpoints no reciben `idEmpresa` ni acotan por ella.
 
 `UBICACIONES` va un paso más: cuelga de la empresa **y** de la sucursal, y los dos
 ids salen de los providers globales (ver
@@ -262,27 +290,170 @@ El content-type se guarda junto al binario en `LOGO_MIME` / `IMAGEN_MIME` /
 DDL: los archivos las agregan en un paso 0 idempotente, que consulta
 `USER_TAB_COLUMNS` antes del `ALTER`.
 
+### Transacciones: cabecera y detalle
+
+`FACTURAS_COMPRAS_CAB` + `FACTURAS_COMPRA_DET` es la **primera transacción** del
+proyecto, y se comporta distinto de todas las tablas anteriores. Hasta acá cada
+fila era una ficha independiente; una factura es una cabecera con sus líneas, y
+las dos partes sólo tienen sentido juntas. Eso obliga a tres decisiones:
+
+- **El detalle viaja como array JSON en el mismo request.** Guardar la cabecera y
+  después las líneas de a una permitiría que la red se corte en el medio y quede
+  una factura sin detalle —que no es una factura—. Con el array, `INSERTAR` hace
+  todo en una transacción: o entra completa o no entra nada. Se parsea con
+  `JSON_TABLE`.
+- **`ACTUALIZAR` reemplaza el detalle entero**: borra las líneas y las reinserta.
+  Comparar línea por línea sería mucho más código para el mismo resultado en
+  facturas de cinco o diez líneas. Consecuencia: los `ID_DETALLE` cambian en cada
+  edición.
+- **`ELIMINAR` borra las dos tablas, detalle primero.** El DDL no declara
+  `ON DELETE CASCADE`, así que al revés da `ORA-02292`.
+
+`SUBTOTAL` es una **columna virtual** (`GENERATED ALWAYS AS`): la calcula Oracle
+y mencionarla en un `INSERT` da `ORA-54013`. Está bien que sea así — no hay forma
+de que quede desincronizada de sus factores.
+
+Los totales **no se guardan**: se suman del detalle en cada consulta. Es el mismo
+criterio que el stock de un artículo (`SUM` sobre lotes) y que el vencimiento de
+una factura (`FECHA_FACTURA + DIAS_PAGO`). Si se puede derivar, se deriva.
+
+### IVA: los precios lo incluyen, así que se divide
+
+Es como se factura en Paraguay, y es la razón de que la tabla `IVA` tenga **dos
+divisores** además del porcentaje:
+
+| Columna            | Ejemplo (10%) | Para qué                      |
+| ------------------ | ------------- | ----------------------------- |
+| `PORCENTAJE`       | 10            | La tasa nominal, para mostrar |
+| `IVA_DIVISION`     | 11            | Saca el impuesto contenido    |
+| `GRAVADA_DIVISION` | 1,1           | Saca la base imponible        |
+
+El método actual es **gravado por división, IVA por resta**:
+
+```sql
+GRAVADO = ROUND(SUBTOTAL / GRAVADA_DIVISION, 2)
+IVA     = SUBTOTAL - GRAVADO
+```
+
+Con 110.000 al 10%: gravado 100.000, IVA 10.000. Y nunca
+`SUBTOTAL * PORCENTAJE / 100`, que daría 11.000 — cobra impuesto sobre impuesto.
+
+> **Por qué el IVA se resta en vez de dividirse por `IVA_DIVISION`:** las dos
+> divisiones redondean por separado y sus redondeos son independientes, así que
+> su suma no tiene por qué dar el subtotal. Con una división y una resta,
+> `gravado + iva = total` siempre, exacto. En un libro de compras una diferencia
+> de un guaraní por línea se acumula y no cuadra contra el papel.
+
+**`GRAVADA_DIVISION` es NULLABLE** y las tasas cargadas antes de que existiera la
+tienen vacía. Ahí el cálculo cae al método anterior —IVA por división, gravado
+por resta— para que las facturas viejas sigan mostrando lo mismo. La elección es
+**por fila**, con un `CASE`, no global.
+
+> **La exenta usa criterios opuestos en los dos divisores**, y es lo más fácil de
+> equivocar: `IVA_DIVISION` va en **0** ("no divide nada") y `GRAVADA_DIVISION`
+> en **1** ("el monto entero es gravado"). Con `IVA_DIVISION` en 1 el desglose
+> diría que todo el monto es impuesto; con `GRAVADA_DIVISION` en 0 sería división
+> por cero. Ninguno de los dos falla visiblemente: dan cifras mal.
+>
+> Toda división va protegida con `NULLIF(..., 0)`.
+
+### Máquina de estados: `INVENTARIOS`
+
+Los conteos físicos son la única tabla con estados y transiciones:
+
+```
+ABIERTO ──> PROCESADO   (aplica el conteo al lote)
+        └─> ANULADO     (lo descarta sin tocar nada)
+```
+
+Desde un estado terminal no se sale, y un conteo que ya no está `ABIERTO` no deja
+tocar su `CANTIDAD_FISICA`. **Eso lo imponen los triggers**, no el paquete: vale
+aunque alguien toque la tabla por fuera de la API. Lo que hace `PKG_INVENTARIOS`
+es chequear antes para devolver un 409 legible en vez de dejar salir un
+`ORA-20002` crudo como error 500.
+
+> **El módulo no tiene `/eliminar`.** `TRG_INVENTARIOS_BD` prohíbe el `DELETE`, y
+> es la decisión correcta: un conteo físico es evidencia de que alguien fue al
+> depósito y contó. Borrarlo hace desaparecer esa evidencia; anularlo la deja
+> asentada. `/anular` ocupa el lugar del `/eliminar` de las demás tablas.
+
+**Los triggers originales tenían dos errores** que corrige
+`db/inventarios-triggers-ddl.sql` —el único archivo de `db/` que administra DDL:
+
+1. `TRG_INVENTARIOS_AU` ajustaba `LOTES.CANTIDAD` al procesar, pero **el stock de
+   un artículo suma `CANTIDAD_DISPON`**. Procesar un conteo no movía el stock que
+   se ve en pantalla, y no fallaba — simplemente no hacía efecto.
+2. `TRG_INVENTARIOS_BIU` escribía `USUARIO_PROCESA`, columna que el DDL nuevo
+   reemplazó por `ID_USUARIO` (FK a `USUARIOS`). El trigger no compilaba, y un
+   trigger inválido bloquea todo `INSERT` y `UPDATE` de la tabla.
+
+`ID_USUARIO` lo escribe el paquete, resolviéndolo del token: `USER` dentro de un
+handler de ORDS devuelve el esquema del workspace, igual para todo el mundo.
+
+### `PERSONAS`: físicas y jurídicas en una tabla
+
+El DDL declara `NOMBRE` y `APELLIDO` como `NOT NULL` pero `RAZON_SOCIAL` como
+nullable — y una persona jurídica es exactamente al revés. Se resuelve sin tocar
+el DDL:
+
+| Tipo           | Qué se pide       | Qué guarda el backend                                  |
+| -------------- | ----------------- | ------------------------------------------------------ |
+| `'F'` física   | Nombre y apellido | Tal cual. `RAZON_SOCIAL` en null                       |
+| `'J'` jurídica | Razón social      | Copia la razón social en `NOMBRE`, `'-'` en `APELLIDO` |
+
+El guión de relleno **no viaja al frontend**: el listado lo traduce a null, así
+que la pantalla nunca ve la convención. Y para mostrar está el campo calculado
+`nombreCompleto`, que resuelve cuál de los dos nombres corresponde — el frontend
+usa ese y no repite la regla.
+
+> `ACTUALIZAR` valida **cómo va a quedar la fila**, no lo que llegó: un PUT que
+> cambia el tipo a `'J'` sin mandar razón social puede ser válido (si ya la tenía)
+> o inválido. Por eso lee la fila actual antes de decidir.
+
 ### Orden de ejecución
 
-Hay **dos dependencias reales**; el resto del orden es indistinto.
+Hay **cinco dependencias reales**; el resto del orden es indistinto.
+
+Todas siguen la misma regla: **un paquete que consulta una tabla necesita que esa
+tabla exista al compilarse**, o queda `INVALID`. No alcanza con que el otro
+archivo se ejecute después.
 
 1. **`auth.sql` primero, sin excepción.** Todos los demás llaman a
    `PKG_AUTH` —`VALIDAR_TOKEN`, `VALIDAR_TOKEN_ADMIN`, el hasheo de
    contraseñas—, así que sin él ninguno compila. Si sale `INVALID`, frená ahí.
 2. **`lotes.sql` antes que `articulos.sql`.** El listado de artículos hace un
-   `SUM()` sobre `LOTES` para calcular el stock: si la tabla no existe,
-   `PKG_ARTICULOS` queda `INVALID`.
+   `SUM()` sobre `LOTES` para calcular el stock.
+3. **`inventarios-triggers-ddl.sql` antes que `inventarios.sql`.** Los triggers
+   que vinieron con el DDL original ajustaban la columna equivocada de `LOTES` y
+   escribían una columna que ya no existe. Con los viejos, `PKG_INVENTARIOS`
+   compila igual pero **procesar un conteo no mueve el stock**.
+4. **`iva.sql`, `personas.sql` y `condiciones-pago.sql` antes que
+   `facturas-compras.sql`.** El listado de facturas hace JOIN contra las tres.
+5. **La tabla `FACTURAS_COMPRA_DET` antes que `iva.sql`**, y
+   **`FACTURAS_COMPRAS_CAB` antes que `condiciones-pago.sql`**: los dos paquetes
+   cuentan cuántas facturas usan cada fila para poder explicar por qué no se
+   puede borrar. Es sólo el DDL de esas tablas, no el paquete.
 
 ```
-1.  db/auth.sql                  9.  db/detalle-monedas.sql
-2.  db/usuarios.sql              10. db/categorias.sql
-3.  db/modulos.sql               11. db/unidades-medida.sql
-4.  db/paginas.sql               12. db/ubicaciones.sql
-5.  db/usuario-paginas.sql       13. db/lotes.sql
-6.  db/empresas.sql              14. db/articulos.sql
-7.  db/sucursales.sql            15. db/articulos-ubicaciones.sql
-8.  db/monedas.sql
+1.  db/auth.sql                  11. db/monedas.sql
+2.  db/usuarios.sql              12. db/detalle-monedas.sql
+3.  db/modulos.sql               13. db/categorias.sql
+4.  db/paginas.sql               14. db/unidades-medida.sql
+5.  db/usuario-paginas.sql       15. db/ubicaciones.sql
+6.  db/paises.sql                16. db/lotes.sql
+7.  db/departamentos.sql         17. db/articulos.sql
+8.  db/ciudades.sql              18. db/articulos-ubicaciones.sql
+9.  db/empresas.sql              19. db/inventarios-triggers-ddl.sql
+10. db/sucursales.sql            20. db/inventarios.sql
+                                 21. db/personas.sql
+                                 22. db/iva.sql
+                                 23. db/condiciones-pago.sql
+                                 24. db/facturas-compras.sql
 ```
+
+Los tres catálogos globales del final —personas, IVA y condiciones— van juntos
+antes de facturas porque es lo único que los necesita. Su posición relativa entre
+ellos es indistinta.
 
 Después de cada uno: el paquete tiene que quedar `VALID` y la consulta de
 `USER_ERRORS` sin filas. Al terminar, conviene verificar las dos cosas que

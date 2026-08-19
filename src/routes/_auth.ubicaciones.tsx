@@ -10,6 +10,7 @@ import { z } from "zod";
 import { AppLayout } from "@/components/ctell/AppLayout";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
 import { useSucursal } from "@/components/ctell/sucursal-provider";
+import { SIN_FILTRO, TableHeadFiltrable } from "@/components/ctell/TableHeadFiltrable";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
 import { useTablaListado } from "@/hooks/use-tabla-listado";
 import { api, ApiError, type Ubicacion } from "@/lib/api";
@@ -105,6 +106,7 @@ function UbicacionesPage() {
   const [editando, setEditando] = useState<Ubicacion | null>(null);
   const [creando, setCreando] = useState(false);
   const [aEliminar, setAEliminar] = useState<Ubicacion | null>(null);
+  const [filtroZona, setFiltroZona] = useState<string>(SIN_FILTRO);
   const [visibles, setVisibles] = useState(POR_PAGINA);
 
   // Las ubicaciones cuelgan de la empresa Y de la sucursal: las dos salen de los
@@ -125,12 +127,19 @@ function UbicacionesPage() {
 
   const items = data?.items ?? [];
 
-  const { busqueda, setBusqueda, orden, alternarOrden, resultado } = useTablaListado(items, (u) => [
-    u.zona,
-    u.estante,
-    u.nivel,
-    u.descripcion,
-  ]);
+  // Las zonas salen del PROPIO listado y no de una tabla aparte: son los
+  // valores que existen en esta sucursal, y ofrecer otros daría opciones que
+  // siempre devuelven cero filas.
+  const zonasOpciones = Array.from(new Set(items.map((u) => u.zona)))
+    .sort((a, b) => a.localeCompare(b, "es"))
+    .map((z) => ({ valor: z, etiqueta: z }));
+
+  const filtrados = items.filter((u) => filtroZona === SIN_FILTRO || u.zona === filtroZona);
+
+  const { busqueda, setBusqueda, orden, alternarOrden, resultado } = useTablaListado(
+    filtrados,
+    (u) => [u.zona, u.estante, u.nivel, u.descripcion],
+  );
 
   /**
    * El orden de `useTablaListado` compara con `localeCompare` sobre strings, y
@@ -262,12 +271,16 @@ function UbicacionesPage() {
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHeadOrdenable
+                        <TableHeadFiltrable
                           direccion={orden?.campo === "zona" ? orden.direccion : null}
-                          onClick={() => alternarOrden("zona")}
+                          onOrdenar={() => alternarOrden("zona")}
+                          opciones={zonasOpciones}
+                          valor={filtroZona}
+                          onFiltrar={setFiltroZona}
+                          buscarPlaceholder="Buscar zona…"
                         >
                           Zona
-                        </TableHeadOrdenable>
+                        </TableHeadFiltrable>
                         <TableHeadOrdenable
                           direccion={orden?.campo === "estante" ? orden.direccion : null}
                           onClick={() => alternarOrden("estante")}

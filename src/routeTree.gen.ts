@@ -16,15 +16,19 @@ import { Route as AuthArticulosRouteImport } from './routes/_auth.articulos'
 import { Route as AuthArticulosUbicacionesRouteImport } from './routes/_auth.articulos-ubicaciones'
 import { Route as AuthCategoriasRouteImport } from './routes/_auth.categorias'
 import { Route as AuthCiudadesRouteImport } from './routes/_auth.ciudades'
+import { Route as AuthCondicionesPagoRouteImport } from './routes/_auth.condiciones-pago'
 import { Route as AuthConfiguracionRouteImport } from './routes/_auth.configuracion'
 import { Route as AuthDepartamentosRouteImport } from './routes/_auth.departamentos'
 import { Route as AuthEmpresasRouteImport } from './routes/_auth.empresas'
+import { Route as AuthFacturasComprasRouteImport } from './routes/_auth.facturas-compras'
 import { Route as AuthHomeRouteImport } from './routes/_auth.home'
 import { Route as AuthInventariosRouteImport } from './routes/_auth.inventarios'
+import { Route as AuthIvaRouteImport } from './routes/_auth.iva'
 import { Route as AuthLotesRouteImport } from './routes/_auth.lotes'
 import { Route as AuthMenuRouteImport } from './routes/_auth.menu'
 import { Route as AuthMonedasRouteImport } from './routes/_auth.monedas'
 import { Route as AuthPaisesRouteImport } from './routes/_auth.paises'
+import { Route as AuthPersonasRouteImport } from './routes/_auth.personas'
 import { Route as AuthSucursalesRouteImport } from './routes/_auth.sucursales'
 import { Route as AuthUbicacionesRouteImport } from './routes/_auth.ubicaciones'
 import { Route as AuthUnidadesMedidaRouteImport } from './routes/_auth.unidades-medida'
@@ -64,6 +68,11 @@ const AuthCiudadesRoute = AuthCiudadesRouteImport.update({
   path: '/ciudades',
   getParentRoute: () => AuthRoute,
 } as any)
+const AuthCondicionesPagoRoute = AuthCondicionesPagoRouteImport.update({
+  id: '/condiciones-pago',
+  path: '/condiciones-pago',
+  getParentRoute: () => AuthRoute,
+} as any)
 const AuthConfiguracionRoute = AuthConfiguracionRouteImport.update({
   id: '/configuracion',
   path: '/configuracion',
@@ -79,6 +88,11 @@ const AuthEmpresasRoute = AuthEmpresasRouteImport.update({
   path: '/empresas',
   getParentRoute: () => AuthRoute,
 } as any)
+const AuthFacturasComprasRoute = AuthFacturasComprasRouteImport.update({
+  id: '/facturas-compras',
+  path: '/facturas-compras',
+  getParentRoute: () => AuthRoute,
+} as any)
 const AuthHomeRoute = AuthHomeRouteImport.update({
   id: '/home',
   path: '/home',
@@ -87,6 +101,11 @@ const AuthHomeRoute = AuthHomeRouteImport.update({
 const AuthInventariosRoute = AuthInventariosRouteImport.update({
   id: '/inventarios',
   path: '/inventarios',
+  getParentRoute: () => AuthRoute,
+} as any)
+const AuthIvaRoute = AuthIvaRouteImport.update({
+  id: '/iva',
+  path: '/iva',
   getParentRoute: () => AuthRoute,
 } as any)
 const AuthLotesRoute = AuthLotesRouteImport.update({
@@ -107,6 +126,11 @@ const AuthMonedasRoute = AuthMonedasRouteImport.update({
 const AuthPaisesRoute = AuthPaisesRouteImport.update({
   id: '/paises',
   path: '/paises',
+  getParentRoute: () => AuthRoute,
+} as any)
+const AuthPersonasRoute = AuthPersonasRouteImport.update({
+  id: '/personas',
+  path: '/personas',
   getParentRoute: () => AuthRoute,
 } as any)
 const AuthSucursalesRoute = AuthSucursalesRouteImport.update({
@@ -132,15 +156,19 @@ export interface FileRoutesByFullPath {
   '/articulos-ubicaciones': typeof AuthArticulosUbicacionesRoute
   '/categorias': typeof AuthCategoriasRoute
   '/ciudades': typeof AuthCiudadesRoute
+  '/condiciones-pago': typeof AuthCondicionesPagoRoute
   '/configuracion': typeof AuthConfiguracionRoute
   '/departamentos': typeof AuthDepartamentosRoute
   '/empresas': typeof AuthEmpresasRoute
+  '/facturas-compras': typeof AuthFacturasComprasRoute
   '/home': typeof AuthHomeRoute
   '/inventarios': typeof AuthInventariosRoute
+  '/iva': typeof AuthIvaRoute
   '/lotes': typeof AuthLotesRoute
   '/menu': typeof AuthMenuRoute
   '/monedas': typeof AuthMonedasRoute
   '/paises': typeof AuthPaisesRoute
+  '/personas': typeof AuthPersonasRoute
   '/sucursales': typeof AuthSucursalesRoute
   '/ubicaciones': typeof AuthUbicacionesRoute
   '/unidades-medida': typeof AuthUnidadesMedidaRoute
@@ -152,15 +180,19 @@ export interface FileRoutesByTo {
   '/articulos-ubicaciones': typeof AuthArticulosUbicacionesRoute
   '/categorias': typeof AuthCategoriasRoute
   '/ciudades': typeof AuthCiudadesRoute
+  '/condiciones-pago': typeof AuthCondicionesPagoRoute
   '/configuracion': typeof AuthConfiguracionRoute
   '/departamentos': typeof AuthDepartamentosRoute
   '/empresas': typeof AuthEmpresasRoute
+  '/facturas-compras': typeof AuthFacturasComprasRoute
   '/home': typeof AuthHomeRoute
   '/inventarios': typeof AuthInventariosRoute
+  '/iva': typeof AuthIvaRoute
   '/lotes': typeof AuthLotesRoute
   '/menu': typeof AuthMenuRoute
   '/monedas': typeof AuthMonedasRoute
   '/paises': typeof AuthPaisesRoute
+  '/personas': typeof AuthPersonasRoute
   '/sucursales': typeof AuthSucursalesRoute
   '/ubicaciones': typeof AuthUbicacionesRoute
   '/unidades-medida': typeof AuthUnidadesMedidaRoute
@@ -174,15 +206,19 @@ export interface FileRoutesById {
   '/_auth/articulos-ubicaciones': typeof AuthArticulosUbicacionesRoute
   '/_auth/categorias': typeof AuthCategoriasRoute
   '/_auth/ciudades': typeof AuthCiudadesRoute
+  '/_auth/condiciones-pago': typeof AuthCondicionesPagoRoute
   '/_auth/configuracion': typeof AuthConfiguracionRoute
   '/_auth/departamentos': typeof AuthDepartamentosRoute
   '/_auth/empresas': typeof AuthEmpresasRoute
+  '/_auth/facturas-compras': typeof AuthFacturasComprasRoute
   '/_auth/home': typeof AuthHomeRoute
   '/_auth/inventarios': typeof AuthInventariosRoute
+  '/_auth/iva': typeof AuthIvaRoute
   '/_auth/lotes': typeof AuthLotesRoute
   '/_auth/menu': typeof AuthMenuRoute
   '/_auth/monedas': typeof AuthMonedasRoute
   '/_auth/paises': typeof AuthPaisesRoute
+  '/_auth/personas': typeof AuthPersonasRoute
   '/_auth/sucursales': typeof AuthSucursalesRoute
   '/_auth/ubicaciones': typeof AuthUbicacionesRoute
   '/_auth/unidades-medida': typeof AuthUnidadesMedidaRoute
@@ -196,15 +232,19 @@ export interface FileRouteTypes {
     | '/articulos-ubicaciones'
     | '/categorias'
     | '/ciudades'
+    | '/condiciones-pago'
     | '/configuracion'
     | '/departamentos'
     | '/empresas'
+    | '/facturas-compras'
     | '/home'
     | '/inventarios'
+    | '/iva'
     | '/lotes'
     | '/menu'
     | '/monedas'
     | '/paises'
+    | '/personas'
     | '/sucursales'
     | '/ubicaciones'
     | '/unidades-medida'
@@ -216,15 +256,19 @@ export interface FileRouteTypes {
     | '/articulos-ubicaciones'
     | '/categorias'
     | '/ciudades'
+    | '/condiciones-pago'
     | '/configuracion'
     | '/departamentos'
     | '/empresas'
+    | '/facturas-compras'
     | '/home'
     | '/inventarios'
+    | '/iva'
     | '/lotes'
     | '/menu'
     | '/monedas'
     | '/paises'
+    | '/personas'
     | '/sucursales'
     | '/ubicaciones'
     | '/unidades-medida'
@@ -237,15 +281,19 @@ export interface FileRouteTypes {
     | '/_auth/articulos-ubicaciones'
     | '/_auth/categorias'
     | '/_auth/ciudades'
+    | '/_auth/condiciones-pago'
     | '/_auth/configuracion'
     | '/_auth/departamentos'
     | '/_auth/empresas'
+    | '/_auth/facturas-compras'
     | '/_auth/home'
     | '/_auth/inventarios'
+    | '/_auth/iva'
     | '/_auth/lotes'
     | '/_auth/menu'
     | '/_auth/monedas'
     | '/_auth/paises'
+    | '/_auth/personas'
     | '/_auth/sucursales'
     | '/_auth/ubicaciones'
     | '/_auth/unidades-medida'
@@ -307,6 +355,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthCiudadesRouteImport
       parentRoute: typeof AuthRoute
     }
+    '/_auth/condiciones-pago': {
+      id: '/_auth/condiciones-pago'
+      path: '/condiciones-pago'
+      fullPath: '/condiciones-pago'
+      preLoaderRoute: typeof AuthCondicionesPagoRouteImport
+      parentRoute: typeof AuthRoute
+    }
     '/_auth/configuracion': {
       id: '/_auth/configuracion'
       path: '/configuracion'
@@ -328,6 +383,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthEmpresasRouteImport
       parentRoute: typeof AuthRoute
     }
+    '/_auth/facturas-compras': {
+      id: '/_auth/facturas-compras'
+      path: '/facturas-compras'
+      fullPath: '/facturas-compras'
+      preLoaderRoute: typeof AuthFacturasComprasRouteImport
+      parentRoute: typeof AuthRoute
+    }
     '/_auth/home': {
       id: '/_auth/home'
       path: '/home'
@@ -340,6 +402,13 @@ declare module '@tanstack/react-router' {
       path: '/inventarios'
       fullPath: '/inventarios'
       preLoaderRoute: typeof AuthInventariosRouteImport
+      parentRoute: typeof AuthRoute
+    }
+    '/_auth/iva': {
+      id: '/_auth/iva'
+      path: '/iva'
+      fullPath: '/iva'
+      preLoaderRoute: typeof AuthIvaRouteImport
       parentRoute: typeof AuthRoute
     }
     '/_auth/lotes': {
@@ -368,6 +437,13 @@ declare module '@tanstack/react-router' {
       path: '/paises'
       fullPath: '/paises'
       preLoaderRoute: typeof AuthPaisesRouteImport
+      parentRoute: typeof AuthRoute
+    }
+    '/_auth/personas': {
+      id: '/_auth/personas'
+      path: '/personas'
+      fullPath: '/personas'
+      preLoaderRoute: typeof AuthPersonasRouteImport
       parentRoute: typeof AuthRoute
     }
     '/_auth/sucursales': {
@@ -400,15 +476,19 @@ interface AuthRouteChildren {
   AuthArticulosUbicacionesRoute: typeof AuthArticulosUbicacionesRoute
   AuthCategoriasRoute: typeof AuthCategoriasRoute
   AuthCiudadesRoute: typeof AuthCiudadesRoute
+  AuthCondicionesPagoRoute: typeof AuthCondicionesPagoRoute
   AuthConfiguracionRoute: typeof AuthConfiguracionRoute
   AuthDepartamentosRoute: typeof AuthDepartamentosRoute
   AuthEmpresasRoute: typeof AuthEmpresasRoute
+  AuthFacturasComprasRoute: typeof AuthFacturasComprasRoute
   AuthHomeRoute: typeof AuthHomeRoute
   AuthInventariosRoute: typeof AuthInventariosRoute
+  AuthIvaRoute: typeof AuthIvaRoute
   AuthLotesRoute: typeof AuthLotesRoute
   AuthMenuRoute: typeof AuthMenuRoute
   AuthMonedasRoute: typeof AuthMonedasRoute
   AuthPaisesRoute: typeof AuthPaisesRoute
+  AuthPersonasRoute: typeof AuthPersonasRoute
   AuthSucursalesRoute: typeof AuthSucursalesRoute
   AuthUbicacionesRoute: typeof AuthUbicacionesRoute
   AuthUnidadesMedidaRoute: typeof AuthUnidadesMedidaRoute
@@ -420,15 +500,19 @@ const AuthRouteChildren: AuthRouteChildren = {
   AuthArticulosUbicacionesRoute: AuthArticulosUbicacionesRoute,
   AuthCategoriasRoute: AuthCategoriasRoute,
   AuthCiudadesRoute: AuthCiudadesRoute,
+  AuthCondicionesPagoRoute: AuthCondicionesPagoRoute,
   AuthConfiguracionRoute: AuthConfiguracionRoute,
   AuthDepartamentosRoute: AuthDepartamentosRoute,
   AuthEmpresasRoute: AuthEmpresasRoute,
+  AuthFacturasComprasRoute: AuthFacturasComprasRoute,
   AuthHomeRoute: AuthHomeRoute,
   AuthInventariosRoute: AuthInventariosRoute,
+  AuthIvaRoute: AuthIvaRoute,
   AuthLotesRoute: AuthLotesRoute,
   AuthMenuRoute: AuthMenuRoute,
   AuthMonedasRoute: AuthMonedasRoute,
   AuthPaisesRoute: AuthPaisesRoute,
+  AuthPersonasRoute: AuthPersonasRoute,
   AuthSucursalesRoute: AuthSucursalesRoute,
   AuthUbicacionesRoute: AuthUbicacionesRoute,
   AuthUnidadesMedidaRoute: AuthUnidadesMedidaRoute,

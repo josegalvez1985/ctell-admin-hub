@@ -17,6 +17,9 @@ de plantilla para todo lo demás.
    - [Tablas por empresa](#31-tablas-por-empresa)
    - [Tablas por empresa Y sucursal](#311-tablas-por-empresa-y-sucursal)
    - [Imágenes y otros binarios](#32-imágenes-y-otros-binarios)
+   - [Cabecera y detalle: una transacción](#33-cabecera-y-detalle-una-transacción)
+   - [Columnas calculadas: lo que no se guarda](#34-columnas-calculadas-lo-que-no-se-guarda)
+   - [Máquinas de estado y triggers](#35-máquinas-de-estado-y-triggers)
 4. [Consumir la API desde el frontend](#4-consumir-la-api-desde-el-frontend)
 5. [Devolver lo que el consumidor necesita](#5-devolver-lo-que-el-consumidor-necesita)
 6. [Seguridad](#6-seguridad)
@@ -878,6 +881,302 @@ El `COUNT` no es adorno: sin él, la segunda ejecución del archivo muere con
 
 ---
 
+## 3.3 Cabecera y detalle: una transacción
+
+Hasta acá cada tabla era una ficha independiente. Una **factura** no: es una
+cabecera con sus líneas, y las dos partes sólo tienen sentido juntas. El modelo
+está en [db/facturas-compras.sql](../db/facturas-compras.sql).
+
+### El detalle viaja en el mismo request
+
+**No hagas un endpoint por línea.** Guardar la cabecera y después las líneas de a
+una permite que la red se corte en el medio y quede una cabecera sin detalle —que
+no es una factura, es basura que después nadie sabe si está a medio cargar.
+
+El detalle llega como un array JSON en el body:
+
+```json
+{
+  "idEmpresa": 1,
+  "numeroFactura": "001-001-0001234",
+  "detalle": [{ "idArticulo": 5, "cantidad": 10, "precioUnitario": 5500, "idIva": 1 }]
+}
+```
+
+y se recorre con `JSON_TABLE`:
+
+```sql
+FOR linea IN (
+  SELECT d.nro, d.idArticulo, d.cantidad, d.precioUnitario, d.idIva
+    FROM JSON_TABLE(
+           p_detalle, '$[*]'
+           COLUMNS (
+             -- FOR ORDINALITY y no ROWNUM: da la posicion REAL dentro del
+             -- array, que es la que el usuario ve en el formulario. ROWNUM se
+             -- asigna al leer y puede no coincidir con el orden del JSON, asi
+             -- que un mensaje de error apuntaria a la linea equivocada.
+             nro            FOR ORDINALITY,
+             idArticulo     NUMBER PATH '$.idArticulo',
+             cantidad       NUMBER PATH '$.cantidad',
+             precioUnitario NUMBER PATH '$.precioUnitario',
+             idIva          NUMBER PATH '$.idIva'
+           )
+         ) d
+) LOOP
+```
+
+**Validá cada línea dentro del bucle, no después.** Es lo que permite decir _qué_
+línea está mal: "la cantidad de la línea 3 es negativa" se corrige, "hay una
+cantidad negativa" obliga a buscarla.
+
+### Sin `COMMIT` entre medio
+
+La cabecera y el detalle van en una sola transacción. El procedimiento que guarda
+el detalle **no hace `COMMIT` ni `ROLLBACK`** —eso lo maneja quien lo llama— y
+devuelve el error en un `OUT` en vez de lanzar una excepción, porque el llamador
+tiene que poder deshacer también la cabecera:
+
+```sql
+INSERT INTO FACTURAS_COMPRAS_CAB (...) RETURNING ID_FACTURA INTO l_id;
+
+GUARDAR_DETALLE(l_id, l_id_empresa, p_detalle, l_lineas, l_error);
+
+IF l_error IS NOT NULL THEN
+  ROLLBACK;                    -- deshace TAMBIEN la cabecera
+  p_status_code := 400;
+  p_resultado := JSON_OBJECT('error' VALUE l_error);
+  RETURN;
+END IF;
+
+COMMIT;
+```
+
+### `ACTUALIZAR` reemplaza el detalle entero
+
+Borra las líneas y las reinserta. Comparar línea por línea —cuál cambió, cuál es
+nueva, cuál se borró— es mucho más código para el mismo resultado en facturas de
+cinco o diez líneas.
+
+> **Consecuencia:** los `ID_DETALLE` cambian en cada edición. No importa mientras
+> nada apunte al detalle; si algún día algo lo hace, esta decisión hay que
+> revisarla.
+
+Y el detalle sólo se reemplaza **si vino**: un PUT que cambia únicamente la
+observación deja las líneas como estaban.
+
+### `ELIMINAR`: detalle primero
+
+El DDL no declara `ON DELETE CASCADE`, así que el orden lo pone el paquete. Al
+revés da `ORA-02292`.
+
+```sql
+-- El subselect acota por empresa: sin eso, mandar el id de una factura ajena
+-- le borraria las lineas aunque el DELETE de la cabecera no hiciera nada.
+DELETE FROM FACTURAS_COMPRA_DET
+ WHERE ID_FACTURA IN (
+         SELECT ID_FACTURA FROM FACTURAS_COMPRAS_CAB
+          WHERE ID_FACTURA = l_id AND ID_EMPRESA = l_id_empresa
+       );
+
+DELETE FROM FACTURAS_COMPRAS_CAB
+ WHERE ID_FACTURA = l_id AND ID_EMPRESA = l_id_empresa;
+```
+
+### Un `OBTENER` aparte para el detalle
+
+El `LISTAR` devuelve **sólo las cabeceras**: cien facturas con todas sus líneas
+serían un CLOB enorme para dibujar una tabla que sólo muestra encabezados. El
+detalle se pide con `GET /<tabla>/obtener/:id/:idEmpresa` cuando se abre una.
+
+En ese procedimiento, **el detalle se arma aparte y se inyecta con `FORMAT JSON`**:
+anidar un `JSON_ARRAYAGG` dentro del `JSON_OBJECT` de la cabecera vuelve a caer en
+el límite de 4000 bytes del resultado intermedio.
+
+### Columnas virtuales: no se insertan
+
+Si el DDL declara una columna `GENERATED ALWAYS AS (...) VIRTUAL`, **mencionarla
+en un `INSERT` o `UPDATE` da `ORA-54013`**. La calcula Oracle en cada lectura y se
+lee como cualquier otra:
+
+```sql
+-- SUBTOTAL NO se menciona: es virtual (CANTIDAD * PRECIO_UNITARIO).
+INSERT INTO FACTURAS_COMPRA_DET (
+  ID_FACTURA, ID_ARTICULO, CANTIDAD, PRECIO_UNITARIO, ID_IVA, FECHA_CREACION
+) VALUES (...);
+```
+
+Está bien que sea así: no hay forma de que quede desincronizada de sus factores.
+
+---
+
+## 3.4 Columnas calculadas: lo que no se guarda
+
+**Si se puede derivar, se deriva.** Es una regla que ya aparecía en el stock de un
+artículo y que las tablas nuevas repiten:
+
+| Dato                        | Cómo se obtiene                      | Por qué no se guarda                                                |
+| --------------------------- | ------------------------------------ | ------------------------------------------------------------------- |
+| Stock de un artículo        | `SUM(CANTIDAD_DISPON)` de sus lotes  | Una columna quedaría desfasada de las partidas                      |
+| Total de una factura        | `SUM(SUBTOTAL)` de su detalle        | La cabecera podría decir 500.000 y las líneas sumar 480.000         |
+| Diferencia de un inventario | `CANTIDAD_FISICA - CANTIDAD_SISTEMA` | Tres columnas derivables entre sí son tres que pueden contradecirse |
+| Vencimiento de una factura  | `FECHA_FACTURA + DIAS_PAGO`          | Se desfasa si se corrige la fecha o la condición                    |
+| IVA de una línea            | Ver abajo                            | Depende de la tasa, que puede corregirse                            |
+
+**La contrapartida:** editar una tasa de IVA o una condición de pago cambia
+retroactivamente el desglose y el vencimiento de todas las facturas que las usan
+—incluidas las de períodos ya declarados—. No se bloquea, porque corregir algo
+mal cargado es válido, pero **el listado devuelve `usos`** para que la pantalla
+avise con el número concreto antes de guardar.
+
+### La excepción: cuando el dato es una foto
+
+`INVENTARIOS.CANTIDAD_SISTEMA` **sí se guarda**, y es lo correcto: es lo que el
+sistema creía que había **al momento de contar**. Si se recalculara contra el lote
+en cada consulta, la diferencia se movería sola entre que se cuenta y se procesa,
+y el registro dejaría de probar nada.
+
+La regla completa es: **derivá lo que describe el presente, guardá lo que
+describe un momento**.
+
+### IVA: los precios lo incluyen
+
+En Paraguay se factura con IVA incluido, así que el impuesto **se divide**, no se
+multiplica. La tabla `IVA` guarda dos divisores además del porcentaje:
+
+```sql
+-- Con GRAVADA_DIVISION cargada (metodo actual):
+GRAVADO = ROUND(SUBTOTAL / GRAVADA_DIVISION, 2)   -- 1.1 al 10%
+IVA     = SUBTOTAL - GRAVADO
+
+-- Sin ella (tasas anteriores a esa columna):
+IVA     = ROUND(SUBTOTAL / IVA_DIVISION, 2)       -- 11 al 10%
+GRAVADO = SUBTOTAL - IVA
+```
+
+**Nunca `SUBTOTAL * PORCENTAJE / 100`**: con 110.000 al 10% daría 11.000 en vez de
+10.000 — cobra impuesto sobre impuesto.
+
+> **Por qué uno se divide y el otro se resta:** las dos divisiones redondean por
+> separado y sus redondeos son independientes, así que su suma no tiene por qué
+> dar el subtotal. Con una división y una resta, `gravado + iva = total` siempre.
+> En un libro de compras una diferencia de un guaraní por línea se acumula.
+
+Tres cosas para no equivocarse:
+
+- **La elección del método es por fila**, con un `CASE` sobre `GRAVADA_DIVISION`,
+  no global: las tasas viejas siguen mostrando lo mismo que antes.
+- **La exenta usa criterios opuestos**: `IVA_DIVISION` va en **0** y
+  `GRAVADA_DIVISION` en **1**. Ninguno de los dos falla visiblemente si se
+  invierten — dan cifras mal.
+- **Toda división va con `NULLIF(..., 0)`**, o la exenta mata la consulta con
+  `ORA-01476`.
+
+Y si el frontend replica el cálculo para mostrarlo en vivo, **tiene que replicar
+también los redondeos**: si no, el total que se ve al cargar difiere del que
+muestra la factura ya guardada, y esa diferencia es imposible de explicar.
+
+---
+
+## 3.5 Máquinas de estado y triggers
+
+`INVENTARIOS` es la primera tabla con estados y transiciones:
+
+```
+ABIERTO ──> PROCESADO   (aplica el conteo al lote)
+        └─> ANULADO     (lo descarta sin tocar nada)
+```
+
+### Las reglas van en la base, los mensajes en el paquete
+
+Los triggers imponen las transiciones con `RAISE_APPLICATION_ERROR`, y está bien
+que sea así: **valen aunque alguien toque la tabla por fuera de la API**.
+
+Lo que hace el paquete es **chequear antes** para devolver un 409 con un mensaje
+legible, en vez de dejar salir un `ORA-20002` crudo como error 500:
+
+```sql
+-- Se lee el estado ANTES de intentar el UPDATE, y acotado por empresa. Dos
+-- motivos: distinguir "no existe / no es tuya" (404) de "ya estaba procesado"
+-- (409), y poder decir QUE estado tenia.
+SELECT ESTADO INTO l_estado
+  FROM INVENTARIOS
+ WHERE ID_INVENTARIO = l_id AND ID_EMPRESA = l_id_empresa;
+
+IF l_estado != 'ABIERTO' THEN
+  p_status_code := 409;
+  p_resultado := JSON_OBJECT('error' VALUE 'El inventario ya esta ' || LOWER(l_estado));
+  RETURN;
+END IF;
+```
+
+Los dos controles no sobran: **el del paquete es para que se entienda, el del
+trigger es el que no se puede esquivar**. Y el `WHEN OTHERS` traduce igual los
+`ORA-20001..20003` a 409, por si otra sesión cambió la fila entre el `SELECT` y el
+`UPDATE`.
+
+### El `UPDATE` repite el `WHERE` del `SELECT`
+
+Entre leer y escribir hay una ventana en la que otra sesión pudo tocar la fila:
+
+```sql
+UPDATE INVENTARIOS
+   SET ESTADO = p_estado_destino, ID_USUARIO = NVL(l_id_usuario, ID_USUARIO)
+ WHERE ID_INVENTARIO = l_id
+   AND ID_EMPRESA    = l_id_empresa
+   AND ESTADO        = 'ABIERTO';   -- <- lo que el SELECT ya verifico
+
+IF SQL%ROWCOUNT = 0 THEN
+  -- La fila existe pero ya no esta ABIERTA: es 409, no 404.
+  ROLLBACK;
+  p_status_code := 409;
+  p_resultado := '{"error":"El inventario cambio de estado, volve a cargar la pagina"}';
+  RETURN;
+END IF;
+```
+
+### Un trigger inválido bloquea toda la tabla
+
+Si un trigger referencia una columna que ya no existe, **no compila — y mientras
+esté `INVALID` ningún `INSERT` ni `UPDATE` sobre esa tabla funciona**. Es lo que
+pasó cuando el DDL de `INVENTARIOS` reemplazó `USUARIO_PROCESA` por `ID_USUARIO`
+sin actualizar `TRG_INVENTARIOS_BIU`.
+
+Verificalo siempre después de un cambio de columnas:
+
+```sql
+-- CERO filas. Cualquier trigger que aparezca bloquea la tabla entera.
+SELECT TRIGGER_NAME, STATUS
+  FROM USER_TRIGGERS
+ WHERE TABLE_NAME = 'TU_TABLA'
+   AND STATUS != 'ENABLED';
+```
+
+> **`TRIGGER_BODY` es de tipo `LONG`** y no se puede pasar por `UPPER()` ni
+> comparar con `LIKE`: da `ORA-00932`. Para inspeccionar el cuerpo hay que usar
+> `DBMS_METADATA.GET_DDL('TRIGGER', nombre)`, que devuelve un `CLOB` — **y
+> filtrando por `TRIGGER_NAME` exacto**, porque Oracle no garantiza el orden de
+> evaluación del `WHERE` y la función se llega a ejecutar sobre triggers de otras
+> tablas, con `ORA-31603`.
+
+### `USER` no sirve para saber quién hizo algo
+
+Dentro de un handler de ORDS, `USER` devuelve **el esquema del workspace**: el
+mismo valor para todas las filas y para todas las personas. El frontend es React
+y no hay sesión de base por usuario.
+
+Quien sabe quién es la persona es `PKG_AUTH`, vía el token — y `VALIDAR_TOKEN` ya
+devuelve el `ID_USUARIO`, así que el valor a guardar es el que se tiene. Sacá esa
+asignación del trigger y hacela en el paquete.
+
+### DDL en `db/`: la excepción, con nombre distinto
+
+La regla es que los archivos de `db/` **no administran DDL**. Cuando hay que
+corregir triggers, el archivo va aparte y con otro nombre —
+[db/inventarios-triggers-ddl.sql](../db/inventarios-triggers-ddl.sql) — para que
+quede claro que no es el paquete y que se ejecuta una sola vez, antes.
+
+---
+
 ## 4. Consumir la API desde el frontend
 
 Agregá el bloque de la tabla nueva en [src/lib/api.ts](../src/lib/api.ts),
@@ -1384,11 +1683,46 @@ Backend (`db/<tabla>.sql`):
 - [ ] **Si se ordena por una columna `VARCHAR2` que guarda números**, la
       conversión lleva `DEFAULT NULL ON CONVERSION ERROR` — una fila con texto
       tumba el listado entero con `ORA-01722`
+- [ ] **Lo que se puede derivar, se deriva**: totales, stock, diferencias y
+      vencimientos se calculan en la consulta, no se guardan en una columna que
+      puede quedar desfasada (ver [3.4](#34-columnas-calculadas-lo-que-no-se-guarda))
+- [ ] **Si el borrado depende de que nadie use la fila**, el listado devuelve
+      `usos` — así la pantalla explica por qué no se puede en vez de mostrar un
+      botón que siempre falla
+
+Si es una **cabecera con detalle** (ver [3.3](#33-cabecera-y-detalle-una-transacción)):
+
+- [ ] El detalle llega como **array JSON en el mismo request**, no en llamadas
+      sueltas: es lo único que garantiza que entren juntos
+- [ ] `JSON_TABLE` con **`FOR ORDINALITY`**, no `ROWNUM`, para numerar las líneas
+      en los mensajes de error
+- [ ] El procedimiento que guarda el detalle **no hace `COMMIT` ni `ROLLBACK`**:
+      devuelve el error en un `OUT` y la transacción la maneja el llamador
+- [ ] Una cabecera **sin líneas se rechaza con 400** — incluido el caso del array
+      vacío `[]`, que pasa el chequeo de longitud pero no inserta nada
+- [ ] `ELIMINAR` borra **el detalle primero** (el DDL no tiene `ON DELETE CASCADE`)
+- [ ] Las **columnas virtuales** (`GENERATED ALWAYS AS`) no se mencionan en el
+      `INSERT`: da `ORA-54013`
+- [ ] Hay un `OBTENER` aparte que trae la cabecera **con** su detalle, porque el
+      `LISTAR` no lo incluye
+
+Si la tabla tiene **estados y triggers** (ver [3.5](#35-máquinas-de-estado-y-triggers)):
+
+- [ ] El paquete **chequea el estado antes** para devolver un 409 legible, aunque
+      el trigger ya lo impida — los dos controles no sobran
+- [ ] El `UPDATE` **repite en el `WHERE` lo que el `SELECT` verificó**: entre los
+      dos hay una ventana en la que otra sesión pudo cambiar la fila
+- [ ] Ningún trigger de la tabla quedó `INVALID` — uno solo bloquea todos los
+      `INSERT` y `UPDATE`
+- [ ] Ningún trigger usa `USER` para saber quién hizo algo: dentro de ORDS es el
+      esquema del workspace, igual para todos
 
 Después de ejecutarlo en APEX:
 
 - [ ] Se frenó `npm run dev` antes de reejecutar
 - [ ] Las consultas de verificación del final no muestran `INVALID` ni errores
+- [ ] **Las consultas de auditoría del final devuelven cero filas** — las que
+      verifican coherencias que el DDL no puede expresar
 - [ ] El tipo en `src/lib/api.ts` refleja todos los campos del `JSON_OBJECT`
 - [ ] `npx tsc --noEmit` pasa sin errores
 

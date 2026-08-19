@@ -10,6 +10,7 @@ import { z } from "zod";
 import { AppLayout } from "@/components/ctell/AppLayout";
 import { DetalleMonedasDialog } from "@/components/ctell/DetalleMonedasDialog";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
+import { SIN_FILTRO, TableHeadFiltrable } from "@/components/ctell/TableHeadFiltrable";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
 import { useTablaListado } from "@/hooks/use-tabla-listado";
 import { api, ApiError, esActivo, type Estado, type Moneda } from "@/lib/api";
@@ -74,10 +75,22 @@ const MENSAJE_ERROR = (error: unknown, fallback: string) =>
  */
 const POR_PAGINA = 20;
 
+/**
+ * Las dos opciones del filtro de Estado. Los valores son los códigos que viajan
+ * en el JSON —"A"/"I"—, así el filtro compara contra la columna sin traducir.
+ */
+const OPCIONES_ESTADO = [
+  { valor: "A", etiqueta: "Activo" },
+  { valor: "I", etiqueta: "Inactivo" },
+];
+
 function MonedasPage() {
   const queryClient = useQueryClient();
   const [editando, setEditando] = useState<Moneda | null>(null);
   const [creando, setCreando] = useState(false);
+  // Filtro de la columna Estado. Va acá y no en el endpoint: el listado ya vino
+  // entero, así que alternar entre activos e inactivos es instantáneo.
+  const [filtroEstado, setFiltroEstado] = useState<string>(SIN_FILTRO);
   const [aEliminar, setAEliminar] = useState<Moneda | null>(null);
   // Moneda cuyas denominaciones se están viendo. El detalle va en un diálogo y
   // no en una ruta propia: sólo tiene sentido dentro de su cabecera.
@@ -116,8 +129,14 @@ function MonedasPage() {
 
   // Búsqueda por cualquier campo visible + orden por click en el header.
   // Ver el criterio general en la guía de frontend, sección "Listados".
+  // El filtro de estado se aplica ANTES de la búsqueda: buscar dentro de lo
+  // filtrado es lo que espera quien acotó primero la columna.
+  const filtrados = (data?.items ?? []).filter(
+    (x) => filtroEstado === SIN_FILTRO || x.activo === filtroEstado,
+  );
+
   const { busqueda, setBusqueda, orden, alternarOrden, resultado, termino } = useTablaListado(
-    data?.items ?? [],
+    filtrados,
     (m) => [m.nombreMoneda, m.simbolo, esActivo(m.activo) ? "Activo" : "Inactivo"],
   );
 
@@ -278,12 +297,16 @@ function MonedasPage() {
                   >
                     Símbolo
                   </TableHeadOrdenable>
-                  <TableHeadOrdenable
+                  <TableHeadFiltrable
                     direccion={orden?.campo === "activo" ? orden.direccion : null}
-                    onClick={() => alternarOrden("activo")}
+                    onOrdenar={() => alternarOrden("activo")}
+                    opciones={OPCIONES_ESTADO}
+                    valor={filtroEstado}
+                    onFiltrar={setFiltroEstado}
+                    buscarPlaceholder="Buscar estado…"
                   >
                     Estado
-                  </TableHeadOrdenable>
+                  </TableHeadFiltrable>
                   <TableHead className="text-right">Acciones</TableHead>
                 </TableRow>
               </TableHeader>

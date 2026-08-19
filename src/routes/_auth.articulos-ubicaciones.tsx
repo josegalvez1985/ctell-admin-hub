@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { AppLayout } from "@/components/ctell/AppLayout";
 import { Combobox } from "@/components/ctell/Combobox";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
+import { SIN_FILTRO, TableHeadFiltrable } from "@/components/ctell/TableHeadFiltrable";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
 import { useTablaListado } from "@/hooks/use-tabla-listado";
 import { api, ApiError, type ArticuloUbicacion } from "@/lib/api";
@@ -82,6 +83,7 @@ function ArticulosUbicacionesPage() {
   const { empresa } = useEmpresa();
   const [creando, setCreando] = useState(false);
   const [aQuitar, setAQuitar] = useState<ArticuloUbicacion | null>(null);
+  const [filtroSucursal, setFiltroSucursal] = useState<string>(SIN_FILTRO);
   const [visibles, setVisibles] = useState(POR_PAGINA);
 
   // Sin filtros: el cruce completo. El backend acepta ?idArticulo= y
@@ -95,15 +97,28 @@ function ArticulosUbicacionesPage() {
 
   const items = data?.items ?? [];
 
-  const { busqueda, setBusqueda, orden, alternarOrden, resultado } = useTablaListado(items, (i) => [
-    i.nombreArticulo,
-    i.codigoArticulo,
-    i.zona,
-    i.estante,
-    i.nivel,
-    i.sucursal,
-    i.descripcion,
-  ]);
+  // Las sucursales salen del propio listado: un articulo puede estar en
+  // depositos de varias, y estas son las que realmente tienen asignaciones.
+  const sucursalesOpciones = Array.from(new Set(items.map((i) => i.sucursal)))
+    .sort((a, b) => a.localeCompare(b, "es"))
+    .map((s) => ({ valor: s, etiqueta: s }));
+
+  const filtrados = items.filter(
+    (i) => filtroSucursal === SIN_FILTRO || i.sucursal === filtroSucursal,
+  );
+
+  const { busqueda, setBusqueda, orden, alternarOrden, resultado } = useTablaListado(
+    filtrados,
+    (i) => [
+      i.nombreArticulo,
+      i.codigoArticulo,
+      i.zona,
+      i.estante,
+      i.nivel,
+      i.sucursal,
+      i.descripcion,
+    ],
+  );
 
   // `estante` y `nivel` son numéricos y useTablaListado ordena con
   // localeCompare: como texto, el estante 10 iría antes que el 2.
@@ -219,12 +234,16 @@ function ArticulosUbicacionesPage() {
                     >
                       Artículo
                     </TableHeadOrdenable>
-                    <TableHeadOrdenable
+                    <TableHeadFiltrable
                       direccion={orden?.campo === "sucursal" ? orden.direccion : null}
-                      onClick={() => alternarOrden("sucursal")}
+                      onOrdenar={() => alternarOrden("sucursal")}
+                      opciones={sucursalesOpciones}
+                      valor={filtroSucursal}
+                      onFiltrar={setFiltroSucursal}
+                      buscarPlaceholder="Buscar sucursal…"
                     >
                       Sucursal
-                    </TableHeadOrdenable>
+                    </TableHeadFiltrable>
                     <TableHeadOrdenable
                       direccion={orden?.campo === "zona" ? orden.direccion : null}
                       onClick={() => alternarOrden("zona")}

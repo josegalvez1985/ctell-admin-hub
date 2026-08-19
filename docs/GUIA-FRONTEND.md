@@ -21,6 +21,7 @@ pantalla ABM completa.
 6. [Formularios](#6-formularios)
    - [Un formulario entra en un pantallazo](#un-formulario-entra-en-un-pantallazo)
    - [Elegir un valor de otra tabla: Combobox](#elegir-un-valor-de-otra-tabla-combobox-no-select)
+   - [Formularios con detalle: cabecera y líneas](#61-formularios-con-detalle-cabecera-y-líneas)
 7. [El menú dinámico por dentro](#7-el-menú-dinámico-por-dentro)
    - [Imágenes: siempre con respaldo](#71-imágenes-siempre-con-respaldo)
    - [Paneles con scroll: `scrollbar-fino`](#72-paneles-con-scroll-scrollbar-fino)
@@ -514,6 +515,101 @@ quitarlo no gana nada.
 **El embudo se pinta resaltado cuando hay un filtro activo.** Un filtro que no
 se ve es un filtro que hace parecer que faltan datos.
 
+#### Qué columna lleva filtro
+
+> **Regla: toda tabla lleva al menos un filtro.** Las 17 pantallas con tabla del
+> proyecto lo tienen, y que una no lo tenga obliga a recordar cuál sí y cuál no.
+
+La que filtra es **la columna con valores repetidos** — la que agrupa filas:
+
+| Tipo de columna     | Ejemplos                                             |
+| ------------------- | ---------------------------------------------------- |
+| Estado `'A'`/`'I'`  | Países, monedas, categorías, unidades de medida      |
+| La entidad padre    | Ciudades → departamento, artículos → categoría       |
+| Una clasificación   | Personas → tipo, inventarios → estado                |
+| Agrupador físico    | Ubicaciones → zona, artículos-ubicaciones → sucursal |
+| "En uso / sin usar" | IVA y condiciones de pago                            |
+
+Ese último merece explicación: en tablas donde **borrar depende de si algo la
+usa**, filtrar por "sin usar" responde _"cuáles puedo borrar"_ de un click, en vez
+de abrir una por una. El backend devuelve `usos` en el listado justamente para
+eso.
+
+Las columnas que **no** llevan filtro son las de valores únicos —un nombre, un
+número de factura, un importe—: ahí filtrar es lo mismo que buscar, y para eso
+está el campo de búsqueda.
+
+#### De dónde salen las opciones
+
+Hay dos formas, y elegir mal deja opciones que nunca devuelven nada:
+
+**Del listado que se está mostrando**, cuando el catálogo padre es mucho más
+grande que lo que aparece:
+
+```tsx
+// El padrón puede tener cientos de personas y sólo unas pocas facturaron en
+// esta sucursal. Ofrecer las demás daría opciones que devuelven cero filas.
+const proveedoresOpciones = Array.from(
+  new Map(items.map((f) => [String(f.idProveedor), f.proveedor])).entries(),
+)
+  .map(([valor, etiqueta]) => ({ valor, etiqueta }))
+  // Alfabético: el orden del listado —por fecha— no significa nada acá.
+  .sort((a, b) => a.etiqueta.localeCompare(b.etiqueta, "es"));
+```
+
+**De su propia query**, cuando el catálogo es chico y conviene ver todas las
+opciones aunque alguna no tenga filas todavía — es lo que hace Artículos con las
+categorías, reusando la misma `queryKey` que la página de Categorías.
+
+#### Los nulos necesitan su propia opción
+
+Si la columna es nullable, las filas sin valor **no aparecen en ninguna opción** y
+no hay forma de aislarlas. Agregá una entrada explícita:
+
+```tsx
+const SIN_CONDICION = "__sin_condicion__";
+
+// "Sin condición" sólo si hay alguna: una opción que no filtra nada es ruido.
+const hayFacturasSinCondicion = items.some((f) => f.idCondicion === null);
+
+opciones={
+  hayFacturasSinCondicion
+    ? [...condicionesOpciones, { valor: SIN_CONDICION, etiqueta: "Sin condición" }]
+    : condicionesOpciones
+}
+```
+
+Encontrar las facturas sin plazo cargado **para completarlas** es un caso real, y
+sin esa entrada no habría cómo.
+
+#### El paginado se resetea con los filtros
+
+Seguir en "80 de 90" después de filtrar a 12 resultados mostraría todo de golpe.
+Con más de un filtro, la clave los concatena:
+
+```tsx
+const claveVista = `${filtroProveedor}|${filtroCondicion}|${termino}`;
+const [claveAnterior, setClaveAnterior] = useState(claveVista);
+if (claveVista !== claveAnterior) {
+  setClaveAnterior(claveVista);
+  setVisibles(POR_PAGINA);
+}
+```
+
+Ajuste **en render, no en `useEffect`**: React re-renderiza antes de pintar, así
+que no hay parpadeo.
+
+Y el estado vacío tiene que mirar **todos** los filtros, no sólo la búsqueda:
+
+```tsx
+const hayFiltro =
+  termino !== "" || filtroProveedor !== SIN_FILTRO || filtroCondicion !== SIN_FILTRO;
+
+{
+  hayFiltro ? "Ninguna factura coincide con los filtros." : "Todavía no hay facturas.";
+}
+```
+
 ### Listados largos: cortar de a 20 con "Mostrar más"
 
 Traer todo de una vez está bien para la red y mal para el DOM: sin corte, un
@@ -862,6 +958,124 @@ selector de país en el filtro de Departamentos es el mismo componente:
 
 ---
 
+## 6.1 Formularios con detalle: cabecera y líneas
+
+El modelo es
+[_auth.facturas-compras.tsx](../src/routes/_auth.facturas-compras.tsx). Un
+formulario con detalle tiene dos partes que se guardan juntas, y eso cambia tres
+cosas respecto de un ABM normal.
+
+### Las líneas NO van en react-hook-form
+
+Van en un `useState` con su propio tipo:
+
+```tsx
+type LineaDetalle = {
+  /** Sólo para el `key` de React: no viaja al backend. */
+  clave: number;
+  idArticulo: string;
+  cantidad: string;
+  precioUnitario: string;
+  idIva: string;
+};
+
+const [lineas, setLineas] = useState<LineaDetalle[]>([]);
+const [proximaClave, setProximaClave] = useState(1);
+```
+
+Modelarlas como campos del formulario obligaría a un `useFieldArray` con nombres
+indexados para algo que se resuelve con un array. El schema de zod cubre **sólo
+la cabecera**.
+
+> **La `clave` no es el índice del array.** Al borrar una línea del medio los
+> índices se corren, y React reusaría el estado del input equivocado — el valor
+> de una fila aparecería en otra.
+
+Los importes son **strings**, igual que en Lotes y Artículos: un campo vacío no se
+convierte solo en 0.
+
+### Validar el detalle a mano
+
+Como no está en el schema, el submit no lo valida. Se cuenta antes:
+
+```tsx
+// Las líneas incompletas se descartan en vez de mandarse: la última suele
+// quedar vacía porque se agregó y no se completó, y mandarla daría un 400 por
+// algo que el usuario no considera parte de la factura.
+const detalle = lineas
+  .filter((l) => l.idArticulo !== "" && l.cantidad !== "" && l.precioUnitario !== "")
+  .map((l) => ({ idArticulo: Number(l.idArticulo), /* … */ }));
+
+// Y el botón se deshabilita si no queda ninguna: sin esto, guardar gastaría un
+// viaje a la red para recibir el 400 del backend.
+const lineasValidas = lineas.filter(/* … */).length;
+<Button type="submit" disabled={guardar.isPending || lineasValidas === 0}>
+```
+
+### Totales en vivo, con los mismos redondeos que el backend
+
+Quien carga una factura tiene el papel adelante con su total impreso. **Ver si
+cuadra antes de guardar es lo que evita cargarla mal**, así que el pie del
+formulario calcula el total mientras se escribe.
+
+> **Los redondeos tienen que coincidir exactamente con los del SQL.** Si el
+> frontend hace `monto / divisor` y el backend `ROUND(monto / divisor, 2)`, el
+> total que se ve al cargar difiere del que muestra la factura ya guardada — y
+> esa diferencia de un guaraní es imposible de explicar.
+
+### La cabecera, compacta
+
+El detalle es la parte larga y la que se completa mirando el papel: **tiene que
+quedar visible sin scrollear**. Tres cosas que ganan altura en la cabecera:
+
+- **Grilla de 3 columnas**, no de 2. Seis campos en dos columnas son cuatro filas;
+  en tres, son dos.
+- **Campos relacionados comparten celda.** Moneda y tipo de cambio: el segundo
+  sólo tiene sentido junto al primero y casi siempre vale 1, así que no merece una
+  columna entera.
+- **Sin `FormDescription` salvo donde aporte.** Cada una suma una línea de alto por
+  campo; lo que dicen suele caber en el placeholder o el label.
+
+En el detalle, **las etiquetas van una sola vez como encabezado**, no repetidas en
+cada línea:
+
+```tsx
+{
+  /* Se oculta en móvil, donde las líneas se apilan y cada campo sí necesita
+    su etiqueta para saber qué es. */
+}
+<div className="hidden gap-2 px-3 sm:grid sm:grid-cols-[2fr_1fr_1.2fr_1fr_auto]">
+  <span className="text-xs text-muted-foreground">Artículo</span>
+  {/* … */}
+</div>;
+```
+
+Con cinco artículos, repetirlas eran cinco encabezados idénticos empujando el pie
+fuera de la pantalla.
+
+### Un diálogo aparte para ver
+
+El listado no trae el detalle (ver la guía de backend), así que hay dos diálogos:
+uno de **sólo lectura** que lo pide al abrir, y el de edición. El de ver muestra
+el desglose completo —gravado, impuesto, total— que es lo que se compara contra el
+comprobante.
+
+### Invalidar lo que depende
+
+Guardar una factura invalida su propio listado **y el detalle en caché**:
+
+```tsx
+queryClient.invalidateQueries({ queryKey: ["facturas-compras"] });
+// Si se editó, el diálogo de ver tiene la versión vieja.
+queryClient.invalidateQueries({ queryKey: ["factura-compra"] });
+```
+
+Lo mismo al revés: editar una tasa de IVA o una condición de pago cambia el
+desglose y el vencimiento de las facturas, así que **esas pantallas invalidan las
+facturas** aunque no las toquen.
+
+---
+
 ## 7. El menú dinámico por dentro
 
 Tres piezas:
@@ -1095,8 +1309,12 @@ empresa !== null`, y el caso `empresa === null` contemplado en el render
 - [ ] Tarjetas abajo de `sm`, tabla arriba
 - [ ] **Buscador con `useTablaListado`** que filtra por los campos visibles
 - [ ] **Headers ordenables (`TableHeadOrdenable`)** en cada columna de la tabla desktop
-- [ ] **Filtro por columna con `TableHeadFiltrable`** si la tabla filtra por una FK —
-      en el header, no en un campo suelto arriba
+- [ ] **Al menos un filtro con `TableHeadFiltrable`**, en el header y no en un
+      campo suelto arriba. La columna es la que tiene valores repetidos: estado,
+      la entidad padre, una clasificación, o "en uso / sin usar"
+- [ ] Si la columna filtrada es **nullable**, una opción explícita para los nulos
+      ("Sin condición", "Sin categoría") — si no, esas filas no se pueden aislar
+- [ ] El paginado y el estado vacío miran **todos** los filtros, no sólo `termino`
 - [ ] **Corte de a 20 con "Mostrar más"**, y `mostrados` (no `resultado`) en la
       tabla y en las tarjetas
 - [ ] **Selectores de FK con `Combobox`**, no `<Select>` — país, módulo, usuario, etc.
@@ -1104,7 +1322,12 @@ empresa !== null`, y el caso `empresa === null` contemplado en el render
 - [ ] **El formulario entra sin scrollear**, con el botón de guardar visible: dos
       columnas y ancho acorde a la cantidad de campos, agrupados en secciones
 - [ ] Toggle de activo sólo en edición, no en el alta
-- [ ] Las mutaciones invalidan sus queries
+- [ ] Las mutaciones invalidan sus queries — **y las que dependen**: editar una
+      tasa de IVA o una condición de pago cambia lo que muestran las facturas
+- [ ] Si el formulario tiene **detalle** (cabecera + líneas): las líneas en
+      `useState` con clave propia, validadas a mano, y totales en vivo con los
+      **mismos redondeos que el SQL** — ver
+      [Formularios con detalle](#61-formularios-con-detalle-cabecera-y-líneas)
 - [ ] Probado en claro/oscuro y en ancho de móvil
 
 ### Errores frecuentes

@@ -17,6 +17,7 @@ import {
   Boxes,
   Building,
   Building2,
+  CalendarClock,
   ClipboardList,
   Cog,
   Coins,
@@ -30,6 +31,7 @@ import {
   Map,
   MapPin,
   Package,
+  Percent,
   Receipt,
   Ruler,
   Settings,
@@ -62,6 +64,7 @@ const POR_NOMBRE: Record<string, LucideIcon> = {
   boxes: Boxes,
   building: Building,
   building2: Building2,
+  calendarclock: CalendarClock,
   clipboardlist: ClipboardList,
   cog: Cog,
   coins: Coins,
@@ -75,6 +78,7 @@ const POR_NOMBRE: Record<string, LucideIcon> = {
   map: Map,
   mappin: MapPin,
   package: Package,
+  percent: Percent,
   receipt: Receipt,
   ruler: Ruler,
   settings: Settings,
@@ -122,6 +126,10 @@ const ICONOS_PAGINA: Record<string, LucideIcon> = {
   sucursal: Store,
   proveedores: Truck,
   clientes: Users,
+  // Users (varias personas) y no UserCog: el padrón son las personas del
+  // negocio; UserCog ya es "usuarios", que son las cuentas del sistema.
+  personas: Users,
+  persona: Users,
   usuarios: UserCog,
   articulos: Package,
   productos: Package,
@@ -157,6 +165,19 @@ const ICONOS_PAGINA: Record<string, LucideIcon> = {
   ordenes: ClipboardList,
   "ordenes de compra": ClipboardList,
   facturas: Receipt,
+  "facturas de compra": Receipt,
+  "facturas compras": Receipt,
+  "facturas de venta": Receipt,
+  // Percent y no Receipt: la tasa es el porcentaje, no el comprobante — con el
+  // mismo ícono que "facturas" los dos ítems del menú se confundirían.
+  iva: Percent,
+  "tasas de iva": Percent,
+  // CalendarClock y no CreditCard: lo que define una condición es el PLAZO
+  // (cuántos días, cuántas cuotas), no el medio de pago. CreditCard ya es
+  // "pagos" y haría pensar en tarjetas.
+  "condiciones de pago": CalendarClock,
+  "condicion de pago": CalendarClock,
+  condiciones: CalendarClock,
   cobros: Coins,
   pagos: CreditCard,
   bancos: Landmark,
