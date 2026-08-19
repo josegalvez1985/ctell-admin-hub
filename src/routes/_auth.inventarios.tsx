@@ -182,18 +182,29 @@ function InventariosPage() {
     enabled: empresa !== null && sucursal !== null,
   });
 
-  // Los lotes alimentan el selector del formulario.
+  // Los lotes alimentan el selector del formulario. Misma queryKey que usa la
+  // página de Lotes, así se comparte la respuesta en vez de pedirla de nuevo.
   //
-  // `tamanio: 200` —el techo del backend— y NO el default: /lotes/listar quedó
-  // paginado de a 20, y sin esto el selector del formulario ofrecería sólo los
-  // primeros 20 lotes de la sucursal, sin ningún aviso de que faltan los demás.
+  // SIN `tamanio`: se manda sólo lo que el handler PUBLICADO en ORDS entiende.
+  // Llegó a llevar `tamanio: 200` para acompañar la paginación nueva de
+  // /lotes/listar, pero ese handler todavía no está ejecutado en APEX: el bind
+  // :tamanio no existe, ORDS falla antes de entrar al paquete y la consulta
+  // devolvía 500. Se vuelve a agregar CUANDO db/lotes.sql esté reejecutado.
   //
-  // La queryKey lleva "todos" para no pisar en caché la del listado paginado de
-  // la pantalla de Lotes, que tiene la misma raíz pero otra forma de respuesta.
-  const { data: lotes, isPending: cargandoLotes } = useQuery({
-    queryKey: ["lotes", "todos", empresa?.id ?? null, sucursal?.id ?? null],
-    queryFn: () =>
-      api.lotes.listar({ idEmpresa: empresa!.id, idSucursal: sucursal!.id, tamanio: 200 }),
+  // `isPending` NO ALCANZA PARA SABER SI ESTÁ CARGANDO. En TanStack Query v5
+  // significa "todavía no hay datos", y eso sigue siendo cierto para siempre
+  // cuando la consulta FALLA: el selector quedaba en "Cargando…" —y
+  // deshabilitado, porque `cargando` también apaga el botón— sin decir nunca que
+  // hubo un error. Con `isError` aparte, el formulario distingue "esperando" de
+  // "falló" y muestra el motivo.
+  const {
+    data: lotes,
+    isPending: cargandoLotes,
+    isError: errorLotes,
+    error: errorLotesDetalle,
+  } = useQuery({
+    queryKey: ["lotes", empresa?.id ?? null, sucursal?.id ?? null],
+    queryFn: () => api.lotes.listar({ idEmpresa: empresa!.id, idSucursal: sucursal!.id }),
     enabled: empresa !== null && sucursal !== null,
   });
 
@@ -643,6 +654,12 @@ function InventariosPage() {
             idSucursal={sucursal.id}
             lotes={lotes?.items ?? []}
             cargandoLotes={cargandoLotes}
+            errorLotes={errorLotes}
+            mensajeErrorLotes={
+              errorLotes
+                ? MENSAJE_ERROR(errorLotesDetalle, "No se pudieron cargar los lotes")
+                : null
+            }
             conteosAbiertos={items.filter((i) => inventarioAbierto(i.estado))}
             onClose={() => {
               setCreando(false);
@@ -727,6 +744,8 @@ function InventarioFormDialog({
   idSucursal,
   lotes,
   cargandoLotes,
+  errorLotes,
+  mensajeErrorLotes,
   conteosAbiertos,
   onClose,
 }: {
@@ -737,6 +756,13 @@ function InventarioFormDialog({
   idSucursal: number;
   lotes: Lote[];
   cargandoLotes: boolean;
+  /**
+   * Si la consulta de lotes falló. Se recibe aparte de `cargandoLotes` porque
+   * `isPending` sigue en true tras un error, y sin esto el selector quedaba
+   * "Cargando…" para siempre.
+   */
+  errorLotes: boolean;
+  mensajeErrorLotes: string | null;
   /** Para no ofrecer lotes que ya tienen un conteo abierto (daría 409). */
   conteosAbiertos: Inventario[];
   onClose: () => void;
@@ -839,7 +865,11 @@ function InventarioFormDialog({
           : `Lote ${l.numeroLote} · ID ${l.id} · ${l.cantidadDispon} en sistema`,
     }));
 
-  const sinLotesDisponibles = !esEdicion && !cargandoLotes && lotesOpciones.length === 0;
+  // `!errorLotes` en la condición: sin eso, una consulta fallida —que deja la
+  // lista vacía— se anunciaba como "todos los lotes ya tienen un conteo
+  // abierto", que manda a buscar el problema al lado equivocado.
+  const sinLotesDisponibles =
+    !esEdicion && !cargandoLotes && !errorLotes && lotesOpciones.length === 0;
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
@@ -857,7 +887,20 @@ function InventarioFormDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {sinLotesDisponibles ? (
+        {/* El error va PRIMERO: si la consulta de lotes falló, el formulario no
+            sirve —no hay de dónde elegir— y hay que decir por qué en vez de
+            dejar el selector girando. */}
+        {errorLotes ? (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-6 text-center">
+            <p className="text-sm text-destructive">
+              {mensajeErrorLotes ?? "No se pudieron cargar los lotes."}
+            </p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Sin la lista de lotes no se puede registrar un conteo. Cerrá y volvé a intentar; si
+              sigue, el error de arriba es el que devolvió el servidor.
+            </p>
+          </div>
+        ) : sinLotesDisponibles ? (
           <div className="rounded-lg border border-border bg-muted px-4 py-6 text-center">
             <p className="text-sm text-muted-foreground">
               Todos los lotes de esta sucursal ya tienen un conteo abierto. Procesá o anulá alguno
@@ -892,7 +935,10 @@ function InventarioFormDialog({
                         placeholder="Elegí el lote a contar"
                         titulo="Elegí el lote a contar"
                         buscarPlaceholder="Buscar lote…"
-                        cargando={cargandoLotes}
+                        // `&& !errorLotes`: con la consulta fallida `isPending`
+                        // no vuelve a false nunca, y el selector quedaba en
+                        // "Cargando…" y deshabilitado para siempre.
+                        cargando={cargandoLotes && !errorLotes}
                         // En edición el lote no se cambia: sería otro conteo.
                         // Si estaba mal, se anula y se carga uno nuevo.
                         disabled={esEdicion}

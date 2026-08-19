@@ -31,6 +31,7 @@ import { Route as AuthMenuRouteImport } from './routes/_auth.menu'
 import { Route as AuthMonedasRouteImport } from './routes/_auth.monedas'
 import { Route as AuthPaisesRouteImport } from './routes/_auth.paises'
 import { Route as AuthPersonasRouteImport } from './routes/_auth.personas'
+import { Route as AuthProfesoresRouteImport } from './routes/_auth.profesores'
 import { Route as AuthSucursalesRouteImport } from './routes/_auth.sucursales'
 import { Route as AuthUbicacionesRouteImport } from './routes/_auth.ubicaciones'
 import { Route as AuthUnidadesMedidaRouteImport } from './routes/_auth.unidades-medida'
@@ -145,6 +146,11 @@ const AuthPersonasRoute = AuthPersonasRouteImport.update({
   path: '/personas',
   getParentRoute: () => AuthRoute,
 } as any)
+const AuthProfesoresRoute = AuthProfesoresRouteImport.update({
+  id: '/profesores',
+  path: '/profesores',
+  getParentRoute: () => AuthRoute,
+} as any)
 const AuthSucursalesRoute = AuthSucursalesRouteImport.update({
   id: '/sucursales',
   path: '/sucursales',
@@ -183,6 +189,7 @@ export interface FileRoutesByFullPath {
   '/monedas': typeof AuthMonedasRoute
   '/paises': typeof AuthPaisesRoute
   '/personas': typeof AuthPersonasRoute
+  '/profesores': typeof AuthProfesoresRoute
   '/sucursales': typeof AuthSucursalesRoute
   '/ubicaciones': typeof AuthUbicacionesRoute
   '/unidades-medida': typeof AuthUnidadesMedidaRoute
@@ -209,6 +216,7 @@ export interface FileRoutesByTo {
   '/monedas': typeof AuthMonedasRoute
   '/paises': typeof AuthPaisesRoute
   '/personas': typeof AuthPersonasRoute
+  '/profesores': typeof AuthProfesoresRoute
   '/sucursales': typeof AuthSucursalesRoute
   '/ubicaciones': typeof AuthUbicacionesRoute
   '/unidades-medida': typeof AuthUnidadesMedidaRoute
@@ -237,6 +245,7 @@ export interface FileRoutesById {
   '/_auth/monedas': typeof AuthMonedasRoute
   '/_auth/paises': typeof AuthPaisesRoute
   '/_auth/personas': typeof AuthPersonasRoute
+  '/_auth/profesores': typeof AuthProfesoresRoute
   '/_auth/sucursales': typeof AuthSucursalesRoute
   '/_auth/ubicaciones': typeof AuthUbicacionesRoute
   '/_auth/unidades-medida': typeof AuthUnidadesMedidaRoute
@@ -265,6 +274,7 @@ export interface FileRouteTypes {
     | '/monedas'
     | '/paises'
     | '/personas'
+    | '/profesores'
     | '/sucursales'
     | '/ubicaciones'
     | '/unidades-medida'
@@ -291,6 +301,7 @@ export interface FileRouteTypes {
     | '/monedas'
     | '/paises'
     | '/personas'
+    | '/profesores'
     | '/sucursales'
     | '/ubicaciones'
     | '/unidades-medida'
@@ -318,6 +329,7 @@ export interface FileRouteTypes {
     | '/_auth/monedas'
     | '/_auth/paises'
     | '/_auth/personas'
+    | '/_auth/profesores'
     | '/_auth/sucursales'
     | '/_auth/ubicaciones'
     | '/_auth/unidades-medida'
@@ -484,6 +496,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthPersonasRouteImport
       parentRoute: typeof AuthRoute
     }
+    '/_auth/profesores': {
+      id: '/_auth/profesores'
+      path: '/profesores'
+      fullPath: '/profesores'
+      preLoaderRoute: typeof AuthProfesoresRouteImport
+      parentRoute: typeof AuthRoute
+    }
     '/_auth/sucursales': {
       id: '/_auth/sucursales'
       path: '/sucursales'
@@ -529,6 +548,7 @@ interface AuthRouteChildren {
   AuthMonedasRoute: typeof AuthMonedasRoute
   AuthPaisesRoute: typeof AuthPaisesRoute
   AuthPersonasRoute: typeof AuthPersonasRoute
+  AuthProfesoresRoute: typeof AuthProfesoresRoute
   AuthSucursalesRoute: typeof AuthSucursalesRoute
   AuthUbicacionesRoute: typeof AuthUbicacionesRoute
   AuthUnidadesMedidaRoute: typeof AuthUnidadesMedidaRoute
@@ -555,6 +575,7 @@ const AuthRouteChildren: AuthRouteChildren = {
   AuthMonedasRoute: AuthMonedasRoute,
   AuthPaisesRoute: AuthPaisesRoute,
   AuthPersonasRoute: AuthPersonasRoute,
+  AuthProfesoresRoute: AuthProfesoresRoute,
   AuthSucursalesRoute: AuthSucursalesRoute,
   AuthUbicacionesRoute: AuthUbicacionesRoute,
   AuthUnidadesMedidaRoute: AuthUnidadesMedidaRoute,

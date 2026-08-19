@@ -148,9 +148,7 @@ function InstitucionesPage() {
   // Las opciones del filtro salen de las instituciones ya listadas, no de
   // /departamentos/listar: filtrar por un departamento sin ninguna institución
   // vaciaría la tabla, así que las únicas opciones útiles son las que aparecen.
-  const departamentosOpciones = Array.from(
-    new Set((data?.items ?? []).map((i) => i.departamento)),
-  )
+  const departamentosOpciones = Array.from(new Set((data?.items ?? []).map((i) => i.departamento)))
     .sort((a, b) => a.localeCompare(b, "es"))
     .map((d) => ({ valor: d, etiqueta: d }));
 
@@ -670,9 +668,7 @@ function InstitucionFormDialog({
                         opciones={ciudadesOpciones}
                         value={field.value}
                         onChange={field.onChange}
-                        placeholder={
-                          idDepartamento ? "Opcional" : "Elegí un departamento primero"
-                        }
+                        placeholder={idDepartamento ? "Opcional" : "Elegí un departamento primero"}
                         titulo="Elegí la ciudad"
                         buscarPlaceholder="Buscar ciudad…"
                         cargando={cargandoCiudades}

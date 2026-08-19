@@ -212,6 +212,51 @@ export type ListaInstituciones = {
   total: number;
 };
 
+/**
+ * Profesor de una empresa.
+ *
+ * **No tiene columna `activo`**: el DDL no la trae, así que la baja es física,
+ * como en `Institucion` y `ListaDescuentos`.
+ *
+ * **`numeroCi` y `usuarioSistema` son únicos EN TODO EL SISTEMA**, no por
+ * empresa — a diferencia del resto de las tablas del proyecto. Dos empresas no
+ * pueden cargar al mismo profesor: la segunda recibe un 409 contra una fila que
+ * su listado no muestra. El mensaje del backend lo aclara.
+ */
+export type Profesor = {
+  id: number;
+  /**
+   * Empresa dueña del profesor. Sale de la empresa activa de la sesión, no de
+   * un combobox.
+   *
+   * No hay campo `empresa` con el nombre: el listado siempre viene filtrado por
+   * una sola empresa, así que sería la misma constante en todas las filas.
+   */
+  idEmpresa: number;
+  /** Cédula. **Única en todo el sistema**, no sólo dentro de la empresa. */
+  numeroCi: string;
+  nombre: string;
+  apellido: string;
+  /**
+   * Identificador corto del profesor (`jperez`, `mgarcia`). **Único en todo el
+   * sistema.**
+   *
+   * NO es un usuario de login: no hay relación con la tabla `USUARIOS` ni con
+   * `PKG_AUTH`, no tiene contraseña y no sirve para entrar al sistema. El
+   * backend lo guarda en minúsculas y sin espacios, para que el UNIQUE sirva de
+   * verdad.
+   */
+  usuarioSistema: string;
+  direccion: string | null;
+  telefono: string | null;
+  correo: string | null;
+};
+
+export type ListaProfesores = {
+  items: Profesor[];
+  total: number;
+};
+
 export type Empresa = {
   id: number;
   nombreEmpresa: string;
@@ -1825,6 +1870,81 @@ export const api = {
     /** Baja **física**: no hay estado que apagar. */
     eliminar: (id: number, idEmpresa: number) =>
       request<{ ok: boolean }>(`/instituciones/eliminar/${id}/${idEmpresa}`, {
+        method: "DELETE",
+      }),
+  },
+
+  /**
+   * Profesores por empresa.
+   *
+   * **No hay `inactivar`/`activar`**: la tabla no tiene columna de estado, así
+   * que `eliminar` es baja física.
+   */
+  profesores: {
+    /**
+     * Profesores de una empresa. `idEmpresa` sale de la empresa activa de la
+     * sesión (`useEmpresa()`), no de un filtro de la pantalla.
+     *
+     * `busqueda` va al backend y filtra en SQL sobre nombre, apellido, cédula,
+     * usuario y correo.
+     */
+    listar: (
+      // `| undefined` explícito y no sólo `?`: con exactOptionalPropertyTypes
+      // pasar `busqueda: undefined` no compilaría contra una propiedad
+      // meramente opcional.
+      params: { idEmpresa?: number | undefined; busqueda?: string | undefined } = {},
+    ) => {
+      const q = new URLSearchParams();
+      if (params.idEmpresa) q.set("idEmpresa", String(params.idEmpresa));
+      if (params.busqueda?.trim()) q.set("busqueda", params.busqueda.trim());
+      const query = q.toString();
+      return request<ListaProfesores>(`/profesores/listar${query ? `?${query}` : ""}`);
+    },
+
+    /**
+     * `numeroCi` y `usuarioSistema` chocan contra **todo el sistema**, no sólo
+     * contra la empresa activa: un 409 puede venir de una fila de otra empresa
+     * que este listado no muestra.
+     */
+    crear: (datos: {
+      idEmpresa: number;
+      numeroCi: string;
+      nombre: string;
+      apellido: string;
+      /** Se guarda en minúsculas y sin espacios. */
+      usuarioSistema: string;
+      direccion?: string;
+      telefono?: string;
+      correo?: string;
+    }) =>
+      request<{ id: number; ok: boolean }>("/profesores/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Los campos ausentes no se modifican. */
+    actualizar: (
+      id: number,
+      datos: {
+        /** OBLIGATORIO: acota a cuál fila se aplica el cambio, no es un dato a guardar. Sin él, 400. */
+        idEmpresa: number;
+        numeroCi?: string;
+        nombre?: string;
+        apellido?: string;
+        usuarioSistema?: string;
+        direccion?: string;
+        telefono?: string;
+        correo?: string;
+      },
+    ) =>
+      request<{ ok: boolean }>(`/profesores/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Baja **física**: no hay estado que apagar. */
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/profesores/eliminar/${id}/${idEmpresa}`, {
         method: "DELETE",
       }),
   },

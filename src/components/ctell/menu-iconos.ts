@@ -34,6 +34,7 @@ import {
   FileText,
   Files,
   Globe,
+  GraduationCap,
   Grid3x3,
   IdCard,
   KeyRound,
@@ -46,6 +47,7 @@ import {
   Percent,
   Receipt,
   Ruler,
+  School,
   Settings,
   ShoppingCart,
   Sliders,
@@ -159,6 +161,22 @@ const ICONOS_PAGINA: Record<string, LucideIcon> = {
   // simplemente "varias personas". ShoppingCart tampoco sirve acá: ya es el
   // módulo Compras.
   clientes: IdCard,
+  // School y NO Building/Building2/Landmark: Building ya es "barrios",
+  // Building2 "empresas" y Landmark "bancos" — los tres edificios genéricos
+  // están tomados, y con cualquiera de ellos la institución se confundiría con
+  // la empresa dueña del sistema. School representa al colegio, que es el caso
+  // típico de esta tabla, sin pisar a ninguno.
+  instituciones: School,
+  institucion: School,
+  // GraduationCap y NO Users/IdCard/Contact: Users ya es "personas" (el padrón
+  // general), IdCard "clientes" y Contact "recursos humanos" — con cualquiera
+  // de ellos el profesor se vería igual que otro grupo de gente. El birrete es
+  // lo que lo distingue, y hace juego con School (instituciones), que es la
+  // tabla con la que se lo lee en el menú.
+  profesores: GraduationCap,
+  profesor: GraduationCap,
+  docentes: GraduationCap,
+  docente: GraduationCap,
   // Users (varias personas) y no UserCog: el padrón son las personas del
   // negocio; UserCog ya es "usuarios", que son las cuentas del sistema.
   personas: Users,
