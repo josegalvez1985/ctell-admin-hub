@@ -59,6 +59,22 @@ const SINONIMOS = [
   ["iva", "tasas de iva"],
   ["condiciones de pago", "condicion de pago", "condiciones"],
   ["rrhh", "recursos humanos"],
+  // La tabla se llamó LISTAS_PRECIOS y se renombró a LISTAS_DESCUENTOS: las
+  // variantes de los dos nombres se mapean al mismo ícono porque el ítem del
+  // menú puede haber quedado cargado con el nombre viejo.
+  [
+    "listas de descuentos",
+    "lista de descuentos",
+    "listas descuentos",
+    "descuentos",
+    "listas de precios",
+    "lista de precios",
+    "listas precios",
+    "listas",
+    "precios",
+  ],
+  ["instituciones", "institucion"],
+  ["profesores", "profesor", "docentes", "docente"],
 ];
 
 /** Clave → representante del grupo. */
