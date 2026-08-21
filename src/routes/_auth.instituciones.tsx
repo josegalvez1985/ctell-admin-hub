@@ -13,7 +13,7 @@ import { SelectorModal } from "@/components/ctell/SelectorModal";
 import { SIN_FILTRO, TableHeadFiltrable } from "@/components/ctell/TableHeadFiltrable";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
 import { useTablaListado } from "@/hooks/use-tabla-listado";
-import { api, ApiError, type Institucion } from "@/lib/api";
+import { api, ApiError, esActivo, type Institucion } from "@/lib/api";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -44,6 +44,7 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { tituloPagina } from "@/lib/marca";
 import {
@@ -56,8 +57,8 @@ import {
 } from "@/components/ui/table";
 
 const schema = z.object({
-  idPais: z.string().min(1, "Elegí un país"),
-  idDepartamento: z.string().min(1, "Elegí un departamento"),
+  idPais: z.string(),
+  idDepartamento: z.string(),
   // Opcional de verdad: el DDL deja ID_CIUDAD nullable.
   idCiudad: z.string(),
   nombreInstitucion: z.string().trim().min(1, "Obligatorio").max(200, "Máximo 200 caracteres"),
@@ -72,6 +73,7 @@ const schema = z.object({
     .max(100, "Máximo 100 caracteres")
     .refine((v) => v === "" || /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v), "Correo inválido"),
   ubicacion: z.string().trim().max(500, "Máximo 500 caracteres"),
+  activo: z.boolean(),
 });
 
 type FormValues = z.infer<typeof schema>;
@@ -148,7 +150,9 @@ function InstitucionesPage() {
   // Las opciones del filtro salen de las instituciones ya listadas, no de
   // /departamentos/listar: filtrar por un departamento sin ninguna institución
   // vaciaría la tabla, así que las únicas opciones útiles son las que aparecen.
-  const departamentosOpciones = Array.from(new Set((data?.items ?? []).map((i) => i.departamento)))
+  const departamentosOpciones = Array.from(
+    new Set((data?.items ?? []).map((i) => i.departamento).filter((d): d is string => d !== null)),
+  )
     .sort((a, b) => a.localeCompare(b, "es"))
     .map((d) => ({ valor: d, etiqueta: d }));
 
@@ -248,6 +252,7 @@ function InstitucionesPage() {
                 <p className="mt-0.5 text-xs text-muted-foreground">
                   {[inst.ciudad, inst.departamento, inst.pais].filter(Boolean).join(" · ")}
                 </p>
+                <EstadoInstitucion activo={inst.activo} />
 
                 <dl className="mt-3 space-y-1 border-t border-border pt-3 text-xs">
                   {inst.director && (
@@ -322,6 +327,7 @@ function InstitucionesPage() {
                   >
                     Ubicación
                   </TableHeadFiltrable>
+                  <TableHead>Estado</TableHead>
                   <TableHeadOrdenable
                     direccion={orden?.campo === "director" ? orden.direccion : null}
                     onClick={() => alternarOrden("director")}
@@ -353,6 +359,9 @@ function InstitucionesPage() {
                       </span>
                     </TableCell>
                     <TableCell className="text-muted-foreground">{inst.director ?? "—"}</TableCell>
+                    <TableCell>
+                      <EstadoInstitucion activo={inst.activo} />
+                    </TableCell>
                     <TableCell className="text-muted-foreground">
                       {inst.contacto ?? "—"}
                       {inst.correo && (
@@ -450,6 +459,20 @@ function InstitucionesPage() {
 /* Alta / Edición                                                              */
 /* -------------------------------------------------------------------------- */
 
+function EstadoInstitucion({ activo }: { activo: Institucion["activo"] }) {
+  return (
+    <span
+      className={
+        esActivo(activo)
+          ? "mt-2 inline-flex rounded-full bg-success/15 px-2 py-0.5 text-xs font-medium text-success"
+          : "mt-2 inline-flex rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+      }
+    >
+      {esActivo(activo) ? "Activa" : "Inactiva"}
+    </span>
+  );
+}
+
 function InstitucionFormDialog({
   open,
   institucion,
@@ -477,6 +500,7 @@ function InstitucionFormDialog({
       contacto: institucion?.contacto ?? "",
       correo: institucion?.correo ?? "",
       ubicacion: institucion?.ubicacion ?? "",
+      activo: institucion ? esActivo(institucion.activo) : true,
     },
   });
 
@@ -506,20 +530,29 @@ function InstitucionFormDialog({
     enabled: idDepartamento !== "",
   });
 
-  const paisesOpciones = (paises?.items ?? []).map((p) => ({
-    valor: String(p.id),
-    etiqueta: p.nombrePais,
-  }));
+  const paisesOpciones = [
+    { valor: "", etiqueta: "Sin país asignado" },
+    ...(paises?.items ?? []).map((p) => ({
+      valor: String(p.id),
+      etiqueta: p.nombrePais,
+    })),
+  ];
 
-  const departamentosOpciones = (departamentos?.items ?? []).map((d) => ({
-    valor: String(d.id),
-    etiqueta: d.nombreDepartamento,
-  }));
+  const departamentosOpciones = [
+    { valor: "", etiqueta: "Sin departamento asignado" },
+    ...(departamentos?.items ?? []).map((d) => ({
+      valor: String(d.id),
+      etiqueta: d.nombreDepartamento,
+    })),
+  ];
 
-  const ciudadesOpciones = (ciudades?.items ?? []).map((c) => ({
-    valor: String(c.id),
-    etiqueta: c.nombreCiudad,
-  }));
+  const ciudadesOpciones = [
+    { valor: "", etiqueta: "Sin ciudad asignada" },
+    ...(ciudades?.items ?? []).map((c) => ({
+      valor: String(c.id),
+      etiqueta: c.nombreCiudad,
+    })),
+  ];
 
   const guardar = useMutation({
     mutationFn: (v: FormValues) => {
@@ -536,24 +569,26 @@ function InstitucionFormDialog({
       if (esEdicion) {
         return api.instituciones.actualizar(institucion.id, {
           idEmpresa: institucion.idEmpresa,
-          idPais: Number(v.idPais),
-          idDepartamento: Number(v.idDepartamento),
+          idPais: v.idPais ? Number(v.idPais) : "null",
+          idDepartamento: v.idDepartamento ? Number(v.idDepartamento) : "null",
           // Vaciar la ciudad en la edición SÍ tiene que borrarla, pero para el
           // backend "ausente" significa "no cambiar". El literal "null"
           // distingue las dos intenciones.
           idCiudad: v.idCiudad ? Number(v.idCiudad) : "null",
           nombreInstitucion: v.nombreInstitucion,
+          activo: v.activo ? "A" : "I",
           ...opcionales,
         });
       }
 
       return api.instituciones.crear({
         idEmpresa,
-        idPais: Number(v.idPais),
-        idDepartamento: Number(v.idDepartamento),
+        ...(v.idPais ? { idPais: Number(v.idPais) } : {}),
+        ...(v.idDepartamento ? { idDepartamento: Number(v.idDepartamento) } : {}),
         // En el alta se omite y listo: no hay valor previo que conservar.
         ...(v.idCiudad ? { idCiudad: Number(v.idCiudad) } : {}),
         nombreInstitucion: v.nombreInstitucion,
+        activo: v.activo ? "A" : "I",
         ...opcionales,
       });
     },
@@ -618,7 +653,7 @@ function InstitucionFormDialog({
                           form.setValue("idDepartamento", "");
                           form.setValue("idCiudad", "");
                         }}
-                        placeholder="Elegí el país"
+                        placeholder="Opcional"
                         titulo="Elegí el país"
                         buscarPlaceholder="Buscar país…"
                         cargando={cargandoPaises}
@@ -645,7 +680,7 @@ function InstitucionFormDialog({
                           // departamento.
                           form.setValue("idCiudad", "");
                         }}
-                        placeholder={idPais ? "Elegí el departamento" : "Elegí un país primero"}
+                        placeholder={idPais ? "Opcional" : "Elegí un país primero"}
                         titulo="Elegí el departamento"
                         buscarPlaceholder="Buscar departamento…"
                         cargando={cargandoDepartamentos}
@@ -775,6 +810,26 @@ function InstitucionFormDialog({
                 </FormItem>
               )}
             />
+
+            {esEdicion && (
+              <FormField
+                control={form.control}
+                name="activo"
+                render={({ field }) => (
+                  <FormItem className="flex items-center justify-between rounded-lg border border-border px-4 py-3">
+                    <div>
+                      <FormLabel>Institución activa</FormLabel>
+                      <FormDescription>
+                        Las instituciones inactivas se conservan en el historial.
+                      </FormDescription>
+                    </div>
+                    <FormControl>
+                      <Switch checked={field.value} onCheckedChange={field.onChange} />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            )}
 
             <DialogFooter className="gap-2">
               <Button

@@ -1,16 +1,17 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Pencil, Plus, Search, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Camera, ImagePlus, Images, Loader2, Pencil, Plus, Search, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
+import { SelectorModal } from "@/components/ctell/SelectorModal";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
-import { api, ApiError, type Profesor } from "@/lib/api";
+import { api, ApiError, esActivo, urlFotoProfesor, type Profesor, type Usuario } from "@/lib/api";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -41,6 +42,8 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
+import { optimizarImagen } from "@/lib/imagen";
 import { tituloPagina } from "@/lib/marca";
 import {
   Table,
@@ -55,15 +58,8 @@ const schema = z.object({
   numeroCi: z.string().trim().min(1, "Obligatorio").max(20, "Máximo 20 caracteres"),
   nombre: z.string().trim().min(1, "Obligatorio").max(100, "Máximo 100 caracteres"),
   apellido: z.string().trim().min(1, "Obligatorio").max(100, "Máximo 100 caracteres"),
-  usuarioSistema: z
-    .string()
-    .trim()
-    .min(1, "Obligatorio")
-    .max(50, "Máximo 50 caracteres")
-    // Mismo criterio que el backend, que lo guarda en minúsculas y sin
-    // espacios: avisar acá es más claro que dejar que el servidor lo
-    // transforme sin que se note.
-    .refine((v) => !/\s/.test(v), "No puede tener espacios"),
+  idUsuario: z.string(),
+  activo: z.boolean(),
   direccion: z.string().trim().max(500, "Máximo 500 caracteres"),
   telefono: z.string().trim().max(20, "Máximo 20 caracteres"),
   // El vacío se acepta porque el campo es opcional; `z.string().email()` sobre
@@ -111,6 +107,11 @@ function ProfesoresPage() {
   // Los profesores son POR EMPRESA: la que se eligió al iniciar sesión. No hay
   // filtro ni combobox de empresa en la pantalla.
   const { empresa } = useEmpresa();
+  const { data: usuariosData, isPending: cargandoUsuarios } = useQuery({
+    queryKey: ["usuarios"],
+    queryFn: () => api.usuarios.listar(),
+  });
+  const usuarios = (usuariosData?.items ?? []).filter((usuario) => esActivo(usuario.activo));
 
   // La empresa y la búsqueda entran en la queryKey: al cambiar cualquiera,
   // TanStack Query trata el listado como otra consulta en vez de mostrar en
@@ -260,8 +261,11 @@ function ProfesoresPage() {
                   {prof.apellido}, {prof.nombre}
                 </p>
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  CI {prof.numeroCi} · {prof.usuarioSistema}
+                  CI {prof.numeroCi} · {prof.usuario ?? "Sin cuenta"}
                 </p>
+                <div className="mt-2 flex items-center gap-2">
+                  <EstadoProfesor activo={prof.activo} />
+                </div>
 
                 <dl className="mt-3 space-y-1 border-t border-border pt-3 text-xs">
                   {prof.telefono && (
@@ -285,6 +289,7 @@ function ProfesoresPage() {
                 </dl>
 
                 <div className="mt-3 flex gap-2 border-t border-border pt-3">
+                  <FotoProfesor profesor={prof} />
                   <Button
                     variant="outline"
                     size="sm"
@@ -314,6 +319,7 @@ function ProfesoresPage() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-14">Foto</TableHead>
                   <TableHeadOrdenable
                     direccion={orden?.campo === "apellido" ? orden.direccion : null}
                     onClick={() => alternarOrden("apellido")}
@@ -327,10 +333,10 @@ function ProfesoresPage() {
                     Cédula
                   </TableHeadOrdenable>
                   <TableHeadOrdenable
-                    direccion={orden?.campo === "usuarioSistema" ? orden.direccion : null}
-                    onClick={() => alternarOrden("usuarioSistema")}
+                    direccion={orden?.campo === "usuario" ? orden.direccion : null}
+                    onClick={() => alternarOrden("usuario")}
                   >
-                    Usuario
+                    Cuenta
                   </TableHeadOrdenable>
                   <TableHead>Contacto</TableHead>
                   <TableHead className="text-right">Acciones</TableHead>
@@ -339,6 +345,9 @@ function ProfesoresPage() {
               <TableBody>
                 {mostrados.map((prof) => (
                   <TableRow key={prof.id}>
+                    <TableCell>
+                      <FotoProfesor profesor={prof} />
+                    </TableCell>
                     <TableCell className="font-medium text-foreground">
                       {prof.apellido}, {prof.nombre}
                       {prof.direccion && (
@@ -350,7 +359,12 @@ function ProfesoresPage() {
                     <TableCell className="tabular-nums text-muted-foreground">
                       {prof.numeroCi}
                     </TableCell>
-                    <TableCell className="text-muted-foreground">{prof.usuarioSistema}</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      <span>{prof.usuario ?? "Sin cuenta"}</span>
+                      <span className="mt-1 block">
+                        <EstadoProfesor activo={prof.activo} />
+                      </span>
+                    </TableCell>
                     <TableCell className="text-muted-foreground">
                       {prof.telefono ?? "—"}
                       {prof.correo && (
@@ -407,6 +421,8 @@ function ProfesoresPage() {
             open={creando || editando !== null}
             profesor={editando}
             idEmpresa={empresa.id}
+            usuarios={usuarios}
+            cargandoUsuarios={cargandoUsuarios}
             onClose={() => {
               setCreando(false);
               setEditando(null);
@@ -449,16 +465,141 @@ function ProfesoresPage() {
 /* Alta / Edición                                                              */
 /* -------------------------------------------------------------------------- */
 
+function EstadoProfesor({ activo }: { activo: Profesor["activo"] }) {
+  return (
+    <span
+      className={
+        esActivo(activo)
+          ? "inline-flex rounded-full bg-success/15 px-2 py-0.5 text-xs font-medium text-success"
+          : "inline-flex rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+      }
+    >
+      {esActivo(activo) ? "Activo" : "Inactivo"}
+    </span>
+  );
+}
+
+function FotoProfesor({ profesor }: { profesor: Profesor }) {
+  const galeria = useRef<HTMLInputElement>(null);
+  const camaraFrontal = useRef<HTMLInputElement>(null);
+  const camaraTrasera = useRef<HTMLInputElement>(null);
+  const [selectorAbierto, setSelectorAbierto] = useState(false);
+  const [version, setVersion] = useState(0);
+  const [falloCarga, setFalloCarga] = useState(false);
+  const subir = useMutation({
+    mutationFn: async (archivo: File) => {
+      const optimizada = await optimizarImagen(archivo);
+      return api.profesores.subirFoto(profesor.id, optimizada);
+    },
+    onSuccess: () => {
+      setVersion((actual) => actual + 1);
+      setFalloCarga(false);
+      toast.success("Foto actualizada");
+    },
+    onError: (e) => toast.error(MENSAJE_ERROR(e, "No se pudo subir la foto")),
+  });
+
+  function alElegir(e: React.ChangeEvent<HTMLInputElement>) {
+    const archivo = e.target.files?.[0];
+    e.target.value = "";
+    setSelectorAbierto(false);
+    if (!archivo) return;
+    subir.mutate(archivo);
+  }
+
+  const mostrarImagen = (profesor.tieneFoto || version > 0) && !falloCarga;
+  return (
+    <>
+      <input
+        ref={galeria}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={alElegir}
+        aria-hidden
+        tabIndex={-1}
+      />
+      <input
+        ref={camaraFrontal}
+        type="file"
+        accept="image/*"
+        capture="user"
+        className="hidden"
+        onChange={alElegir}
+        aria-hidden
+        tabIndex={-1}
+      />
+      <input
+        ref={camaraTrasera}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={alElegir}
+        aria-hidden
+        tabIndex={-1}
+      />
+      <button
+        type="button"
+        title={mostrarImagen ? "Cambiar foto" : "Subir foto"}
+        aria-label={`${mostrarImagen ? "Cambiar" : "Subir"} foto de ${profesor.nombre} ${profesor.apellido}`}
+        onClick={() => setSelectorAbierto(true)}
+        disabled={subir.isPending}
+        className="flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-border bg-muted transition-colors hover:border-primary"
+      >
+        {subir.isPending ? (
+          <Loader2 className="size-4 animate-spin text-muted-foreground" />
+        ) : mostrarImagen ? (
+          <img
+            src={`${urlFotoProfesor(profesor.id)}${version > 0 ? `?v=${version}` : ""}`}
+            alt=""
+            className="size-full object-cover"
+            onError={() => setFalloCarga(true)}
+          />
+        ) : (
+          <ImagePlus className="size-4 text-muted-foreground" />
+        )}
+      </button>
+      <Dialog open={selectorAbierto} onOpenChange={setSelectorAbierto}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{mostrarImagen ? "Cambiar foto" : "Agregar foto"}</DialogTitle>
+            <DialogDescription>Elegí de dónde querés obtener la foto.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-2">
+            <Button type="button" variant="outline" onClick={() => galeria.current?.click()}>
+              <Images className="size-4" />
+              Elegir de la galería
+            </Button>
+            <Button type="button" variant="outline" onClick={() => camaraFrontal.current?.click()}>
+              <Camera className="size-4" />
+              Usar cámara frontal
+            </Button>
+            <Button type="button" variant="outline" onClick={() => camaraTrasera.current?.click()}>
+              <Camera className="size-4" />
+              Usar cámara trasera
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
 function ProfesorFormDialog({
   open,
   profesor,
   idEmpresa,
+  usuarios,
+  cargandoUsuarios,
   onClose,
 }: {
   open: boolean;
   profesor: Profesor | null;
   /** Empresa activa de la sesión. No es un campo del formulario. */
   idEmpresa: number;
+  usuarios: Usuario[];
+  cargandoUsuarios: boolean;
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -470,7 +611,8 @@ function ProfesorFormDialog({
       numeroCi: profesor?.numeroCi ?? "",
       nombre: profesor?.nombre ?? "",
       apellido: profesor?.apellido ?? "",
-      usuarioSistema: profesor?.usuarioSistema ?? "",
+      idUsuario: profesor?.idUsuario ? String(profesor.idUsuario) : "",
+      activo: profesor ? esActivo(profesor.activo) : true,
       direccion: profesor?.direccion ?? "",
       telefono: profesor?.telefono ?? "",
       correo: profesor?.correo ?? "",
@@ -487,21 +629,24 @@ function ProfesorFormDialog({
         ...(v.correo ? { correo: v.correo } : {}),
       };
 
+      const idUsuario = v.idUsuario ? Number(v.idUsuario) : undefined;
+
       return esEdicion
         ? api.profesores.actualizar(profesor.id, {
             idEmpresa: profesor.idEmpresa,
             numeroCi: v.numeroCi,
             nombre: v.nombre,
             apellido: v.apellido,
-            usuarioSistema: v.usuarioSistema,
+            ...(idUsuario !== undefined ? { idUsuario } : {}),
             ...opcionales,
+            activo: v.activo ? "A" : "I",
           })
         : api.profesores.crear({
             idEmpresa,
             numeroCi: v.numeroCi,
             nombre: v.nombre,
             apellido: v.apellido,
-            usuarioSistema: v.usuarioSistema,
+            ...(idUsuario !== undefined ? { idUsuario } : {}),
             ...opcionales,
           });
     },
@@ -586,21 +731,62 @@ function ProfesorFormDialog({
 
               <FormField
                 control={form.control}
-                name="usuarioSistema"
+                name="idUsuario"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Usuario</FormLabel>
+                    <FormLabel>Cuenta de acceso</FormLabel>
                     <FormControl>
-                      <Input {...field} placeholder="jperez" autoComplete="off" />
+                      <SelectorModal
+                        opciones={usuarios.map((usuario) => ({
+                          valor: String(usuario.id),
+                          etiqueta: usuario.usuario,
+                          descripcion: usuario.nombreApellido,
+                        }))}
+                        value={field.value}
+                        onChange={field.onChange}
+                        placeholder="Sin cuenta vinculada"
+                        titulo="Elegí una cuenta"
+                        buscarPlaceholder="Buscar usuario…"
+                        cargando={cargandoUsuarios}
+                      />
                     </FormControl>
                     <FormDescription>
-                      Identificador corto. Se guarda en minúsculas y tampoco puede repetirse.
+                      Opcional. Cada cuenta puede vincularse una sola vez.
                     </FormDescription>
+                    {esEdicion && profesor.idUsuario !== null && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="mt-1 h-auto px-0 text-destructive hover:bg-transparent hover:text-destructive"
+                        onClick={() => field.onChange("0")}
+                      >
+                        Desvincular cuenta
+                      </Button>
+                    )}
                     <FormMessage />
                   </FormItem>
                 )}
               />
             </div>
+
+            {esEdicion && (
+              <FormField
+                control={form.control}
+                name="activo"
+                render={({ field }) => (
+                  <FormItem className="flex items-center justify-between rounded-lg border border-border px-4 py-3">
+                    <div>
+                      <FormLabel>Profesor activo</FormLabel>
+                      <FormDescription>Los inactivos no se eliminan del historial.</FormDescription>
+                    </div>
+                    <FormControl>
+                      <Switch checked={field.value} onCheckedChange={field.onChange} />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            )}
 
             <FormField
               control={form.control}

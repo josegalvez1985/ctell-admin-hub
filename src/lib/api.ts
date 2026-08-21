@@ -163,8 +163,8 @@ export type ListaCiudades = {
 /**
  * Institución de una empresa: un colegio, un hospital, una municipalidad.
  *
- * **No tiene columna `activo`**: el DDL no la trae, así que la baja es física,
- * como en `DetalleMoneda` y `ListaDescuentos`.
+ * Tiene estado activo/inactivo. La baja física queda reservada para cargas
+ * equivocadas; la operación normal es inactivar.
  *
  * LA GEOGRAFÍA VIENE DESNORMALIZADA: guarda país, departamento y ciudad aunque
  * el país se deduzca del departamento. El backend valida que la cadena sea
@@ -181,12 +181,12 @@ export type Institucion = {
    * una sola empresa, así que sería la misma constante en todas las filas.
    */
   idEmpresa: number;
-  /** Obligatorio. El nombre viene del JOIN contra PAISES. */
-  idPais: number;
-  pais: string;
-  /** Obligatorio. El nombre viene del JOIN contra DEPARTAMENTOS. */
-  idDepartamento: number;
-  departamento: string;
+  /** Opcional. El nombre viene del LEFT JOIN contra PAISES. */
+  idPais: number | null;
+  pais: string | null;
+  /** Opcional. El nombre viene del LEFT JOIN contra DEPARTAMENTOS. */
+  idDepartamento: number | null;
+  departamento: string | null;
   /**
    * **Opcional**: el DDL la deja nullable. Una institución rural puede no tener
    * ciudad asignada. Por eso el JOIN contra CIUDADES es LEFT y `ciudad` llega
@@ -205,6 +205,7 @@ export type Institucion = {
    * posiciones dentro de un depósito.
    */
   ubicacion: string | null;
+  activo: Estado;
 };
 
 export type ListaInstituciones = {
@@ -215,13 +216,11 @@ export type ListaInstituciones = {
 /**
  * Profesor de una empresa.
  *
- * **No tiene columna `activo`**: el DDL no la trae, así que la baja es física,
- * como en `Institucion` y `ListaDescuentos`.
+ * Tiene estado activo/inactivo y puede vincularse opcionalmente con una cuenta
+ * de USUARIOS.
  *
- * **`numeroCi` y `usuarioSistema` son únicos EN TODO EL SISTEMA**, no por
- * empresa — a diferencia del resto de las tablas del proyecto. Dos empresas no
- * pueden cargar al mismo profesor: la segunda recibe un 409 contra una fila que
- * su listado no muestra. El mensaje del backend lo aclara.
+ * `numeroCi` es único en todo el sistema. `idUsuario` también se usa una sola
+ * vez, aunque esa regla se valida en el paquete PL/SQL.
  */
 export type Profesor = {
   id: number;
@@ -237,16 +236,10 @@ export type Profesor = {
   numeroCi: string;
   nombre: string;
   apellido: string;
-  /**
-   * Identificador corto del profesor (`jperez`, `mgarcia`). **Único en todo el
-   * sistema.**
-   *
-   * NO es un usuario de login: no hay relación con la tabla `USUARIOS` ni con
-   * `PKG_AUTH`, no tiene contraseña y no sirve para entrar al sistema. El
-   * backend lo guarda en minúsculas y sin espacios, para que el UNIQUE sirva de
-   * verdad.
-   */
-  usuarioSistema: string;
+  idUsuario: number | null;
+  usuario: string | null;
+  activo: Estado;
+  tieneFoto: boolean;
   direccion: string | null;
   telefono: string | null;
   correo: string | null;
@@ -1171,6 +1164,11 @@ export function urlFotoDetalleMoneda(id: number): string {
   return `${BASE_URL}/detalle-monedas/foto/${id}`;
 }
 
+/** URL pública de la foto de un profesor. */
+export function urlFotoProfesor(id: number): string {
+  return `${BASE_URL}/profesores/foto/${id}`;
+}
+
 /**
  * Empresa a la que el usuario eligió conectarse en el login.
  *
@@ -1792,8 +1790,8 @@ export const api = {
   /**
    * Instituciones por empresa, con su ubicación geográfica.
    *
-   * **No hay `inactivar`/`activar`**: la tabla no tiene columna de estado, así
-   * que `eliminar` es baja física.
+   * El estado se modifica mediante `actualizar`; `eliminar` sigue siendo baja
+   * física para cargas equivocadas.
    */
   instituciones: {
     /**
@@ -1811,6 +1809,7 @@ export const api = {
         idPais?: number | undefined;
         idDepartamento?: number | undefined;
         idCiudad?: number | undefined;
+        activo?: Estado | undefined;
       } = {},
     ) => {
       const q = new URLSearchParams();
@@ -1818,14 +1817,15 @@ export const api = {
       if (params.idPais) q.set("idPais", String(params.idPais));
       if (params.idDepartamento) q.set("idDepartamento", String(params.idDepartamento));
       if (params.idCiudad) q.set("idCiudad", String(params.idCiudad));
+      if (params.activo) q.set("activo", params.activo);
       const query = q.toString();
       return request<ListaInstituciones>(`/instituciones/listar${query ? `?${query}` : ""}`);
     },
 
     crear: (datos: {
       idEmpresa: number;
-      idPais: number;
-      idDepartamento: number;
+      idPais?: number;
+      idDepartamento?: number;
       /** Opcional: el DDL la deja nullable. */
       idCiudad?: number;
       nombreInstitucion: string;
@@ -1834,6 +1834,7 @@ export const api = {
       contacto?: string;
       correo?: string;
       ubicacion?: string;
+      activo?: Estado;
     }) =>
       request<{ id: number; ok: boolean }>("/instituciones/crear", {
         method: "POST",
@@ -1846,8 +1847,8 @@ export const api = {
       datos: {
         /** OBLIGATORIO: acota a cuál fila se aplica el cambio, no es un dato a guardar. Sin él, 400. */
         idEmpresa: number;
-        idPais?: number;
-        idDepartamento?: number;
+        idPais?: number | "null";
+        idDepartamento?: number | "null";
         /**
          * Ausente significa **no cambiar**, no "quitarle la ciudad". Para dejar
          * la institución sin ciudad se manda el literal `"null"` — sin ese valor
@@ -1860,6 +1861,7 @@ export const api = {
         contacto?: string;
         correo?: string;
         ubicacion?: string;
+        activo?: Estado;
       },
     ) =>
       request<{ ok: boolean }>(`/instituciones/actualizar/${id}`, {
@@ -1867,7 +1869,7 @@ export const api = {
         body: JSON.stringify(datos),
       }),
 
-    /** Baja **física**: no hay estado que apagar. */
+    /** Baja física para cargas equivocadas; normalmente se usa `activo: "I"`. */
     eliminar: (id: number, idEmpresa: number) =>
       request<{ ok: boolean }>(`/instituciones/eliminar/${id}/${idEmpresa}`, {
         method: "DELETE",
@@ -1877,8 +1879,8 @@ export const api = {
   /**
    * Profesores por empresa.
    *
-   * **No hay `inactivar`/`activar`**: la tabla no tiene columna de estado, así
-   * que `eliminar` es baja física.
+   * El estado se modifica mediante `actualizar`; `eliminar` queda como baja
+   * física para cargas equivocadas.
    */
   profesores: {
     /**
@@ -1892,27 +1894,30 @@ export const api = {
       // `| undefined` explícito y no sólo `?`: con exactOptionalPropertyTypes
       // pasar `busqueda: undefined` no compilaría contra una propiedad
       // meramente opcional.
-      params: { idEmpresa?: number | undefined; busqueda?: string | undefined } = {},
+      params: {
+        idEmpresa?: number | undefined;
+        busqueda?: string | undefined;
+        activo?: Estado | undefined;
+      } = {},
     ) => {
       const q = new URLSearchParams();
       if (params.idEmpresa) q.set("idEmpresa", String(params.idEmpresa));
       if (params.busqueda?.trim()) q.set("busqueda", params.busqueda.trim());
+      if (params.activo) q.set("activo", params.activo);
       const query = q.toString();
       return request<ListaProfesores>(`/profesores/listar${query ? `?${query}` : ""}`);
     },
 
     /**
-     * `numeroCi` y `usuarioSistema` chocan contra **todo el sistema**, no sólo
-     * contra la empresa activa: un 409 puede venir de una fila de otra empresa
-     * que este listado no muestra.
+     * `numeroCi` e `idUsuario` se validan contra **todo el sistema**, no sólo
+     * contra la empresa activa.
      */
     crear: (datos: {
       idEmpresa: number;
       numeroCi: string;
       nombre: string;
       apellido: string;
-      /** Se guarda en minúsculas y sin espacios. */
-      usuarioSistema: string;
+      idUsuario?: number;
       direccion?: string;
       telefono?: string;
       correo?: string;
@@ -1931,10 +1936,11 @@ export const api = {
         numeroCi?: string;
         nombre?: string;
         apellido?: string;
-        usuarioSistema?: string;
+        idUsuario?: number;
         direccion?: string;
         telefono?: string;
         correo?: string;
+        activo?: Estado;
       },
     ) =>
       request<{ ok: boolean }>(`/profesores/actualizar/${id}`, {
@@ -1942,10 +1948,17 @@ export const api = {
         body: JSON.stringify(datos),
       }),
 
-    /** Baja **física**: no hay estado que apagar. */
+    /** Baja física para una carga equivocada. */
     eliminar: (id: number, idEmpresa: number) =>
       request<{ ok: boolean }>(`/profesores/eliminar/${id}/${idEmpresa}`, {
         method: "DELETE",
+      }),
+
+    subirFoto: (id: number, archivo: File) =>
+      request<{ ok: boolean }>(`/profesores/foto/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": archivo.type },
+        body: archivo,
       }),
   },
 

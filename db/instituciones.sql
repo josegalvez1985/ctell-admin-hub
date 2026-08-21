@@ -7,7 +7,7 @@
 -- texto dentro de los handlers.
 --
 --   1. LISTAR      GET    /instituciones/listar
---                         (?idEmpresa= &idPais= &idDepartamento= &idCiudad=)
+--                         (?idEmpresa= &idPais= &idDepartamento= &idCiudad= &activo=)
 --   2. INSERTAR    POST   /instituciones/crear
 --   3. ACTUALIZAR  PUT    /instituciones/actualizar/:id
 --   4. ELIMINAR    DELETE /instituciones/eliminar/:id/:idEmpresa
@@ -21,7 +21,7 @@
 -- Tabla (no la crea ni la altera; el DDL se administra aparte):
 --   INSTITUCIONES  ID_INSTITUCION, ID_EMPRESA, ID_PAIS, ID_DEPARTAMENTO,
 --                  ID_CIUDAD, NOMBRE_INSTITUCION, DIRECCION, DIRECTOR,
---                  CONTACTO, CORREO, UBICACION, FECHA_CREACION,
+--                  CONTACTO, CORREO, UBICACION, ACTIVO, FECHA_CREACION,
 --                  FECHA_ACTUALIZACION
 --
 -- LA INSTITUCION ES POR EMPRESA. Cada empresa tiene su propio padron: el
@@ -54,16 +54,14 @@
 -- romper la cadena. Se leen los valores actuales, se aplica el NVL y recien
 -- entonces se valida el trio resultante.
 --
--- ID_CIUDAD ES OPCIONAL (el DDL la deja nullable) y las otras dos no. Una
--- institucion en una zona rural puede no tener ciudad asignada; pais y
--- departamento siempre se saben.
+-- ID_PAIS, ID_DEPARTAMENTO e ID_CIUDAD son opcionales. La cadena geografica
+-- puede estar incompleta: una institucion puede no tener ningun nivel cargado.
 --
 --------------------------------------------------------------------------------
--- NO HAY COLUMNA ACTIVO
+-- ESTADO ACTIVO/INACTIVO
 --
--- El DDL no la trae, asi que la baja es FISICA, como en DETALLE_MONEDAS y
--- LISTAS_DESCUENTOS. No hay /inactivar ni /activar, y el ACTUALIZAR no recibe
--- p_activo. Una institucion existe o no existe.
+-- ACTIVO es VARCHAR2(1): 'A' activo, 'I' inactivo. La baja fisica sigue
+-- existiendo para cargas equivocadas, pero la operacion normal es inactivar.
 --
 --------------------------------------------------------------------------------
 -- CON JOIN CONTRA LA GEOGRAFIA, SIN JOIN CONTRA EMPRESAS
@@ -77,9 +75,8 @@
 -- sola —la de la sesion— asi que seria la misma constante repetida en cada
 -- fila. Mismo criterio que db/monedas.sql.
 --
--- LEFT JOIN CONTRA CIUDADES, INNER contra las otras dos: ID_CIUDAD es nullable
--- y con un JOIN interno las instituciones sin ciudad desapareceran del listado
--- sin ningun error visible.
+-- LEFT JOIN CONTRA LOS TRES CATALOGOS: cualquiera de los niveles puede ser NULL
+-- y con un JOIN interno las instituciones incompletas desaparecerian del listado.
 --
 --------------------------------------------------------------------------------
 -- UBICACION ES TEXTO LIBRE, NO UNA FK
@@ -127,12 +124,13 @@ CREATE OR REPLACE PACKAGE PKG_INSTITUCIONES AS
     p_id_pais         IN  VARCHAR2,
     p_id_departamento IN  VARCHAR2,
     p_id_ciudad       IN  VARCHAR2,
+    p_activo          IN  VARCHAR2,
     p_status_code     OUT NUMBER,
     p_resultado       OUT CLOB
   );
 
-  -- idEmpresa, idPais, idDepartamento y nombreInstitucion son obligatorios.
-  -- idCiudad es opcional (el DDL la deja nullable).
+  -- idEmpresa y nombreInstitucion son obligatorios. Los tres niveles
+  -- geograficos son opcionales.
   PROCEDURE INSERTAR (
     p_authorization      IN  VARCHAR2,
     p_id_empresa         IN  VARCHAR2,
@@ -145,6 +143,7 @@ CREATE OR REPLACE PACKAGE PKG_INSTITUCIONES AS
     p_contacto           IN  VARCHAR2,
     p_correo             IN  VARCHAR2,
     p_ubicacion          IN  VARCHAR2,
+    p_activo             IN  VARCHAR2,
     p_status_code        OUT NUMBER,
     p_resultado          OUT CLOB
   );
@@ -152,8 +151,7 @@ CREATE OR REPLACE PACKAGE PKG_INSTITUCIONES AS
   -- Los parametros ausentes (NULL) no modifican la columna correspondiente.
   --
   -- CONSECUENCIA EN LOS OPCIONALES: mandarlos vacios significa "no cambiar", no
-  -- "borrar el dato". Para vaciar idCiudad se manda el literal 'null' — ver
-  -- LIMPIA en el body.
+  -- "borrar el dato". Para vaciar un nivel se manda el literal 'null'.
   PROCEDURE ACTUALIZAR (
     p_authorization      IN  VARCHAR2,
     p_id                 IN  VARCHAR2,
@@ -167,6 +165,7 @@ CREATE OR REPLACE PACKAGE PKG_INSTITUCIONES AS
     p_contacto           IN  VARCHAR2,
     p_correo             IN  VARCHAR2,
     p_ubicacion          IN  VARCHAR2,
+    p_activo             IN  VARCHAR2,
     p_status_code        OUT NUMBER,
     p_resultado          OUT CLOB
   );
@@ -262,6 +261,15 @@ CREATE OR REPLACE PACKAGE BODY PKG_INSTITUCIONES AS
     RETURN LOWER(TRIM(p_texto)) = C_BORRAR;
   END LIMPIA;
 
+  FUNCTION A_ESTADO (p_texto IN VARCHAR2) RETURN VARCHAR2 IS
+  BEGIN
+    RETURN CASE UPPER(TRIM(p_texto))
+             WHEN 'A' THEN 'A'
+             WHEN 'I' THEN 'I'
+             ELSE NULL
+           END;
+  END A_ESTADO;
+
   ------------------------------------------------------------------------------
   -- Privado: el departamento pertenece a ese pais?
   --
@@ -310,6 +318,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_INSTITUCIONES AS
     p_id_pais         IN  VARCHAR2,
     p_id_departamento IN  VARCHAR2,
     p_id_ciudad       IN  VARCHAR2,
+    p_activo          IN  VARCHAR2,
     p_status_code     OUT NUMBER,
     p_resultado       OUT CLOB
   ) IS
@@ -318,6 +327,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_INSTITUCIONES AS
     l_id_pais         NUMBER;
     l_id_departamento NUMBER;
     l_id_ciudad       NUMBER;
+    l_activo          VARCHAR2(1);
     l_total           NUMBER;
     l_items           CLOB;
   BEGIN
@@ -334,6 +344,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_INSTITUCIONES AS
     l_id_pais         := A_NUMERO(p_id_pais);
     l_id_departamento := A_NUMERO(p_id_departamento);
     l_id_ciudad       := A_NUMERO(p_id_ciudad);
+    l_activo          := A_ESTADO(p_activo);
 
     SELECT COUNT(*)
       INTO l_total
@@ -341,11 +352,11 @@ CREATE OR REPLACE PACKAGE BODY PKG_INSTITUCIONES AS
      WHERE (l_id_empresa      IS NULL OR ID_EMPRESA      = l_id_empresa)
        AND (l_id_pais         IS NULL OR ID_PAIS         = l_id_pais)
        AND (l_id_departamento IS NULL OR ID_DEPARTAMENTO = l_id_departamento)
-       AND (l_id_ciudad       IS NULL OR ID_CIUDAD       = l_id_ciudad);
+      AND (l_id_ciudad       IS NULL OR ID_CIUDAD       = l_id_ciudad)
+      AND (l_activo          IS NULL OR NVL(UPPER(TRIM(ACTIVO)), 'A') = l_activo);
 
-    -- LEFT JOIN contra CIUDADES, INNER contra PAISES y DEPARTAMENTOS: ID_CIUDAD
-    -- es nullable y con un JOIN interno las instituciones sin ciudad se caerian
-    -- del listado sin ningun error visible. Las otras dos son NOT NULL.
+    -- LEFT JOIN contra los tres catalogos: los tres ids son nullable y con un
+    -- JOIN interno las instituciones sin geografia se caerian del listado.
     --
     -- Se devuelven los ids Y los nombres: el formulario necesita los ids para
     -- precargar los combobox, y la tabla los nombres para mostrarlos.
@@ -372,18 +383,20 @@ CREATE OR REPLACE PACKAGE BODY PKG_INSTITUCIONES AS
                  'director'          VALUE i.DIRECTOR,
                  'contacto'          VALUE i.CONTACTO,
                  'correo'            VALUE i.CORREO,
-                 'ubicacion'         VALUE i.UBICACION
+                 'ubicacion'         VALUE i.UBICACION,
+                 'activo'            VALUE NVL(UPPER(TRIM(i.ACTIVO)), 'A')
                  RETURNING CLOB
                ) AS fila,
                i.NOMBRE_INSTITUCION AS nombre_institucion
           FROM INSTITUCIONES i
-          JOIN PAISES        p ON p.ID_PAIS         = i.ID_PAIS
-          JOIN DEPARTAMENTOS d ON d.ID_DEPARTAMENTO = i.ID_DEPARTAMENTO
+          LEFT JOIN PAISES        p ON p.ID_PAIS         = i.ID_PAIS
+          LEFT JOIN DEPARTAMENTOS d ON d.ID_DEPARTAMENTO = i.ID_DEPARTAMENTO
           LEFT JOIN CIUDADES c ON c.ID_CIUDAD       = i.ID_CIUDAD
          WHERE (l_id_empresa      IS NULL OR i.ID_EMPRESA      = l_id_empresa)
            AND (l_id_pais         IS NULL OR i.ID_PAIS         = l_id_pais)
            AND (l_id_departamento IS NULL OR i.ID_DEPARTAMENTO = l_id_departamento)
            AND (l_id_ciudad       IS NULL OR i.ID_CIUDAD       = l_id_ciudad)
+           AND (l_activo          IS NULL OR NVL(UPPER(TRIM(i.ACTIVO)), 'A') = l_activo)
       );
 
     p_status_code := 200;
@@ -429,6 +442,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_INSTITUCIONES AS
     p_contacto           IN  VARCHAR2,
     p_correo             IN  VARCHAR2,
     p_ubicacion          IN  VARCHAR2,
+    p_activo             IN  VARCHAR2,
     p_status_code        OUT NUMBER,
     p_resultado          OUT CLOB
   ) IS
@@ -437,6 +451,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_INSTITUCIONES AS
     l_id_pais         NUMBER;
     l_id_departamento NUMBER;
     l_id_ciudad       NUMBER;
+    l_activo          VARCHAR2(1);
     l_id              NUMBER;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
@@ -450,27 +465,39 @@ CREATE OR REPLACE PACKAGE BODY PKG_INSTITUCIONES AS
     l_id_pais         := A_NUMERO(p_id_pais);
     l_id_departamento := A_NUMERO(p_id_departamento);
     l_id_ciudad       := A_NUMERO(p_id_ciudad);
+    l_activo          := NVL(A_ESTADO(p_activo), 'A');
 
-    -- Las cuatro columnas NOT NULL del DDL. Sin esto el INSERT moriria con
+    -- Las dos columnas NOT NULL del DDL. Sin esto el INSERT moriria con
     -- ORA-01400 (500); validado aca devuelve un 400 que dice cual falta.
     IF l_id_empresa IS NULL
-       OR l_id_pais IS NULL
-       OR l_id_departamento IS NULL
        OR TRIM(p_nombre_institucion) IS NULL THEN
       p_status_code := 400;
-      p_resultado := '{"error":"idEmpresa, idPais, idDepartamento y nombreInstitucion son obligatorios"}';
+      p_resultado := '{"error":"idEmpresa y nombreInstitucion son obligatorios"}';
       RETURN;
     END IF;
 
     -- LA CADENA GEOGRAFICA, antes de escribir. Las FK ya garantizan que las
     -- filas existan; esto garantiza que tengan que ver entre si.
-    IF NOT DEPARTAMENTO_ES_DE_PAIS(l_id_departamento, l_id_pais) THEN
+    IF l_id_departamento IS NOT NULL AND l_id_pais IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"No se puede indicar departamento sin pais"}';
+      RETURN;
+    END IF;
+
+    IF l_id_departamento IS NOT NULL
+       AND NOT DEPARTAMENTO_ES_DE_PAIS(l_id_departamento, l_id_pais) THEN
       p_status_code := 400;
       p_resultado := '{"error":"El departamento no pertenece al pais indicado"}';
       RETURN;
     END IF;
 
     -- Solo si vino: la ciudad es opcional.
+    IF l_id_ciudad IS NOT NULL AND l_id_departamento IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"No se puede indicar ciudad sin departamento"}';
+      RETURN;
+    END IF;
+
     IF l_id_ciudad IS NOT NULL
        AND NOT CIUDAD_ES_DE_DEPARTAMENTO(l_id_ciudad, l_id_departamento) THEN
       p_status_code := 400;
@@ -481,7 +508,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_INSTITUCIONES AS
     INSERT INTO INSTITUCIONES (
       ID_EMPRESA, ID_PAIS, ID_DEPARTAMENTO, ID_CIUDAD,
       NOMBRE_INSTITUCION, DIRECCION, DIRECTOR, CONTACTO, CORREO, UBICACION,
-      FECHA_CREACION, FECHA_ACTUALIZACION
+      ACTIVO, FECHA_CREACION, FECHA_ACTUALIZACION
     ) VALUES (
       l_id_empresa,
       l_id_pais,
@@ -493,6 +520,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_INSTITUCIONES AS
       TRIM(p_contacto),
       TRIM(p_correo),
       TRIM(p_ubicacion),
+      l_activo,
       SYSTIMESTAMP,
       SYSTIMESTAMP
     )
@@ -539,6 +567,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_INSTITUCIONES AS
     p_contacto           IN  VARCHAR2,
     p_correo             IN  VARCHAR2,
     p_ubicacion          IN  VARCHAR2,
+    p_activo             IN  VARCHAR2,
     p_status_code        OUT NUMBER,
     p_resultado          OUT CLOB
   ) IS
@@ -548,11 +577,14 @@ CREATE OR REPLACE PACKAGE BODY PKG_INSTITUCIONES AS
     l_id_pais         NUMBER;
     l_id_departamento NUMBER;
     l_id_ciudad       NUMBER;
+    l_borra_pais      BOOLEAN;
+    l_borra_dep       BOOLEAN;
     l_borra_ciudad    BOOLEAN;
     -- Valores FINALES tras aplicar el cambio, para validar la cadena completa.
     l_pais_final      NUMBER;
     l_dep_final       NUMBER;
     l_ciudad_final    NUMBER;
+    l_activo          VARCHAR2(1);
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -566,7 +598,10 @@ CREATE OR REPLACE PACKAGE BODY PKG_INSTITUCIONES AS
     l_id_pais         := A_NUMERO(p_id_pais);
     l_id_departamento := A_NUMERO(p_id_departamento);
     l_id_ciudad       := A_NUMERO(p_id_ciudad);
+    l_borra_pais      := LIMPIA(p_id_pais);
+    l_borra_dep       := LIMPIA(p_id_departamento);
     l_borra_ciudad    := LIMPIA(p_id_ciudad);
+    l_activo          := A_ESTADO(p_activo);
 
     -- AISLAMIENTO POR EMPRESA: el idEmpresa acota A CUAL fila se le aplica el
     -- cambio, no es solo un campo mas a modificar. Sin el WHERE, un PUT con el
@@ -590,8 +625,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_INSTITUCIONES AS
     -- El SELECT ademas hace de control de existencia dentro de la empresa: si
     -- no devuelve fila, ya se sabe que el UPDATE no iba a tocar nada.
     BEGIN
-      SELECT NVL(l_id_pais, ID_PAIS),
-             NVL(l_id_departamento, ID_DEPARTAMENTO),
+            SELECT CASE WHEN l_borra_pais THEN NULL ELSE NVL(l_id_pais, ID_PAIS) END,
+              CASE WHEN l_borra_dep THEN NULL ELSE NVL(l_id_departamento, ID_DEPARTAMENTO) END,
              CASE WHEN l_borra_ciudad THEN NULL
                   ELSE NVL(l_id_ciudad, ID_CIUDAD)
              END
@@ -609,9 +644,22 @@ CREATE OR REPLACE PACKAGE BODY PKG_INSTITUCIONES AS
         RETURN;
     END;
 
-    IF NOT DEPARTAMENTO_ES_DE_PAIS(l_dep_final, l_pais_final) THEN
+    IF l_dep_final IS NOT NULL AND l_pais_final IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"No se puede indicar departamento sin pais"}';
+      RETURN;
+    END IF;
+
+    IF l_dep_final IS NOT NULL
+       AND NOT DEPARTAMENTO_ES_DE_PAIS(l_dep_final, l_pais_final) THEN
       p_status_code := 400;
       p_resultado := '{"error":"El departamento no pertenece al pais indicado"}';
+      RETURN;
+    END IF;
+
+    IF l_ciudad_final IS NOT NULL AND l_dep_final IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"No se puede indicar ciudad sin departamento"}';
       RETURN;
     END IF;
 
@@ -635,6 +683,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_INSTITUCIONES AS
            CONTACTO            = NVL(TRIM(p_contacto), CONTACTO),
            CORREO              = NVL(TRIM(p_correo), CORREO),
            UBICACION           = NVL(TRIM(p_ubicacion), UBICACION),
+           ACTIVO             = NVL(l_activo, ACTIVO),
            FECHA_ACTUALIZACION = SYSTIMESTAMP
      WHERE ID_INSTITUCION = l_id
        AND ID_EMPRESA     = l_id_empresa;
@@ -699,8 +748,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_INSTITUCIONES AS
     -- AISLAMIENTO POR EMPRESA: las dos condiciones. Con solo el id, un DELETE
     -- con el id de una institucion de otra empresa la borraba.
     --
-    -- BAJA FISICA: la tabla no tiene columna ACTIVO, asi que no hay baja
-    -- logica posible. Es el mismo caso que DETALLE_MONEDAS.
+    -- BAJA FISICA para cargas equivocadas. La baja normal se hace actualizando
+    -- ACTIVO a 'I'.
     DELETE FROM INSTITUCIONES
      WHERE ID_INSTITUCION = l_id
        AND ID_EMPRESA     = l_id_empresa;
@@ -780,7 +829,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_INSTITUCIONES AS
       p_pattern     => 'listar',
       p_method      => 'GET',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_INSTITUCIONES.LISTAR(:authorization, :idEmpresa, :idPais, :idDepartamento, :idCiudad, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_INSTITUCIONES.LISTAR(:authorization, :idEmpresa, :idPais, :idDepartamento, :idCiudad, :activo, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
@@ -801,7 +850,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_INSTITUCIONES AS
     ----------------------------------------------------------------------------
     -- POST /instituciones/crear
     -- Body: { idEmpresa, idPais, idDepartamento, idCiudad?, nombreInstitucion,
-    --         direccion?, director?, contacto?, correo?, ubicacion? }
+    --         direccion?, director?, contacto?, correo?, ubicacion?, activo? }
     ----------------------------------------------------------------------------
     ORDS.DEFINE_TEMPLATE(p_module_name => 'instituciones', p_pattern => 'crear');
 
@@ -810,7 +859,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_INSTITUCIONES AS
       p_pattern     => 'crear',
       p_method      => 'POST',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_INSTITUCIONES.INSERTAR(:authorization, :idEmpresa, :idPais, :idDepartamento, :idCiudad, :nombreInstitucion, :direccion, :director, :contacto, :correo, :ubicacion, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_INSTITUCIONES.INSERTAR(:authorization, :idEmpresa, :idPais, :idDepartamento, :idCiudad, :nombreInstitucion, :direccion, :director, :contacto, :correo, :ubicacion, :activo, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
@@ -832,7 +881,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_INSTITUCIONES AS
     -- PUT /instituciones/actualizar/:id
     -- Body: { idEmpresa, idPais?, idDepartamento?, idCiudad?,
     --         nombreInstitucion?, direccion?, director?, contacto?, correo?,
-    --         ubicacion? }
+    --         ubicacion?, activo? }
     --       (ausentes = no cambia; idCiudad: "null" = quitarla)
     ----------------------------------------------------------------------------
     ORDS.DEFINE_TEMPLATE(p_module_name => 'instituciones', p_pattern => 'actualizar/:id');
@@ -842,7 +891,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_INSTITUCIONES AS
       p_pattern     => 'actualizar/:id',
       p_method      => 'PUT',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_INSTITUCIONES.ACTUALIZAR(:authorization, :id, :idEmpresa, :idPais, :idDepartamento, :idCiudad, :nombreInstitucion, :direccion, :director, :contacto, :correo, :ubicacion, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_INSTITUCIONES.ACTUALIZAR(:authorization, :id, :idEmpresa, :idPais, :idDepartamento, :idCiudad, :nombreInstitucion, :direccion, :director, :contacto, :correo, :ubicacion, :activo, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
