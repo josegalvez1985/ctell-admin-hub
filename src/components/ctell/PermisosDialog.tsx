@@ -622,10 +622,14 @@ function PanelPermisos({ idUsuario }: { idUsuario: number }) {
                           }
                         />
                         {/* Las ya asignadas se atenúan: lo que se viene a
-                            buscar acá es lo que falta. */}
+                            buscar acá es lo que falta.
+
+                            Y el nombre se parte en varias líneas en vez de
+                            truncarse: es lo que se tilda, y dos páginas con el
+                            mismo prefijo largo se veían idénticas cortadas. */}
                         <span
                           className={cn(
-                            "min-w-0 flex-1 truncate",
+                            "min-w-0 flex-1 break-words",
                             tiene ? "text-muted-foreground" : "text-foreground",
                           )}
                         >

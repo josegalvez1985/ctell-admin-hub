@@ -82,16 +82,32 @@ export function SelectorModal({
         aria-expanded={abierto}
         disabled={disabled || cargando}
         onClick={() => setAbierto(true)}
-        className={cn("w-full justify-between font-normal", className)}
-        // El disparador es de una sola línea, así que la etiqueta sigue
-        // truncada acá. El `title` deja leer el nombre completo al pasar el
-        // mouse sin tener que abrir el modal.
+        className={cn(
+          // `h-auto` + `min-h-9` y no la altura fija del Button: una etiqueta
+          // larga necesita dos líneas, y con `h-9` el texto se salía del borde.
+          // `whitespace-normal` anula el `whitespace-nowrap` de la clase base,
+          // que es lo que impedía el salto de línea.
+          "h-auto min-h-9 w-full justify-between whitespace-normal py-1.5 text-left font-normal",
+          className,
+        )}
+        // El `title` deja leer el nombre completo al pasar el mouse aunque las
+        // dos líneas no alcancen para mostrarlo entero.
         {...(seleccionada ? { title: seleccionada.etiqueta } : {})}
       >
-        <span className={cn("truncate", !seleccionada && "text-muted-foreground")}>
+        {/* `min-w-0` es lo que permite que el span se achique por debajo de su
+            contenido: sin él, un nombre de artículo largo estiraba el botón y
+            desbordaba el diálogo en vez de partirse. `line-clamp-2` lo deja
+            crecer hasta dos líneas y recién ahí corta, para que el botón no se
+            estire sin techo con un nombre muy largo. */}
+        <span
+          className={cn(
+            "line-clamp-2 min-w-0 flex-1 break-words",
+            !seleccionada && "text-muted-foreground",
+          )}
+        >
           {cargando ? "Cargando…" : (seleccionada?.etiqueta ?? placeholder)}
         </span>
-        <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" />
+        <ChevronsUpDown className="ml-2 size-4 shrink-0 self-center opacity-50" />
       </Button>
 
       <ListaEnModal

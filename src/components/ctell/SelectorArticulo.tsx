@@ -75,12 +75,24 @@ export function SelectorArticulo({
         role="combobox"
         disabled={disabled}
         onClick={() => setAbierto(true)}
-        className={cn("w-full justify-between font-normal", className)}
+        className={cn(
+          // Igual que en SelectorModal: `h-auto` + `whitespace-normal` para que
+          // un nombre de artículo largo pase a una segunda línea en vez de
+          // desbordar el diálogo que contiene al selector.
+          "h-auto min-h-9 w-full justify-between whitespace-normal py-1.5 text-left font-normal",
+          className,
+        )}
+        {...(etiquetaSeleccionada ? { title: etiquetaSeleccionada } : {})}
       >
-        <span className={cn("truncate", !etiquetaSeleccionada && "text-muted-foreground")}>
+        <span
+          className={cn(
+            "line-clamp-2 min-w-0 flex-1 break-words",
+            !etiquetaSeleccionada && "text-muted-foreground",
+          )}
+        >
           {etiquetaSeleccionada ?? placeholder}
         </span>
-        <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" />
+        <ChevronsUpDown className="ml-2 size-4 shrink-0 self-center opacity-50" />
       </Button>
 
       {/* El contenido se monta sólo con el modal abierto: así la consulta no

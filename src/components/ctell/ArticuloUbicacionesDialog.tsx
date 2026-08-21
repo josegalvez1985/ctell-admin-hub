@@ -189,11 +189,15 @@ export function ArticuloUbicacionesDialog({
                   className="flex items-center gap-3 rounded-lg border border-border p-3"
                 >
                   <MapPin className="size-5 shrink-0 text-primary" />
+                  {/* El texto se PARTE en varias líneas en vez de truncarse: la
+                      descripción es lo que distingue una ubicación de otra, y
+                      cortada se pierde justo eso. `min-w-0` es lo que permite
+                      que el bloque se achique en vez de estirar la fila. */}
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium tabular-nums text-foreground">
+                    <p className="break-words text-sm font-medium tabular-nums text-foreground">
                       {etiquetaUbicacion(item.zona, item.estante, item.nivel)}
                     </p>
-                    <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                    <p className="mt-0.5 break-words text-xs text-muted-foreground">
                       {item.sucursal}
                       {item.descripcion ? ` · ${item.descripcion}` : ""}
                     </p>

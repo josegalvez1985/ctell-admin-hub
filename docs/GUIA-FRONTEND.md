@@ -26,6 +26,7 @@ pantalla ABM completa.
 7. [El menú dinámico por dentro](#7-el-menú-dinámico-por-dentro)
    - [Imágenes: siempre con respaldo](#71-imágenes-siempre-con-respaldo)
    - [Paneles con scroll: `scrollbar-fino`](#72-paneles-con-scroll-scrollbar-fino)
+   - [Texto largo: `truncate` no alcanza](#73-texto-largo-truncate-no-alcanza-y-en-un-diálogo-molesta)
 8. [Checklist](#8-checklist)
 
 ---
@@ -898,6 +899,13 @@ hay nada que buscar ni datos que cargar.
 su cuenta: arma `opciones` a partir de lo que ya haya cargado con `useQuery`,
 igual que antes se armaban los `<SelectItem>`.
 
+> **El texto largo ya está resuelto adentro del componente**: el disparador crece
+> a dos líneas y la lista del modal envuelve el nombre entero. Si armás otro
+> selector con `<Button>` por fuera de estos dos, leé
+> [Texto largo](#73-texto-largo-truncate-no-alcanza-y-en-un-diálogo-molesta)
+> antes — la clase base del botón impide el salto de línea y el desborde no se
+> nota hasta que alguien carga un nombre de 80 caracteres.
+
 ```tsx
 const { data: paises, isPending: cargandoPaises } = useQuery({
   queryKey: ["paises"],
@@ -1019,11 +1027,11 @@ Migrar el selector no alcanza. La misma consulta suele alimentar otras cosas de
 la pantalla que también asumen el listado completo, y ésas fallan en silencio —
 no dan error, sólo muestran de menos:
 
-| Uso                        | Qué le pasa al paginar                      | Cómo se arregla                                             |
-| -------------------------- | ------------------------------------------- | ----------------------------------------------------------- |
-| Filtro de una columna      | Ofrece 20 opciones de un catálogo de 300     | Armalo desde **las filas ya listadas**, no del catálogo      |
-| "¿Hay al menos uno?"       | `items.length` mira la página, no el total   | Usá `total`, y pedí `tamanio: 1` — no hacen falta 20 filas   |
-| Resolver un id → nombre    | El id de la página 5 no está en la lista     | Que el nombre venga en el dato que ya tenés, o por prop      |
+| Uso                     | Qué le pasa al paginar                     | Cómo se arregla                                            |
+| ----------------------- | ------------------------------------------ | ---------------------------------------------------------- |
+| Filtro de una columna   | Ofrece 20 opciones de un catálogo de 300   | Armalo desde **las filas ya listadas**, no del catálogo    |
+| "¿Hay al menos uno?"    | `items.length` mira la página, no el total | Usá `total`, y pedí `tamanio: 1` — no hacen falta 20 filas |
+| Resolver un id → nombre | El id de la página 5 no está en la lista   | Que el nombre venga en el dato que ya tenés, o por prop    |
 
 El filtro de columna en Lotes es el ejemplo: sus opciones salen de los lotes
 listados y no de `/articulos/listar`. Además de esquivar la paginación es lo
@@ -1420,6 +1428,112 @@ Chrome anteriores). Cada navegador aplica la que entiende.
 
 ---
 
+## 7.3 Texto largo: `truncate` no alcanza, y en un diálogo molesta
+
+Los nombres de artículo del catálogo real llegan a 80 caracteres. En cualquier
+lugar donde se muestre un dato que viene de la base hay que decidir **qué pasa
+cuando no entra**, y la respuesta no es la misma en todos lados.
+
+### `min-w-0` es lo que evita el desborde, no `truncate`
+
+Es la parte contraintuitiva y la que ya nos costó una pantalla rota. Dentro de un
+contenedor flex, un hijo **no se encoge por debajo del ancho de su contenido**
+salvo que se lo declares: ese es el valor inicial `min-width: auto` de la
+especificación. Sin `min-w-0`, un texto largo **estira el contenedor** y se sale
+del diálogo — y `truncate` no lo impide, porque nunca llega a activarse.
+
+```tsx
+// ✗ Desborda el diálogo: el span estira el botón hasta donde le pida el texto
+<div className="flex">
+  <span className="truncate">{nombreLargo}</span>
+</div>
+
+// ✓ El span se achica y recién ahí trunca
+<div className="flex">
+  <span className="min-w-0 flex-1 truncate">{nombreLargo}</span>
+</div>
+```
+
+**La regla: todo `truncate` dentro de un flex lleva `min-w-0` en el mismo
+elemento o en su contenedor.** Si ves un `truncate` sin `min-w-0` cerca, es un
+desborde esperando a que alguien cargue un nombre largo.
+
+### Truncar o envolver: depende de para qué se lee el dato
+
+| Dónde                                        | Qué hacer               | Por qué                                                                                      |
+| -------------------------------------------- | ----------------------- | -------------------------------------------------------------------------------------------- |
+| Celda de tabla, tarjeta de listado           | `min-w-0` + `truncate`  | Son filas repetidas: la altura pareja es lo que hace la lista legible de un vistazo          |
+| **Dentro de un diálogo**                     | `break-words`, envolver | El diálogo es angosto y el dato es el que se está por elegir o tildar: hay que leerlo entero |
+| Disparador de un selector (el valor elegido) | Ver abajo               | Necesita crecer, pero con techo                                                              |
+
+El caso del medio es el que más se equivoca. En una lista de permisos, dos
+páginas que empiezan igual se ven **idénticas** truncadas, y quien tilda no
+tiene forma de saber cuál marcó. Lo mismo con la descripción de una ubicación:
+truncada se pierde justo lo que la distingue de la de al lado.
+
+### El `<Button>` no salta de línea solo
+
+La clase base de shadcn trae **`whitespace-nowrap` y altura fija** (`h-9`), así
+que un botón cuyo contenido es un dato variable —el disparador de un selector,
+que muestra el valor elegido— no puede pasar a una segunda línea aunque le pongas
+`break-words`. Hay que anular las dos cosas:
+
+```tsx
+<Button
+  className={cn(
+    // `h-auto` + `min-h-9`: con la altura fija el texto se sale del borde.
+    // `whitespace-normal` anula el `whitespace-nowrap` de la clase base.
+    "h-auto min-h-9 w-full justify-between whitespace-normal py-1.5 text-left font-normal",
+    className,
+  )}
+  {...(seleccionada ? { title: seleccionada.etiqueta } : {})}
+>
+  {/* `line-clamp-2` y no `break-words` a secas: crece hasta dos líneas y recién
+      ahí corta, para que un nombre disparatado no estire el botón sin techo. */}
+  <span className="line-clamp-2 min-w-0 flex-1 break-words">{etiqueta}</span>
+  <ChevronsUpDown className="ml-2 size-4 shrink-0 self-center opacity-50" />
+</Button>
+```
+
+Los dos selectores del proyecto —[SelectorModal](../src/components/ctell/SelectorModal.tsx)
+y [SelectorArticulo](../src/components/ctell/SelectorArticulo.tsx)— ya lo tienen
+resuelto, así que **usándolos no hay nada que hacer**. Esto importa si algún día
+armás otro disparador con `<Button>`.
+
+Y el `title` con el texto completo va siempre: dos líneas alcanzan casi siempre,
+pero cuando no, el hover es la única forma de leer el resto sin abrir el modal.
+
+### La lista dentro del modal siempre envuelve
+
+Es el lugar donde se elige, así que ahí el nombre va entero:
+
+```tsx
+<span className="flex min-w-0 flex-1 flex-col">
+  <span className="break-words">{opcion.etiqueta}</span>
+  {/* La descripción sí trunca: es corta, de apoyo, y sale de campos acotados
+      (un código, un RUC, "12 en sistema"). */}
+  {opcion.descripcion && (
+    <span className="truncate text-xs text-muted-foreground">{opcion.descripcion}</span>
+  )}
+</span>
+```
+
+### Tablas anchas dentro de un diálogo
+
+Ahí el problema no es una celda sino el conjunto de columnas. La solución no es
+truncar cada una sino envolver la tabla:
+
+```tsx
+<div className="overflow-x-auto">
+  <Table>…</Table>
+</div>
+```
+
+`TableCell` **no** trae `whitespace-nowrap`, así que el texto de cada celda
+envuelve solo — y la tabla scrollea de costado si aun así no entra.
+
+---
+
 ## 8. Checklist
 
 Antes de dar por terminada una pantalla:
@@ -1441,6 +1555,14 @@ empresa !== null`, y el caso `empresa === null` contemplado en el render
       `queryKey` y en el `enabled`, y el caso "la empresa no tiene sucursales"
       resuelto en el render — ver [Empresa y sucursal activas](#empresa-y-sucursal-activas)
 - [ ] Los contenedores con scroll propio llevan `scrollbar-fino`
+- [ ] **Todo `truncate` dentro de un flex tiene `min-w-0`** en el mismo elemento
+      o en su contenedor — sin eso el texto largo desborda en vez de cortarse
+- [ ] **Dentro de un diálogo el texto envuelve (`break-words`), no trunca** — el
+      nombre que se está por elegir o tildar hay que poder leerlo entero. En
+      celdas de tabla y tarjetas de listado sí se trunca. Ver
+      [Texto largo](#73-texto-largo-truncate-no-alcanza-y-en-un-diálogo-molesta)
+- [ ] Probado con **el nombre más largo del catálogo real**, no con datos de
+      prueba cortos: es lo único que revela un desborde
 - [ ] Los cuatro estados del listado: cargando, error, vacío con acción, con datos
 - [ ] Tarjetas abajo de `sm`, tabla arriba
 - [ ] **Buscador con `useTablaListado`** que filtra por los campos visibles
@@ -1475,27 +1597,30 @@ empresa !== null`, y el caso `empresa === null` contemplado en el render
 
 ### Errores frecuentes
 
-| Síntoma                                                   | Causa                                                                                                                                                                                                           |
-| --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| El item aparece en el menú pero el clic no navega         | `PAGINAS.RUTA` no coincide con ninguna ruta del router                                                                                                                                                          |
-| El menú no muestra una página asignada                    | El módulo o la página están inactivos, o falta el permiso                                                                                                                                                       |
-| Todo se ve bien pero una acción no hace nada              | La API no devuelve un campo: llega `undefined`. Corré `npx tsc --noEmit`                                                                                                                                        |
-| El texto no se lee en hover en el sidebar                 | Falta `variant="dark"`: las clases claras no contrastan sobre el navy                                                                                                                                           |
-| El formulario muestra datos del registro anterior         | Se usó `defaultValues` en vez de `values` en un dialog reutilizado                                                                                                                                              |
-| Hay que scrollear para llegar al botón de guardar         | El diálogo quedó en una columna con demasiados campos: subí el ancho y pasá a `sm:grid-cols-2`                                                                                                                  |
-| Un campo bloqueado se puede editar igual                  | El `<fieldset disabled>` está con `display:contents` dentro de una grilla: poné `disabled` en cada `Input`                                                                                                      |
-| El error del backend no se ve al borrar                   | Falta `e.preventDefault()` en el `AlertDialogAction`                                                                                                                                                            |
-| La lista no se actualiza tras guardar                     | Falta `invalidateQueries`                                                                                                                                                                                       |
-| `window is not defined`                                   | Acceso al DOM fuera de `useEffect` (corre en el prerender de build)                                                                                                                                             |
-| Cambios que no aparecen por más que recargues             | Hay más de un `npm run dev` corriendo: mirá en qué puerto estás                                                                                                                                                 |
-| El buscador no encuentra nada que sí está en pantalla     | Falta agregar ese campo al array que devuelve la función de `useTablaListado`                                                                                                                                   |
-| El selector no filtra por lo que se ve en pantalla        | `SelectorModal` busca contra `etiqueta` y `descripcion`, nunca contra `valor` (que es el id). Si armaste una lista a mano con `Command`, ese es el error: el `filter` de cmdk compara contra el `value`         |
-| **El menú quedó vacío después de entrar**                 | El usuario no tiene permisos **en esa empresa**, o los tiene con `idEmpresa` en null (cargados antes de que existiera la columna). Reasignalos desde el ABM de permisos entrando con la empresa que corresponda |
-| **Un listado por empresa trae filas de otra**             | Falta `enabled: empresa !== null`: en el primer render `empresa` todavía es null y la petición sale sin `idEmpresa`                                                                                             |
-| **400 al MODIFICAR, pero el alta funciona**               | Falta `idEmpresa` en el `actualizar`. El backend lo exige para acotar a cuál fila se aplica el cambio, y es fácil de olvidar porque no es un campo del formulario. Pasó en 7 pantallas a la vez: se copió el formulario y se arrastró el olvido |
-| **El selector no encuentra un registro que sí existe**    | Ese endpoint pagina y se está usando `SelectorModal`, que filtra en memoria sobre la primera página. Usar un selector que consulte al servidor (ver `SelectorArticulo`)                                          |
-| **Dos páginas del menú tienen el mismo ícono**            | Alguna no está en `ICONOS_PAGINA` y cae en el fallback `FileText`, que comparten todas las no mapeadas. Corré `npm run verificar-iconos`: nombra el ícono y quiénes lo comparten                                |
-| **Un filtro de columna ofrece pocas opciones**            | Se está armando desde un `listar` paginado. Armalo desde las filas ya listadas (como el filtro de artículo en Lotes): además evita ofrecer valores que dejarían la tabla vacía                                   |
-| **Al cambiar de empresa se ven los datos de la anterior** | Falta `empresa.id` en la `queryKey`: TanStack Query cree que es la misma consulta                                                                                                                               |
-| Las imágenes se ven como ícono roto                       | Falta el `onError` que cae al respaldo. Si además es en todas, el endpoint de imagen no está publicado en APEX                                                                                                  |
-| Elegir el mismo archivo dos veces no hace nada            | Falta `event.target.value = ""` en el `onChange` del input file                                                                                                                                                 |
+| Síntoma                                                                   | Causa                                                                                                                                                                                                                                           |
+| ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| El item aparece en el menú pero el clic no navega                         | `PAGINAS.RUTA` no coincide con ninguna ruta del router                                                                                                                                                                                          |
+| El menú no muestra una página asignada                                    | El módulo o la página están inactivos, o falta el permiso                                                                                                                                                                                       |
+| Todo se ve bien pero una acción no hace nada                              | La API no devuelve un campo: llega `undefined`. Corré `npx tsc --noEmit`                                                                                                                                                                        |
+| El texto no se lee en hover en el sidebar                                 | Falta `variant="dark"`: las clases claras no contrastan sobre el navy                                                                                                                                                                           |
+| El formulario muestra datos del registro anterior                         | Se usó `defaultValues` en vez de `values` en un dialog reutilizado                                                                                                                                                                              |
+| Hay que scrollear para llegar al botón de guardar                         | El diálogo quedó en una columna con demasiados campos: subí el ancho y pasá a `sm:grid-cols-2`                                                                                                                                                  |
+| Un campo bloqueado se puede editar igual                                  | El `<fieldset disabled>` está con `display:contents` dentro de una grilla: poné `disabled` en cada `Input`                                                                                                                                      |
+| El error del backend no se ve al borrar                                   | Falta `e.preventDefault()` en el `AlertDialogAction`                                                                                                                                                                                            |
+| La lista no se actualiza tras guardar                                     | Falta `invalidateQueries`                                                                                                                                                                                                                       |
+| `window is not defined`                                                   | Acceso al DOM fuera de `useEffect` (corre en el prerender de build)                                                                                                                                                                             |
+| Cambios que no aparecen por más que recargues                             | Hay más de un `npm run dev` corriendo: mirá en qué puerto estás                                                                                                                                                                                 |
+| El buscador no encuentra nada que sí está en pantalla                     | Falta agregar ese campo al array que devuelve la función de `useTablaListado`                                                                                                                                                                   |
+| El selector no filtra por lo que se ve en pantalla                        | `SelectorModal` busca contra `etiqueta` y `descripcion`, nunca contra `valor` (que es el id). Si armaste una lista a mano con `Command`, ese es el error: el `filter` de cmdk compara contra el `value`                                         |
+| **El menú quedó vacío después de entrar**                                 | El usuario no tiene permisos **en esa empresa**, o los tiene con `idEmpresa` en null (cargados antes de que existiera la columna). Reasignalos desde el ABM de permisos entrando con la empresa que corresponda                                 |
+| **Un listado por empresa trae filas de otra**                             | Falta `enabled: empresa !== null`: en el primer render `empresa` todavía es null y la petición sale sin `idEmpresa`                                                                                                                             |
+| **400 al MODIFICAR, pero el alta funciona**                               | Falta `idEmpresa` en el `actualizar`. El backend lo exige para acotar a cuál fila se aplica el cambio, y es fácil de olvidar porque no es un campo del formulario. Pasó en 7 pantallas a la vez: se copió el formulario y se arrastró el olvido |
+| **El selector no encuentra un registro que sí existe**                    | Ese endpoint pagina y se está usando `SelectorModal`, que filtra en memoria sobre la primera página. Usar un selector que consulte al servidor (ver `SelectorArticulo`)                                                                         |
+| **Dos páginas del menú tienen el mismo ícono**                            | Alguna no está en `ICONOS_PAGINA` y cae en el fallback `FileText`, que comparten todas las no mapeadas. Corré `npm run verificar-iconos`: nombra el ícono y quiénes lo comparten                                                                |
+| **Un filtro de columna ofrece pocas opciones**                            | Se está armando desde un `listar` paginado. Armalo desde las filas ya listadas (como el filtro de artículo en Lotes): además evita ofrecer valores que dejarían la tabla vacía                                                                  |
+| **Al cambiar de empresa se ven los datos de la anterior**                 | Falta `empresa.id` en la `queryKey`: TanStack Query cree que es la misma consulta                                                                                                                                                               |
+| **Un nombre largo se sale del diálogo**                                   | Falta `min-w-0` en el elemento con `truncate` (o en su contenedor flex): sin él el texto estira el contenedor y `truncate` nunca llega a activarse. Ver [Texto largo](#73-texto-largo-truncate-no-alcanza-y-en-un-diálogo-molesta)              |
+| **El texto de un botón no salta de línea aunque le pongas `break-words`** | La clase base del `<Button>` de shadcn trae `whitespace-nowrap` y `h-9`. Hay que anular las dos: `h-auto min-h-9 whitespace-normal`                                                                                                             |
+| **Dos opciones de una lista se ven idénticas**                            | Están truncadas y comparten el prefijo. Dentro de un diálogo el texto envuelve (`break-words`), no trunca                                                                                                                                       |
+| Las imágenes se ven como ícono roto                                       | Falta el `onError` que cae al respaldo. Si además es en todas, el endpoint de imagen no está publicado en APEX                                                                                                                                  |
+| Elegir el mismo archivo dos veces no hace nada                            | Falta `event.target.value = ""` en el `onChange` del input file                                                                                                                                                                                 |
