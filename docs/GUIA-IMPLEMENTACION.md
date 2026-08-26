@@ -89,6 +89,7 @@ db/
 ├── sucursales.sql
 ├── bancos.sql           Catálogo global de entidades bancarias
 ├── cuentas-bancarias.sql Cuentas por empresa, con FK a bancos y monedas
+├── talonarios.sql        Numeración fiscal por empresa y sucursal
 ├── ventas.sql            Venta transaccional con detalle y cuotas
 ├── ventas-cobros.sql     Cobros y cuenta bancaria destino
 ├── monedas.sql          ─┐
@@ -729,6 +730,14 @@ precio llega manualmente por línea y el porcentaje de `LISTAS_DESCUENTOS` se
 calcula en el backend. Una condición de 30 días y 3 cuotas genera vencimientos
 acumulados a 30, 60 y 90 días.
 
+Antes de insertar la cabecera, recibe `ID_TALONARIO`, busca un talonario activo
+de la misma empresa y sucursal y lo bloquea con `FOR UPDATE`. De esa fila copia
+`TIPO_COMPROBANTE`, `NRO_TIMBRADO`, `ESTABLECIMIENTO`, `PUNTO_EXPEDICION` y
+`NRO_ACTUAL` a `VENTAS_CABECERAS`; luego incrementa `TALONARIOS.NRO_ACTUAL` en
+la misma transacción. El cliente no debe enviar `NUMERO_VENTA` ni los datos
+fiscales: son datos derivados del talonario y permitirlos abriría una puerta a
+duplicados o numeración fuera de rango.
+
 Al confirmar la venta se descuenta `LOTES.CANTIDAD_DISPON` usando primero los
 lotes con vencimiento más cercano. Si no hay stock suficiente, se revierte la
 operación completa. `PKG_VENTAS_COBROS` registra luego los cobros y actualiza
@@ -775,6 +784,13 @@ existe una unidad con ese nombre" mandaría a cambiar el campo equivocado.
 
 `UBICACIONES` es la primera tabla que cuelga de dos contextos: `ID_EMPRESA` **y**
 `ID_SUCURSAL`. El listado acepta los dos filtros y el alta los exige.
+
+`TALONARIOS` usa el mismo contexto y agrega una responsabilidad operativa: sus
+columnas de numeración alimentan `VENTAS_CABECERAS`. El alta inicializa
+`NRO_ACTUAL` dentro del rango; al emitir una venta, `PKG_VENTAS` bloquea el
+talonario, copia sus datos fiscales y avanza el número. No se debe actualizar
+`NRO_ACTUAL` desde el frontend ni aceptar un número fiscal enviado por el
+cliente.
 
 Los dos ids salen de los providers globales del frontend (`useEmpresa()` y
 `useSucursal()`), nunca de un combobox del formulario — igual que el `idEmpresa`
@@ -1757,6 +1773,10 @@ Backend (`db/<tabla>.sql`):
 - [ ] **Si tiene dos FK de contexto (empresa + sucursal): se valida a mano que
       una pertenezca a la otra** y se devuelve 400 si no. Las FK sueltas no lo
       garantizan (ver [3.1.1](#311-tablas-por-empresa-y-sucursal))
+- [ ] **Si es `TALONARIOS`:** `NRO_ACTUAL` inicia dentro de
+  `[NRO_INICIAL, NRO_FINAL]`; sus datos fiscales sólo se copian a Ventas
+  desde el backend y el avance del número ocurre en la misma transacción
+  que la venta
 - [ ] **Si el `ACTUALIZAR` puede romper una coherencia entre columnas**, se
       resuelven los valores finales (`NVL` contra la fila actual) **antes** de
       validar — no sólo los parámetros recibidos

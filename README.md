@@ -62,6 +62,7 @@ db/                      Backend: un archivo SQL por tabla
 ├── sucursales.sql       Sucursales de cada empresa
 ├── bancos.sql           Entidades bancarias (catálogo GLOBAL)
 ├── cuentas-bancarias.sql Cuentas bancarias, POR EMPRESA, con banco y moneda
+├── talonarios.sql        Numeración fiscal POR EMPRESA Y SUCURSAL
 ├── ventas.sql            Punto de venta: cabecera, detalle y cuotas
 ├── ventas-cobros.sql     Cobros de ventas y cuenta bancaria destino
 ├── monedas.sql          ─┐
@@ -195,6 +196,11 @@ línea. La lista de descuentos seleccionada aplica su porcentaje en el servidor.
 confirmar, el backend consume el stock disponible de `LOTES` por vencimiento
 más próximo. `VENTAS_CUOTAS` se genera usando vencimientos acumulados: una
 condición de 30 días y 3 cuotas produce días 30, 60 y 90.
+
+El POS exige un talonario activo de la sucursal. `PKG_VENTAS` lo bloquea, toma
+de allí el tipo de comprobante, timbrado, establecimiento, punto de expedición
+y número actual, y avanza `TALONARIOS.NRO_ACTUAL` en la misma transacción. El
+frontend no genera ni envía un número fiscal manual.
 
 `VENTAS_COBROS` se registra después de la venta y puede apuntar a una cuota,
 canal, moneda y cuenta bancaria. `ventas-cobros.sql` agrega idempotentemente
@@ -465,7 +471,7 @@ usa ese y no repite la regla.
 
 ### Orden de ejecución
 
-Hay **cinco dependencias reales**; el resto del orden es indistinto.
+Hay **seis dependencias reales**; el resto del orden es indistinto.
 
 Todas siguen la misma regla: **un paquete que consulta una tabla necesita que esa
 tabla exista al compilarse**, o queda `INVALID`. No alcanza con que el otro
@@ -501,12 +507,15 @@ archivo se ejecute después.
 11. db/bancos.sql                23. db/personas.sql
 12. db/cuentas-bancarias.sql     24. db/iva.sql
                                  25. db/condiciones-pago.sql
-                                 26. db/facturas-compras.sql
+                                 26. db/talonarios.sql       después del DDL de TALONARIOS
+                                 27. db/ventas.sql
+                                 28. db/facturas-compras.sql
 ```
 
 Los tres catálogos globales del final —personas, IVA y condiciones— van juntos
-antes de facturas porque es lo único que los necesita. Su posición relativa entre
-ellos es indistinta.
+antes de ventas y facturas porque son dependencias de esas operaciones. `TALONARIOS`
+debe existir antes de ejecutar `db/talonarios.sql`; y `db/talonarios.sql` antes de
+`db/ventas.sql`, porque Ventas consulta y actualiza la numeración fiscal.
 
 Después de cada uno: el paquete tiene que quedar `VALID` y la consulta de
 `USER_ERRORS` sin filas. Al terminar, conviene verificar las dos cosas que

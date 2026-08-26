@@ -53,8 +53,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_TALONARIOS AS
     SELECT JSON_ARRAYAGG(fila ORDER BY tipo, timbrado RETURNING CLOB) INTO l_items FROM (
       SELECT JSON_OBJECT('id' VALUE ID_TALONARIO, 'idEmpresa' VALUE ID_EMPRESA, 'idSucursal' VALUE ID_SUCURSAL, 'tipoComprobante' VALUE TIPO_COMPROBANTE, 'nroTimbrado' VALUE NRO_TIMBRADO, 'establecimiento' VALUE ESTABLECIMIENTO, 'puntoExpedicion' VALUE PUNTO_EXPEDICION, 'nroInicial' VALUE NRO_INICIAL, 'nroFinal' VALUE NRO_FINAL, 'nroActual' VALUE NRO_ACTUAL, 'fechaInicio' VALUE TO_CHAR(FECHA_INICIO, 'YYYY-MM-DD'), 'fechaVencimiento' VALUE TO_CHAR(FECHA_VENCIMIENTO, 'YYYY-MM-DD'), 'activo' VALUE ACTIVO) fila, TIPO_COMPROBANTE tipo, NRO_TIMBRADO timbrado
       FROM TALONARIOS WHERE (l_empresa IS NULL OR ID_EMPRESA = l_empresa) AND (l_sucursal IS NULL OR ID_SUCURSAL = l_sucursal));
-    p_status_code := 200; p_resultado := JSON_OBJECT('items' VALUE NVL(l_items, '[]') FORMAT JSON, 'total' VALUE l_total RETURNING CLOB);
-  EXCEPTION WHEN OTHERS THEN p_status_code := 400; p_resultado := JSON_OBJECT('error' VALUE SQLERRM RETURNING CLOB); END LISTAR;
+    SELECT JSON_OBJECT('items' VALUE NVL(l_items, TO_CLOB('[]')) FORMAT JSON, 'total' VALUE l_total RETURNING CLOB) INTO p_resultado FROM DUAL;
+    p_status_code := 200;
+  EXCEPTION WHEN OTHERS THEN p_status_code := 400; p_resultado := JSON_OBJECT('error' VALUE SQLERRM); END LISTAR;
 
   PROCEDURE INSERTAR(p_authorization IN VARCHAR2, p_id_empresa IN VARCHAR2, p_id_sucursal IN VARCHAR2, p_tipo IN VARCHAR2, p_timbrado IN VARCHAR2, p_establecimiento IN VARCHAR2, p_punto IN VARCHAR2, p_inicial IN VARCHAR2, p_final IN VARCHAR2, p_actual IN VARCHAR2, p_fecha_inicio IN VARCHAR2, p_fecha_vencimiento IN VARCHAR2, p_status_code OUT NUMBER, p_resultado OUT CLOB) IS
     l_sesion NUMBER; l_empresa NUMBER; l_sucursal NUMBER; l_inicial NUMBER; l_final NUMBER; l_actual NUMBER; l_id NUMBER; l_inicio DATE; l_vencimiento DATE;
@@ -65,8 +66,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_TALONARIOS AS
     IF UPPER(TRIM(p_tipo)) NOT IN ('FCO','FCR','NCR') OR l_inicial IS NULL OR l_final IS NULL OR l_final < l_inicial OR l_actual NOT BETWEEN l_inicial AND l_final THEN RAISE_APPLICATION_ERROR(-20003, 'Tipo o rango de numeracion invalido'); END IF;
     IF l_vencimiento IS NOT NULL AND l_inicio IS NOT NULL AND l_vencimiento < l_inicio THEN RAISE_APPLICATION_ERROR(-20004, 'La fecha de vencimiento no puede ser anterior al inicio'); END IF;
     INSERT INTO TALONARIOS(ID_EMPRESA, ID_SUCURSAL, TIPO_COMPROBANTE, NRO_TIMBRADO, ESTABLECIMIENTO, PUNTO_EXPEDICION, NRO_INICIAL, NRO_FINAL, NRO_ACTUAL, FECHA_INICIO, FECHA_VENCIMIENTO) VALUES(l_empresa, l_sucursal, UPPER(TRIM(p_tipo)), TRIM(p_timbrado), TRIM(p_establecimiento), TRIM(p_punto), l_inicial, l_final, l_actual, l_inicio, l_vencimiento) RETURNING ID_TALONARIO INTO l_id;
-    COMMIT; p_status_code := 201; p_resultado := JSON_OBJECT('ok' VALUE TRUE, 'id' VALUE l_id RETURNING CLOB);
-  EXCEPTION WHEN DUP_VAL_ON_INDEX THEN ROLLBACK; p_status_code := 409; p_resultado := '{"error":"Ya existe un talonario con ese timbrado en la sucursal"}'; WHEN OTHERS THEN ROLLBACK; p_status_code := 400; p_resultado := JSON_OBJECT('error' VALUE SQLERRM RETURNING CLOB); END INSERTAR;
+    COMMIT; p_status_code := 201; p_resultado := JSON_OBJECT('id' VALUE l_id, 'ok' VALUE 'true' FORMAT JSON);
+  EXCEPTION WHEN DUP_VAL_ON_INDEX THEN ROLLBACK; p_status_code := 409; p_resultado := '{"error":"Ya existe un talonario con ese timbrado en la sucursal"}'; WHEN OTHERS THEN ROLLBACK; p_status_code := 400; p_resultado := JSON_OBJECT('error' VALUE SQLERRM); END INSERTAR;
 
   PROCEDURE ACTUALIZAR(p_authorization IN VARCHAR2, p_id IN VARCHAR2, p_id_empresa IN VARCHAR2, p_tipo IN VARCHAR2, p_timbrado IN VARCHAR2, p_establecimiento IN VARCHAR2, p_punto IN VARCHAR2, p_inicial IN VARCHAR2, p_final IN VARCHAR2, p_actual IN VARCHAR2, p_fecha_inicio IN VARCHAR2, p_fecha_vencimiento IN VARCHAR2, p_activo IN VARCHAR2, p_status_code OUT NUMBER, p_resultado OUT CLOB) IS
     l_sesion NUMBER; l_id NUMBER; l_empresa NUMBER; l_actual NUMBER; l_inicial NUMBER; l_final NUMBER; l_inicio DATE; l_vencimiento DATE; l_old TALONARIOS%ROWTYPE;
@@ -78,13 +79,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_TALONARIOS AS
     IF l_vencimiento IS NOT NULL AND l_inicio IS NOT NULL AND l_vencimiento < l_inicio THEN RAISE_APPLICATION_ERROR(-20004, 'La fecha de vencimiento no puede ser anterior al inicio'); END IF;
     UPDATE TALONARIOS SET TIPO_COMPROBANTE = NVL(UPPER(TRIM(NULLIF(p_tipo,''))), TIPO_COMPROBANTE), NRO_TIMBRADO = NVL(TRIM(NULLIF(p_timbrado,'')), NRO_TIMBRADO), ESTABLECIMIENTO = NVL(TRIM(NULLIF(p_establecimiento,'')), ESTABLECIMIENTO), PUNTO_EXPEDICION = NVL(TRIM(NULLIF(p_punto,'')), PUNTO_EXPEDICION), NRO_INICIAL = l_inicial, NRO_FINAL = l_final, NRO_ACTUAL = l_actual, FECHA_INICIO = l_inicio, FECHA_VENCIMIENTO = l_vencimiento, ACTIVO = NVL(UPPER(TRIM(NULLIF(p_activo,''))), ACTIVO), FECHA_ACTUALIZACION = SYSTIMESTAMP WHERE ID_TALONARIO = l_id AND ID_EMPRESA = l_empresa;
     COMMIT; p_status_code := 200; p_resultado := '{"ok":true}';
-  EXCEPTION WHEN NO_DATA_FOUND THEN ROLLBACK; p_status_code := 404; p_resultado := '{"error":"Talonario no encontrado"}'; WHEN DUP_VAL_ON_INDEX THEN ROLLBACK; p_status_code := 409; p_resultado := '{"error":"Ya existe un talonario con ese timbrado en la sucursal"}'; WHEN OTHERS THEN ROLLBACK; p_status_code := 400; p_resultado := JSON_OBJECT('error' VALUE SQLERRM RETURNING CLOB); END ACTUALIZAR;
+  EXCEPTION WHEN NO_DATA_FOUND THEN ROLLBACK; p_status_code := 404; p_resultado := '{"error":"Talonario no encontrado"}'; WHEN DUP_VAL_ON_INDEX THEN ROLLBACK; p_status_code := 409; p_resultado := '{"error":"Ya existe un talonario con ese timbrado en la sucursal"}'; WHEN OTHERS THEN ROLLBACK; p_status_code := 400; p_resultado := JSON_OBJECT('error' VALUE SQLERRM); END ACTUALIZAR;
 
   PROCEDURE ELIMINAR(p_authorization IN VARCHAR2, p_id IN VARCHAR2, p_id_empresa IN VARCHAR2, p_status_code OUT NUMBER, p_resultado OUT CLOB) IS
   BEGIN
     IF SESION(p_authorization) IS NULL THEN p_status_code := 401; p_resultado := '{"error":"Sesion invalida o vencida"}'; RETURN; END IF;
     DELETE FROM TALONARIOS WHERE ID_TALONARIO = TO_NUMBER(p_id) AND ID_EMPRESA = TO_NUMBER(p_id_empresa); IF SQL%ROWCOUNT = 0 THEN p_status_code := 404; p_resultado := '{"error":"Talonario no encontrado"}'; RETURN; END IF; COMMIT; p_status_code := 200; p_resultado := '{"ok":true}';
-  EXCEPTION WHEN OTHERS THEN ROLLBACK; p_status_code := 400; p_resultado := JSON_OBJECT('error' VALUE SQLERRM RETURNING CLOB); END ELIMINAR;
+  EXCEPTION WHEN OTHERS THEN ROLLBACK; p_status_code := 400; p_resultado := JSON_OBJECT('error' VALUE SQLERRM); END ELIMINAR;
 
   PROCEDURE PUBLICAR_ENDPOINTS IS
   BEGIN

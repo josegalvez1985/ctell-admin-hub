@@ -57,9 +57,15 @@ pantalla ABM completa.
 Para el punto de venta, la pantalla recomendada es `/punto-venta`: catálogo de
 artículos buscable, carrito sticky, precios manuales por línea y checkout en el
 mismo panel. El resumen muestra subtotal, porcentaje de la lista, descuento y
-total antes de confirmar. Cliente, lista, condición de pago y moneda se eligen
-en el checkout; la cuenta bancaria se reserva para el registro posterior del
-cobro.
+total antes de confirmar. Cliente, lista, condición de pago, moneda y talonario
+se eligen en el checkout; la cuenta bancaria se reserva para el registro
+posterior del cobro.
+
+El talonario se consulta con `api.talonarios.listar({ idEmpresa, idSucursal })`
+y se muestran sólo los registros activos de la sucursal. El POS envía únicamente
+`idTalonario` a `api.ventas.crear`; nunca genera `numeroVenta` ni permite editar
+timbrado, establecimiento, punto de expedición o número actual. El backend
+resuelve esos datos al confirmar para evitar numeración duplicada.
 >
 > Esto no es pereza, es la lección más cara de este proyecto. Implementar
 > Ciudades "parecido pero a mi manera" —columnas de más, otra `queryKey`, otra
