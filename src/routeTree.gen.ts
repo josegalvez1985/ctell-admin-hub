@@ -14,6 +14,7 @@ import { Route as AuthRouteImport } from './routes/_auth'
 import { Route as AuthAdministracionRouteImport } from './routes/_auth.administracion'
 import { Route as AuthArticulosRouteImport } from './routes/_auth.articulos'
 import { Route as AuthArticulosUbicacionesRouteImport } from './routes/_auth.articulos-ubicaciones'
+import { Route as AuthCanalesPagosRouteImport } from './routes/_auth.canales-pagos'
 import { Route as AuthCategoriasRouteImport } from './routes/_auth.categorias'
 import { Route as AuthCiudadesRouteImport } from './routes/_auth.ciudades'
 import { Route as AuthCondicionesPagoRouteImport } from './routes/_auth.condiciones-pago'
@@ -61,6 +62,11 @@ const AuthArticulosUbicacionesRoute =
     path: '/articulos-ubicaciones',
     getParentRoute: () => AuthRoute,
   } as any)
+const AuthCanalesPagosRoute = AuthCanalesPagosRouteImport.update({
+  id: '/canales-pagos',
+  path: '/canales-pagos',
+  getParentRoute: () => AuthRoute,
+} as any)
 const AuthCategoriasRoute = AuthCategoriasRouteImport.update({
   id: '/categorias',
   path: '/categorias',
@@ -172,6 +178,7 @@ export interface FileRoutesByFullPath {
   '/administracion': typeof AuthAdministracionRoute
   '/articulos': typeof AuthArticulosRoute
   '/articulos-ubicaciones': typeof AuthArticulosUbicacionesRoute
+  '/canales-pagos': typeof AuthCanalesPagosRoute
   '/categorias': typeof AuthCategoriasRoute
   '/ciudades': typeof AuthCiudadesRoute
   '/condiciones-pago': typeof AuthCondicionesPagoRoute
@@ -199,6 +206,7 @@ export interface FileRoutesByTo {
   '/administracion': typeof AuthAdministracionRoute
   '/articulos': typeof AuthArticulosRoute
   '/articulos-ubicaciones': typeof AuthArticulosUbicacionesRoute
+  '/canales-pagos': typeof AuthCanalesPagosRoute
   '/categorias': typeof AuthCategoriasRoute
   '/ciudades': typeof AuthCiudadesRoute
   '/condiciones-pago': typeof AuthCondicionesPagoRoute
@@ -228,6 +236,7 @@ export interface FileRoutesById {
   '/_auth/administracion': typeof AuthAdministracionRoute
   '/_auth/articulos': typeof AuthArticulosRoute
   '/_auth/articulos-ubicaciones': typeof AuthArticulosUbicacionesRoute
+  '/_auth/canales-pagos': typeof AuthCanalesPagosRoute
   '/_auth/categorias': typeof AuthCategoriasRoute
   '/_auth/ciudades': typeof AuthCiudadesRoute
   '/_auth/condiciones-pago': typeof AuthCondicionesPagoRoute
@@ -257,6 +266,7 @@ export interface FileRouteTypes {
     | '/administracion'
     | '/articulos'
     | '/articulos-ubicaciones'
+    | '/canales-pagos'
     | '/categorias'
     | '/ciudades'
     | '/condiciones-pago'
@@ -284,6 +294,7 @@ export interface FileRouteTypes {
     | '/administracion'
     | '/articulos'
     | '/articulos-ubicaciones'
+    | '/canales-pagos'
     | '/categorias'
     | '/ciudades'
     | '/condiciones-pago'
@@ -312,6 +323,7 @@ export interface FileRouteTypes {
     | '/_auth/administracion'
     | '/_auth/articulos'
     | '/_auth/articulos-ubicaciones'
+    | '/_auth/canales-pagos'
     | '/_auth/categorias'
     | '/_auth/ciudades'
     | '/_auth/condiciones-pago'
@@ -375,6 +387,13 @@ declare module '@tanstack/react-router' {
       path: '/articulos-ubicaciones'
       fullPath: '/articulos-ubicaciones'
       preLoaderRoute: typeof AuthArticulosUbicacionesRouteImport
+      parentRoute: typeof AuthRoute
+    }
+    '/_auth/canales-pagos': {
+      id: '/_auth/canales-pagos'
+      path: '/canales-pagos'
+      fullPath: '/canales-pagos'
+      preLoaderRoute: typeof AuthCanalesPagosRouteImport
       parentRoute: typeof AuthRoute
     }
     '/_auth/categorias': {
@@ -531,6 +550,7 @@ interface AuthRouteChildren {
   AuthAdministracionRoute: typeof AuthAdministracionRoute
   AuthArticulosRoute: typeof AuthArticulosRoute
   AuthArticulosUbicacionesRoute: typeof AuthArticulosUbicacionesRoute
+  AuthCanalesPagosRoute: typeof AuthCanalesPagosRoute
   AuthCategoriasRoute: typeof AuthCategoriasRoute
   AuthCiudadesRoute: typeof AuthCiudadesRoute
   AuthCondicionesPagoRoute: typeof AuthCondicionesPagoRoute
@@ -558,6 +578,7 @@ const AuthRouteChildren: AuthRouteChildren = {
   AuthAdministracionRoute: AuthAdministracionRoute,
   AuthArticulosRoute: AuthArticulosRoute,
   AuthArticulosUbicacionesRoute: AuthArticulosUbicacionesRoute,
+  AuthCanalesPagosRoute: AuthCanalesPagosRoute,
   AuthCategoriasRoute: AuthCategoriasRoute,
   AuthCiudadesRoute: AuthCiudadesRoute,
   AuthCondicionesPagoRoute: AuthCondicionesPagoRoute,

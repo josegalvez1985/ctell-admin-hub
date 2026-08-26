@@ -58,6 +58,7 @@ const SINONIMOS = [
   ["facturas de compra", "facturas compras"],
   ["iva", "tasas de iva"],
   ["condiciones de pago", "condicion de pago", "condiciones"],
+  ["canales de pago", "canal de pago", "canales pagos"],
   ["rrhh", "recursos humanos"],
   // La tabla se llamó LISTAS_PRECIOS y se renombró a LISTAS_DESCUENTOS: las
   // variantes de los dos nombres se mapean al mismo ícono porque el ítem del

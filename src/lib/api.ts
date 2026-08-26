@@ -124,6 +124,18 @@ export type ListaPaises = {
   total: number;
 };
 
+export type CanalPago = {
+  id: number;
+  nombreCanal: string;
+  descripcion: string | null;
+  activo: Estado;
+};
+
+export type ListaCanalesPagos = {
+  items: CanalPago[];
+  total: number;
+};
+
 export type Departamento = {
   id: number;
   idPais: number;
@@ -1723,6 +1735,29 @@ export const api = {
 
     eliminar: (id: number) =>
       request<{ ok: boolean }>(`/paises/eliminar/${id}`, { method: "DELETE" }),
+  },
+
+  canalesPagos: {
+    listar: () => request<ListaCanalesPagos>("/canales-pagos/listar"),
+
+    crear: (datos: { nombreCanal: string; descripcion?: string }) =>
+      request<{ id: number; ok: boolean }>("/canales-pagos/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Los campos ausentes no se modifican. */
+    actualizar: (
+      id: number,
+      datos: { nombreCanal?: string; descripcion?: string; activo?: Estado },
+    ) =>
+      request<{ ok: boolean }>(`/canales-pagos/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    eliminar: (id: number) =>
+      request<{ ok: boolean }>(`/canales-pagos/eliminar/${id}`, { method: "DELETE" }),
   },
 
   departamentos: {
