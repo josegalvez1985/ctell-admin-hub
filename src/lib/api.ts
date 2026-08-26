@@ -136,6 +136,18 @@ export type ListaCanalesPagos = {
   total: number;
 };
 
+export type Banco = {
+  id: number;
+  nombreBanco: string;
+  descripcion: string | null;
+  activo: Estado;
+};
+
+export type ListaBancos = {
+  items: Banco[];
+  total: number;
+};
+
 export type Departamento = {
   id: number;
   idPais: number;
@@ -1758,6 +1770,28 @@ export const api = {
 
     eliminar: (id: number) =>
       request<{ ok: boolean }>(`/canales-pagos/eliminar/${id}`, { method: "DELETE" }),
+  },
+
+  bancos: {
+    listar: () => request<ListaBancos>("/bancos/listar"),
+
+    crear: (datos: { nombreBanco: string; descripcion?: string }) =>
+      request<{ id: number; ok: boolean }>("/bancos/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    actualizar: (
+      id: number,
+      datos: { nombreBanco?: string; descripcion?: string; activo?: Estado },
+    ) =>
+      request<{ ok: boolean }>(`/bancos/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    eliminar: (id: number) =>
+      request<{ ok: boolean }>(`/bancos/eliminar/${id}`, { method: "DELETE" }),
   },
 
   departamentos: {

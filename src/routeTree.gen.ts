@@ -14,6 +14,7 @@ import { Route as AuthRouteImport } from './routes/_auth'
 import { Route as AuthAdministracionRouteImport } from './routes/_auth.administracion'
 import { Route as AuthArticulosRouteImport } from './routes/_auth.articulos'
 import { Route as AuthArticulosUbicacionesRouteImport } from './routes/_auth.articulos-ubicaciones'
+import { Route as AuthBancosRouteImport } from './routes/_auth.bancos'
 import { Route as AuthCanalesPagosRouteImport } from './routes/_auth.canales-pagos'
 import { Route as AuthCategoriasRouteImport } from './routes/_auth.categorias'
 import { Route as AuthCiudadesRouteImport } from './routes/_auth.ciudades'
@@ -62,6 +63,11 @@ const AuthArticulosUbicacionesRoute =
     path: '/articulos-ubicaciones',
     getParentRoute: () => AuthRoute,
   } as any)
+const AuthBancosRoute = AuthBancosRouteImport.update({
+  id: '/bancos',
+  path: '/bancos',
+  getParentRoute: () => AuthRoute,
+} as any)
 const AuthCanalesPagosRoute = AuthCanalesPagosRouteImport.update({
   id: '/canales-pagos',
   path: '/canales-pagos',
@@ -178,6 +184,7 @@ export interface FileRoutesByFullPath {
   '/administracion': typeof AuthAdministracionRoute
   '/articulos': typeof AuthArticulosRoute
   '/articulos-ubicaciones': typeof AuthArticulosUbicacionesRoute
+  '/bancos': typeof AuthBancosRoute
   '/canales-pagos': typeof AuthCanalesPagosRoute
   '/categorias': typeof AuthCategoriasRoute
   '/ciudades': typeof AuthCiudadesRoute
@@ -206,6 +213,7 @@ export interface FileRoutesByTo {
   '/administracion': typeof AuthAdministracionRoute
   '/articulos': typeof AuthArticulosRoute
   '/articulos-ubicaciones': typeof AuthArticulosUbicacionesRoute
+  '/bancos': typeof AuthBancosRoute
   '/canales-pagos': typeof AuthCanalesPagosRoute
   '/categorias': typeof AuthCategoriasRoute
   '/ciudades': typeof AuthCiudadesRoute
@@ -236,6 +244,7 @@ export interface FileRoutesById {
   '/_auth/administracion': typeof AuthAdministracionRoute
   '/_auth/articulos': typeof AuthArticulosRoute
   '/_auth/articulos-ubicaciones': typeof AuthArticulosUbicacionesRoute
+  '/_auth/bancos': typeof AuthBancosRoute
   '/_auth/canales-pagos': typeof AuthCanalesPagosRoute
   '/_auth/categorias': typeof AuthCategoriasRoute
   '/_auth/ciudades': typeof AuthCiudadesRoute
@@ -266,6 +275,7 @@ export interface FileRouteTypes {
     | '/administracion'
     | '/articulos'
     | '/articulos-ubicaciones'
+    | '/bancos'
     | '/canales-pagos'
     | '/categorias'
     | '/ciudades'
@@ -294,6 +304,7 @@ export interface FileRouteTypes {
     | '/administracion'
     | '/articulos'
     | '/articulos-ubicaciones'
+    | '/bancos'
     | '/canales-pagos'
     | '/categorias'
     | '/ciudades'
@@ -323,6 +334,7 @@ export interface FileRouteTypes {
     | '/_auth/administracion'
     | '/_auth/articulos'
     | '/_auth/articulos-ubicaciones'
+    | '/_auth/bancos'
     | '/_auth/canales-pagos'
     | '/_auth/categorias'
     | '/_auth/ciudades'
@@ -387,6 +399,13 @@ declare module '@tanstack/react-router' {
       path: '/articulos-ubicaciones'
       fullPath: '/articulos-ubicaciones'
       preLoaderRoute: typeof AuthArticulosUbicacionesRouteImport
+      parentRoute: typeof AuthRoute
+    }
+    '/_auth/bancos': {
+      id: '/_auth/bancos'
+      path: '/bancos'
+      fullPath: '/bancos'
+      preLoaderRoute: typeof AuthBancosRouteImport
       parentRoute: typeof AuthRoute
     }
     '/_auth/canales-pagos': {
@@ -550,6 +569,7 @@ interface AuthRouteChildren {
   AuthAdministracionRoute: typeof AuthAdministracionRoute
   AuthArticulosRoute: typeof AuthArticulosRoute
   AuthArticulosUbicacionesRoute: typeof AuthArticulosUbicacionesRoute
+  AuthBancosRoute: typeof AuthBancosRoute
   AuthCanalesPagosRoute: typeof AuthCanalesPagosRoute
   AuthCategoriasRoute: typeof AuthCategoriasRoute
   AuthCiudadesRoute: typeof AuthCiudadesRoute
@@ -578,6 +598,7 @@ const AuthRouteChildren: AuthRouteChildren = {
   AuthAdministracionRoute: AuthAdministracionRoute,
   AuthArticulosRoute: AuthArticulosRoute,
   AuthArticulosUbicacionesRoute: AuthArticulosUbicacionesRoute,
+  AuthBancosRoute: AuthBancosRoute,
   AuthCanalesPagosRoute: AuthCanalesPagosRoute,
   AuthCategoriasRoute: AuthCategoriasRoute,
   AuthCiudadesRoute: AuthCiudadesRoute,
