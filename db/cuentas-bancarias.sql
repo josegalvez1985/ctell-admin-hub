@@ -143,7 +143,6 @@ CREATE OR REPLACE PACKAGE BODY PKG_CUENTAS_BANCARIAS AS
     ORDS.DEFINE_TEMPLATE(p_module_name => 'cuentas-bancarias', p_pattern => 'listar');
     ORDS.DEFINE_HANDLER(p_module_name => 'cuentas-bancarias', p_pattern => 'listar', p_method => 'GET', p_source_type => ORDS.source_type_plsql, p_source => 'BEGIN PKG_CUENTAS_BANCARIAS.LISTAR(:authorization, :idEmpresa, :status_code, :resultado); END;');
     ORDS.DEFINE_PARAMETER(p_module_name => 'cuentas-bancarias', p_pattern => 'listar', p_method => 'GET', p_name => 'authorization', p_bind_variable_name => 'authorization', p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
-    ORDS.DEFINE_PARAMETER(p_module_name => 'cuentas-bancarias', p_pattern => 'listar', p_method => 'GET', p_name => 'idEmpresa', p_bind_variable_name => 'idEmpresa', p_source_type => 'QUERY', p_param_type => 'STRING', p_access_method => 'IN');
     ORDS.DEFINE_PARAMETER(p_module_name => 'cuentas-bancarias', p_pattern => 'listar', p_method => 'GET', p_name => 'resultado', p_bind_variable_name => 'resultado', p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
     ORDS.DEFINE_PARAMETER(p_module_name => 'cuentas-bancarias', p_pattern => 'listar', p_method => 'GET', p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code', p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
     ORDS.DEFINE_TEMPLATE(p_module_name => 'cuentas-bancarias', p_pattern => 'crear');

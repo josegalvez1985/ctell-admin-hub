@@ -813,6 +813,71 @@ export type ListaFacturasCompras = {
   total: number;
 };
 
+export type VentaDetalle = {
+  id: number;
+  idArticulo: number;
+  idIva: number | null;
+  cantidad: number;
+  precioUnitario: number;
+  subtotal: number;
+  porcentajeDescuento: number;
+  montoDescuento: number;
+  montoIva: number;
+  total: number;
+};
+
+export type Venta = {
+  id: number;
+  idEmpresa: number;
+  idSucursal: number;
+  idCliente: number | null;
+  cliente: string | null;
+  numeroVenta: string;
+  fechaVenta: string;
+  idMoneda: number;
+  montoSubtotal: number;
+  montoDescuento: number;
+  montoIva: number;
+  montoTotal: number;
+  observacion: string | null;
+  lineas: number;
+};
+
+export type VentaCompleta = {
+  cabecera: Omit<Venta, "cliente" | "lineas"> & {
+    idListaDescuentos: number;
+    idCondicionPago: number;
+  };
+  detalle: VentaDetalle[];
+  cuotas: Array<{
+    id: number;
+    nroCuota: number;
+    fechaVencimiento: string;
+    montoCuota: number;
+    montoPagado: number;
+    saldoPendiente: number;
+    estado: string;
+  }>;
+};
+
+export type ListaVentas = { items: Venta[]; total: number };
+
+export type VentaCobro = {
+  id: number;
+  idVenta: number;
+  idCuota: number | null;
+  idCanalPago: number;
+  canalPago: string;
+  idMoneda: number;
+  idCuentaBancaria: number | null;
+  monto: number;
+  fechaCobro: string;
+  referencia: string | null;
+  observacion: string | null;
+};
+
+export type ListaVentasCobros = { items: VentaCobro[] };
+
 export type ListaLotes = {
   items: Lote[];
   /** Las filas que pasan el filtro, **no** las de esta página. */
@@ -3108,6 +3173,60 @@ export const api = {
     eliminar: (id: number, idEmpresa: number) =>
       request<{ ok: boolean }>(`/facturas-compras/eliminar/${id}/${idEmpresa}`, {
         method: "DELETE",
+      }),
+  },
+
+  ventas: {
+    listar: (params: { idEmpresa: number; idSucursal: number }) =>
+      request<ListaVentas>(
+        `/ventas/listar?idEmpresa=${params.idEmpresa}&idSucursal=${params.idSucursal}`,
+      ),
+    obtener: (id: number, idEmpresa: number) =>
+      request<VentaCompleta>(`/ventas/obtener/${id}/${idEmpresa}`),
+    crear: (datos: {
+      idEmpresa: number;
+      idSucursal: number;
+      idUsuario: number;
+      idCliente?: number;
+      idListaDescuentos: number;
+      idCondicionPago: number;
+      idMoneda: number;
+      numeroVenta: string;
+      fechaVenta: string;
+      observacion?: string;
+      detalle: Array<{
+        idArticulo: number;
+        cantidad: number;
+        precioUnitario: number;
+        idIva?: number;
+      }>;
+    }) =>
+      request<{ id: number; lineas: number; total: number; ok: boolean }>("/ventas/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/ventas/eliminar/${id}/${idEmpresa}`, { method: "DELETE" }),
+  },
+
+  ventasCobros: {
+    listar: (idVenta: number, idEmpresa: number) =>
+      request<ListaVentasCobros>(`/ventas-cobros/listar/${idVenta}/${idEmpresa}`),
+    crear: (datos: {
+      idVenta: number;
+      idCuota?: number;
+      idEmpresa: number;
+      idCanalPago: number;
+      idMoneda: number;
+      idCuentaBancaria?: number;
+      monto: number;
+      fechaCobro: string;
+      referencia?: string;
+      observacion?: string;
+    }) =>
+      request<{ id: number; ok: boolean }>("/ventas-cobros/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
       }),
   },
 };

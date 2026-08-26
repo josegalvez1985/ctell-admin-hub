@@ -60,6 +60,10 @@ db/                      Backend: un archivo SQL por tabla
 ├── condiciones-pago.sql Contado, plazos y cuotas (catálogo global)
 ├── empresas.sql         Empresas + logo (BLOB) + listado público del login
 ├── sucursales.sql       Sucursales de cada empresa
+├── bancos.sql           Entidades bancarias (catálogo GLOBAL)
+├── cuentas-bancarias.sql Cuentas bancarias, POR EMPRESA, con banco y moneda
+├── ventas.sql            Punto de venta: cabecera, detalle y cuotas
+├── ventas-cobros.sql     Cobros de ventas y cuenta bancaria destino
 ├── monedas.sql          ─┐
 ├── detalle-monedas.sql   │ Denominaciones de cada moneda + foto (BLOB)
 ├── unidades-medida.sql   │ Definiciones POR EMPRESA
@@ -164,7 +168,7 @@ E `INVENTARIOS` **no tiene `/eliminar`** en absoluto — ver
 
 ### Tablas por empresa
 
-`SUCURSALES`, `MONEDAS`, `UNIDADES_MEDIDA`, `CATEGORIAS`, `ARTICULOS`,
+`SUCURSALES`, `CUENTAS_BANCARIAS`, `MONEDAS`, `UNIDADES_MEDIDA`, `CATEGORIAS`, `ARTICULOS`,
 `UBICACIONES`, `LOTES`, `INVENTARIOS` y `FACTURAS_COMPRAS_CAB` **cuelgan de
 `EMPRESAS`**: cada empresa tiene su propio juego. El `idEmpresa` no sale de un
 combobox del formulario sino de la **empresa activa de la sesión**, que se elige
@@ -173,6 +177,36 @@ al iniciar sesión (ver [Empresa activa](#empresa-activa)).
 Consecuencia en el listado: **no hacen JOIN contra `EMPRESAS`**. Como ya vienen
 filtradas por una sola empresa, su nombre sería la misma constante repetida en
 cada fila, y el frontend ya lo tiene.
+
+`CUENTAS_BANCARIAS` se filtra por la empresa activa. `ID_BANCO` es obligatorio;
+`ID_MONEDA` es opcional y, si se informa, debe pertenecer a la misma empresa.
+Su `PUT` y su `DELETE` reciben `idEmpresa` y lo usan para aislar la operación.
+
+`BANCOS` es un catálogo global referenciado por las cuentas. Sus endpoints no
+reciben `idEmpresa`.
+
+### Punto de venta
+
+`/punto-venta` usa una vista operativa de una sola pantalla: catálogo buscable a
+la izquierda y carrito sticky a la derecha. El precio se carga manualmente por
+línea. La lista de descuentos seleccionada aplica su porcentaje en el servidor.
+
+`VENTAS_CABECERAS` y `VENTAS_DETALLES` se guardan en una sola transacción. Al
+confirmar, el backend consume el stock disponible de `LOTES` por vencimiento
+más próximo. `VENTAS_CUOTAS` se genera usando vencimientos acumulados: una
+condición de 30 días y 3 cuotas produce días 30, 60 y 90.
+
+`VENTAS_COBROS` se registra después de la venta y puede apuntar a una cuota,
+canal, moneda y cuenta bancaria. `ventas-cobros.sql` agrega idempotentemente
+`ID_CUENTA_BANCARIA`, que no estaba en el DDL original.
+
+Endpoints agregados:
+
+- `GET/POST /bancos/listar` y `/bancos/crear`, más `PUT/DELETE` sobre
+  `/bancos/actualizar/:id` y `/bancos/eliminar/:id`.
+- `GET /cuentas-bancarias/listar?idEmpresa=...`, `POST
+  /cuentas-bancarias/crear`, `PUT /cuentas-bancarias/actualizar/:id` y
+  `DELETE /cuentas-bancarias/eliminar/:id/:idEmpresa`.
 
 ### Aislamiento por empresa
 
@@ -454,20 +488,20 @@ archivo se ejecute después.
    puede borrar. Es sólo el DDL de esas tablas, no el paquete.
 
 ```
-1.  db/auth.sql                  11. db/monedas.sql
-2.  db/usuarios.sql              12. db/detalle-monedas.sql
-3.  db/modulos.sql               13. db/categorias.sql
-4.  db/paginas.sql               14. db/unidades-medida.sql
-5.  db/usuario-paginas.sql       15. db/ubicaciones.sql
-6.  db/paises.sql                16. db/lotes.sql
-7.  db/departamentos.sql         17. db/articulos.sql
-8.  db/ciudades.sql              18. db/articulos-ubicaciones.sql
-9.  db/empresas.sql              19. db/inventarios-triggers-ddl.sql
-10. db/sucursales.sql            20. db/inventarios.sql
-                                 21. db/personas.sql
-                                 22. db/iva.sql
-                                 23. db/condiciones-pago.sql
-                                 24. db/facturas-compras.sql
+1.  db/auth.sql                  13. db/monedas.sql
+2.  db/usuarios.sql              14. db/detalle-monedas.sql
+3.  db/modulos.sql               15. db/categorias.sql
+4.  db/paginas.sql               16. db/unidades-medida.sql
+5.  db/usuario-paginas.sql       17. db/ubicaciones.sql
+6.  db/paises.sql                18. db/lotes.sql
+7.  db/departamentos.sql         19. db/articulos.sql
+8.  db/ciudades.sql              20. db/articulos-ubicaciones.sql
+9.  db/empresas.sql              21. db/inventarios-triggers-ddl.sql
+10. db/sucursales.sql            22. db/inventarios.sql
+11. db/bancos.sql                23. db/personas.sql
+12. db/cuentas-bancarias.sql     24. db/iva.sql
+                                 25. db/condiciones-pago.sql
+                                 26. db/facturas-compras.sql
 ```
 
 Los tres catálogos globales del final —personas, IVA y condiciones— van juntos

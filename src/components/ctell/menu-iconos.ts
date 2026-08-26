@@ -14,6 +14,7 @@
  */
 import {
   Archive,
+  BadgeDollarSign,
   Banknote,
   Boxes,
   Building,
@@ -45,6 +46,7 @@ import {
   MapPin,
   Package,
   PackageCheck,
+  PiggyBank,
   Percent,
   Receipt,
   Ruler,
@@ -278,6 +280,8 @@ const ICONOS_PAGINA: Record<string, LucideIcon> = {
   cobros: Coins,
   pagos: CreditCard,
   bancos: Landmark,
+  "cuentas bancarias": PiggyBank,
+  "punto de venta": BadgeDollarSign,
   // Las tres páginas de Administración. Sin ellas caían las tres en el fallback
   // FileText y el módulo entero se veía con el mismo ícono repetido.
   //

@@ -87,6 +87,10 @@ db/
 ├── ciudades.sql         ─┘
 ├── empresas.sql         + logo (BLOB) y listado público del login
 ├── sucursales.sql
+├── bancos.sql           Catálogo global de entidades bancarias
+├── cuentas-bancarias.sql Cuentas por empresa, con FK a bancos y monedas
+├── ventas.sql            Venta transaccional con detalle y cuotas
+├── ventas-cobros.sql     Cobros y cuenta bancaria destino
 ├── monedas.sql          ─┐
 ├── unidades-medida.sql   │ Por empresa (ver 3.1)
 ├── categorias.sql        │
@@ -706,9 +710,33 @@ SELECT NAME, LINE, POSITION, TEXT
 
 ## 3.1 Tablas por empresa
 
-`MONEDAS`, `UNIDADES_MEDIDA`, `CATEGORIAS` y `ARTICULOS` cuelgan de `EMPRESAS`:
+`CUENTAS_BANCARIAS`, `MONEDAS`, `UNIDADES_MEDIDA`, `CATEGORIAS` y `ARTICULOS` cuelgan de `EMPRESAS`:
 cada empresa tiene su propio juego. Si la tabla nueva es de este tipo, seguí
 `db/monedas.sql` — es el ejemplo más chico y completo.
+
+`CUENTAS_BANCARIAS` agrega dos relaciones: `ID_BANCO` es obligatorio y apunta
+al catálogo global `BANCOS`; `ID_MONEDA` es opcional y debe apuntar a una
+moneda de la misma empresa. El listado recibe `?idEmpresa=` y las operaciones
+de actualización y borrado también exigen ese id para aislar la fila.
+
+`BANCOS` no es una tabla por empresa: se comparte entre todas y sus endpoints
+no reciben `idEmpresa`.
+
+### Punto de venta
+
+`PKG_VENTAS` maneja cabecera, detalle y cuotas en una única transacción. El
+precio llega manualmente por línea y el porcentaje de `LISTAS_DESCUENTOS` se
+calcula en el backend. Una condición de 30 días y 3 cuotas genera vencimientos
+acumulados a 30, 60 y 90 días.
+
+Al confirmar la venta se descuenta `LOTES.CANTIDAD_DISPON` usando primero los
+lotes con vencimiento más cercano. Si no hay stock suficiente, se revierte la
+operación completa. `PKG_VENTAS_COBROS` registra luego los cobros y actualiza
+`VENTAS_CUOTAS.MONTO_PAGADO`.
+
+El DDL original de `VENTAS_COBROS` no trae cuenta bancaria. Ejecutá
+`db/ventas-cobros.sql` después de crear la tabla: agrega idempotentemente
+`ID_CUENTA_BANCARIA` y su FK a `CUENTAS_BANCARIAS` antes de compilar el paquete.
 
 Tres cosas específicas:
 

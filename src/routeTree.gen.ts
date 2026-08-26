@@ -35,6 +35,7 @@ import { Route as AuthMonedasRouteImport } from './routes/_auth.monedas'
 import { Route as AuthPaisesRouteImport } from './routes/_auth.paises'
 import { Route as AuthPersonasRouteImport } from './routes/_auth.personas'
 import { Route as AuthProfesoresRouteImport } from './routes/_auth.profesores'
+import { Route as AuthPuntoVentaRouteImport } from './routes/_auth.punto-venta'
 import { Route as AuthSucursalesRouteImport } from './routes/_auth.sucursales'
 import { Route as AuthUbicacionesRouteImport } from './routes/_auth.ubicaciones'
 import { Route as AuthUnidadesMedidaRouteImport } from './routes/_auth.unidades-medida'
@@ -169,6 +170,11 @@ const AuthProfesoresRoute = AuthProfesoresRouteImport.update({
   path: '/profesores',
   getParentRoute: () => AuthRoute,
 } as any)
+const AuthPuntoVentaRoute = AuthPuntoVentaRouteImport.update({
+  id: '/punto-venta',
+  path: '/punto-venta',
+  getParentRoute: () => AuthRoute,
+} as any)
 const AuthSucursalesRoute = AuthSucursalesRouteImport.update({
   id: '/sucursales',
   path: '/sucursales',
@@ -211,6 +217,7 @@ export interface FileRoutesByFullPath {
   '/paises': typeof AuthPaisesRoute
   '/personas': typeof AuthPersonasRoute
   '/profesores': typeof AuthProfesoresRoute
+  '/punto-venta': typeof AuthPuntoVentaRoute
   '/sucursales': typeof AuthSucursalesRoute
   '/ubicaciones': typeof AuthUbicacionesRoute
   '/unidades-medida': typeof AuthUnidadesMedidaRoute
@@ -241,6 +248,7 @@ export interface FileRoutesByTo {
   '/paises': typeof AuthPaisesRoute
   '/personas': typeof AuthPersonasRoute
   '/profesores': typeof AuthProfesoresRoute
+  '/punto-venta': typeof AuthPuntoVentaRoute
   '/sucursales': typeof AuthSucursalesRoute
   '/ubicaciones': typeof AuthUbicacionesRoute
   '/unidades-medida': typeof AuthUnidadesMedidaRoute
@@ -273,6 +281,7 @@ export interface FileRoutesById {
   '/_auth/paises': typeof AuthPaisesRoute
   '/_auth/personas': typeof AuthPersonasRoute
   '/_auth/profesores': typeof AuthProfesoresRoute
+  '/_auth/punto-venta': typeof AuthPuntoVentaRoute
   '/_auth/sucursales': typeof AuthSucursalesRoute
   '/_auth/ubicaciones': typeof AuthUbicacionesRoute
   '/_auth/unidades-medida': typeof AuthUnidadesMedidaRoute
@@ -305,6 +314,7 @@ export interface FileRouteTypes {
     | '/paises'
     | '/personas'
     | '/profesores'
+    | '/punto-venta'
     | '/sucursales'
     | '/ubicaciones'
     | '/unidades-medida'
@@ -335,6 +345,7 @@ export interface FileRouteTypes {
     | '/paises'
     | '/personas'
     | '/profesores'
+    | '/punto-venta'
     | '/sucursales'
     | '/ubicaciones'
     | '/unidades-medida'
@@ -366,6 +377,7 @@ export interface FileRouteTypes {
     | '/_auth/paises'
     | '/_auth/personas'
     | '/_auth/profesores'
+    | '/_auth/punto-venta'
     | '/_auth/sucursales'
     | '/_auth/ubicaciones'
     | '/_auth/unidades-medida'
@@ -560,6 +572,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthProfesoresRouteImport
       parentRoute: typeof AuthRoute
     }
+    '/_auth/punto-venta': {
+      id: '/_auth/punto-venta'
+      path: '/punto-venta'
+      fullPath: '/punto-venta'
+      preLoaderRoute: typeof AuthPuntoVentaRouteImport
+      parentRoute: typeof AuthRoute
+    }
     '/_auth/sucursales': {
       id: '/_auth/sucursales'
       path: '/sucursales'
@@ -609,6 +628,7 @@ interface AuthRouteChildren {
   AuthPaisesRoute: typeof AuthPaisesRoute
   AuthPersonasRoute: typeof AuthPersonasRoute
   AuthProfesoresRoute: typeof AuthProfesoresRoute
+  AuthPuntoVentaRoute: typeof AuthPuntoVentaRoute
   AuthSucursalesRoute: typeof AuthSucursalesRoute
   AuthUbicacionesRoute: typeof AuthUbicacionesRoute
   AuthUnidadesMedidaRoute: typeof AuthUnidadesMedidaRoute
@@ -639,6 +659,7 @@ const AuthRouteChildren: AuthRouteChildren = {
   AuthPaisesRoute: AuthPaisesRoute,
   AuthPersonasRoute: AuthPersonasRoute,
   AuthProfesoresRoute: AuthProfesoresRoute,
+  AuthPuntoVentaRoute: AuthPuntoVentaRoute,
   AuthSucursalesRoute: AuthSucursalesRoute,
   AuthUbicacionesRoute: AuthUbicacionesRoute,
   AuthUnidadesMedidaRoute: AuthUnidadesMedidaRoute,

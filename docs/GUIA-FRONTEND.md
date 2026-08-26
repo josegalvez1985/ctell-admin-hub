@@ -48,6 +48,18 @@ pantalla ABM completa.
 > Todas traen lo mismo: filtro en el header de la columna que filtra
 > (`TableHeadFiltrable`), corte de a 20 con "Mostrar más", tabla en escritorio +
 > tarjetas en móvil, y diálogo de alta/edición.
+
+> Para `CUENTAS_BANCARIAS`, usá el patrón por empresa y agregá selectores para
+> las FK: banco obligatorio y moneda opcional. El banco se obtiene de
+> `api.bancos.listar()` y las monedas de `api.monedas.listar({ idEmpresa })`;
+> mostrá sólo opciones activas.
+
+Para el punto de venta, la pantalla recomendada es `/punto-venta`: catálogo de
+artículos buscable, carrito sticky, precios manuales por línea y checkout en el
+mismo panel. El resumen muestra subtotal, porcentaje de la lista, descuento y
+total antes de confirmar. Cliente, lista, condición de pago y moneda se eligen
+en el checkout; la cuenta bancaria se reserva para el registro posterior del
+cobro.
 >
 > Esto no es pereza, es la lección más cara de este proyecto. Implementar
 > Ciudades "parecido pero a mi manera" —columnas de más, otra `queryKey`, otra
@@ -1295,6 +1307,9 @@ porque `Coins` ya era "cobros"; Categorías con `Tags` (la agrupación) y no
 `Package`, que es el artículo; Facturas de compra y de venta con `FileInput` /
 `FileOutput`, porque con el mismo `Receipt` sólo las distinguía el texto.
 
+En el catálogo financiero, `Bancos` usa `Landmark` y `Cuentas bancarias` usa
+`PiggyBank`: son páginas relacionadas, pero cada una conserva un ícono propio.
+
 ### Por qué el link es un `<a>` y no un `<Link>`
 
 `<Link to>` de TanStack Router espera un literal del árbol de rutas. La ruta del
@@ -1551,6 +1566,9 @@ Antes de dar por terminada una pantalla:
 - [ ] Registrada en Administración → Páginas, y asignada en Permisos
 - [ ] Si es una tabla por empresa: `empresa.id` en la `queryKey`, `enabled:
 empresa !== null`, y el caso `empresa === null` contemplado en el render
+- [ ] Si tiene FK a otro catálogo: selector con datos de la API relacionada,
+      filtrando opciones inactivas y validando en backend la pertenencia a la
+      empresa cuando corresponda
 - [ ] Si además cuelga de una sucursal: **`sucursal.id` también** en la
       `queryKey` y en el `enabled`, y el caso "la empresa no tiene sucursales"
       resuelto en el render — ver [Empresa y sucursal activas](#empresa-y-sucursal-activas)
