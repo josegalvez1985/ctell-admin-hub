@@ -20,6 +20,7 @@ import { Route as AuthCategoriasRouteImport } from './routes/_auth.categorias'
 import { Route as AuthCiudadesRouteImport } from './routes/_auth.ciudades'
 import { Route as AuthCondicionesPagoRouteImport } from './routes/_auth.condiciones-pago'
 import { Route as AuthConfiguracionRouteImport } from './routes/_auth.configuracion'
+import { Route as AuthCuentasBancariasRouteImport } from './routes/_auth.cuentas-bancarias'
 import { Route as AuthDepartamentosRouteImport } from './routes/_auth.departamentos'
 import { Route as AuthEmpresasRouteImport } from './routes/_auth.empresas'
 import { Route as AuthFacturasComprasRouteImport } from './routes/_auth.facturas-compras'
@@ -91,6 +92,11 @@ const AuthCondicionesPagoRoute = AuthCondicionesPagoRouteImport.update({
 const AuthConfiguracionRoute = AuthConfiguracionRouteImport.update({
   id: '/configuracion',
   path: '/configuracion',
+  getParentRoute: () => AuthRoute,
+} as any)
+const AuthCuentasBancariasRoute = AuthCuentasBancariasRouteImport.update({
+  id: '/cuentas-bancarias',
+  path: '/cuentas-bancarias',
   getParentRoute: () => AuthRoute,
 } as any)
 const AuthDepartamentosRoute = AuthDepartamentosRouteImport.update({
@@ -190,6 +196,7 @@ export interface FileRoutesByFullPath {
   '/ciudades': typeof AuthCiudadesRoute
   '/condiciones-pago': typeof AuthCondicionesPagoRoute
   '/configuracion': typeof AuthConfiguracionRoute
+  '/cuentas-bancarias': typeof AuthCuentasBancariasRoute
   '/departamentos': typeof AuthDepartamentosRoute
   '/empresas': typeof AuthEmpresasRoute
   '/facturas-compras': typeof AuthFacturasComprasRoute
@@ -219,6 +226,7 @@ export interface FileRoutesByTo {
   '/ciudades': typeof AuthCiudadesRoute
   '/condiciones-pago': typeof AuthCondicionesPagoRoute
   '/configuracion': typeof AuthConfiguracionRoute
+  '/cuentas-bancarias': typeof AuthCuentasBancariasRoute
   '/departamentos': typeof AuthDepartamentosRoute
   '/empresas': typeof AuthEmpresasRoute
   '/facturas-compras': typeof AuthFacturasComprasRoute
@@ -250,6 +258,7 @@ export interface FileRoutesById {
   '/_auth/ciudades': typeof AuthCiudadesRoute
   '/_auth/condiciones-pago': typeof AuthCondicionesPagoRoute
   '/_auth/configuracion': typeof AuthConfiguracionRoute
+  '/_auth/cuentas-bancarias': typeof AuthCuentasBancariasRoute
   '/_auth/departamentos': typeof AuthDepartamentosRoute
   '/_auth/empresas': typeof AuthEmpresasRoute
   '/_auth/facturas-compras': typeof AuthFacturasComprasRoute
@@ -281,6 +290,7 @@ export interface FileRouteTypes {
     | '/ciudades'
     | '/condiciones-pago'
     | '/configuracion'
+    | '/cuentas-bancarias'
     | '/departamentos'
     | '/empresas'
     | '/facturas-compras'
@@ -310,6 +320,7 @@ export interface FileRouteTypes {
     | '/ciudades'
     | '/condiciones-pago'
     | '/configuracion'
+    | '/cuentas-bancarias'
     | '/departamentos'
     | '/empresas'
     | '/facturas-compras'
@@ -340,6 +351,7 @@ export interface FileRouteTypes {
     | '/_auth/ciudades'
     | '/_auth/condiciones-pago'
     | '/_auth/configuracion'
+    | '/_auth/cuentas-bancarias'
     | '/_auth/departamentos'
     | '/_auth/empresas'
     | '/_auth/facturas-compras'
@@ -441,6 +453,13 @@ declare module '@tanstack/react-router' {
       path: '/configuracion'
       fullPath: '/configuracion'
       preLoaderRoute: typeof AuthConfiguracionRouteImport
+      parentRoute: typeof AuthRoute
+    }
+    '/_auth/cuentas-bancarias': {
+      id: '/_auth/cuentas-bancarias'
+      path: '/cuentas-bancarias'
+      fullPath: '/cuentas-bancarias'
+      preLoaderRoute: typeof AuthCuentasBancariasRouteImport
       parentRoute: typeof AuthRoute
     }
     '/_auth/departamentos': {
@@ -575,6 +594,7 @@ interface AuthRouteChildren {
   AuthCiudadesRoute: typeof AuthCiudadesRoute
   AuthCondicionesPagoRoute: typeof AuthCondicionesPagoRoute
   AuthConfiguracionRoute: typeof AuthConfiguracionRoute
+  AuthCuentasBancariasRoute: typeof AuthCuentasBancariasRoute
   AuthDepartamentosRoute: typeof AuthDepartamentosRoute
   AuthEmpresasRoute: typeof AuthEmpresasRoute
   AuthFacturasComprasRoute: typeof AuthFacturasComprasRoute
@@ -604,6 +624,7 @@ const AuthRouteChildren: AuthRouteChildren = {
   AuthCiudadesRoute: AuthCiudadesRoute,
   AuthCondicionesPagoRoute: AuthCondicionesPagoRoute,
   AuthConfiguracionRoute: AuthConfiguracionRoute,
+  AuthCuentasBancariasRoute: AuthCuentasBancariasRoute,
   AuthDepartamentosRoute: AuthDepartamentosRoute,
   AuthEmpresasRoute: AuthEmpresasRoute,
   AuthFacturasComprasRoute: AuthFacturasComprasRoute,

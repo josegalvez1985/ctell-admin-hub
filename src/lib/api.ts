@@ -340,6 +340,25 @@ export type ListaMonedas = {
   total: number;
 };
 
+export type CuentaBancaria = {
+  id: number;
+  idEmpresa: number;
+  idBanco: number;
+  banco: string;
+  numeroCuenta: string;
+  tipoCuenta: string | null;
+  titular: string | null;
+  saldoInicial: number | null;
+  idMoneda: number | null;
+  moneda: string | null;
+  activo: Estado;
+};
+
+export type ListaCuentasBancarias = {
+  items: CuentaBancaria[];
+  total: number;
+};
+
 /**
  * Denominación de una moneda: el billete de 50.000, la moneda de 500.
  *
@@ -2383,6 +2402,45 @@ export const api = {
 
     eliminar: (id: number, idEmpresa: number) =>
       request<{ ok: boolean }>(`/monedas/eliminar/${id}/${idEmpresa}`, { method: "DELETE" }),
+  },
+
+  cuentasBancarias: {
+    listar: (idEmpresa: number) =>
+      request<ListaCuentasBancarias>(`/cuentas-bancarias/listar?idEmpresa=${idEmpresa}`),
+    crear: (datos: {
+      idEmpresa: number;
+      idBanco: number;
+      numeroCuenta: string;
+      tipoCuenta?: string;
+      titular?: string;
+      saldoInicial?: number;
+      idMoneda?: number;
+    }) =>
+      request<{ id: number; ok: boolean }>("/cuentas-bancarias/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+    actualizar: (
+      id: number,
+      datos: {
+        idEmpresa: number;
+        idBanco?: number;
+        numeroCuenta?: string;
+        tipoCuenta?: string;
+        titular?: string;
+        saldoInicial?: number;
+        idMoneda?: number;
+        activo?: Estado;
+      },
+    ) =>
+      request<{ ok: boolean }>(`/cuentas-bancarias/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/cuentas-bancarias/eliminar/${id}/${idEmpresa}`, {
+        method: "DELETE",
+      }),
   },
 
   /**
