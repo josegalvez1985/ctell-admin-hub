@@ -40,6 +40,7 @@ function PuntoVentaPage() {
   const [idLista, setIdLista] = useState("");
   const [idCondicion, setIdCondicion] = useState("");
   const [idMoneda, setIdMoneda] = useState("");
+  const [idTalonario, setIdTalonario] = useState("");
   const [observacion, setObservacion] = useState("");
 
   const articulos = useQuery({
@@ -62,6 +63,11 @@ function PuntoVentaPage() {
     queryKey: ["monedas", empresa?.id ?? null],
     queryFn: () => api.monedas.listar({ idEmpresa: empresa!.id }),
     enabled: empresa !== null,
+  });
+  const talonarios = useQuery({
+    queryKey: ["talonarios", empresa?.id ?? null, sucursal?.id ?? null],
+    queryFn: () => api.talonarios.listar({ idEmpresa: empresa!.id, idSucursal: sucursal!.id }),
+    enabled: empresa !== null && sucursal !== null,
   });
   const listaElegida = (listas.data?.items ?? []).find((lista) => String(lista.id) === idLista);
   const descuento = listaElegida?.porcentajeDescuento ?? 0;
@@ -94,8 +100,8 @@ function PuntoVentaPage() {
         idListaDescuentos: Number(idLista),
         idCondicionPago: Number(idCondicion),
         idMoneda: Number(idMoneda),
-        numeroVenta: `POS-${Date.now()}`,
         fechaVenta: hoy(),
+        idTalonario: Number(idTalonario),
         observacion,
         detalle: carrito.map((linea) => ({
           idArticulo: linea.id,
@@ -107,6 +113,7 @@ function PuntoVentaPage() {
       toast.success("Venta registrada");
       setCarrito([]);
       setObservacion("");
+      setIdTalonario("");
       queryClient.invalidateQueries({ queryKey: ["pos-articulos"] });
       queryClient.invalidateQueries({ queryKey: ["articulos"] });
     },
@@ -120,7 +127,8 @@ function PuntoVentaPage() {
     carrito.every((linea) => Number(linea.precio) >= 0 && linea.precio !== "") &&
     idLista &&
     idCondicion &&
-    idMoneda;
+    idMoneda &&
+    idTalonario;
 
   return (
     <AppLayout active="/punto-venta" title="Punto de venta">
@@ -331,6 +339,21 @@ function PuntoVentaPage() {
                         <SelectItem key={moneda.id} value={String(moneda.id)}>
                           {moneda.nombreMoneda}
                           {moneda.simbolo ? ` (${moneda.simbolo})` : ""}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+                <Select value={idTalonario} onValueChange={setIdTalonario}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Talonario de comprobantes" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(talonarios.data?.items ?? [])
+                      .filter((talonario) => esActivo(talonario.activo))
+                      .map((talonario) => (
+                        <SelectItem key={talonario.id} value={String(talonario.id)}>
+                          {talonario.tipoComprobante} · {talonario.establecimiento}-
+                          {talonario.puntoExpedicion} · desde {talonario.nroActual}
                         </SelectItem>
                       ))}
                   </SelectContent>

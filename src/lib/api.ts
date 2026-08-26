@@ -320,6 +320,27 @@ export type Sucursal = {
   activo: Estado;
 };
 
+export type Talonario = {
+  id: number;
+  idEmpresa: number;
+  idSucursal: number;
+  tipoComprobante: "FCO" | "FCR" | "NCR";
+  nroTimbrado: string;
+  establecimiento: string;
+  puntoExpedicion: string;
+  nroInicial: number;
+  nroFinal: number;
+  nroActual: number;
+  fechaInicio: string | null;
+  fechaVencimiento: string | null;
+  activo: Estado;
+};
+
+export type ListaTalonarios = {
+  items: Talonario[];
+  total: number;
+};
+
 export type Moneda = {
   id: number;
   /**
@@ -834,6 +855,12 @@ export type Venta = {
   cliente: string | null;
   numeroVenta: string;
   fechaVenta: string;
+  tipoComprobante: "FCO" | "FCR" | "NCR";
+  idTalonario: number;
+  nroTimbrado: string;
+  establecimiento: string;
+  puntoExpedicion: string;
+  nroComprobante: number;
   idMoneda: number;
   montoSubtotal: number;
   montoDescuento: number;
@@ -2275,6 +2302,58 @@ export const api = {
       request<{ ok: boolean }>(`/ubicaciones/eliminar/${id}/${idEmpresa}`, { method: "DELETE" }),
   },
 
+  talonarios: {
+    listar: (params: { idEmpresa?: number; idSucursal?: number } = {}) => {
+      const q = new URLSearchParams();
+      if (params.idEmpresa) q.set("idEmpresa", String(params.idEmpresa));
+      if (params.idSucursal) q.set("idSucursal", String(params.idSucursal));
+      const query = q.toString();
+      return request<ListaTalonarios>(`/talonarios/listar${query ? `?${query}` : ""}`);
+    },
+
+    crear: (datos: {
+      idEmpresa: number;
+      idSucursal: number;
+      tipoComprobante: Talonario["tipoComprobante"];
+      nroTimbrado: string;
+      establecimiento: string;
+      puntoExpedicion: string;
+      nroInicial: number;
+      nroFinal: number;
+      nroActual?: number;
+      fechaInicio?: string;
+      fechaVencimiento?: string;
+    }) =>
+      request<{ id: number; ok: boolean }>("/talonarios/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    actualizar: (
+      id: number,
+      datos: {
+        idEmpresa: number;
+        tipoComprobante?: Talonario["tipoComprobante"];
+        nroTimbrado?: string;
+        establecimiento?: string;
+        puntoExpedicion?: string;
+        nroInicial?: number;
+        nroFinal?: number;
+        nroActual?: number;
+        fechaInicio?: string;
+        fechaVencimiento?: string;
+        activo?: Estado;
+      },
+    ) =>
+      request<{ ok: boolean }>(`/talonarios/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/talonarios/eliminar/${id}/${idEmpresa}`, { method: "DELETE" }),
+  },
+
   /**
    * Lotes de mercadería (partidas con vencimiento y costo).
    *
@@ -3191,8 +3270,8 @@ export const api = {
       idListaDescuentos: number;
       idCondicionPago: number;
       idMoneda: number;
-      numeroVenta: string;
       fechaVenta: string;
+      idTalonario: number;
       observacion?: string;
       detalle: Array<{
         idArticulo: number;

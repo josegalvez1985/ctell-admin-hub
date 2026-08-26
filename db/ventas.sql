@@ -16,8 +16,8 @@ CREATE OR REPLACE PACKAGE PKG_VENTAS AS
   PROCEDURE INSERTAR (
     p_authorization IN VARCHAR2, p_id_empresa IN VARCHAR2, p_id_sucursal IN VARCHAR2,
     p_id_usuario IN VARCHAR2, p_id_cliente IN VARCHAR2, p_id_lista_descuentos IN VARCHAR2,
-    p_id_condicion_pago IN VARCHAR2, p_id_moneda IN VARCHAR2, p_numero_venta IN VARCHAR2,
-    p_fecha_venta IN VARCHAR2, p_observacion IN VARCHAR2, p_detalle IN CLOB,
+    p_id_condicion_pago IN VARCHAR2, p_id_moneda IN VARCHAR2,
+    p_fecha_venta IN VARCHAR2, p_observacion IN VARCHAR2, p_id_talonario IN VARCHAR2, p_detalle IN CLOB,
     p_status_code OUT NUMBER, p_resultado OUT CLOB
   );
   PROCEDURE ELIMINAR (p_authorization IN VARCHAR2, p_id IN VARCHAR2, p_id_empresa IN VARCHAR2, p_status_code OUT NUMBER, p_resultado OUT CLOB);
@@ -51,6 +51,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_VENTAS AS
       SELECT JSON_OBJECT('id' VALUE v.ID_VENTA, 'idEmpresa' VALUE v.ID_EMPRESA, 'idSucursal' VALUE v.ID_SUCURSAL,
         'idCliente' VALUE v.ID_CLIENTE, 'cliente' VALUE CASE WHEN p.ID_PERSONA IS NULL THEN NULL ELSE p.NOMBRE || NVL2(p.APELLIDO, ' ' || p.APELLIDO, '') END,
         'numeroVenta' VALUE v.NUMERO_VENTA, 'fechaVenta' VALUE TO_CHAR(v.FECHA_VENTA, 'YYYY-MM-DD"T"HH24:MI:SS'),
+        'tipoComprobante' VALUE v.TIPO_COMPROBANTE, 'idTalonario' VALUE v.ID_TALONARIO, 'nroTimbrado' VALUE v.NRO_TIMBRADO,
+        'establecimiento' VALUE v.ESTABLECIMIENTO, 'puntoExpedicion' VALUE v.PUNTO_EXPEDICION, 'nroComprobante' VALUE v.NRO_COMPROBANTE,
         'idMoneda' VALUE v.ID_MONEDA, 'montoSubtotal' VALUE v.MONTO_SUBTOTAL, 'montoDescuento' VALUE v.MONTO_DESCUENTO,
         'montoIva' VALUE v.MONTO_IVA, 'montoTotal' VALUE v.MONTO_TOTAL, 'observacion' VALUE v.OBSERVACION,
         'lineas' VALUE (SELECT COUNT(*) FROM VENTAS_DETALLES d WHERE d.ID_VENTA = v.ID_VENTA)
@@ -71,6 +73,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_VENTAS AS
     SELECT JSON_OBJECT('id' VALUE v.ID_VENTA, 'idEmpresa' VALUE v.ID_EMPRESA, 'idSucursal' VALUE v.ID_SUCURSAL,
       'idCliente' VALUE v.ID_CLIENTE, 'idListaDescuentos' VALUE v.ID_LISTA_DESCUENTOS, 'idCondicionPago' VALUE v.ID_CONDICION_PAGO,
       'idMoneda' VALUE v.ID_MONEDA, 'numeroVenta' VALUE v.NUMERO_VENTA, 'fechaVenta' VALUE TO_CHAR(v.FECHA_VENTA, 'YYYY-MM-DD"T"HH24:MI:SS'),
+      'tipoComprobante' VALUE v.TIPO_COMPROBANTE, 'idTalonario' VALUE v.ID_TALONARIO, 'nroTimbrado' VALUE v.NRO_TIMBRADO,
+      'establecimiento' VALUE v.ESTABLECIMIENTO, 'puntoExpedicion' VALUE v.PUNTO_EXPEDICION, 'nroComprobante' VALUE v.NRO_COMPROBANTE,
       'montoSubtotal' VALUE v.MONTO_SUBTOTAL, 'montoDescuento' VALUE v.MONTO_DESCUENTO, 'montoIva' VALUE v.MONTO_IVA,
       'montoTotal' VALUE v.MONTO_TOTAL, 'observacion' VALUE v.OBSERVACION RETURNING CLOB)
       INTO l_cab FROM VENTAS_CABECERAS v WHERE v.ID_VENTA = l_id AND v.ID_EMPRESA = l_empresa;
@@ -89,24 +93,35 @@ CREATE OR REPLACE PACKAGE BODY PKG_VENTAS AS
 
   PROCEDURE INSERTAR (
     p_authorization IN VARCHAR2, p_id_empresa IN VARCHAR2, p_id_sucursal IN VARCHAR2, p_id_usuario IN VARCHAR2, p_id_cliente IN VARCHAR2,
-    p_id_lista_descuentos IN VARCHAR2, p_id_condicion_pago IN VARCHAR2, p_id_moneda IN VARCHAR2, p_numero_venta IN VARCHAR2,
-    p_fecha_venta IN VARCHAR2, p_observacion IN VARCHAR2, p_detalle IN CLOB, p_status_code OUT NUMBER, p_resultado OUT CLOB
+    p_id_lista_descuentos IN VARCHAR2, p_id_condicion_pago IN VARCHAR2, p_id_moneda IN VARCHAR2,
+    p_fecha_venta IN VARCHAR2, p_observacion IN VARCHAR2, p_id_talonario IN VARCHAR2, p_detalle IN CLOB, p_status_code OUT NUMBER, p_resultado OUT CLOB
   ) IS
     l_sesion NUMBER; l_empresa NUMBER; l_sucursal NUMBER; l_usuario NUMBER; l_cliente NUMBER; l_lista NUMBER; l_condicion NUMBER; l_moneda NUMBER; l_id NUMBER; l_lineas NUMBER := 0;
     l_fecha TIMESTAMP; l_descuento NUMBER := 0; l_subtotal NUMBER := 0; l_iva NUMBER := 0; l_total NUMBER := 0; l_porcentaje NUMBER := 0; l_dias NUMBER := 0; l_cuotas NUMBER := 1; l_stock NUMBER; l_cantidad NUMBER;
+    l_talonario NUMBER; l_nro NUMBER; l_final_talonario NUMBER; l_tipo VARCHAR2(3); l_timbrado VARCHAR2(20); l_establecimiento VARCHAR2(3); l_punto VARCHAR2(3); l_numero VARCHAR2(50);
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     l_empresa := TO_NUMBER(NULLIF(p_id_empresa, '')); l_sucursal := TO_NUMBER(NULLIF(p_id_sucursal, '')); l_usuario := TO_NUMBER(NULLIF(p_id_usuario, '')); l_cliente := TO_NUMBER(NULLIF(p_id_cliente, ''));
-    l_lista := TO_NUMBER(NULLIF(p_id_lista_descuentos, '')); l_condicion := TO_NUMBER(NULLIF(p_id_condicion_pago, '')); l_moneda := TO_NUMBER(NULLIF(p_id_moneda, ''));
+    l_lista := TO_NUMBER(NULLIF(p_id_lista_descuentos, '')); l_condicion := TO_NUMBER(NULLIF(p_id_condicion_pago, '')); l_moneda := TO_NUMBER(NULLIF(p_id_moneda, '')); l_talonario := TO_NUMBER(NULLIF(p_id_talonario, ''));
     l_fecha := TO_TIMESTAMP(NULLIF(p_fecha_venta, ''), 'YYYY-MM-DD"T"HH24:MI:SS');
     IF l_sesion IS NULL THEN p_status_code := 401; p_resultado := '{"error":"Sesion invalida o vencida"}'; RETURN; END IF;
-    IF l_empresa IS NULL OR l_sucursal IS NULL OR l_usuario IS NULL OR l_lista IS NULL OR l_condicion IS NULL OR l_moneda IS NULL OR TRIM(p_numero_venta) IS NULL OR p_detalle IS NULL THEN
+    IF l_empresa IS NULL OR l_sucursal IS NULL OR l_usuario IS NULL OR l_lista IS NULL OR l_condicion IS NULL OR l_moneda IS NULL OR l_talonario IS NULL OR p_detalle IS NULL THEN
       p_status_code := 400; p_resultado := '{"error":"Faltan datos obligatorios de la venta"}'; RETURN;
     END IF;
+    SELECT TIPO_COMPROBANTE, NRO_TIMBRADO, ESTABLECIMIENTO, PUNTO_EXPEDICION, NRO_ACTUAL, NRO_FINAL
+      INTO l_tipo, l_timbrado, l_establecimiento, l_punto, l_nro, l_final_talonario
+      FROM TALONARIOS
+     WHERE ID_TALONARIO = l_talonario AND ID_EMPRESA = l_empresa AND ID_SUCURSAL = l_sucursal
+       AND ACTIVO = 'A' AND (FECHA_INICIO IS NULL OR TRUNC(FECHA_INICIO) <= TRUNC(CAST(l_fecha AS DATE)))
+       AND (FECHA_VENCIMIENTO IS NULL OR TRUNC(FECHA_VENCIMIENTO) >= TRUNC(CAST(l_fecha AS DATE)))
+     FOR UPDATE;
+    IF l_nro > l_final_talonario THEN RAISE_APPLICATION_ERROR(-20010, 'El talonario no tiene numeros disponibles'); END IF;
+    l_numero := l_establecimiento || '-' || l_punto || '-' || LPAD(TO_CHAR(l_nro), 7, '0');
     SELECT PORCENTAJE_DESCUENTO INTO l_porcentaje FROM LISTAS_DESCUENTOS WHERE ID_LISTA_PRECIOS = l_lista AND ID_EMPRESA = l_empresa AND FECHA_VIGENCIA_DESDE <= l_fecha AND (FECHA_VIGENCIA_HASTA IS NULL OR FECHA_VIGENCIA_HASTA >= l_fecha);
     SELECT NVL(DIAS_PAGO, 0), NVL(CANTIDAD_CUOTAS, 1) INTO l_dias, l_cuotas FROM CONDICIONES_PAGO WHERE ID_CONDICION = l_condicion;
-    INSERT INTO VENTAS_CABECERAS (ID_EMPRESA, ID_SUCURSAL, ID_USUARIO, ID_CLIENTE, ID_LISTA_DESCUENTOS, ID_CONDICION_PAGO, ID_MONEDA, NUMERO_VENTA, FECHA_VENTA, MONTO_SUBTOTAL, MONTO_DESCUENTO, MONTO_IVA, MONTO_TOTAL, OBSERVACION)
-      VALUES (l_empresa, l_sucursal, l_usuario, l_cliente, l_lista, l_condicion, l_moneda, TRIM(p_numero_venta), l_fecha, 0, 0, 0, 0, NULLIF(TRIM(p_observacion), '')) RETURNING ID_VENTA INTO l_id;
+    INSERT INTO VENTAS_CABECERAS (ID_EMPRESA, ID_SUCURSAL, ID_USUARIO, ID_CLIENTE, ID_LISTA_DESCUENTOS, ID_CONDICION_PAGO, ID_MONEDA, NUMERO_VENTA, FECHA_VENTA, MONTO_SUBTOTAL, MONTO_DESCUENTO, MONTO_IVA, MONTO_TOTAL, OBSERVACION, TIPO_COMPROBANTE, ID_TALONARIO, NRO_TIMBRADO, ESTABLECIMIENTO, PUNTO_EXPEDICION, NRO_COMPROBANTE)
+      VALUES (l_empresa, l_sucursal, l_usuario, l_cliente, l_lista, l_condicion, l_moneda, l_numero, l_fecha, 0, 0, 0, 0, NULLIF(TRIM(p_observacion), ''), l_tipo, l_talonario, l_timbrado, l_establecimiento, l_punto, l_nro) RETURNING ID_VENTA INTO l_id;
+    UPDATE TALONARIOS SET NRO_ACTUAL = CASE WHEN NRO_ACTUAL = NRO_FINAL THEN NRO_ACTUAL ELSE NRO_ACTUAL + 1 END, ACTIVO = CASE WHEN NRO_ACTUAL = NRO_FINAL THEN 'I' ELSE ACTIVO END, FECHA_ACTUALIZACION = SYSTIMESTAMP WHERE ID_TALONARIO = l_talonario;
     FOR linea IN (SELECT idArticulo, cantidad, precioUnitario, idIva FROM JSON_TABLE(p_detalle, '$[*]' COLUMNS (idArticulo NUMBER PATH '$.idArticulo', cantidad NUMBER PATH '$.cantidad', precioUnitario NUMBER PATH '$.precioUnitario', idIva NUMBER PATH '$.idIva'))) LOOP
       IF linea.idArticulo IS NULL OR linea.cantidad IS NULL OR linea.cantidad <= 0 OR linea.precioUnitario IS NULL OR linea.precioUnitario < 0 THEN RAISE VALUE_ERROR; END IF;
       l_cantidad := linea.cantidad;
@@ -133,6 +148,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_VENTAS AS
     END LOOP;
     COMMIT; p_status_code := 201; p_resultado := JSON_OBJECT('id' VALUE l_id, 'lineas' VALUE l_lineas, 'total' VALUE l_total, 'ok' VALUE 'true' FORMAT JSON);
   EXCEPTION WHEN DUP_VAL_ON_INDEX THEN ROLLBACK; p_status_code := 409; p_resultado := '{"error":"El numero de venta ya existe en esta sucursal"}';
+  WHEN NO_DATA_FOUND THEN ROLLBACK; p_status_code := 409; p_resultado := '{"error":"El talonario no existe, esta inactivo, vencido o pertenece a otra sucursal"}';
   WHEN VALUE_ERROR THEN ROLLBACK; p_status_code := 400; p_resultado := '{"error":"Los datos de la venta son invalidos"}';
   WHEN OTHERS THEN ROLLBACK; p_status_code := 500; APEX_DEBUG.ERROR('PKG_VENTAS.INSERTAR: ' || SQLERRM); p_resultado := '{"error":"Error al crear la venta"}';
   END INSERTAR;
@@ -153,7 +169,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_VENTAS AS
     ORDS.DEFINE_TEMPLATE(p_module_name => 'ventas', p_pattern => 'listar'); ORDS.DEFINE_HANDLER(p_module_name => 'ventas', p_pattern => 'listar', p_method => 'GET', p_source_type => ORDS.source_type_plsql, p_source => 'BEGIN PKG_VENTAS.LISTAR(:authorization, :idEmpresa, :idSucursal, :status_code, :resultado); END;');
     ORDS.DEFINE_PARAMETER(p_module_name => 'ventas', p_pattern => 'listar', p_method => 'GET', p_name => 'authorization', p_bind_variable_name => 'authorization', p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN'); ORDS.DEFINE_PARAMETER(p_module_name => 'ventas', p_pattern => 'listar', p_method => 'GET', p_name => 'resultado', p_bind_variable_name => 'resultado', p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT'); ORDS.DEFINE_PARAMETER(p_module_name => 'ventas', p_pattern => 'listar', p_method => 'GET', p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code', p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
     ORDS.DEFINE_TEMPLATE(p_module_name => 'ventas', p_pattern => 'obtener/:id/:idEmpresa'); ORDS.DEFINE_HANDLER(p_module_name => 'ventas', p_pattern => 'obtener/:id/:idEmpresa', p_method => 'GET', p_source_type => ORDS.source_type_plsql, p_source => 'BEGIN PKG_VENTAS.OBTENER(:authorization, :id, :idEmpresa, :status_code, :resultado); END;'); ORDS.DEFINE_PARAMETER(p_module_name => 'ventas', p_pattern => 'obtener/:id/:idEmpresa', p_method => 'GET', p_name => 'authorization', p_bind_variable_name => 'authorization', p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN'); ORDS.DEFINE_PARAMETER(p_module_name => 'ventas', p_pattern => 'obtener/:id/:idEmpresa', p_method => 'GET', p_name => 'resultado', p_bind_variable_name => 'resultado', p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT'); ORDS.DEFINE_PARAMETER(p_module_name => 'ventas', p_pattern => 'obtener/:id/:idEmpresa', p_method => 'GET', p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code', p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
-    ORDS.DEFINE_TEMPLATE(p_module_name => 'ventas', p_pattern => 'crear'); ORDS.DEFINE_HANDLER(p_module_name => 'ventas', p_pattern => 'crear', p_method => 'POST', p_source_type => ORDS.source_type_plsql, p_source => 'BEGIN PKG_VENTAS.INSERTAR(:authorization, :idEmpresa, :idSucursal, :idUsuario, :idCliente, :idListaDescuentos, :idCondicionPago, :idMoneda, :numeroVenta, :fechaVenta, :observacion, :detalle, :status_code, :resultado); END;'); ORDS.DEFINE_PARAMETER(p_module_name => 'ventas', p_pattern => 'crear', p_method => 'POST', p_name => 'authorization', p_bind_variable_name => 'authorization', p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN'); ORDS.DEFINE_PARAMETER(p_module_name => 'ventas', p_pattern => 'crear', p_method => 'POST', p_name => 'resultado', p_bind_variable_name => 'resultado', p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT'); ORDS.DEFINE_PARAMETER(p_module_name => 'ventas', p_pattern => 'crear', p_method => 'POST', p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code', p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'ventas', p_pattern => 'crear'); ORDS.DEFINE_HANDLER(p_module_name => 'ventas', p_pattern => 'crear', p_method => 'POST', p_source_type => ORDS.source_type_plsql, p_source => 'BEGIN PKG_VENTAS.INSERTAR(:authorization, :idEmpresa, :idSucursal, :idUsuario, :idCliente, :idListaDescuentos, :idCondicionPago, :idMoneda, :fechaVenta, :observacion, :idTalonario, :detalle, :status_code, :resultado); END;'); ORDS.DEFINE_PARAMETER(p_module_name => 'ventas', p_pattern => 'crear', p_method => 'POST', p_name => 'authorization', p_bind_variable_name => 'authorization', p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN'); ORDS.DEFINE_PARAMETER(p_module_name => 'ventas', p_pattern => 'crear', p_method => 'POST', p_name => 'resultado', p_bind_variable_name => 'resultado', p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT'); ORDS.DEFINE_PARAMETER(p_module_name => 'ventas', p_pattern => 'crear', p_method => 'POST', p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code', p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
     ORDS.DEFINE_TEMPLATE(p_module_name => 'ventas', p_pattern => 'eliminar/:id/:idEmpresa'); ORDS.DEFINE_HANDLER(p_module_name => 'ventas', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE', p_source_type => ORDS.source_type_plsql, p_source => 'BEGIN PKG_VENTAS.ELIMINAR(:authorization, :id, :idEmpresa, :status_code, :resultado); END;'); ORDS.DEFINE_PARAMETER(p_module_name => 'ventas', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE', p_name => 'authorization', p_bind_variable_name => 'authorization', p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN'); ORDS.DEFINE_PARAMETER(p_module_name => 'ventas', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE', p_name => 'resultado', p_bind_variable_name => 'resultado', p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT'); ORDS.DEFINE_PARAMETER(p_module_name => 'ventas', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE', p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code', p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT'); COMMIT;
   END PUBLICAR_ENDPOINTS;
 END PKG_VENTAS;
