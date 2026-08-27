@@ -191,7 +191,10 @@ function PuntoVentaPage() {
               </div>
               <div className="surface-card max-h-[calc(100vh-13rem)] divide-y divide-border overflow-y-auto">
                 {articulosDisponibles.map((articulo) => (
-                  <article key={articulo.id} className="flex items-center gap-3 p-3 transition-colors hover:bg-muted/40 sm:px-4">
+                  <article
+                    key={articulo.id}
+                    className="flex items-center gap-3 p-3 transition-colors hover:bg-muted/40 sm:px-4"
+                  >
                     <div className="min-w-0 flex-1">
                       <h2 className="break-words text-xs font-semibold leading-tight text-foreground">
                         {articulo.nombreArticulo}
@@ -205,7 +208,10 @@ function PuntoVentaPage() {
                         </p>
                       )}
                     </div>
-                    <Badge className="shrink-0" variant={articulo.cantidadStock > 0 ? "outline" : "destructive"}>
+                    <Badge
+                      className="shrink-0"
+                      variant={articulo.cantidadStock > 0 ? "outline" : "destructive"}
+                    >
                       {dinero(articulo.cantidadStock)} disp.
                     </Badge>
                     <Button
@@ -308,7 +314,9 @@ function PuntoVentaPage() {
                         <Input
                           value={linea.precio}
                           onChange={(e) => actualizar(linea.id, { precio: e.target.value })}
-                          onBlur={() => actualizar(linea.id, { precio: precioVisible(linea.precio) })}
+                          onBlur={() =>
+                            actualizar(linea.id, { precio: precioVisible(linea.precio) })
+                          }
                           type="text"
                           inputMode="decimal"
                           placeholder="0,00"
