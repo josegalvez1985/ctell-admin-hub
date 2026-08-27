@@ -726,7 +726,27 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
                  -- traerse el detalle entero.
                  'lineas'         VALUE (SELECT COUNT(*)
                                            FROM FACTURAS_COMPRAS_DET d
-                                          WHERE d.ID_FACTURA = f.ID_FACTURA)
+                                          WHERE d.ID_FACTURA = f.ID_FACTURA),
+                 -- Pagado y saldo se DERIVAN, igual que el total: una columna
+                 -- SALDO en la cabecera podria contradecir a los pagos y nadie
+                 -- se entera hasta que alguien cuadra la cuenta del proveedor.
+                 'montoPagado'    VALUE NVL((SELECT SUM(p.MONTO)
+                                               FROM FACTURAS_COMPRAS_PAGOS p
+                                              WHERE p.ID_FACTURA = f.ID_FACTURA), 0),
+                 'saldoPendiente' VALUE NVL((SELECT SUM(d.SUBTOTAL)
+                                               FROM FACTURAS_COMPRAS_DET d
+                                              WHERE d.ID_FACTURA = f.ID_FACTURA), 0)
+                                      - NVL((SELECT SUM(p.MONTO)
+                                               FROM FACTURAS_COMPRAS_PAGOS p
+                                              WHERE p.ID_FACTURA = f.ID_FACTURA), 0),
+                 -- Si algo de esta factura ya se vendio: con eso la pantalla
+                 -- sabe que no puede ofrecer editar ni eliminar.
+                 'tieneSalidas'   VALUE CASE WHEN EXISTS (
+                                          SELECT 1 FROM FACTURAS_COMPRAS_DET d
+                                            JOIN LOTES lo ON lo.ID_LOTE = d.ID_LOTE
+                                           WHERE d.ID_FACTURA = f.ID_FACTURA
+                                             AND NVL(lo.CANTIDAD_DISPON, lo.CANTIDAD) < lo.CANTIDAD
+                                        ) THEN 'S' ELSE 'N' END
                  RETURNING CLOB
                ) AS fila,
                f.FECHA_FACTURA AS fecha,
@@ -918,7 +938,36 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
                                            FROM FACTURAS_COMPRAS_DET d
                                            LEFT JOIN IVA i2 ON i2.ID_IVA = d.ID_IVA
                                           WHERE d.ID_FACTURA = f.ID_FACTURA), 0),
-             'detalle'        VALUE NVL(l_detalle, TO_CLOB('[]')) FORMAT JSON
+             'montoPagado'    VALUE NVL((SELECT SUM(p.MONTO)
+                                           FROM FACTURAS_COMPRAS_PAGOS p
+                                          WHERE p.ID_FACTURA = f.ID_FACTURA), 0),
+             'saldoPendiente' VALUE NVL((SELECT SUM(d.SUBTOTAL)
+                                           FROM FACTURAS_COMPRAS_DET d
+                                          WHERE d.ID_FACTURA = f.ID_FACTURA), 0)
+                                  - NVL((SELECT SUM(p.MONTO)
+                                           FROM FACTURAS_COMPRAS_PAGOS p
+                                          WHERE p.ID_FACTURA = f.ID_FACTURA), 0),
+             'tieneSalidas'   VALUE CASE WHEN EXISTS (
+                                      SELECT 1 FROM FACTURAS_COMPRAS_DET d
+                                        JOIN LOTES lo ON lo.ID_LOTE = d.ID_LOTE
+                                       WHERE d.ID_FACTURA = f.ID_FACTURA
+                                         AND NVL(lo.CANTIDAD_DISPON, lo.CANTIDAD) < lo.CANTIDAD
+                                    ) THEN 'S' ELSE 'N' END,
+             'detalle'        VALUE NVL(l_detalle, TO_CLOB('[]')) FORMAT JSON,
+             -- El plan de cuotas que genero la condicion de pago. Vacio en una
+             -- factura al contado, que es lo que significa no tener condicion.
+             'cuotas'         VALUE NVL((
+                                SELECT JSON_ARRAYAGG(JSON_OBJECT(
+                                         'id'               VALUE q.ID_CUOTA,
+                                         'nroCuota'         VALUE q.NRO_CUOTA,
+                                         'fechaVencimiento' VALUE TO_CHAR(q.FECHA_VENCIMIENTO, C_FORMATO_FECHA),
+                                         'montoCuota'       VALUE q.MONTO_CUOTA,
+                                         'montoPagado'      VALUE q.MONTO_PAGADO,
+                                         'saldoPendiente'   VALUE q.SALDO_PENDIENTE,
+                                         'estado'           VALUE q.ESTADO
+                                         RETURNING CLOB) ORDER BY q.NRO_CUOTA RETURNING CLOB)
+                                  FROM FACTURAS_COMPRAS_CUOTAS q
+                                 WHERE q.ID_FACTURA = f.ID_FACTURA), TO_CLOB('[]')) FORMAT JSON
              RETURNING CLOB
            )
       INTO p_resultado

@@ -26,6 +26,7 @@ pantalla ABM completa.
 7. [El menú dinámico por dentro](#7-el-menú-dinámico-por-dentro)
    - [Imágenes: siempre con respaldo](#71-imágenes-siempre-con-respaldo)
    - [Paneles con scroll: `scrollbar-fino`](#72-paneles-con-scroll-scrollbar-fino)
+   - [Montos: `InputMoneda` y `lib/moneda.ts`](#721-montos-inputmoneda-y-libmonedats)
    - [Texto largo: `truncate` no alcanza](#73-texto-largo-truncate-no-alcanza-y-en-un-diálogo-molesta)
 8. [Checklist](#8-checklist)
 
@@ -330,6 +331,38 @@ menú muestra el item pero el clic no lleva a ningún lado.
 | -------------------- | ------------------- | -------------- |
 | `_auth.empresas.tsx` | Empresas            | `/empresas`    |
 | `_auth.paises.tsx`   | Paises              | `/paises`      |
+
+### La misma ruta puede repetirse — en otro módulo
+
+`PAGINAS` tiene `UNIQUE (ID_MODULO, RUTA, ENTRADA)`: lo que no se puede es
+cargar la misma ruta **dos veces en el mismo módulo y la misma sección**. En
+otro módulo sí, y es deliberado — "Artículos" bajo *Stock* y también bajo
+*Compras* son dos entradas de menú al mismo destino, para dos perfiles que lo
+buscan en lugares distintos.
+
+Por eso el alta **avisa en vez de bloquear**. El desplegable muestra dónde está
+ya cargada cada ruta:
+
+```
+Ventas          /ventas · Ya está en Operaciones › Ventas
+Cobros          /cobros
+```
+
+**Se muestran, no se esconden.** Si la opción desaparece de la lista, el usuario
+no entiende por qué falta y termina cargándola con otro nombre o dudando de si
+existe; diciendo *dónde* está, decide él. Y como repetir en otro módulo es
+válido, sacarla sería directamente incorrecto.
+
+Cuando la combinación exacta ya existe —mismo módulo, misma ruta, misma
+sección— aparece un aviso rojo mientras se completa el formulario, no al
+guardar: descubrirlo recién al confirmar obliga a rehacer nombre, orden y
+estado. El backend igual lo rechaza con 409, por si alguien llama al endpoint
+directo.
+
+> El backend **normaliza la ruta** antes de guardarla (minúsculas, barra inicial,
+> sin barra final). Sin eso el `UNIQUE` no serviría: para Oracle `/Ventas`,
+> `ventas` y `/ventas/` son tres valores distintos. Ver
+> [3.8 en la guía de backend](GUIA-IMPLEMENTACION.md#38-un-unique-sobre-texto-necesita-el-texto-normalizado).
 
 ---
 
@@ -1446,6 +1479,61 @@ repintarla.
 Lleva las dos sintaxis porque ningún navegador soporta ambas —
 `scrollbar-width` (Firefox, Chrome 121+) y `::-webkit-scrollbar` (Safari y
 Chrome anteriores). Cada navegador aplica la que entiende.
+
+---
+
+## 7.2.1 Montos: `InputMoneda` y `lib/moneda.ts`
+
+**Todo campo de dinero usa `<InputMoneda>`.** Separa los miles mientras se
+escribe y devuelve el texto ya formateado:
+
+```tsx
+<InputMoneda value={montoCobro} onChange={setMontoCobro} placeholder="Monto *" />
+```
+
+Para parsear lo que devuelve, `numeroMoneda()`. Para mostrar un número,
+`formatearMoneda()`. Las dos viven en [lib/moneda.ts](../src/lib/moneda.ts) y son
+el **único** lugar donde se formatea o se parsea plata.
+
+### Por qué no alcanza con formatear en `onBlur`
+
+Era como estaba: el número sólo se leía bien al salir del campo, justo cuando ya
+se dejó de mirar. Quien carga un monto largo lo cuenta con el dedo en la
+pantalla — y ahí es donde `34200` y `342000` se confunden.
+
+### El problema real es el cursor
+
+Reformatear en cada tecla reemplaza el valor del input, y el navegador manda el
+cursor al final: corregir un dígito en medio de `1.234.567` lo tira al fondo y la
+siguiente tecla cae en el lugar equivocado.
+
+Se resuelve contando los **caracteres significativos** a la izquierda del cursor
+—dígitos y coma, lo único que sobrevive al formateo— y reubicándolo después de
+esa misma cantidad. Va en `useLayoutEffect` y no en el `onChange`: el valor lo
+controla el padre, así que recién después de que React pinta el texto nuevo tiene
+sentido mover el cursor.
+
+### Nunca `Number()` sobre un monto
+
+```ts
+Number("34.200")        // 34.2   ← un importe mil veces menor
+numeroMoneda("34.200")  // 34200
+```
+
+No tira error: guarda el número mal y nadie se entera. Era el bug que había en
+compras, inventarios, lotes y cuentas bancarias, invisible mientras los inputs no
+separaban miles.
+
+Lo mismo al precargar desde un número: va `formatearMoneda(n)`, no `String(n)`.
+`String(34200.5)` da `"34200.5"` con punto decimal de JS, que el componente
+leería como separador de miles.
+
+### Los porcentajes y las cantidades no son montos
+
+`InputMoneda` es sólo para plata. Una cantidad de unidades o un porcentaje de IVA
+siguen con `<Input>` común: separarles los miles no ayuda, y en Lotes hay un
+`montoOpcional` de zod aparte del `numeroOpcional` justamente para no aflojar la
+validación de las cantidades.
 
 ---
 

@@ -109,6 +109,21 @@ type LineaDetalle = {
   idIva: string;
 };
 
+/**
+ * Por qué una factura no se puede tocar, o `undefined` si sí se puede.
+ *
+ * Cargar una factura **crea un lote por línea**: editarla los rehace y borrarla
+ * los elimina. Ninguna de las dos cosas es posible una vez que salió mercadería
+ * —el stock quedaría por debajo del físico— ni con pagos hechos, que
+ * desaparecerían sin dejar rastro. El backend rechaza con 409; esto lo explica
+ * antes, en el `title` del botón deshabilitado.
+ */
+function motivoCongelada(factura: FacturaCompra): string | undefined {
+  if (factura.tieneSalidas === "S") return "Ya se vendió mercadería de esta factura";
+  if (factura.montoPagado > 0) return "Tiene pagos registrados: anulalos primero desde Pagos";
+  return undefined;
+}
+
 /** Hoy en ISO de sólo día, para precargar la fecha. */
 function hoyISO(): string {
   const hoy = new Date();
@@ -386,11 +401,16 @@ function FacturasComprasPage() {
                           <Eye className="size-4" />
                           Ver detalle
                         </Button>
+                        {/* Congelada: la compra creó lotes y algo ya se vendió.
+                            El backend rechaza las dos acciones con 409; acá se
+                            explica el motivo antes del error. */}
                         <div className="flex gap-2">
                           <Button
                             variant="outline"
                             size="sm"
                             className="flex-1"
+                            disabled={factura.tieneSalidas === "S"}
+                            title={motivoCongelada(factura)}
                             onClick={() => setEditando(factura)}
                           >
                             <Pencil className="size-4" />
@@ -400,6 +420,8 @@ function FacturasComprasPage() {
                             variant="outline"
                             size="sm"
                             className="flex-1 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                            disabled={factura.tieneSalidas === "S" || factura.montoPagado > 0}
+                            title={motivoCongelada(factura)}
                             onClick={() => setAEliminar(factura)}
                           >
                             <Trash2 className="size-4" />
@@ -509,7 +531,8 @@ function FacturasComprasPage() {
                               <Button
                                 variant="ghost"
                                 size="icon"
-                                title="Editar"
+                                disabled={factura.tieneSalidas === "S"}
+                                title={motivoCongelada(factura) ?? "Editar"}
                                 aria-label={`Editar la factura ${factura.numeroFactura}`}
                                 onClick={() => setEditando(factura)}
                               >
@@ -518,7 +541,8 @@ function FacturasComprasPage() {
                               <Button
                                 variant="ghost"
                                 size="icon"
-                                title="Eliminar"
+                                disabled={factura.tieneSalidas === "S" || factura.montoPagado > 0}
+                                title={motivoCongelada(factura) ?? "Eliminar"}
                                 aria-label={`Eliminar la factura ${factura.numeroFactura}`}
                                 onClick={() => setAEliminar(factura)}
                               >

@@ -20,6 +20,9 @@ de plantilla para todo lo demás.
    - [Cabecera y detalle: una transacción](#33-cabecera-y-detalle-una-transacción)
    - [Columnas calculadas: lo que no se guarda](#34-columnas-calculadas-lo-que-no-se-guarda)
    - [Máquinas de estado y triggers](#35-máquinas-de-estado-y-triggers)
+   - [Transacciones que mueven stock o plata](#36-transacciones-que-mueven-stock-o-plata)
+   - [Trampas de PL/SQL que se repiten](#37-trampas-de-plsql-que-se-repiten)
+   - [Un `UNIQUE` sobre texto necesita el texto normalizado](#38-un-unique-sobre-texto-necesita-el-texto-normalizado)
 4. [Consumir la API desde el frontend](#4-consumir-la-api-desde-el-frontend)
 5. [Devolver lo que el consumidor necesita](#5-devolver-lo-que-el-consumidor-necesita)
 6. [Seguridad](#6-seguridad)
@@ -1124,6 +1127,14 @@ artículo y que las tablas nuevas repiten:
 | Diferencia de un inventario | `CANTIDAD_FISICA - CANTIDAD_SISTEMA` | Tres columnas derivables entre sí son tres que pueden contradecirse |
 | Vencimiento de una factura  | `FECHA_FACTURA + DIAS_PAGO`          | Se desfasa si se corrige la fecha o la condición                    |
 | IVA de una línea            | Ver abajo                            | Depende de la tasa, que puede corregirse                            |
+| Cobrado de una venta        | `SUM(MONTO)` de `VENTAS_COBROS`      | Una columna podría contradecir a los cobros que la respaldan        |
+| Saldo pendiente             | `total - cobrado`                    | Es la resta de dos derivados: guardarla suma un tercer desacuerdo   |
+| Pagado de una compra        | `SUM(MONTO)` de `..._PAGOS`          | Ídem, en espejo                                                     |
+
+**`VENTAS_CABECERAS` y `FACTURAS_COMPRAS_CAB` no tienen ninguna columna de
+monto.** Total, descuento, gravado, IVA, cobrado y saldo salen todos del detalle
+en cada consulta. Las cabeceras guardan **qué** es la operación —quién, cuándo,
+con qué comprobante— y el detalle guarda **cuánto**.
 
 **La contrapartida:** editar una tasa de IVA o una condición de pago cambia
 retroactivamente el desglose y el vencimiento de todas las facturas que las usan
@@ -1277,6 +1288,213 @@ La regla es que los archivos de `db/` **no administran DDL**. Cuando hay que
 corregir triggers, el archivo va aparte y con otro nombre —
 [db/inventarios-triggers-ddl.sql](../db/inventarios-triggers-ddl.sql) — para que
 quede claro que no es el paquete y que se ejecuta una sola vez, antes.
+
+---
+
+## 3.6 Transacciones que mueven stock o plata
+
+Comprar hace entrar mercadería, vender la saca, cobrar y pagar mueven dinero.
+Todas comparten la misma regla:
+
+> **Lo que una operación movió, su baja tiene que revertirlo — o la baja se
+> rechaza.**
+
+### Comprar crea lotes; vender los descuenta
+
+Cada línea de una factura de compra crea **su propio lote**, con la cantidad y el
+precio unitario como costo. Uno por línea y no acumulado en uno existente: cada
+compra entró a un precio distinto, y mezclarlas perdería a cuánto entró cada
+unidad.
+
+Cada línea de venta descuenta de **un solo lote**, el que elige el cajero.
+`VENTAS_DETALLES.ID_LOTE` guarda cuál, y `FACTURAS_COMPRAS_DET.ID_LOTE` guarda el
+que la compra creó. Las dos columnas existen por el mismo motivo:
+
+> **Sin registrar de qué lote salió cada unidad, la baja no sabe dónde
+> reponerla.** `CANTIDAD_DISPON` es una columna real, no se deriva de nada: si se
+> pierde el vínculo, el stock queda por debajo del físico para siempre y sólo se
+> descubre en el próximo inventario.
+
+### Se lee con `FOR UPDATE`, siempre
+
+Entre leer un saldo y grabar el movimiento puede entrar otra caja. Sin el lock,
+las dos ven existencia o saldo suficiente y las dos graban:
+
+```sql
+-- El lock va sobre la CABECERA aunque el monto salga del detalle: es lo que
+-- serializa los movimientos de esa operación.
+SELECT ID_VENTA INTO l_existe
+  FROM VENTAS_CABECERAS
+ WHERE ID_VENTA = l_id AND ID_EMPRESA = l_empresa
+   FOR UPDATE;
+
+SELECT NVL(SUM(TOTAL), 0) INTO l_total FROM VENTAS_DETALLES WHERE ID_VENTA = l_id;
+SELECT NVL(SUM(MONTO), 0) INTO l_cobrado FROM VENTAS_COBROS WHERE ID_VENTA = l_id;
+```
+
+### Cuándo rechazar con 409
+
+| Situación                                     | Por qué no se permite                                  |
+| --------------------------------------------- | ------------------------------------------------------ |
+| Borrar una venta con cobros                   | El `DELETE` en cascada se lleva plata que entró         |
+| Borrar o editar una compra con pagos          | Ídem, y rehacer cuotas rompería la FK de los pagos      |
+| Borrar o editar una compra ya vendida en parte| Sacar del stock lo que ya salió lo deja bajo el físico  |
+| Cobrar o pagar de más                         | El saldo quedaría negativo                              |
+| Vender más de lo que tiene el lote            | No hay existencia que descontar                         |
+
+En todos los casos el mensaje dice **qué hacer**, no sólo que no se puede:
+`"La venta tiene cobros registrados: anulalos antes de eliminarla"`.
+
+### Lo que la baja no deshace, se avisa
+
+Eliminar una venta **no devuelve el número de comprobante**: `NRO_ACTUAL` del
+talonario ya avanzó y la secuencia queda con un hueco. Fiscalmente es lo
+correcto —un comprobante emitido no se reutiliza— pero la pantalla tiene que
+decirlo antes de confirmar, no descubrirse después.
+
+> Los helpers que aparecen acá —`ESTADO_CUOTA`, `TIENE_SALIDAS`— son funciones
+> privadas del body, y llamarlas desde un `UPDATE` no compila. Ver
+> [3.7 Trampas de PL/SQL](#37-trampas-de-plsql-que-se-repiten).
+
+### Reponer agrupando, no fila por fila
+
+Dos líneas distintas pueden salir del mismo lote. Sumar de a una hace dos
+`UPDATE` sobre la misma fila, y el segundo lee el valor viejo:
+
+```sql
+FOR reposicion IN (SELECT ID_LOTE, SUM(CANTIDAD) AS cantidad
+                     FROM VENTAS_DETALLES WHERE ID_VENTA = l_id AND ID_LOTE IS NOT NULL
+                    GROUP BY ID_LOTE) LOOP
+  UPDATE LOTES SET CANTIDAD_DISPON = NVL(CANTIDAD_DISPON, CANTIDAD) + reposicion.cantidad
+   WHERE ID_LOTE = reposicion.ID_LOTE;
+END LOOP;
+```
+
+---
+
+## 3.7 Trampas de PL/SQL que se repiten
+
+Tres errores de compilación que aparecieron más de una vez en este proyecto. No
+son casos raros: salen del estilo normal del código de acá —helpers privados y
+`JSON_OBJECT` para armar la respuesta— así que conviene reconocerlos de memoria.
+
+### `PLS-00231`: una función privada del *body* no se puede usar en SQL
+
+Sólo las declaradas en el **spec** del paquete valen dentro de una sentencia SQL.
+Una función definida sólo en el body sirve para PL/SQL, no para el `SET` de un
+`UPDATE` ni el `VALUES` de un `INSERT`:
+
+```sql
+-- MAL: PLS-00231
+UPDATE CUOTAS SET ESTADO = ESTADO_CUOTA(l_pagado, l_monto) WHERE ...;
+INSERT INTO PAGINAS (RUTA) VALUES (NORMALIZAR_RUTA(p_ruta));
+
+-- BIEN: se calcula antes, y en la sentencia va la variable
+l_estado := ESTADO_CUOTA(l_pagado, l_monto);
+UPDATE CUOTAS SET ESTADO = l_estado WHERE ...;
+
+l_ruta := NORMALIZAR_RUTA(p_ruta);
+INSERT INTO PAGINAS (RUTA) VALUES (l_ruta);
+```
+
+**Declararla en el spec también compila**, pero publica un detalle interno en la
+interfaz del paquete. Preferir la variable, salvo que la función sea realmente
+parte de la API.
+
+> Este error se cometió **dos veces**, la segunda después de haber escrito esta
+> misma nota. Si estás por llamar un helper dentro de una sentencia SQL, mirá
+> primero dónde está declarado.
+
+### `PLS-00684`: `RETURNING CLOB` no va en una asignación suelta
+
+`RETURNING CLOB` sólo se acepta dentro de una sentencia SQL:
+
+```sql
+-- MAL: PLS-00684
+p_resultado := JSON_OBJECT('a' VALUE 1 RETURNING CLOB);
+
+-- BIEN
+SELECT JSON_OBJECT('a' VALUE 1 RETURNING CLOB) INTO p_resultado FROM DUAL;
+```
+
+Sin `RETURNING CLOB` la asignación directa sí funciona, y es lo que hacen los
+paquetes cuando la respuesta es corta:
+
+```sql
+p_resultado := JSON_OBJECT('id' VALUE l_id, 'ok' VALUE 'true' FORMAT JSON);
+```
+
+### `ORA-00932`: a una columna `LONG` no se le aplican funciones
+
+`USER_TAB_COLS.DATA_DEFAULT` es `LONG`. En SQL no se puede envolver en nada; en
+PL/SQL, en cambio, se lee `INTO` un `VARCHAR2` y Oracle lo convierte solo:
+
+```sql
+-- MAL: ORA-00932
+SELECT ... WHERE INSTR(DATA_DEFAULT, 'MONTO_IVA') > 0;
+
+-- BIEN
+DECLARE l_def VARCHAR2(4000);
+BEGIN
+  SELECT DATA_DEFAULT INTO l_def FROM USER_TAB_COLS WHERE ...;
+  IF INSTR(UPPER(l_def), 'MONTO_IVA') > 0 THEN ...
+END;
+```
+
+---
+
+## 3.8 Un `UNIQUE` sobre texto necesita el texto normalizado
+
+`PAGINAS` tiene `UNIQUE (ID_MODULO, RUTA, ENTRADA)` para que la misma ruta no se
+cargue dos veces en el mismo lugar. Pero la restricción compara **strings**:
+`/Ventas`, `ventas` y `/ventas/` son tres valores distintos para Oracle, así que
+las tres entran como páginas separadas apuntando al mismo destino. **El `UNIQUE`
+no falla — simplemente no aplica.**
+
+La restricción sólo hace lo que se espera si el valor llega en una forma
+canónica. Va en una función privada, y se aplica en el alta y en la modificación:
+
+```sql
+FUNCTION NORMALIZAR_RUTA (p_ruta IN VARCHAR2) RETURN VARCHAR2 IS
+  l_ruta VARCHAR2(200);
+BEGIN
+  l_ruta := LOWER(TRIM(p_ruta));
+  IF l_ruta IS NULL THEN RETURN NULL; END IF;
+  IF SUBSTR(l_ruta, 1, 1) != '/' THEN l_ruta := '/' || l_ruta; END IF;
+  IF LENGTH(l_ruta) > 1 THEN l_ruta := RTRIM(l_ruta, '/'); END IF;
+  RETURN NVL(NULLIF(l_ruta, ''), '/');
+END NORMALIZAR_RUTA;
+```
+
+Devolver `NULL` ante `NULL` es deliberado: deja intacto el
+`RUTA = NVL(l_ruta, RUTA)` del `UPDATE`, donde un parámetro ausente no modifica
+la columna.
+
+### Y el choque se traduce a 409
+
+Sin capturarlo, el `ORA-00001` del `UNIQUE` llega al frontend como un 500
+genérico y el usuario no sabe si el error es suyo o del sistema:
+
+```sql
+EXCEPTION
+  WHEN DUP_VAL_ON_INDEX THEN
+    ROLLBACK;
+    p_status_code := 409;
+    p_resultado := '{"error":"Esa ruta ya esta cargada en ese modulo y seccion"}';
+```
+
+**El mensaje dice qué hacer, no sólo que no se puede.** Y va tanto en `INSERTAR`
+como en `ACTUALIZAR`: mover una página a un módulo donde esa ruta ya existe choca
+con la misma restricción.
+
+### Normalizar hacia atrás es un paso aparte
+
+La función arregla lo que entra de ahora en más. Lo ya cargado se revisa a mano:
+
+```sql
+SELECT ID_PAGINA, ID_MODULO, RUTA FROM PAGINAS
+ WHERE RUTA != LOWER(RUTA) OR RUTA LIKE '%/' OR RUTA NOT LIKE '/%';
+```
 
 ---
 

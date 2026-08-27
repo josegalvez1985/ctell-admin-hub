@@ -110,6 +110,27 @@ END PKG_PAGINAS;
 CREATE OR REPLACE PACKAGE BODY PKG_PAGINAS AS
 
   ------------------------------------------------------------------------------
+  -- Privado: deja la ruta en una sola forma canónica.
+  --
+  -- El UNIQUE (ID_MODULO, RUTA, ENTRADA) compara strings: para Oracle "/Ventas",
+  -- "ventas" y "/ventas/" son tres valores distintos y las tres entrarían como
+  -- páginas separadas, con el mismo destino repetido en el menú. Normalizando
+  -- antes de guardar, la restricción hace lo que se espera de ella.
+  --
+  -- Minúsculas porque las rutas del router lo son, barra inicial siempre y final
+  -- nunca — salvo la raíz, que es sólo "/".
+  FUNCTION NORMALIZAR_RUTA (p_ruta IN VARCHAR2) RETURN VARCHAR2 IS
+    l_ruta VARCHAR2(200);
+  BEGIN
+    l_ruta := LOWER(TRIM(p_ruta));
+    IF l_ruta IS NULL THEN RETURN NULL; END IF;
+    IF SUBSTR(l_ruta, 1, 1) != '/' THEN l_ruta := '/' || l_ruta; END IF;
+    -- RTRIM y no SUBSTR: "/ventas///" tambien tiene que quedar en "/ventas".
+    IF LENGTH(l_ruta) > 1 THEN l_ruta := RTRIM(l_ruta, '/'); END IF;
+    RETURN NVL(NULLIF(l_ruta, ''), '/');
+  END NORMALIZAR_RUTA;
+
+  ------------------------------------------------------------------------------
   -- Privado: borra el módulo ORDS si existe, reintentando ante un interbloqueo.
   --
   -- Nunca usar `WHEN OTHERS THEN NULL` acá: se tragaría también un ORA-00060,
@@ -242,6 +263,10 @@ CREATE OR REPLACE PACKAGE BODY PKG_PAGINAS AS
     l_entrada   VARCHAR2(1);
     l_orden     NUMBER;
     l_id        NUMBER;
+    -- La ruta normalizada se resuelve ANTES del INSERT: NORMALIZAR_RUTA es
+    -- privada del body y no se puede llamar desde una sentencia SQL
+    -- (PLS-00231). En el INSERT va la variable.
+    l_ruta      VARCHAR2(200);
   BEGIN
     -- SOLO ADMINISTRADORES: la estructura del menu se administra desde la
     -- pantalla de Administracion, que ya es exclusiva de admins. El menu que ve
@@ -293,11 +318,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_PAGINAS AS
          AND ENTRADA = l_entrada;
     END IF;
 
+    l_ruta := NORMALIZAR_RUTA(p_ruta);
+
     INSERT INTO PAGINAS (ID_MODULO, NOMBRE, RUTA, ENTRADA, ORDEN, ACTIVO)
     VALUES (
       l_id_modulo,
       TRIM(p_nombre),
-      TRIM(p_ruta),
+      l_ruta,
       l_entrada,
       l_orden,
       'A'
@@ -308,6 +335,17 @@ CREATE OR REPLACE PACKAGE BODY PKG_PAGINAS AS
     p_status_code := 201;
     p_resultado := JSON_OBJECT('id' VALUE l_id, 'ok' VALUE 'true' FORMAT JSON);
   EXCEPTION
+    -- PAGINAS_UK (ID_MODULO, RUTA, ENTRADA): esa ruta ya está en ese módulo y
+    -- esa sección. Sin capturarlo, el ORA-00001 llegaba como un 500 genérico y
+    -- el usuario no sabía si era un error suyo o del sistema.
+    --
+    -- La misma ruta en OTRO módulo sí es válida y no pasa por acá: dos entradas
+    -- de menú al mismo destino, para dos perfiles que lo buscan en lugares
+    -- distintos.
+    WHEN DUP_VAL_ON_INDEX THEN
+      ROLLBACK;
+      p_status_code := 409;
+      p_resultado := '{"error":"Esa ruta ya esta cargada en ese modulo y seccion"}';
     WHEN OTHERS THEN
       ROLLBACK;
       -- ORA-02291: la FK contra MODULOS no encontró el padre. Es un dato
@@ -339,6 +377,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_PAGINAS AS
     l_id_modulo NUMBER;
     l_entrada   VARCHAR2(1);
     l_estado    VARCHAR2(1);
+    -- Ver la nota en INSERTAR: PLS-00231 si se llama dentro del UPDATE.
+    l_ruta      VARCHAR2(200);
   BEGIN
     -- SOLO ADMINISTRADORES: la estructura del menu se administra desde la
     -- pantalla de Administracion, que ya es exclusiva de admins. El menu que ve
@@ -367,10 +407,12 @@ CREATE OR REPLACE PACKAGE BODY PKG_PAGINAS AS
                   ELSE NULL
                 END;
 
+    l_ruta := NORMALIZAR_RUTA(p_ruta);
+
     UPDATE PAGINAS
        SET ID_MODULO = NVL(l_id_modulo, ID_MODULO),
            NOMBRE    = NVL(TRIM(p_nombre), NOMBRE),
-           RUTA      = NVL(TRIM(p_ruta), RUTA),
+           RUTA      = NVL(l_ruta, RUTA),
            ENTRADA   = NVL(l_entrada, ENTRADA),
            ORDEN     = NVL(TO_NUMBER(NULLIF(p_orden, '')), ORDEN),
            ACTIVO    = NVL(l_estado, ACTIVO)
@@ -388,6 +430,12 @@ CREATE OR REPLACE PACKAGE BODY PKG_PAGINAS AS
     p_status_code := 200;
     p_resultado := '{"ok":true}';
   EXCEPTION
+    -- Mover una página a un módulo donde esa ruta ya existe choca con el mismo
+    -- UNIQUE que el alta. Ver la nota en INSERTAR.
+    WHEN DUP_VAL_ON_INDEX THEN
+      ROLLBACK;
+      p_status_code := 409;
+      p_resultado := '{"error":"Esa ruta ya esta cargada en ese modulo y seccion"}';
     WHEN OTHERS THEN
       ROLLBACK;
       IF SQLCODE = -2291 THEN

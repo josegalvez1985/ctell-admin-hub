@@ -24,6 +24,12 @@ ctell-admin-hub/
 ├── db/                        Backend: PL/SQL + ORDS
 │   ├── auth.sql              PKG_AUTH: autenticación y sesiones
 │   ├── usuarios.sql          PKG_USUARIOS: ABM de usuarios
+│   ├── ventas.sql            PKG_VENTAS: punto de venta (cabecera+detalle+cuotas)
+│   ├── ventas-cobros.sql     PKG_VENTAS_COBROS: cobros contra ventas
+│   ├── facturas-compras.sql  PKG_FACTURAS_COMPRAS: compras (crea lotes)
+│   ├── facturas-compras-pagos.sql  PKG_FACTURAS_COMPRAS_PAGOS: pagos a proveedores
+│   ├── dashboard.sql         PKG_DASHBOARD: los indicadores de la home
+│   ├── verificar.sql         Sólo lectura: chequea que el backend quedó consistente
 │   └── [table].sql           Cada tabla nueva va aquí
 ├── src/
 │   ├── routes/               Rutas por archivo (TanStack Router)
@@ -35,6 +41,8 @@ ctell-admin-hub/
 │   ├── components/
 │   │   ├── ctell/            Componentes propios del proyecto
 │   │   │   ├── AppLayout.tsx
+│   │   │   ├── AccesosRapidos.tsx   Botonera de la home, ordenada por uso
+│   │   │   ├── InputMoneda.tsx      Campo de monto con separador en vivo
 │   │   │   ├── UsuariosDialog.tsx
 │   │   │   ├── ThemeToggle.tsx
 │   │   │   ├── Logo.tsx
@@ -44,7 +52,9 @@ ctell-admin-hub/
 │   │   ├── use-usuario-actual.ts   Hook para auth del usuario logueado
 │   │   └── use-cerrar-sesion-al-vencer.ts
 │   ├── lib/
-│   │   └── api.ts            Cliente HTTP contra ORDS
+│   │   ├── api.ts            Cliente HTTP contra ORDS
+│   │   ├── moneda.ts         Formato y parseo es-PY, en un solo lugar
+│   │   └── uso-paginas.ts    Conteo de uso por página (localStorage)
 │   ├── router.tsx            Configuración del router
 │   └── styles.css            Design system: variables de color en oklch
 ├── docs/
@@ -128,6 +138,59 @@ El alta de usuarios y `/auth/recuperar` mandan la contraseña por mail vía
 - **Diagnóstico:** `SELECT PKG_AUTH.PROBAR_CORREO('x@y.com') FROM DUAL;` —
   devuelve el error en texto en vez de tragárselo como los envíos de producción.
 
+#### Punto de venta y cobros — `/ventas`, `/ventas-cobros`
+
+| Método   | Ruta                                     | Qué hace                              |
+| -------- | ---------------------------------------- | ------------------------------------- |
+| `GET`    | `/ventas/listar`                         | Listado con totales y saldo derivados |
+| `GET`    | `/ventas/obtener/:id/:idEmpresa`         | Cabecera, detalle con lote, cuotas    |
+| `POST`   | `/ventas/crear`                          | Venta completa en una transacción     |
+| `DELETE` | `/ventas/eliminar/:id/:idEmpresa`        | Borra y **repone el stock**           |
+| `GET`    | `/ventas-cobros/listar/:idVenta/:idEmp`  | Historial de cobros                   |
+| `POST`   | `/ventas-cobros/crear`                   | Cobro, validado contra el saldo       |
+| `DELETE` | `/ventas-cobros/eliminar/:id/:idEmpresa` | Borra y devuelve el saldo             |
+
+#### Compras y pagos — `/facturas-compras`, `/compras-pagos`
+
+Misma forma que ventas, en espejo. `/compras-pagos` es idéntico a `/ventas-cobros` con la plata saliendo.
+
+#### Dashboard — `/dashboard/resumen?idEmpresa=&idSucursal=`
+
+Los indicadores de la home en una consulta: montos del mes con su mes anterior, valor de stock, artículos bajo mínimo, últimos movimientos (ventas + compras + inventarios unidos), stock crítico y cuotas de compra por vencer.
+
+Un endpoint propio y no sumar en el frontend porque los listados están paginados: sumarlos en el cliente daría el total de la página, no del mes.
+
+### Los totales no se guardan: se calculan
+
+`VENTAS_CABECERAS` y `FACTURAS_COMPRAS_CAB` **no tienen** columnas de monto. Total, descuento, gravado, IVA, cobrado/pagado y saldo se derivan sumando el detalle en cada consulta.
+
+Guardarlos además permitiría que la cabecera diga 500.000 mientras sus líneas suman 480.000 — una inconsistencia que nadie detecta hasta que alguien cuadra la caja. Es el mismo criterio del stock de un artículo (`SUM` sobre sus lotes) y de la diferencia de un inventario: **si se puede derivar, se deriva.**
+
+### Los precios incluyen IVA: el impuesto se desglosa, no se suma
+
+Es como se factura en Paraguay. El precio que carga el cajero es el de la etiqueta: 11.000 la unidad, no 10.000 + IVA.
+
+```
+MONTO_GRAVADO = ROUND(neto / GRAVADA_DIVISION, 2)   (1,1 al 10%; 1,05 al 5%)
+MONTO_IVA     = neto - MONTO_GRAVADO
+```
+
+donde `neto = cantidad * precio - descuento`. Con una línea de 110.000 al 10%: gravado 100.000, IVA 10.000, y el cliente paga **110.000**.
+
+- **El IVA sale por resta**, no por su propia división: dos divisiones redondean por separado y su suma no tiene por qué dar el neto. Con una división y una resta, `gravado + iva = neto` siempre, exacto.
+- **Nunca `neto * porcentaje / 100`** — eso cobraría impuesto sobre impuesto.
+- Toda división va con `NULLIF(..., 0)`: la exenta tiene `IVA_DIVISION = 0`. Ojo que en `GRAVADA_DIVISION` la exenta va en **1**, no en 0 — los dos divisores usan criterios opuestos.
+- **La columna virtual `TOTAL` no debe sumar `MONTO_IVA`.** El DDL original lo hacía y no se notaba porque `MONTO_IVA` se guardaba siempre en 0.
+
+### El stock se mueve con las transacciones
+
+- **Comprar hace entrar stock:** cada línea de una factura de compra crea **su propio lote**, con la cantidad y el precio unitario como costo. Uno por línea y no acumulado: cada compra entró a un precio distinto.
+- **Vender lo saca:** cada línea de venta descuenta de **un solo lote**, el que elige el cajero. `VENTAS_DETALLES.ID_LOTE` guarda cuál — sin esa columna, borrar la venta no sabría dónde reponer.
+- **Borrar revierte:** eliminar una venta devuelve las unidades a su lote; eliminar una compra saca del stock lo que trajo.
+- **Se bloquea lo que no se puede revertir** (409): una venta con cobros, una factura con pagos, y una factura cuya mercadería ya se vendió (`CANTIDAD_DISPON < CANTIDAD`).
+
+`FACTURAS_COMPRAS_DET.ID_LOTE` es el espejo de `VENTAS_DETALLES.ID_LOTE`, en el otro sentido.
+
 ### Estado: `'A'` (activo) / `'I'` (inactivo)
 
 Las columnas `ACTIVO` son `VARCHAR2(1)` con valores `'A'` o `'I'`. **Este código viaja en el JSON sin traducción**. No hacía falta traducir a 1/0 (generaba `ORA-01722` en conversiones fallidas) y la presente unificación vale para **todas** las tablas.
@@ -147,8 +210,28 @@ Las columnas `ACTIVO` son `VARCHAR2(1)` con valores `'A'` o `'I'`. **Este códig
 - **`__root.tsx`:** Layout raíz con `<html>`, providers globales, meta global.
 - **`index.tsx`:** "/" → Login (público).
 - **`_auth.tsx`:** Layout protegido (requiere token). Las rutas bajo `_auth` heredan este layout.
-- **`_auth.home.tsx`:** "/home" → Dashboard.
+- **`_auth.home.tsx`:** "/home" → Dashboard. Los KPIs, movimientos y stock crítico salen de `/dashboard/resumen`; arriba va `<AccesosRapidos />`.
+- **`_auth.punto-venta.tsx`:** "/punto-venta" → Caja. Carrito con IVA y lote por línea; al guardar abre el modal de cobro.
+- **`_auth.ventas.tsx`:** "/ventas" → Comprobantes emitidos: ver detalle y eliminar. **No** se editan.
+- **`_auth.cobros.tsx`:** "/cobros" → Cobros de ventas, historial y baja.
+- **`_auth.pagos.tsx`:** "/pagos" → Pagos a proveedores. Espejo de cobros.
 - **`_auth.configuracion.tsx`:** "/configuracion" → Preferencias (tema, acento).
+
+> Las páginas nuevas hay que **darlas de alta en administración** con su ruta: `PAGINAS` es data, no hay seed en SQL. El ícono se resuelve por nombre normalizado contra `menu-iconos.ts`.
+>
+> `PAGINAS` tiene `UNIQUE (ID_MODULO, RUTA, ENTRADA)`: la misma ruta **sí** puede estar en dos módulos —dos entradas al mismo destino para dos perfiles—, lo que no se puede es repetirla en el mismo módulo y sección. El backend normaliza la ruta antes de guardar (minúsculas, barra inicial, sin barra final) porque si no el `UNIQUE` compara strings y no aplica; el choque sale como 409, y el alta lo avisa mientras se completa el formulario.
+
+### Montos: siempre `InputMoneda` y `lib/moneda.ts`
+
+Todo campo de dinero usa `<InputMoneda>`, que **separa los miles mientras se escribe** y preserva la posición del cursor. Para parsear lo que devuelve, `numeroMoneda()`; para mostrar un número, `formatearMoneda()`.
+
+Nunca `Number(texto)` sobre un monto: `Number("34.200")` da **34,2** y guarda un importe mil veces menor sin ningún error a la vista. Fue exactamente el bug que había en compras, inventarios, lotes y cuentas bancarias.
+
+Al precargar un campo desde un número va `formatearMoneda(n)`, no `String(n)`: `String(34200.5)` da `"34200.5"` con punto decimal de JS, que el componente leería como separador de miles.
+
+### Canal de pago: `IND_BANCO`, no el nombre
+
+`requiereCuentaBancaria(canal)` lee `CANALES_PAGOS.IND_BANCO` (`'S'`/`'N'`) para saber si al cobrar hay que pedir la cuenta receptora. Antes era un `idCanalPago !== "1"` escrito a mano, y después una heurística sobre el nombre; las dos se rompían solas. Un canal sin el indicador cargado se trata como efectivo.
 
 ### Temas y colores (`src/styles.css` + `src/components/ctell/color-themes.ts`)
 
@@ -261,6 +344,14 @@ Ver [docs/GUIA-IMPLEMENTACION.md](docs/GUIA-IMPLEMENTACION.md) — explica cómo
 
 - **Estados uniforme:** `'A'`/`'I'` en todas las tablas (no 1/0).
 - **Comparar estado:** usar `esActivo(x.activo)` en lugar de literales.
+- **Montos:** `<InputMoneda>` para cargar, `numeroMoneda()` para parsear, `formatearMoneda()` para mostrar. Nunca `Number()` sobre un monto.
+- **Totales:** derivarlos del detalle, no guardarlos en la cabecera.
+- **Toda baja que movió stock o plata tiene que revertirlo**, o rechazarse con 409 si no puede.
+- **Los helpers privados del *body* de un paquete no se pueden llamar desde SQL** (`PLS-00231`): calcular en una variable PL/SQL y usar la variable en el `INSERT`/`UPDATE`. Este error se cometió dos veces — si vas a llamar un helper dentro de una sentencia SQL, mirá primero dónde está declarado.
+- **`RETURNING CLOB` no va en una asignación PL/SQL suelta** (`PLS-00684`): usar `SELECT ... INTO x FROM DUAL`.
+- **Un `UNIQUE` sobre texto necesita el texto normalizado**, o no aplica: para Oracle `/Ventas` y `/ventas` son distintos. Normalizar en una función privada antes de guardar, y traducir el `DUP_VAL_ON_INDEX` a un 409 que diga qué hacer.
+
+Las tres están explicadas con ejemplos en [GUIA-IMPLEMENTACION.md](docs/GUIA-IMPLEMENTACION.md#37-trampas-de-plsql-que-se-repiten).
 - **Hash de contraseñas:** `STANDARD_HASH` SHA-256 hoy (débil frente a fuerza bruta). Si conseguís `GRANT EXECUTE ON SYS.DBMS_CRYPTO`, migra a PBKDF2 (versión lista en comentario dentro de `HASH_PASSWORD`). Migrar invalida hashes existentes.
 
 ## Comandos
@@ -283,3 +374,7 @@ Ver [docs/GUIA-IMPLEMENTACION.md](docs/GUIA-IMPLEMENTACION.md) — explica cómo
 5. **CORS por entorno:** proxy de Vite en dev, CORS directo en ORDS en producción (sin proxy ni Worker).
 6. **Estado uniforme:** `'A'`/`'I'` en todas las tablas, sin traducción.
 7. **Reejecutar `db/`:** frena dev primero (evita `ORA-00060`).
+8. **Los totales se derivan**, no se guardan en la cabecera.
+9. **El precio incluye IVA:** se desglosa, nunca se suma.
+10. **Comprar crea lotes, vender los descuenta, borrar revierte** — o se rechaza con 409.
+11. **`db/verificar.sql`** corre entero, no modifica nada y dice si el backend quedó consistente. Es lo primero después de ejecutar cambios en APEX.

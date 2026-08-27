@@ -837,6 +837,99 @@ export type FacturaCompra = {
   total: number;
   /** Cuántas líneas tiene, para mostrarlo sin traer el detalle. */
   lineas: number;
+  /** Suma de los pagos registrados. Derivado, no es una columna. */
+  montoPagado: number;
+  /** `total - montoPagado`. En 0 la factura está saldada. */
+  saldoPendiente: number;
+  /**
+   * `'S'` si algo de esta factura **ya se vendió**.
+   *
+   * La compra creó un lote por línea; editar o borrar la factura rehace o
+   * elimina esos lotes, y eso no se puede una vez que salió mercadería. El
+   * backend lo rechaza con 409 — esto permite avisarlo antes.
+   */
+  tieneSalidas: "S" | "N";
+};
+
+/** Una cuota del plan de pago de una factura de compra. */
+export type CuotaCompra = {
+  id: number;
+  nroCuota: number;
+  fechaVencimiento: string;
+  montoCuota: number;
+  montoPagado: number;
+  saldoPendiente: number;
+  /** Los valores del CHECK del DDL. Ojo: `PAGADA`, no `PAGADO` como en ventas. */
+  estado: "PENDIENTE" | "PARCIAL" | "PAGADA" | "VENCIDA";
+};
+
+export type PagoCompra = {
+  id: number;
+  idFactura: number;
+  idCuota: number | null;
+  nroCuota: number | null;
+  idCanalPago: number;
+  /** De LEFT JOIN: `null` si el canal, la cuenta o el banco se borraron después. */
+  canalPago: string | null;
+  idMoneda: number;
+  idCuentaBancaria: number | null;
+  banco: string | null;
+  numeroCuenta: string | null;
+  monto: number;
+  fechaPago: string;
+  referencia: string | null;
+  observacion: string | null;
+};
+
+export type ListaPagosCompras = { items: PagoCompra[] };
+
+/**
+ * Los indicadores de la home. El mes es el **calendario en curso**, no 30 días
+ * móviles: se compara contra el cierre del mes pasado, no contra una ventana
+ * que se corre sola.
+ */
+export type ResumenDashboard = {
+  ventasMes: number;
+  ventasMesAnterior: number;
+  comprasMes: number;
+  comprasMesAnterior: number;
+  /** Lo que queda en los lotes por lo que costó, no por lo que se vende. */
+  valorStock: number;
+  unidadesStock: number;
+  /** Artículos con stock por debajo de su mínimo. El único que pide una acción. */
+  articulosBajoMinimo: number;
+  /**
+   * Cuotas de compra con saldo que vencen dentro de `diasPorVencer` — incluidas
+   * las ya vencidas. Se cuentan cuotas y no facturas: lo que hay que pagar el
+   * viernes es una cuota, no la factura entera.
+   */
+  cuotasPorVencer: number;
+  montoPorVencer: number;
+  diasPorVencer: number;
+  /** Debajo de cuántas unidades un artículo entra en stock crítico. */
+  umbralCritico: number;
+  /**
+   * Ventas, compras e inventarios en una sola lista por fecha. Se unen en el
+   * backend porque cada origen está paginado por su lado: mezclar tres primeras
+   * páginas no da los últimos movimientos, da los últimos de cada uno.
+   */
+  movimientos: Array<{
+    tipo: "Venta" | "Compra" | "Inventario";
+    documento: string;
+    parte: string;
+    monto: number;
+    /** `'S'` en los inventarios: el monto son unidades, no plata. */
+    enUnidades: "S" | "N";
+    fecha: string;
+    estado: string;
+  }>;
+  stockCritico: Array<{
+    idArticulo: number;
+    articulo: string;
+    codigo: string | null;
+    disponible: number;
+    cantidadMinima: number | null;
+  }>;
 };
 
 /** La factura completa: cabecera, totales desglosados y sus líneas. */
@@ -848,6 +941,8 @@ export type FacturaCompraCompleta = Omit<FacturaCompra, "lineas"> & {
   /** El total menos el IVA. */
   totalGravado: number;
   detalle: FacturaCompraDetalle[];
+  /** El plan de pago que generó la condición. Vacío en una factura al contado. */
+  cuotas: CuotaCompra[];
 };
 
 export type ListaFacturasCompras = {
@@ -3312,6 +3407,50 @@ export const api = {
     /** Borra la factura **y su detalle**. Baja física: no hay estado. */
     eliminar: (id: number, idEmpresa: number) =>
       request<{ ok: boolean }>(`/facturas-compras/eliminar/${id}/${idEmpresa}`, {
+        method: "DELETE",
+      }),
+  },
+
+  dashboard: {
+    /**
+     * Los indicadores de la home, en una consulta.
+     *
+     * Cada monto viene con el del **mes anterior** en vez de un porcentaje ya
+     * calculado: con los dos números la pantalla puede distinguir "no cambió"
+     * de "el mes pasado no hubo nada", que con un porcentaje solo se confunden.
+     */
+    resumen: (params: { idEmpresa: number; idSucursal: number }) =>
+      request<ResumenDashboard>(
+        `/dashboard/resumen?idEmpresa=${params.idEmpresa}&idSucursal=${params.idSucursal}`,
+      ),
+  },
+
+  /**
+   * Pagos a proveedores. Espejo de `ventasCobros`: mismo contrato, dinero
+   * saliendo en vez de entrando.
+   */
+  comprasPagos: {
+    listar: (idFactura: number, idEmpresa: number) =>
+      request<ListaPagosCompras>(`/compras-pagos/listar/${idFactura}/${idEmpresa}`),
+    crear: (datos: {
+      idFactura: number;
+      idCuota?: number;
+      idEmpresa: number;
+      idCanalPago: number;
+      idMoneda: number;
+      idCuentaBancaria?: number;
+      monto: number;
+      fechaPago: string;
+      referencia?: string;
+      observacion?: string;
+    }) =>
+      request<{ id: number; ok: boolean }>("/compras-pagos/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+    /** Borra el pago y devuelve el saldo a la factura, reabriendo su cuota. */
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean; idFactura: number }>(`/compras-pagos/eliminar/${id}/${idEmpresa}`, {
         method: "DELETE",
       }),
   },

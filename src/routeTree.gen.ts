@@ -33,6 +33,7 @@ import { Route as AuthListasDescuentosRouteImport } from './routes/_auth.listas-
 import { Route as AuthLotesRouteImport } from './routes/_auth.lotes'
 import { Route as AuthMenuRouteImport } from './routes/_auth.menu'
 import { Route as AuthMonedasRouteImport } from './routes/_auth.monedas'
+import { Route as AuthPagosRouteImport } from './routes/_auth.pagos'
 import { Route as AuthPaisesRouteImport } from './routes/_auth.paises'
 import { Route as AuthPersonasRouteImport } from './routes/_auth.personas'
 import { Route as AuthProfesoresRouteImport } from './routes/_auth.profesores'
@@ -163,6 +164,11 @@ const AuthMonedasRoute = AuthMonedasRouteImport.update({
   path: '/monedas',
   getParentRoute: () => AuthRoute,
 } as any)
+const AuthPagosRoute = AuthPagosRouteImport.update({
+  id: '/pagos',
+  path: '/pagos',
+  getParentRoute: () => AuthRoute,
+} as any)
 const AuthPaisesRoute = AuthPaisesRouteImport.update({
   id: '/paises',
   path: '/paises',
@@ -233,6 +239,7 @@ export interface FileRoutesByFullPath {
   '/lotes': typeof AuthLotesRoute
   '/menu': typeof AuthMenuRoute
   '/monedas': typeof AuthMonedasRoute
+  '/pagos': typeof AuthPagosRoute
   '/paises': typeof AuthPaisesRoute
   '/personas': typeof AuthPersonasRoute
   '/profesores': typeof AuthProfesoresRoute
@@ -267,6 +274,7 @@ export interface FileRoutesByTo {
   '/lotes': typeof AuthLotesRoute
   '/menu': typeof AuthMenuRoute
   '/monedas': typeof AuthMonedasRoute
+  '/pagos': typeof AuthPagosRoute
   '/paises': typeof AuthPaisesRoute
   '/personas': typeof AuthPersonasRoute
   '/profesores': typeof AuthProfesoresRoute
@@ -303,6 +311,7 @@ export interface FileRoutesById {
   '/_auth/lotes': typeof AuthLotesRoute
   '/_auth/menu': typeof AuthMenuRoute
   '/_auth/monedas': typeof AuthMonedasRoute
+  '/_auth/pagos': typeof AuthPagosRoute
   '/_auth/paises': typeof AuthPaisesRoute
   '/_auth/personas': typeof AuthPersonasRoute
   '/_auth/profesores': typeof AuthProfesoresRoute
@@ -339,6 +348,7 @@ export interface FileRouteTypes {
     | '/lotes'
     | '/menu'
     | '/monedas'
+    | '/pagos'
     | '/paises'
     | '/personas'
     | '/profesores'
@@ -373,6 +383,7 @@ export interface FileRouteTypes {
     | '/lotes'
     | '/menu'
     | '/monedas'
+    | '/pagos'
     | '/paises'
     | '/personas'
     | '/profesores'
@@ -408,6 +419,7 @@ export interface FileRouteTypes {
     | '/_auth/lotes'
     | '/_auth/menu'
     | '/_auth/monedas'
+    | '/_auth/pagos'
     | '/_auth/paises'
     | '/_auth/personas'
     | '/_auth/profesores'
@@ -594,6 +606,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthMonedasRouteImport
       parentRoute: typeof AuthRoute
     }
+    '/_auth/pagos': {
+      id: '/_auth/pagos'
+      path: '/pagos'
+      fullPath: '/pagos'
+      preLoaderRoute: typeof AuthPagosRouteImport
+      parentRoute: typeof AuthRoute
+    }
     '/_auth/paises': {
       id: '/_auth/paises'
       path: '/paises'
@@ -683,6 +702,7 @@ interface AuthRouteChildren {
   AuthLotesRoute: typeof AuthLotesRoute
   AuthMenuRoute: typeof AuthMenuRoute
   AuthMonedasRoute: typeof AuthMonedasRoute
+  AuthPagosRoute: typeof AuthPagosRoute
   AuthPaisesRoute: typeof AuthPaisesRoute
   AuthPersonasRoute: typeof AuthPersonasRoute
   AuthProfesoresRoute: typeof AuthProfesoresRoute
@@ -717,6 +737,7 @@ const AuthRouteChildren: AuthRouteChildren = {
   AuthLotesRoute: AuthLotesRoute,
   AuthMenuRoute: AuthMenuRoute,
   AuthMonedasRoute: AuthMonedasRoute,
+  AuthPagosRoute: AuthPagosRoute,
   AuthPaisesRoute: AuthPaisesRoute,
   AuthPersonasRoute: AuthPersonasRoute,
   AuthProfesoresRoute: AuthProfesoresRoute,

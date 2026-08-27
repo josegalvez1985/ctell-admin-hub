@@ -75,7 +75,11 @@ db/                      Backend: un archivo SQL por tabla
 ├── articulos-ubicaciones.sql  Cruce: en qué ubicaciones está cada artículo
 ├── inventarios-triggers-ddl.sql  DDL aparte: corrige los triggers de INVENTARIOS
 ├── inventarios.sql      Conteos físicos con máquina de estados
-└── facturas-compras.sql Cabecera + detalle. La primera TRANSACCIÓN del proyecto
+├── facturas-compras.sql Cabecera + detalle. La primera TRANSACCIÓN del proyecto
+│                        Cada línea CREA UN LOTE: comprar hace entrar el stock
+├── facturas-compras-pagos.sql  Pagos a proveedores. Espejo de ventas-cobros
+├── dashboard.sql        PKG_DASHBOARD: los indicadores de la home, en 1 consulta
+└── verificar.sql        Sólo lectura: dice si el backend quedó consistente
 
 src/
 ├── routes/              Rutas (el archivo define la URL)
@@ -83,11 +87,17 @@ src/
 │   ├── index.tsx        "/" → login (elegir empresa + credenciales)
 │   ├── _auth.tsx        Layout protegido (requiere token)
 │   ├── _auth.home.tsx           "/home"          → panel general
+│   ├── _auth.punto-venta.tsx    "/punto-venta"   → caja: carrito y cobro
+│   ├── _auth.ventas.tsx         "/ventas"        → comprobantes: ver y eliminar
+│   ├── _auth.cobros.tsx         "/cobros"        → cobros de ventas
+│   ├── _auth.pagos.tsx          "/pagos"         → pagos a proveedores
 │   ├── _auth.configuracion.tsx  "/configuracion" → preferencias
 │   └── _auth.<tabla>.tsx        una por cada ABM
 ├── components/
 │   ├── ctell/           Componentes propios del proyecto
 │   │   ├── empresa-provider.tsx  Empresa activa de la sesión
+│   │   ├── AccesosRapidos.tsx    Botonera de la home, ordenada por uso
+│   │   ├── InputMoneda.tsx       Campo de monto: separa miles al escribir
 │   │   ├── LogoEmpresa.tsx       Logo con iniciales de respaldo
 │   │   ├── ImagenArticulo.tsx    Imagen con ícono de respaldo
 │   │   ├── TableHeadFiltrable.tsx / TableHeadOrdenable.tsx
@@ -100,7 +110,9 @@ src/
 │   ├── use-tabla-listado.ts         Búsqueda y orden de los listados
 │   └── use-cerrar-sesion-al-vencer.ts
 ├── lib/
-│   └── api.ts           Cliente HTTP contra ORDS
+│   ├── api.ts           Cliente HTTP contra ORDS
+│   ├── moneda.ts        Formato y parseo es-PY: el ÚNICO lugar donde se hace
+│   └── uso-paginas.ts   Cuántas veces se abrió cada página (localStorage)
 └── styles.css           Design system (variables de color en oklch)
 ```
 
@@ -984,3 +996,41 @@ Antes de escribir código nuevo, leé la
 [Guía de implementación](docs/GUIA-IMPLEMENTACION.md): explica cómo agregar una
 tabla nueva de punta a punta — paquete PL/SQL, endpoints ORDS, cliente HTTP,
 página y formulario — siguiendo los patrones del proyecto.
+
+Las cuatro que más se olvidan:
+
+**Los totales se derivan, no se guardan.** Ni `VENTAS_CABECERAS` ni
+`FACTURAS_COMPRAS_CAB` tienen columnas de monto: total, IVA, cobrado y saldo
+salen de sumar el detalle en cada consulta. Guardarlos permitiría que la cabecera
+diga 500.000 mientras sus líneas suman 480.000.
+
+**El precio incluye IVA.** Se desglosa (`gravado = neto / 1,1`, `iva = neto −
+gravado`), nunca se suma. Sumarlo cobra el impuesto dos veces.
+Ver [Columnas calculadas](docs/GUIA-IMPLEMENTACION.md#34-columnas-calculadas-lo-que-no-se-guarda).
+
+**Todo monto pasa por `lib/moneda.ts`.** `<InputMoneda>` para cargar,
+`numeroMoneda()` para parsear, `formatearMoneda()` para mostrar. Nunca
+`Number(texto)`: `Number("34.200")` da **34,2** y guarda un importe mil veces
+menor sin ningún error a la vista.
+Ver [Montos](docs/GUIA-FRONTEND.md#721-montos-inputmoneda-y-libmonedats).
+
+**Lo que una operación movió, su baja lo revierte — o se rechaza con 409.**
+Comprar crea lotes, vender los descuenta, borrar repone. Una venta con cobros o
+una compra ya vendida no se borran.
+Ver [Transacciones que mueven stock o plata](docs/GUIA-IMPLEMENTACION.md#36-transacciones-que-mueven-stock-o-plata).
+
+### Tres errores de PL/SQL que ya se cometieron
+
+`PLS-00231` (helper privado del body usado dentro de un `INSERT`/`UPDATE`),
+`PLS-00684` (`RETURNING CLOB` en una asignación suelta) y `ORA-00932` (una
+función aplicada a una columna `LONG`). Salen del estilo normal del código de
+acá, así que conviene reconocerlos:
+[Trampas de PL/SQL](docs/GUIA-IMPLEMENTACION.md#37-trampas-de-plsql-que-se-repiten).
+
+### Después de tocar `db/`
+
+Correr [db/verificar.sql](db/verificar.sql) entero en APEX. No modifica nada:
+chequea que los paquetes estén `VALID`, que existan las columnas que el código da
+por hechas, que los módulos ORDS tengan CORS, y ocho controles de datos donde
+**cero filas es lo correcto** (lotes en negativo, desgloses de IVA que no cuadran,
+ventas cobradas de más, cuotas cuyo pagado no coincide con sus movimientos).

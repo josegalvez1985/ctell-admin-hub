@@ -80,6 +80,22 @@ type Vista = { tipo: "lista" } | { tipo: "alta" } | { tipo: "edicion"; pagina: P
  */
 const RUTAS_DISPONIBLES = RUTAS_APP;
 
+/**
+ * La descripción de una ruta en el desplegable: dónde está ya cargada.
+ *
+ * `PAGINAS_UK` es `(ID_MODULO, RUTA, ENTRADA)`, así que repetir una ruta en otro
+ * módulo **es válido** — dos entradas de menú al mismo destino, para dos
+ * perfiles que lo buscan en lugares distintos. Por eso esto avisa en vez de
+ * bloquear: quitar la opción de la lista dejaría al usuario sin entender por qué
+ * falta, y volvería a cargarla con otro nombre.
+ */
+function describirRuta(ruta: string, paginas: Pagina[]): string {
+  const usos = paginas.filter((p) => p.ruta === ruta);
+  if (usos.length === 0) return ruta;
+  const donde = usos.map((p) => `${p.modulo} › ${p.nombre}`).join(", ");
+  return `${ruta} · Ya está en ${donde}`;
+}
+
 const MENSAJE_ERROR = (error: unknown, fallback: string) =>
   error instanceof ApiError ? error.message : fallback;
 
@@ -309,6 +325,14 @@ function PanelForm({ pagina, onVolver }: { pagina?: Pagina; onVolver: () => void
     queryFn: () => api.modulos.listar(),
   });
 
+  // Las páginas ya cargadas, para avisar cuándo una ruta se repite. Misma
+  // queryKey que el listado de atrás: se comparte la respuesta, no se vuelve
+  // a pedir.
+  const { data: paginas } = useQuery({
+    queryKey: ["paginas"],
+    queryFn: () => api.paginas.listar(),
+  });
+
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     // Sin defaults React avisa por inputs no controlados.
@@ -324,6 +348,20 @@ function PanelForm({ pagina, onVolver }: { pagina?: Pagina; onVolver: () => void
       activo: pagina ? esActivo(pagina.activo) : true,
     },
   });
+
+  // La combinación que el UNIQUE de la base rechaza. Se mira en vivo sobre los
+  // tres campos, no sólo la ruta: cambiar el módulo o la sección la resuelve.
+  // En edición se excluye la propia página, que si no chocaría consigo misma.
+  const idModulo = form.watch("idModulo");
+  const rutaElegida = form.watch("ruta");
+  const entradaElegida = form.watch("entrada");
+  const duplicada = (paginas?.items ?? []).some(
+    (p) =>
+      p.id !== pagina?.id &&
+      String(p.idModulo) === idModulo &&
+      p.ruta === rutaElegida &&
+      p.entrada === entradaElegida,
+  );
 
   const guardar = useMutation({
     mutationFn: (v: FormValues) =>
@@ -423,7 +461,12 @@ function PanelForm({ pagina, onVolver }: { pagina?: Pagina; onVolver: () => void
                     opciones={RUTAS_DISPONIBLES.map((ruta) => ({
                       valor: ruta.valor,
                       etiqueta: ruta.label,
-                      descripcion: ruta.valor,
+                      // Dónde está ya cargada, si lo está. Se MUESTRA en vez de
+                      // esconderla: la misma ruta en otro módulo es válida —dos
+                      // entradas al mismo destino para dos perfiles— y sacarla
+                      // de la lista dejaría al usuario sin entender por qué
+                      // falta. Con el dónde, decide él.
+                      descripcion: describirRuta(ruta.valor, paginas?.items ?? []),
                     }))}
                     value={field.value}
                     onChange={field.onChange}
@@ -443,6 +486,16 @@ function PanelForm({ pagina, onVolver }: { pagina?: Pagina; onVolver: () => void
                     ? `La ruta guardada ("${field.value}") no existe en el proyecto. Elegí una de la lista.`
                     : "Las rutas salen del router: si creaste la página .tsx, está acá."}
                 </FormDescription>
+                {/* La colisión EXACTA —mismo módulo, misma ruta, misma sección—
+                    es la que el UNIQUE de la base rechaza. Se avisa mientras se
+                    completa el formulario y no al guardar: descubrirlo después
+                    de cargar nombre, orden y estado obliga a rehacer todo. */}
+                {duplicada && (
+                  <p className="text-xs font-medium text-destructive">
+                    Ese módulo ya tiene esta ruta en la misma sección. Guardar va a fallar: cambiá
+                    el módulo, la sección, o editá la página que ya existe.
+                  </p>
+                )}
                 <FormMessage />
               </FormItem>
             )}
