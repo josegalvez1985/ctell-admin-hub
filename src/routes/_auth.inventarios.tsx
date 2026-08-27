@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { z } from "zod";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
+import { InputMoneda } from "@/components/ctell/InputMoneda";
 import { SelectorArticulo } from "@/components/ctell/SelectorArticulo";
 import { SelectorModal } from "@/components/ctell/SelectorModal";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
@@ -56,6 +57,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { tituloPagina } from "@/lib/marca";
+import { esMontoValido, numeroMoneda } from "@/lib/moneda";
 import { cn } from "@/lib/utils";
 import {
   Table,
@@ -1185,7 +1187,7 @@ function LoteRapidoDialog({
         // documenta que el lote nace vacío a propósito.
         cantidad: 0,
         cantidadDispon: 0,
-        ...(costo.trim() ? { costo: Number(costo) } : {}),
+        ...(costo.trim() ? { costo: numeroMoneda(costo) } : {}),
         ...(fechaVencimiento ? { fechaVencimiento } : {}),
       }),
     onSuccess: (r) => {
@@ -1205,7 +1207,7 @@ function LoteRapidoDialog({
       setError("Elegí un artículo.");
       return;
     }
-    if (costo.trim() && (Number.isNaN(Number(costo)) || Number(costo) < 0)) {
+    if (costo.trim() && !esMontoValido(costo)) {
       setError("El costo tiene que ser un número no negativo.");
       return;
     }
@@ -1256,13 +1258,12 @@ function LoteRapidoDialog({
               ahora, y pedirlo acá era un dato más que nadie iba a completar. */}
           <div className="space-y-2">
             <label className="text-sm font-medium">Costo</label>
-            <Input
+            <InputMoneda
               value={costo}
-              onChange={(e) => setCosto(e.target.value)}
-              inputMode="decimal"
+              onChange={setCosto}
               placeholder="Opcional"
               autoComplete="off"
-              className="h-11 tabular-nums sm:h-10"
+              className="h-11 sm:h-10"
             />
           </div>
 

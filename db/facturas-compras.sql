@@ -23,13 +23,51 @@
 -- Base de los endpoints: https://oracleapex.com/ords/ctell/facturas-compras/
 --
 -- Tablas (no las crea ni las altera; el DDL se administra aparte):
---   FACTURAS_COMPRAS_CAB  ID_FACTURA, ID_EMPRESA, ID_SUCURSAL, ID_PROVEEDOR,
---                         NUMERO_FACTURA, FECHA_FACTURA, ID_MONEDA, TIP_CAMBIO,
---                         ID_CONDICION, OBSERVACION,
---                         FECHA_CREACION, FECHA_ACTUALIZACION
---   FACTURAS_COMPRA_DET   ID_DETALLE, ID_FACTURA, ID_ARTICULO, CANTIDAD,
---                         PRECIO_UNITARIO, SUBTOTAL (VIRTUAL), ID_IVA,
---                         FECHA_CREACION
+--   FACTURAS_COMPRAS_CAB    ID_FACTURA, ID_EMPRESA, ID_SUCURSAL, ID_PROVEEDOR,
+--                           NUMERO_FACTURA, FECHA_FACTURA, ID_MONEDA,
+--                           TIP_CAMBIO, ID_CONDICION, OBSERVACION,
+--                           FECHA_CREACION, FECHA_ACTUALIZACION
+--   FACTURAS_COMPRAS_DET    ID_DETALLE, ID_FACTURA, ID_ARTICULO, CANTIDAD,
+--                           PRECIO_UNITARIO, SUBTOTAL (VIRTUAL), ID_IVA,
+--                           ID_LOTE, FECHA_CREACION
+--   FACTURAS_COMPRAS_CUOTAS ID_CUOTA, ID_FACTURA, NRO_CUOTA, FECHA_VENCIMIENTO,
+--                           MONTO_CUOTA, MONTO_PAGADO, SALDO_PENDIENTE (VIRTUAL),
+--                           ESTADO, FECHA_CREACION, FECHA_ACTUALIZACION
+--   FACTURAS_COMPRAS_PAGOS  ID_PAGO, ID_FACTURA, ID_CUOTA, ID_CANAL_PAGO,
+--                           ID_CUENTA_BANCARIA, ID_MONEDA, MONTO, FECHA_PAGO,
+--                           REFERENCIA, OBSERVACION, FECHA_CREACION,
+--                           FECHA_ACTUALIZACION
+--
+--------------------------------------------------------------------------------
+-- LA COMPRA ES LO QUE HACE ENTRAR EL STOCK
+--
+-- Cada linea del detalle crea SU PROPIO lote, con la cantidad comprada y el
+-- precio unitario como costo. No se suma a un lote existente: cada compra entro
+-- a un precio distinto, y mezclarlas perderia a cuanto entro cada unidad.
+--
+-- El lote nace sin NUMERO_LOTE ni FECHA_VENCIMIENTO —las dos columnas son
+-- nullable y esos datos no vienen en la factura—. Se completan editando el lote
+-- si hacen falta; el FIFO de ventas ordena por vencimiento y los deja al final
+-- (NULLS LAST) mientras esten vacios.
+--
+-- FACTURAS_COMPRAS_DET.ID_LOTE es lo que ata la linea con el lote que creo. Sin
+-- esa columna, borrar la factura no sabria que lote sacar del stock. Es la misma
+-- solucion que VENTAS_DETALLES.ID_LOTE, en el otro sentido.
+--
+-- CORRER UNA VEZ EN APEX antes que este archivo:
+--
+--   ALTER TABLE FACTURAS_COMPRAS_DET ADD (ID_LOTE NUMBER);
+--   ALTER TABLE FACTURAS_COMPRAS_DET ADD CONSTRAINT FCD_FK_LOTES
+--     FOREIGN KEY (ID_LOTE) REFERENCES LOTES (ID_LOTE);
+--
+-- SI ALGO YA SALIO, LA FACTURA SE CONGELA. Editar el detalle o borrar la factura
+-- rehace o elimina esos lotes, y eso no se puede si la mercaderia ya se vendio:
+-- el stock quedaria por debajo del fisico, o habria unidades vendidas sin
+-- ninguna compra que respalde su costo. Se detecta con CANTIDAD_DISPON <
+-- CANTIDAD y se rechaza con 409. Igual que una factura con pagos registrados.
+--
+-- Las facturas cargadas ANTES de este cambio no tienen ID_LOTE ni trajeron
+-- stock: borrarlas no saca nada, que es lo correcto para ellas.
 --
 --------------------------------------------------------------------------------
 -- ES LA PRIMERA TRANSACCION DEL PROYECTO, Y ESO CAMBIA VARIAS COSAS
@@ -391,14 +429,74 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
   -- NO HACE COMMIT NI ROLLBACK: la transaccion la maneja quien lo llama, que es
   -- justamente el punto de que cabecera y detalle entren juntos.
   ------------------------------------------------------------------------------
+  -- Privado: TRUE si algun lote que trajo esta factura ya tuvo salidas.
+  --
+  -- Se detecta con CANTIDAD_DISPON < CANTIDAD: el lote nace con las dos iguales,
+  -- y toda venta baja la primera. Es la condicion que bloquea editar y borrar —
+  -- deshacer una compra cuya mercaderia ya se vendio dejaria el stock por debajo
+  -- de lo fisico, o un lote huerfano sin factura que respalde su costo.
+  FUNCTION TIENE_SALIDAS (p_id_factura IN NUMBER) RETURN BOOLEAN IS
+    l_con_salidas PLS_INTEGER;
+  BEGIN
+    SELECT COUNT(*) INTO l_con_salidas
+      FROM FACTURAS_COMPRAS_DET d
+      JOIN LOTES lo ON lo.ID_LOTE = d.ID_LOTE
+     WHERE d.ID_FACTURA = p_id_factura
+       AND NVL(lo.CANTIDAD_DISPON, lo.CANTIDAD) < lo.CANTIDAD;
+    RETURN l_con_salidas > 0;
+  END TIENE_SALIDAS;
+
+  -- Privado: borra los lotes que trajo la factura, junto con sus lineas.
+  --
+  -- El orden es al reves de la FK: primero las lineas que apuntan al lote, y
+  -- recien despues el lote. Al reves da ORA-02292.
+  PROCEDURE BORRAR_DETALLE_Y_LOTES (p_id_factura IN NUMBER) IS
+    TYPE t_ids IS TABLE OF NUMBER;
+    l_lotes t_ids;
+  BEGIN
+    SELECT ID_LOTE BULK COLLECT INTO l_lotes
+      FROM FACTURAS_COMPRAS_DET WHERE ID_FACTURA = p_id_factura AND ID_LOTE IS NOT NULL;
+    DELETE FROM FACTURAS_COMPRAS_DET WHERE ID_FACTURA = p_id_factura;
+    FORALL i IN 1 .. l_lotes.COUNT
+      DELETE FROM LOTES WHERE ID_LOTE = l_lotes(i);
+  END BORRAR_DETALLE_Y_LOTES;
+
+  -- Privado: rehace las cuotas de la factura segun su condicion de pago.
+  --
+  -- Se borran y se generan de nuevo en vez de ajustarse: el total pudo cambiar
+  -- al editar el detalle, y repartir un total nuevo sobre cuotas viejas deja
+  -- montos que no suman la factura. Sin condicion de pago no hay cuotas — es una
+  -- factura al contado.
+  PROCEDURE REGENERAR_CUOTAS (p_id_factura IN NUMBER) IS
+    l_condicion NUMBER; l_dias NUMBER := 0; l_cuotas NUMBER := 1;
+    l_total NUMBER; l_fecha DATE;
+  BEGIN
+    SELECT ID_CONDICION, FECHA_FACTURA INTO l_condicion, l_fecha
+      FROM FACTURAS_COMPRAS_CAB WHERE ID_FACTURA = p_id_factura;
+    DELETE FROM FACTURAS_COMPRAS_CUOTAS WHERE ID_FACTURA = p_id_factura;
+    IF l_condicion IS NULL THEN RETURN; END IF;
+    SELECT NVL(SUM(SUBTOTAL), 0) INTO l_total FROM FACTURAS_COMPRAS_DET WHERE ID_FACTURA = p_id_factura;
+    -- El CHECK del DDL exige MONTO_CUOTA > 0: una factura en cero no lleva cuotas.
+    IF l_total <= 0 THEN RETURN; END IF;
+    SELECT NVL(DIAS_PAGO, 0), NVL(CANTIDAD_CUOTAS, 1) INTO l_dias, l_cuotas
+      FROM CONDICIONES_PAGO WHERE ID_CONDICION = l_condicion;
+    IF l_cuotas < 1 THEN l_cuotas := 1; END IF;
+    FOR n IN 1 .. l_cuotas LOOP
+      INSERT INTO FACTURAS_COMPRAS_CUOTAS (ID_FACTURA, NRO_CUOTA, FECHA_VENCIMIENTO, MONTO_CUOTA, MONTO_PAGADO, ESTADO)
+        VALUES (p_id_factura, n, l_fecha + (l_dias * n), ROUND(l_total / l_cuotas, 2), 0, 'PENDIENTE');
+    END LOOP;
+  END REGENERAR_CUOTAS;
+
   PROCEDURE GUARDAR_DETALLE (
-    p_id_factura IN  NUMBER,
-    p_id_empresa IN  NUMBER,
-    p_detalle    IN  CLOB,
-    p_lineas     OUT NUMBER,
-    p_error      OUT VARCHAR2
+    p_id_factura  IN  NUMBER,
+    p_id_empresa  IN  NUMBER,
+    p_id_sucursal IN  NUMBER,
+    p_detalle     IN  CLOB,
+    p_lineas      OUT NUMBER,
+    p_error       OUT VARCHAR2
   ) IS
     l_lineas PLS_INTEGER := 0;
+    l_id_lote NUMBER;
   BEGIN
     p_error  := NULL;
     p_lineas := 0;
@@ -470,16 +568,37 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
         END IF;
       END;
 
+      -- LA COMPRA ES LO QUE HACE ENTRAR EL STOCK: cada linea crea SU PROPIO
+      -- lote. No se suma a un lote existente porque cada compra tiene su costo,
+      -- y mezclarlas perderia a que precio entro cada unidad.
+      --
+      -- Sin numero de lote ni vencimiento: las dos columnas son nullable y esos
+      -- datos no viajan en la factura. Se completan editando el lote si hace
+      -- falta —el FIFO de ventas los ordena por vencimiento, y sin el quedan al
+      -- final (NULLS LAST)—.
+      --
+      -- CANTIDAD_DISPON arranca igual a CANTIDAD: nada se consumio todavia. Esa
+      -- igualdad es despues la que dice si el lote tuvo salidas, y por lo tanto
+      -- si la factura se puede editar o borrar.
+      INSERT INTO LOTES (
+        ID_EMPRESA, ID_SUCURSAL, ID_ARTICULO, CANTIDAD, CANTIDAD_DISPON, COSTO,
+        FECHA_ENTRADA, FECHA_CREACION, FECHA_ACTUALIZACION
+      ) VALUES (
+        p_id_empresa, p_id_sucursal, linea.idArticulo, linea.cantidad, linea.cantidad,
+        linea.precioUnitario, SYSDATE, SYSTIMESTAMP, SYSTIMESTAMP
+      ) RETURNING ID_LOTE INTO l_id_lote;
+
       -- SUBTOTAL NO SE MENCIONA: es una columna virtual y mencionarla da
       -- ORA-54013. La calcula la base como CANTIDAD*PRECIO_UNITARIO.
-      INSERT INTO FACTURAS_COMPRA_DET (
-        ID_FACTURA, ID_ARTICULO, CANTIDAD, PRECIO_UNITARIO, ID_IVA, FECHA_CREACION
+      INSERT INTO FACTURAS_COMPRAS_DET (
+        ID_FACTURA, ID_ARTICULO, CANTIDAD, PRECIO_UNITARIO, ID_IVA, ID_LOTE, FECHA_CREACION
       ) VALUES (
         p_id_factura,
         linea.idArticulo,
         linea.cantidad,
         linea.precioUnitario,
         linea.idIva,
+        l_id_lote,
         SYSTIMESTAMP
       );
     END LOOP;
@@ -601,12 +720,12 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
                  -- lo impide) pero si alguna quedo asi, SUM devuelve NULL y el
                  -- frontend recibiria null en vez de un numero.
                  'total'          VALUE NVL((SELECT SUM(d.SUBTOTAL)
-                                               FROM FACTURAS_COMPRA_DET d
+                                               FROM FACTURAS_COMPRAS_DET d
                                               WHERE d.ID_FACTURA = f.ID_FACTURA), 0),
                  -- Cuantas lineas tiene, para mostrarlo en el listado sin
                  -- traerse el detalle entero.
                  'lineas'         VALUE (SELECT COUNT(*)
-                                           FROM FACTURAS_COMPRA_DET d
+                                           FROM FACTURAS_COMPRAS_DET d
                                           WHERE d.ID_FACTURA = f.ID_FACTURA)
                  RETURNING CLOB
                ) AS fila,
@@ -731,7 +850,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
                  RETURNING CLOB
                ) AS fila,
                d.ID_DETALLE AS id
-          FROM FACTURAS_COMPRA_DET d
+          FROM FACTURAS_COMPRAS_DET d
           JOIN ARTICULOS a ON a.ID_ARTICULO = d.ID_ARTICULO
           -- LEFT en IVA: la columna ID_IVA es NULLABLE en el DDL, asi que una
           -- linea sin tasa asignada existe. Con JOIN interno esa linea
@@ -772,7 +891,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
              -- resueltos para que la pantalla no repita la formula del IVA —que
              -- es justo donde es facil equivocarse.
              'total'          VALUE NVL((SELECT SUM(d.SUBTOTAL)
-                                           FROM FACTURAS_COMPRA_DET d
+                                           FROM FACTURAS_COMPRAS_DET d
                                           WHERE d.ID_FACTURA = f.ID_FACTURA), 0),
              -- Los dos totales usan el MISMO CASE que cada linea, no una formula
              -- propia: si divergieran, la suma de las lineas no coincidiria con
@@ -785,7 +904,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
                                                            NVL(ROUND(d.SUBTOTAL /
                                                            NULLIF(i2.IVA_DIVISION, 0), 2), 0)
                                                     END)
-                                           FROM FACTURAS_COMPRA_DET d
+                                           FROM FACTURAS_COMPRAS_DET d
                                            LEFT JOIN IVA i2 ON i2.ID_IVA = d.ID_IVA
                                           WHERE d.ID_FACTURA = f.ID_FACTURA), 0),
              'totalIva'       VALUE NVL((SELECT SUM(CASE
@@ -796,7 +915,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
                                                       ELSE NVL(ROUND(d.SUBTOTAL /
                                                            NULLIF(i2.IVA_DIVISION, 0), 2), 0)
                                                     END)
-                                           FROM FACTURAS_COMPRA_DET d
+                                           FROM FACTURAS_COMPRAS_DET d
                                            LEFT JOIN IVA i2 ON i2.ID_IVA = d.ID_IVA
                                           WHERE d.ID_FACTURA = f.ID_FACTURA), 0),
              'detalle'        VALUE NVL(l_detalle, TO_CLOB('[]')) FORMAT JSON
@@ -972,7 +1091,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
 
     -- SIN COMMIT ENTRE MEDIO: si el detalle falla, el ROLLBACK deshace tambien
     -- la cabecera. Es todo el punto de recibir el detalle en el mismo request.
-    GUARDAR_DETALLE(l_id, l_id_empresa, p_detalle, l_lineas, l_error);
+    GUARDAR_DETALLE(l_id, l_id_empresa, l_id_sucursal, p_detalle, l_lineas, l_error);
 
     IF l_error IS NOT NULL THEN
       ROLLBACK;
@@ -990,6 +1109,10 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
       p_resultado := '{"error":"La factura necesita al menos una linea de detalle"}';
       RETURN;
     END IF;
+
+    -- Despues del detalle: las cuotas se reparten sobre el total, que recien
+    -- existe cuando las lineas estan grabadas.
+    REGENERAR_CUOTAS(l_id);
 
     COMMIT;
     p_status_code := 201;
@@ -1047,6 +1170,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
     l_existe       PLS_INTEGER;
     l_lineas       NUMBER;
     l_error        VARCHAR2(500);
+    l_sucursal_lote NUMBER;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -1117,6 +1241,17 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
       END IF;
     END IF;
 
+    -- UNA FACTURA CON PAGOS NO SE EDITA. Cambiar el detalle mueve el total, y
+    -- las cuotas se rehacen sobre ese total nuevo: borrar cuotas que ya tienen
+    -- pagos apuntando romperia la FK, y ajustarlas dejaria montos que no suman
+    -- la factura. Hay que anular los pagos primero, uno por uno.
+    SELECT COUNT(*) INTO l_existe FROM FACTURAS_COMPRAS_PAGOS WHERE ID_FACTURA = l_id;
+    IF l_existe > 0 THEN
+      p_status_code := 409;
+      p_resultado := '{"error":"La factura tiene pagos registrados: anulalos antes de modificarla"}';
+      RETURN;
+    END IF;
+
     -- NVL en cada columna: un parametro ausente conserva el valor actual.
     --
     -- ID_EMPRESA sale del SET a proposito: mover una factura a otra empresa es
@@ -1149,9 +1284,23 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
     -- actualizacion es solo de la cabecera y las lineas quedan como estaban —
     -- que es lo que espera un PUT que cambia unicamente la observacion.
     IF p_detalle IS NOT NULL AND DBMS_LOB.GETLENGTH(p_detalle) > 0 THEN
-      DELETE FROM FACTURAS_COMPRA_DET WHERE ID_FACTURA = l_id;
+      -- Rehacer el detalle implica rehacer los lotes que trajo la factura, y eso
+      -- no se puede si la mercaderia ya salio: borrar un lote a medio vender
+      -- dejaria el stock por debajo del fisico.
+      IF TIENE_SALIDAS(l_id) THEN
+        ROLLBACK;
+        p_status_code := 409;
+        p_resultado := '{"error":"Ya se vendio mercaderia de esta factura: no se puede cambiar el detalle"}';
+        RETURN;
+      END IF;
 
-      GUARDAR_DETALLE(l_id, l_id_empresa, p_detalle, l_lineas, l_error);
+      -- La sucursal sale de la cabecera ya actualizada: `l_id_sucursal` puede
+      -- venir NULL en un PUT que no la toca, y el lote la necesita si o si.
+      SELECT ID_SUCURSAL INTO l_sucursal_lote FROM FACTURAS_COMPRAS_CAB WHERE ID_FACTURA = l_id;
+
+      BORRAR_DETALLE_Y_LOTES(l_id);
+
+      GUARDAR_DETALLE(l_id, l_id_empresa, l_sucursal_lote, p_detalle, l_lineas, l_error);
 
       IF l_error IS NOT NULL THEN
         -- El ROLLBACK devuelve tambien el DELETE: la factura queda con su
@@ -1169,6 +1318,10 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
         RETURN;
       END IF;
     END IF;
+
+    -- Siempre, no solo cuando vino el detalle: cambiar la CONDICION de pago sin
+    -- tocar las lineas tambien cambia el plan de cuotas.
+    REGENERAR_CUOTAS(l_id);
 
     COMMIT;
     p_status_code := 200;
@@ -1204,6 +1357,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
     l_sesion     NUMBER;
     l_id         NUMBER;
     l_id_empresa NUMBER;
+    l_existe     NUMBER;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -1227,24 +1381,50 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
     -- El DELETE del detalle se acota por empresa a traves de un subselect sobre
     -- la cabecera: sin eso, mandar el id de una factura ajena le borraria las
     -- lineas aunque el DELETE de la cabecera despues no hiciera nada.
-    DELETE FROM FACTURAS_COMPRA_DET
-     WHERE ID_FACTURA IN (
-             SELECT ID_FACTURA
-               FROM FACTURAS_COMPRAS_CAB
-              WHERE ID_FACTURA = l_id
-                AND ID_EMPRESA = l_id_empresa
-           );
-
-    DELETE FROM FACTURAS_COMPRAS_CAB
-     WHERE ID_FACTURA = l_id
-       AND ID_EMPRESA = l_id_empresa;
-
-    IF SQL%ROWCOUNT = 0 THEN
+    -- La factura tiene que existir Y ser de esta empresa ANTES de tocar nada.
+    -- Antes los DELETE salian a ciegas y el 404 se deducia del SQL%ROWCOUNT del
+    -- ultimo; ahora hay lotes y pagos de por medio y eso ya no alcanza.
+    BEGIN
+      SELECT ID_FACTURA INTO l_existe
+        FROM FACTURAS_COMPRAS_CAB
+       WHERE ID_FACTURA = l_id AND ID_EMPRESA = l_id_empresa
+         FOR UPDATE;
+    EXCEPTION WHEN NO_DATA_FOUND THEN
       ROLLBACK;
       p_status_code := 404;
       p_resultado := '{"error":"La factura no existe"}';
       RETURN;
+    END;
+
+    -- BORRAR LA FACTURA SACA DEL STOCK lo que trajo, asi que no se puede si algo
+    -- ya salio: el lote quedaria por debajo de lo fisico, o —peor— habria
+    -- mercaderia vendida sin ninguna compra que justifique su costo.
+    IF TIENE_SALIDAS(l_id) THEN
+      ROLLBACK;
+      p_status_code := 409;
+      p_resultado := '{"error":"Ya se vendio mercaderia de esta factura: anula esas ventas antes de eliminarla"}';
+      RETURN;
     END IF;
+
+    -- Mismo criterio que en ventas con los cobros: el DELETE en cascada se
+    -- llevaria plata que salio de la caja sin dejar rastro.
+    SELECT COUNT(*) INTO l_existe FROM FACTURAS_COMPRAS_PAGOS WHERE ID_FACTURA = l_id;
+    IF l_existe > 0 THEN
+      ROLLBACK;
+      p_status_code := 409;
+      p_resultado := '{"error":"La factura tiene pagos registrados: anulalos antes de eliminarla"}';
+      RETURN;
+    END IF;
+
+    DELETE FROM FACTURAS_COMPRAS_CUOTAS WHERE ID_FACTURA = l_id;
+
+    -- Borra el detalle y, detras, los lotes que esas lineas hicieron entrar:
+    -- la existencia que trajo la factura se va con ella.
+    BORRAR_DETALLE_Y_LOTES(l_id);
+
+    DELETE FROM FACTURAS_COMPRAS_CAB
+     WHERE ID_FACTURA = l_id
+       AND ID_EMPRESA = l_id_empresa;
 
     COMMIT;
     p_status_code := 200;
@@ -1517,7 +1697,7 @@ SELECT f.ID_FACTURA, f.ID_EMPRESA AS EMPRESA_FACTURA, m.ID_EMPRESA AS EMPRESA_MO
 -- 3. Lineas cuyo articulo es de otra empresa que la factura.
 SELECT d.ID_DETALLE, d.ID_FACTURA, f.ID_EMPRESA AS EMPRESA_FACTURA,
        a.ID_EMPRESA AS EMPRESA_ARTICULO, a.NOMBRE_ARTICULO
-  FROM FACTURAS_COMPRA_DET d
+  FROM FACTURAS_COMPRAS_DET d
   JOIN FACTURAS_COMPRAS_CAB f ON f.ID_FACTURA  = d.ID_FACTURA
   JOIN ARTICULOS           a ON a.ID_ARTICULO = d.ID_ARTICULO
  WHERE f.ID_EMPRESA != a.ID_EMPRESA;
@@ -1527,13 +1707,13 @@ SELECT d.ID_DETALLE, d.ID_FACTURA, f.ID_EMPRESA AS EMPRESA_FACTURA,
 SELECT f.ID_FACTURA, f.NUMERO_FACTURA,
        TO_CHAR(f.FECHA_FACTURA, 'YYYY-MM-DD') AS FECHA
   FROM FACTURAS_COMPRAS_CAB f
- WHERE NOT EXISTS (SELECT 1 FROM FACTURAS_COMPRA_DET d
+ WHERE NOT EXISTS (SELECT 1 FROM FACTURAS_COMPRAS_DET d
                     WHERE d.ID_FACTURA = f.ID_FACTURA);
 
 -- 5. Lineas con cantidad o precio invalidos. El paquete los rechaza; una fila
 --    aca entro por fuera de la API.
 SELECT ID_DETALLE, ID_FACTURA, ID_ARTICULO, CANTIDAD, PRECIO_UNITARIO
-  FROM FACTURAS_COMPRA_DET
+  FROM FACTURAS_COMPRAS_DET
  WHERE CANTIDAD <= 0
     OR PRECIO_UNITARIO < 0;
 
@@ -1553,7 +1733,7 @@ SELECT f.ID_FACTURA,
        NVL(cp.NOMBRE_CONDICION, 'Sin condicion') AS CONDICION,
        TO_CHAR(f.FECHA_FACTURA + cp.DIAS_PAGO, 'YYYY-MM-DD') AS VENCE,
        m.SIMBOLO,
-       (SELECT SUM(d.SUBTOTAL) FROM FACTURAS_COMPRA_DET d
+       (SELECT SUM(d.SUBTOTAL) FROM FACTURAS_COMPRAS_DET d
          WHERE d.ID_FACTURA = f.ID_FACTURA) AS TOTAL
   FROM FACTURAS_COMPRAS_CAB f
   JOIN EMPRESAS   e  ON e.ID_EMPRESA   = f.ID_EMPRESA
@@ -1575,7 +1755,7 @@ SELECT f.ID_FACTURA,
        cp.NOMBRE_CONDICION,
        TO_CHAR(f.FECHA_FACTURA + cp.DIAS_PAGO, 'YYYY-MM-DD') AS VENCE,
        TRUNC(f.FECHA_FACTURA + cp.DIAS_PAGO) - TRUNC(SYSDATE) AS DIAS_RESTANTES,
-       (SELECT SUM(d.SUBTOTAL) FROM FACTURAS_COMPRA_DET d
+       (SELECT SUM(d.SUBTOTAL) FROM FACTURAS_COMPRAS_DET d
          WHERE d.ID_FACTURA = f.ID_FACTURA) AS TOTAL
   FROM FACTURAS_COMPRAS_CAB f
   JOIN PERSONAS         pr ON pr.ID_PERSONA  = f.ID_PROVEEDOR
@@ -1599,7 +1779,7 @@ SELECT f.ID_FACTURA,
                 ELSE NVL(ROUND(d.SUBTOTAL /
                      NULLIF(iv.IVA_DIVISION, 0), 2), 0) END) AS IVA
   FROM FACTURAS_COMPRAS_CAB f
-  JOIN FACTURAS_COMPRA_DET  d  ON d.ID_FACTURA = f.ID_FACTURA
+  JOIN FACTURAS_COMPRAS_DET  d  ON d.ID_FACTURA = f.ID_FACTURA
   JOIN PERSONAS             pr ON pr.ID_PERSONA = f.ID_PROVEEDOR
   LEFT JOIN IVA             iv ON iv.ID_IVA = d.ID_IVA
  GROUP BY f.ID_FACTURA, f.NUMERO_FACTURA, f.FECHA_FACTURA, pr.RUC
@@ -1622,7 +1802,7 @@ SELECT f.ID_FACTURA, f.NUMERO_FACTURA,
                 ELSE NVL(ROUND(d.SUBTOTAL /
                      NULLIF(iv.IVA_DIVISION, 0), 2), 0) END) AS GRAVADO_MAS_IVA
   FROM FACTURAS_COMPRAS_CAB f
-  JOIN FACTURAS_COMPRA_DET  d  ON d.ID_FACTURA = f.ID_FACTURA
+  JOIN FACTURAS_COMPRAS_DET  d  ON d.ID_FACTURA = f.ID_FACTURA
   LEFT JOIN IVA             iv ON iv.ID_IVA = d.ID_IVA
  GROUP BY f.ID_FACTURA, f.NUMERO_FACTURA
 HAVING SUM(d.SUBTOTAL) !=
@@ -1642,7 +1822,7 @@ SELECT CASE WHEN NVL(UPPER(TRIM(pr.TIPO_PERSONA)), 'F') = 'J'
        COUNT(DISTINCT f.ID_FACTURA) AS FACTURAS,
        SUM(d.SUBTOTAL)              AS TOTAL
   FROM FACTURAS_COMPRAS_CAB f
-  JOIN FACTURAS_COMPRA_DET  d  ON d.ID_FACTURA  = f.ID_FACTURA
+  JOIN FACTURAS_COMPRAS_DET  d  ON d.ID_FACTURA  = f.ID_FACTURA
   JOIN PERSONAS             pr ON pr.ID_PERSONA = f.ID_PROVEEDOR
  GROUP BY pr.ID_PERSONA, pr.TIPO_PERSONA, pr.RAZON_SOCIAL, pr.NOMBRE, pr.APELLIDO
  ORDER BY TOTAL DESC;

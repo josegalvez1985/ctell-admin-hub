@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { z } from "zod";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
+import { InputMoneda } from "@/components/ctell/InputMoneda";
 import { SelectorModal } from "@/components/ctell/SelectorModal";
 import { SelectorArticulo } from "@/components/ctell/SelectorArticulo";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
@@ -48,6 +49,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { tituloPagina } from "@/lib/marca";
+import { formatearMoneda, numeroMoneda } from "@/lib/moneda";
 import {
   Table,
   TableBody,
@@ -124,11 +126,6 @@ function formatearFecha(valor: string): string {
   return new Intl.DateTimeFormat("es-PY", { dateStyle: "medium" }).format(
     new Date(anio, mes - 1, dia),
   );
-}
-
-/** Importe con separador de miles. Sin decimales fijos: 1500 no es "1.500,00". */
-function formatearImporte(valor: number): string {
-  return new Intl.NumberFormat("es-PY", { maximumFractionDigits: 2 }).format(valor);
 }
 
 /**
@@ -367,7 +364,7 @@ function FacturasComprasPage() {
                         </div>
                         <p className="shrink-0 text-right font-semibold tabular-nums text-foreground">
                           {factura.simboloMoneda ? `${factura.simboloMoneda} ` : ""}
-                          {formatearImporte(factura.total)}
+                          {formatearMoneda(factura.total)}
                         </p>
                       </div>
 
@@ -496,7 +493,7 @@ function FacturasComprasPage() {
                           </TableCell>
                           <TableCell className="text-right font-semibold tabular-nums">
                             {factura.simboloMoneda ? `${factura.simboloMoneda} ` : ""}
-                            {formatearImporte(factura.total)}
+                            {formatearMoneda(factura.total)}
                           </TableCell>
                           <TableCell className="text-right">
                             <div className="flex justify-end gap-1">
@@ -548,7 +545,7 @@ function FacturasComprasPage() {
                     responde ninguna pregunta. */}
                 <p className="text-center text-xs text-muted-foreground">
                   Mostrando {mostrados.length} de {resultado.length} factura
-                  {resultado.length === 1 ? "" : "s"} · Total {formatearImporte(totalListado)}
+                  {resultado.length === 1 ? "" : "s"} · Total {formatearMoneda(totalListado)}
                   {hayFiltro ? ` (${items.length} en total)` : ""}
                 </p>
               </>
@@ -686,13 +683,13 @@ function FacturaVerDialog({
                       </TableCell>
                       <TableCell className="text-right tabular-nums">{linea.cantidad}</TableCell>
                       <TableCell className="text-right tabular-nums">
-                        {formatearImporte(linea.precioUnitario)}
+                        {formatearMoneda(linea.precioUnitario)}
                       </TableCell>
                       <TableCell className="text-right tabular-nums text-muted-foreground">
                         {linea.porcentajeIva === null ? "—" : `${linea.porcentajeIva}%`}
                       </TableCell>
                       <TableCell className="text-right font-medium tabular-nums">
-                        {formatearImporte(linea.subtotal)}
+                        {formatearMoneda(linea.subtotal)}
                       </TableCell>
                     </TableRow>
                   ))}
@@ -707,21 +704,21 @@ function FacturaVerDialog({
                 <dt>Gravado</dt>
                 <dd className="tabular-nums">
                   {simbolo}
-                  {formatearImporte(data.totalGravado)}
+                  {formatearMoneda(data.totalGravado)}
                 </dd>
               </div>
               <div className="flex justify-between text-muted-foreground">
                 <dt>IVA incluido</dt>
                 <dd className="tabular-nums">
                   {simbolo}
-                  {formatearImporte(data.totalIva)}
+                  {formatearMoneda(data.totalIva)}
                 </dd>
               </div>
               <div className="flex justify-between text-base font-semibold text-foreground">
                 <dt>Total</dt>
                 <dd className="tabular-nums">
                   {simbolo}
-                  {formatearImporte(data.total)}
+                  {formatearMoneda(data.total)}
                 </dd>
               </div>
             </dl>
@@ -832,7 +829,7 @@ function FacturaFormDialog({
         idArticulo: String(d.idArticulo),
         nombreArticulo: d.nombreArticulo,
         cantidad: String(d.cantidad),
-        precioUnitario: String(d.precioUnitario),
+        precioUnitario: formatearMoneda(d.precioUnitario),
         idIva: d.idIva === null ? "" : String(d.idIva),
       })),
     );
@@ -913,7 +910,7 @@ function FacturaFormDialog({
   const totales = lineas.reduce(
     (acumulado, linea) => {
       const cantidad = Number(linea.cantidad);
-      const precio = Number(linea.precioUnitario);
+      const precio = numeroMoneda(linea.precioUnitario);
       if (Number.isNaN(cantidad) || Number.isNaN(precio)) return acumulado;
 
       const subtotal = cantidad * precio;
@@ -934,7 +931,7 @@ function FacturaFormDialog({
         .map((l) => ({
           idArticulo: Number(l.idArticulo),
           cantidad: Number(l.cantidad),
-          precioUnitario: Number(l.precioUnitario),
+          precioUnitario: numeroMoneda(l.precioUnitario),
           ...(l.idIva ? { idIva: Number(l.idIva) } : {}),
         }));
 
@@ -1151,7 +1148,7 @@ function FacturaFormDialog({
               <div className="space-y-2">
                 {lineas.map((linea) => {
                   const cantidad = Number(linea.cantidad);
-                  const precio = Number(linea.precioUnitario);
+                  const precio = numeroMoneda(linea.precioUnitario);
                   const subtotal =
                     Number.isNaN(cantidad) || Number.isNaN(precio) ? 0 : cantidad * precio;
 
@@ -1192,14 +1189,10 @@ function FacturaFormDialog({
                         <label className="text-xs text-muted-foreground sm:hidden">
                           Precio (con IVA)
                         </label>
-                        <Input
+                        <InputMoneda
                           value={linea.precioUnitario}
-                          onChange={(e) =>
-                            cambiarLinea(linea.clave, "precioUnitario", e.target.value)
-                          }
-                          inputMode="decimal"
+                          onChange={(valor) => cambiarLinea(linea.clave, "precioUnitario", valor)}
                           placeholder="0"
-                          className="tabular-nums"
                         />
                       </div>
 
@@ -1220,7 +1213,7 @@ function FacturaFormDialog({
 
                       <div className="flex items-center justify-between gap-2 sm:flex-col sm:items-end">
                         <span className="text-sm font-medium tabular-nums text-foreground">
-                          {formatearImporte(subtotal)}
+                          {formatearMoneda(subtotal)}
                         </span>
                         <Button
                           type="button"
@@ -1257,19 +1250,19 @@ function FacturaFormDialog({
                 <div className="flex justify-between text-muted-foreground">
                   <dt>Gravado</dt>
                   <dd className="tabular-nums">
-                    {simbolo} {formatearImporte(totales.total - totales.iva)}
+                    {simbolo} {formatearMoneda(totales.total - totales.iva)}
                   </dd>
                 </div>
                 <div className="flex justify-between text-muted-foreground">
                   <dt>IVA incluido</dt>
                   <dd className="tabular-nums">
-                    {simbolo} {formatearImporte(totales.iva)}
+                    {simbolo} {formatearMoneda(totales.iva)}
                   </dd>
                 </div>
                 <div className="flex justify-between text-base font-semibold text-foreground">
                   <dt>Total</dt>
                   <dd className="tabular-nums">
-                    {simbolo} {formatearImporte(totales.total)}
+                    {simbolo} {formatearMoneda(totales.total)}
                   </dd>
                 </div>
               </dl>

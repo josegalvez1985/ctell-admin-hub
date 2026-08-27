@@ -18,6 +18,7 @@ import { Route as AuthBancosRouteImport } from './routes/_auth.bancos'
 import { Route as AuthCanalesPagosRouteImport } from './routes/_auth.canales-pagos'
 import { Route as AuthCategoriasRouteImport } from './routes/_auth.categorias'
 import { Route as AuthCiudadesRouteImport } from './routes/_auth.ciudades'
+import { Route as AuthCobrosRouteImport } from './routes/_auth.cobros'
 import { Route as AuthCondicionesPagoRouteImport } from './routes/_auth.condiciones-pago'
 import { Route as AuthConfiguracionRouteImport } from './routes/_auth.configuracion'
 import { Route as AuthCuentasBancariasRouteImport } from './routes/_auth.cuentas-bancarias'
@@ -40,6 +41,7 @@ import { Route as AuthSucursalesRouteImport } from './routes/_auth.sucursales'
 import { Route as AuthTalonariosRouteImport } from './routes/_auth.talonarios'
 import { Route as AuthUbicacionesRouteImport } from './routes/_auth.ubicaciones'
 import { Route as AuthUnidadesMedidaRouteImport } from './routes/_auth.unidades-medida'
+import { Route as AuthVentasRouteImport } from './routes/_auth.ventas'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -84,6 +86,11 @@ const AuthCategoriasRoute = AuthCategoriasRouteImport.update({
 const AuthCiudadesRoute = AuthCiudadesRouteImport.update({
   id: '/ciudades',
   path: '/ciudades',
+  getParentRoute: () => AuthRoute,
+} as any)
+const AuthCobrosRoute = AuthCobrosRouteImport.update({
+  id: '/cobros',
+  path: '/cobros',
   getParentRoute: () => AuthRoute,
 } as any)
 const AuthCondicionesPagoRoute = AuthCondicionesPagoRouteImport.update({
@@ -196,6 +203,11 @@ const AuthUnidadesMedidaRoute = AuthUnidadesMedidaRouteImport.update({
   path: '/unidades-medida',
   getParentRoute: () => AuthRoute,
 } as any)
+const AuthVentasRoute = AuthVentasRouteImport.update({
+  id: '/ventas',
+  path: '/ventas',
+  getParentRoute: () => AuthRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -206,6 +218,7 @@ export interface FileRoutesByFullPath {
   '/canales-pagos': typeof AuthCanalesPagosRoute
   '/categorias': typeof AuthCategoriasRoute
   '/ciudades': typeof AuthCiudadesRoute
+  '/cobros': typeof AuthCobrosRoute
   '/condiciones-pago': typeof AuthCondicionesPagoRoute
   '/configuracion': typeof AuthConfiguracionRoute
   '/cuentas-bancarias': typeof AuthCuentasBancariasRoute
@@ -228,6 +241,7 @@ export interface FileRoutesByFullPath {
   '/talonarios': typeof AuthTalonariosRoute
   '/ubicaciones': typeof AuthUbicacionesRoute
   '/unidades-medida': typeof AuthUnidadesMedidaRoute
+  '/ventas': typeof AuthVentasRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -238,6 +252,7 @@ export interface FileRoutesByTo {
   '/canales-pagos': typeof AuthCanalesPagosRoute
   '/categorias': typeof AuthCategoriasRoute
   '/ciudades': typeof AuthCiudadesRoute
+  '/cobros': typeof AuthCobrosRoute
   '/condiciones-pago': typeof AuthCondicionesPagoRoute
   '/configuracion': typeof AuthConfiguracionRoute
   '/cuentas-bancarias': typeof AuthCuentasBancariasRoute
@@ -260,6 +275,7 @@ export interface FileRoutesByTo {
   '/talonarios': typeof AuthTalonariosRoute
   '/ubicaciones': typeof AuthUbicacionesRoute
   '/unidades-medida': typeof AuthUnidadesMedidaRoute
+  '/ventas': typeof AuthVentasRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -272,6 +288,7 @@ export interface FileRoutesById {
   '/_auth/canales-pagos': typeof AuthCanalesPagosRoute
   '/_auth/categorias': typeof AuthCategoriasRoute
   '/_auth/ciudades': typeof AuthCiudadesRoute
+  '/_auth/cobros': typeof AuthCobrosRoute
   '/_auth/condiciones-pago': typeof AuthCondicionesPagoRoute
   '/_auth/configuracion': typeof AuthConfiguracionRoute
   '/_auth/cuentas-bancarias': typeof AuthCuentasBancariasRoute
@@ -294,6 +311,7 @@ export interface FileRoutesById {
   '/_auth/talonarios': typeof AuthTalonariosRoute
   '/_auth/ubicaciones': typeof AuthUbicacionesRoute
   '/_auth/unidades-medida': typeof AuthUnidadesMedidaRoute
+  '/_auth/ventas': typeof AuthVentasRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -306,6 +324,7 @@ export interface FileRouteTypes {
     | '/canales-pagos'
     | '/categorias'
     | '/ciudades'
+    | '/cobros'
     | '/condiciones-pago'
     | '/configuracion'
     | '/cuentas-bancarias'
@@ -328,6 +347,7 @@ export interface FileRouteTypes {
     | '/talonarios'
     | '/ubicaciones'
     | '/unidades-medida'
+    | '/ventas'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -338,6 +358,7 @@ export interface FileRouteTypes {
     | '/canales-pagos'
     | '/categorias'
     | '/ciudades'
+    | '/cobros'
     | '/condiciones-pago'
     | '/configuracion'
     | '/cuentas-bancarias'
@@ -360,6 +381,7 @@ export interface FileRouteTypes {
     | '/talonarios'
     | '/ubicaciones'
     | '/unidades-medida'
+    | '/ventas'
   id:
     | '__root__'
     | '/'
@@ -371,6 +393,7 @@ export interface FileRouteTypes {
     | '/_auth/canales-pagos'
     | '/_auth/categorias'
     | '/_auth/ciudades'
+    | '/_auth/cobros'
     | '/_auth/condiciones-pago'
     | '/_auth/configuracion'
     | '/_auth/cuentas-bancarias'
@@ -393,6 +416,7 @@ export interface FileRouteTypes {
     | '/_auth/talonarios'
     | '/_auth/ubicaciones'
     | '/_auth/unidades-medida'
+    | '/_auth/ventas'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -463,6 +487,13 @@ declare module '@tanstack/react-router' {
       path: '/ciudades'
       fullPath: '/ciudades'
       preLoaderRoute: typeof AuthCiudadesRouteImport
+      parentRoute: typeof AuthRoute
+    }
+    '/_auth/cobros': {
+      id: '/_auth/cobros'
+      path: '/cobros'
+      fullPath: '/cobros'
+      preLoaderRoute: typeof AuthCobrosRouteImport
       parentRoute: typeof AuthRoute
     }
     '/_auth/condiciones-pago': {
@@ -619,6 +650,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthUnidadesMedidaRouteImport
       parentRoute: typeof AuthRoute
     }
+    '/_auth/ventas': {
+      id: '/_auth/ventas'
+      path: '/ventas'
+      fullPath: '/ventas'
+      preLoaderRoute: typeof AuthVentasRouteImport
+      parentRoute: typeof AuthRoute
+    }
   }
 }
 
@@ -630,6 +668,7 @@ interface AuthRouteChildren {
   AuthCanalesPagosRoute: typeof AuthCanalesPagosRoute
   AuthCategoriasRoute: typeof AuthCategoriasRoute
   AuthCiudadesRoute: typeof AuthCiudadesRoute
+  AuthCobrosRoute: typeof AuthCobrosRoute
   AuthCondicionesPagoRoute: typeof AuthCondicionesPagoRoute
   AuthConfiguracionRoute: typeof AuthConfiguracionRoute
   AuthCuentasBancariasRoute: typeof AuthCuentasBancariasRoute
@@ -652,6 +691,7 @@ interface AuthRouteChildren {
   AuthTalonariosRoute: typeof AuthTalonariosRoute
   AuthUbicacionesRoute: typeof AuthUbicacionesRoute
   AuthUnidadesMedidaRoute: typeof AuthUnidadesMedidaRoute
+  AuthVentasRoute: typeof AuthVentasRoute
 }
 
 const AuthRouteChildren: AuthRouteChildren = {
@@ -662,6 +702,7 @@ const AuthRouteChildren: AuthRouteChildren = {
   AuthCanalesPagosRoute: AuthCanalesPagosRoute,
   AuthCategoriasRoute: AuthCategoriasRoute,
   AuthCiudadesRoute: AuthCiudadesRoute,
+  AuthCobrosRoute: AuthCobrosRoute,
   AuthCondicionesPagoRoute: AuthCondicionesPagoRoute,
   AuthConfiguracionRoute: AuthConfiguracionRoute,
   AuthCuentasBancariasRoute: AuthCuentasBancariasRoute,
@@ -684,6 +725,7 @@ const AuthRouteChildren: AuthRouteChildren = {
   AuthTalonariosRoute: AuthTalonariosRoute,
   AuthUbicacionesRoute: AuthUbicacionesRoute,
   AuthUnidadesMedidaRoute: AuthUnidadesMedidaRoute,
+  AuthVentasRoute: AuthVentasRoute,
 }
 
 const AuthRouteWithChildren = AuthRoute._addFileChildren(AuthRouteChildren)

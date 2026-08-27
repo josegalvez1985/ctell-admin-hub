@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { z } from "zod";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
+import { InputMoneda } from "@/components/ctell/InputMoneda";
 import { SelectorArticulo } from "@/components/ctell/SelectorArticulo";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
 import { useSucursal } from "@/components/ctell/sucursal-provider";
@@ -47,6 +48,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { tituloPagina } from "@/lib/marca";
+import { esMontoValido, formatearMoneda, numeroMoneda } from "@/lib/moneda";
 import {
   Table,
   TableBody,
@@ -128,13 +130,27 @@ const numeroOpcional = (etiqueta: string) =>
     .refine((v) => v === "" || !Number.isNaN(Number(v)), `${etiqueta} tiene que ser un número`)
     .refine((v) => v === "" || Number(v) >= 0, `${etiqueta} no puede ser negativo`);
 
+/**
+ * Igual que `numeroOpcional` pero para importes, que llegan con separador de
+ * miles desde `InputMoneda` ("34.200").
+ *
+ * Va aparte y no reemplaza al otro porque `Number("34.200")` da **34,2**: si el
+ * costo se validara con el helper de cantidades, un costo de treinta y cuatro
+ * mil pasaría la validación y se guardaría como treinta y cuatro con dos.
+ */
+const montoOpcional = (etiqueta: string) =>
+  z
+    .string()
+    .trim()
+    .refine((v) => v === "" || esMontoValido(v), `${etiqueta} tiene que ser un monto válido`);
+
 const schema = z
   .object({
     idArticulo: z.string().min(1, "Elegí un artículo"),
     numeroLote: numeroOpcional("El número de lote"),
     cantidad: numeroOpcional("La cantidad"),
     cantidadDispon: numeroOpcional("La cantidad disponible"),
-    costo: numeroOpcional("El costo"),
+    costo: montoOpcional("El costo"),
     fechaEntrada: fechaOpcional,
     fechaVencimiento: fechaOpcional,
     observaciones: z.string().trim().max(1000, "Máximo 1000 caracteres"),
@@ -832,7 +848,7 @@ function LoteFormDialog({
       // correcto para una partida recién ingresada. Poner "0" acá haría que el
       // lote naciera sin nada disponible.
       cantidadDispon: lote ? String(lote.cantidadDispon) : "",
-      costo: lote?.costo != null ? String(lote.costo) : "",
+      costo: lote?.costo != null ? formatearMoneda(lote.costo) : "",
       // El alta arranca con la fecha de hoy: lo habitual es cargar el lote el
       // día que entró la mercadería.
       fechaEntrada: lote?.fechaEntrada ?? hoyISO(),
@@ -851,7 +867,7 @@ function LoteFormDialog({
         ...(v.numeroLote ? { numeroLote: Number(v.numeroLote) } : {}),
         ...(v.cantidad ? { cantidad: Number(v.cantidad) } : {}),
         ...(v.cantidadDispon ? { cantidadDispon: Number(v.cantidadDispon) } : {}),
-        ...(v.costo ? { costo: Number(v.costo) } : {}),
+        ...(v.costo ? { costo: numeroMoneda(v.costo) } : {}),
         ...(v.fechaEntrada ? { fechaEntrada: v.fechaEntrada } : {}),
         ...(v.fechaVencimiento ? { fechaVencimiento: v.fechaVencimiento } : {}),
         ...(v.observaciones ? { observaciones: v.observaciones } : {}),
@@ -989,13 +1005,9 @@ function LoteFormDialog({
                   <FormItem>
                     <FormLabel>Costo</FormLabel>
                     <FormControl>
-                      <Input
-                        {...field}
-                        inputMode="decimal"
-                        placeholder="0"
-                        autoComplete="off"
-                        className="tabular-nums"
-                      />
+                      {/* `onChange` recibe el texto ya formateado, no el evento:
+                          react-hook-form acepta el valor directo. */}
+                      <InputMoneda {...field} placeholder="0" autoComplete="off" />
                     </FormControl>
                     <FormDescription>Costo de esta partida.</FormDescription>
                     <FormMessage />

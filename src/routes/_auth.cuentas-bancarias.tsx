@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { z } from "zod";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
+import { InputMoneda } from "@/components/ctell/InputMoneda";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
 import { SIN_FILTRO, TableHeadFiltrable } from "@/components/ctell/TableHeadFiltrable";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
@@ -60,6 +61,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { tituloPagina } from "@/lib/marca";
+import { numeroMoneda } from "@/lib/moneda";
 
 const schema = z.object({
   idBanco: z.string().min(1, "Elegí un banco"),
@@ -68,7 +70,7 @@ const schema = z.object({
   titular: z.string().trim().max(200, "Máximo 200 caracteres"),
   saldoInicial: z
     .string()
-    .refine((v) => v === "" || Number.isFinite(Number(v)), "Ingresá un importe válido"),
+    .refine((v) => v === "" || Number.isFinite(numeroMoneda(v)), "Ingresá un importe válido"),
   idMoneda: z.string(),
   activo: z.boolean(),
 });
@@ -395,7 +397,7 @@ function CuentaFormDialog({
       saldoInicial:
         cuenta?.saldoInicial === null || cuenta?.saldoInicial === undefined
           ? ""
-          : String(cuenta.saldoInicial),
+          : importe(cuenta.saldoInicial),
       idMoneda: cuenta?.idMoneda ? String(cuenta.idMoneda) : "",
       activo: cuenta ? esActivo(cuenta.activo) : true,
     },
@@ -408,7 +410,7 @@ function CuentaFormDialog({
         numeroCuenta: v.numeroCuenta,
         tipoCuenta: v.tipoCuenta,
         titular: v.titular,
-        ...(v.saldoInicial ? { saldoInicial: Number(v.saldoInicial) } : {}),
+        ...(v.saldoInicial ? { saldoInicial: numeroMoneda(v.saldoInicial) } : {}),
         ...(v.idMoneda ? { idMoneda: Number(v.idMoneda) } : {}),
       };
       return esEdicion
@@ -552,7 +554,10 @@ function CuentaFormDialog({
                 <FormItem>
                   <FormLabel>Saldo inicial</FormLabel>
                   <FormControl>
-                    <Input {...field} type="number" step="0.01" inputMode="decimal" />
+                    {/* Se sale de `type="number"`: un input numérico nativo
+                        rechaza "1.500,00" y no deja mover el cursor, que es lo
+                        que necesita el separador de miles en vivo. */}
+                    <InputMoneda {...field} />
                   </FormControl>
                   <FormMessage />
                 </FormItem>

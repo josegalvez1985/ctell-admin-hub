@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { ArrowDownRight, ArrowUpRight, Banknote, Building2 } from "lucide-react";
 import { AppLayout } from "@/components/ctell/AppLayout";
 import { LogoEmpresa } from "@/components/ctell/LogoEmpresa";
-import { MenuDinamico } from "@/components/ctell/MenuDinamico";
+import { AccesosRapidos } from "@/components/ctell/AccesosRapidos";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
 import { useSucursal } from "@/components/ctell/sucursal-provider";
 import { primerNombre, useUsuarioActual } from "@/hooks/use-usuario-actual";
@@ -202,6 +202,17 @@ function HomePage() {
           </div>
         </div>
 
+        {/* Arriba de los KPIs y no al final: es lo que la gente viene a usar.
+            Los indicadores se miran de paso, el menú es el punto de partida de
+            cualquier tarea — tenerlo abajo obligaba a scrollear la home entera
+            para llegar a lo único accionable de la pantalla. */}
+        <section>
+          <h2 className="mb-4 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+            Acceso rápido
+          </h2>
+          <AccesosRapidos />
+        </section>
+
         <section className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
           {kpis.map((kpi) => (
             <article key={kpi.label} className="surface-card p-4 sm:p-5">
@@ -280,15 +291,6 @@ function HomePage() {
             </div>
           </section>
         </div>
-
-        <section>
-          <h2 className="mb-4 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-            Acceso rápido
-          </h2>
-          <div className="max-w-2xl">
-            <MenuDinamico />
-          </div>
-        </section>
       </main>
     </AppLayout>
   );

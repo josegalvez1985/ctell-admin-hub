@@ -56,6 +56,7 @@ import {
 const schema = z.object({
   nombreCanal: z.string().trim().min(1, "Obligatorio").max(100, "Máximo 100 caracteres"),
   descripcion: z.string().trim().max(200, "Máximo 200 caracteres"),
+  indBanco: z.boolean(),
   activo: z.boolean(),
 });
 
@@ -328,19 +329,26 @@ function CanalPagoFormDialog({
     values: {
       nombreCanal: canal?.nombreCanal ?? "",
       descripcion: canal?.descripcion ?? "",
+      indBanco: canal?.indBanco === "S",
       activo: canal ? esActivo(canal.activo) : true,
     },
   });
   const guardar = useMutation({
     mutationFn: (v: FormValues) => {
       const activo: Estado = v.activo ? "A" : "I";
+      const indBanco: "S" | "N" = v.indBanco ? "S" : "N";
       return esEdicion
         ? api.canalesPagos.actualizar(canal.id, {
             nombreCanal: v.nombreCanal,
             descripcion: v.descripcion,
+            indBanco,
             activo,
           })
-        : api.canalesPagos.crear({ nombreCanal: v.nombreCanal, descripcion: v.descripcion });
+        : api.canalesPagos.crear({
+            nombreCanal: v.nombreCanal,
+            descripcion: v.descripcion,
+            indBanco,
+          });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["canales-pagos"] });
@@ -394,6 +402,24 @@ function CanalPagoFormDialog({
                     />
                   </FormControl>
                   <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="indBanco"
+              render={({ field }) => (
+                <FormItem className="flex items-center justify-between rounded-lg border border-border p-3">
+                  <div className="space-y-0.5">
+                    <FormLabel>Requiere cuenta bancaria</FormLabel>
+                    <p className="text-xs text-muted-foreground">
+                      Al cobrar por este canal se pide a qué cuenta entró la plata. Dejalo apagado
+                      para el efectivo.
+                    </p>
+                  </div>
+                  <FormControl>
+                    <Switch checked={field.value} onCheckedChange={field.onChange} />
+                  </FormControl>
                 </FormItem>
               )}
             />

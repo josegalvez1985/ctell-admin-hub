@@ -25,6 +25,7 @@ CREATE OR REPLACE PACKAGE PKG_CANALES_PAGOS AS
     p_authorization IN VARCHAR2,
     p_nombre_canal IN VARCHAR2,
     p_descripcion IN VARCHAR2,
+    p_ind_banco IN VARCHAR2,
     p_status_code OUT NUMBER,
     p_resultado OUT CLOB
   );
@@ -34,6 +35,7 @@ CREATE OR REPLACE PACKAGE PKG_CANALES_PAGOS AS
     p_id IN VARCHAR2,
     p_nombre_canal IN VARCHAR2,
     p_descripcion IN VARCHAR2,
+    p_ind_banco IN VARCHAR2,
     p_activo IN VARCHAR2,
     p_status_code OUT NUMBER,
     p_resultado OUT CLOB
@@ -104,6 +106,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_CANALES_PAGOS AS
                'id' VALUE ID_CANAL_PAGO,
                'nombreCanal' VALUE NOMBRE_CANAL,
                'descripcion' VALUE DESCRIPCION,
+               'indBanco' VALUE NVL(UPPER(TRIM(IND_BANCO)), 'N'),
                'activo' VALUE UPPER(TRIM(ACTIVO))
                RETURNING CLOB
              ) ORDER BY NOMBRE_CANAL RETURNING CLOB
@@ -128,6 +131,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_CANALES_PAGOS AS
     p_authorization IN VARCHAR2,
     p_nombre_canal IN VARCHAR2,
     p_descripcion IN VARCHAR2,
+    p_ind_banco IN VARCHAR2,
     p_status_code OUT NUMBER,
     p_resultado OUT CLOB
   ) IS
@@ -147,8 +151,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_CANALES_PAGOS AS
       RETURN;
     END IF;
 
-    INSERT INTO CANALES_PAGOS (NOMBRE_CANAL, DESCRIPCION, ACTIVO)
-    VALUES (TRIM(p_nombre_canal), NULLIF(TRIM(p_descripcion), ''), 'A')
+    INSERT INTO CANALES_PAGOS (NOMBRE_CANAL, DESCRIPCION, IND_BANCO, ACTIVO)
+    VALUES (TRIM(p_nombre_canal), NULLIF(TRIM(p_descripcion), ''), CASE WHEN UPPER(TRIM(p_ind_banco)) = 'S' THEN 'S' ELSE 'N' END, 'A')
     RETURNING ID_CANAL_PAGO INTO l_id;
 
     COMMIT;
@@ -167,6 +171,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_CANALES_PAGOS AS
     p_id IN VARCHAR2,
     p_nombre_canal IN VARCHAR2,
     p_descripcion IN VARCHAR2,
+    p_ind_banco IN VARCHAR2,
     p_activo IN VARCHAR2,
     p_status_code OUT NUMBER,
     p_resultado OUT CLOB
@@ -192,6 +197,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_CANALES_PAGOS AS
     UPDATE CANALES_PAGOS
        SET NOMBRE_CANAL = NVL(TRIM(p_nombre_canal), NOMBRE_CANAL),
            DESCRIPCION = NVL(NULLIF(TRIM(p_descripcion), ''), DESCRIPCION),
+           IND_BANCO   = NVL(CASE WHEN UPPER(TRIM(p_ind_banco)) IN ('S', 'N') THEN UPPER(TRIM(p_ind_banco)) END, IND_BANCO),
            ACTIVO = NVL(l_estado, ACTIVO),
            FECHA_ACTUALIZACION = SYSTIMESTAMP
      WHERE ID_CANAL_PAGO = l_id;
@@ -276,7 +282,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_CANALES_PAGOS AS
     ORDS.DEFINE_HANDLER(
       p_module_name => 'canales-pagos', p_pattern => 'crear', p_method => 'POST',
       p_source_type => ORDS.source_type_plsql,
-      p_source => 'BEGIN PKG_CANALES_PAGOS.INSERTAR(:authorization, :nombreCanal, :descripcion, :status_code, :resultado); END;');
+      p_source => 'BEGIN PKG_CANALES_PAGOS.INSERTAR(:authorization, :nombreCanal, :descripcion, :indBanco, :status_code, :resultado); END;');
     ORDS.DEFINE_PARAMETER(p_module_name => 'canales-pagos', p_pattern => 'crear', p_method => 'POST', p_name => 'authorization', p_bind_variable_name => 'authorization', p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
     ORDS.DEFINE_PARAMETER(p_module_name => 'canales-pagos', p_pattern => 'crear', p_method => 'POST', p_name => 'resultado', p_bind_variable_name => 'resultado', p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
     ORDS.DEFINE_PARAMETER(p_module_name => 'canales-pagos', p_pattern => 'crear', p_method => 'POST', p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code', p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
@@ -285,7 +291,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_CANALES_PAGOS AS
     ORDS.DEFINE_HANDLER(
       p_module_name => 'canales-pagos', p_pattern => 'actualizar/:id', p_method => 'PUT',
       p_source_type => ORDS.source_type_plsql,
-      p_source => 'BEGIN PKG_CANALES_PAGOS.ACTUALIZAR(:authorization, :id, :nombreCanal, :descripcion, :activo, :status_code, :resultado); END;');
+      p_source => 'BEGIN PKG_CANALES_PAGOS.ACTUALIZAR(:authorization, :id, :nombreCanal, :descripcion, :indBanco, :activo, :status_code, :resultado); END;');
     ORDS.DEFINE_PARAMETER(p_module_name => 'canales-pagos', p_pattern => 'actualizar/:id', p_method => 'PUT', p_name => 'authorization', p_bind_variable_name => 'authorization', p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
     ORDS.DEFINE_PARAMETER(p_module_name => 'canales-pagos', p_pattern => 'actualizar/:id', p_method => 'PUT', p_name => 'resultado', p_bind_variable_name => 'resultado', p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
     ORDS.DEFINE_PARAMETER(p_module_name => 'canales-pagos', p_pattern => 'actualizar/:id', p_method => 'PUT', p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code', p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');

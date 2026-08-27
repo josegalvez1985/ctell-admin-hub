@@ -128,6 +128,12 @@ export type CanalPago = {
   id: number;
   nombreCanal: string;
   descripcion: string | null;
+  /**
+   * `'S'` si el canal mueve dinero por un banco y hay que pedir la cuenta
+   * receptora al cobrar; `'N'` si es efectivo. Es un dato de la tabla, no una
+   * suposición sobre el nombre.
+   */
+  indBanco: "S" | "N";
   activo: Estado;
 };
 
@@ -135,6 +141,21 @@ export type ListaCanalesPagos = {
   items: CanalPago[];
   total: number;
 };
+
+/**
+ * Si al cobrar por este canal hay que pedir la cuenta bancaria receptora.
+ *
+ * Lee `IND_BANCO` de la tabla. Antes esto era un `idCanalPago !== "1"` escrito a
+ * mano en las dos pantallas de cobro, y después una heurística sobre el nombre
+ * (`/efectivo|caja/`) que se rompía con un renombre. Ahora es un dato.
+ *
+ * Un canal sin el indicador cargado se trata como efectivo: pedir una cuenta que
+ * no corresponde bloquea un cobro válido, mientras que no pedirla sólo deja el
+ * dato vacío en un cobro que igual queda registrado.
+ */
+export function requiereCuentaBancaria(canal: CanalPago | undefined): boolean {
+  return canal?.indBanco === "S";
+}
 
 export type Banco = {
   id: number;
@@ -843,8 +864,21 @@ export type VentaDetalle = {
   subtotal: number;
   porcentajeDescuento: number;
   montoDescuento: number;
+  /** La base imponible: el neto menos el IVA que ya venía dentro del precio. */
+  montoGravado: number;
   montoIva: number;
   total: number;
+  articulo: string | null;
+  /**
+   * El lote del que salió la línea. **Uno solo**: `VENTAS_DETALLES` tiene una
+   * columna `ID_LOTE` y un `UNIQUE (ID_VENTA, ID_ARTICULO)`, así que una línea
+   * no se reparte entre lotes — las 10 unidades salen todas del mismo.
+   *
+   * `null` en los artículos `ES_GASTO`: un servicio no tiene stock.
+   */
+  idLote: number | null;
+  numeroLote: number | null;
+  loteVence: string | null;
 };
 
 export type Venta = {
@@ -862,12 +896,31 @@ export type Venta = {
   puntoExpedicion: string;
   nroComprobante: number;
   idMoneda: number;
+  /**
+   * Los montos **no son columnas de la cabecera**: el backend los deriva
+   * sumando el detalle en cada consulta. Guardarlos además dejaría que la
+   * cabecera diga 500.000 mientras sus líneas suman 480.000.
+   */
   montoSubtotal: number;
   montoDescuento: number;
+  /** Base imponible: el total menos el IVA que ya venía dentro del precio. */
+  montoGravado: number;
+  /**
+   * El IVA **contenido** en `montoTotal`, no un importe a sumarle: los precios
+   * ya lo incluyen, igual que en compras. `montoGravado + montoIva` da
+   * `montoTotal` exacto.
+   */
   montoIva: number;
   montoTotal: number;
   observacion: string | null;
   lineas: number;
+  /** Suma de los cobros registrados. Lo deriva el backend, no es una columna. */
+  montoCobrado: number;
+  /**
+   * `montoTotal - montoCobrado`. En 0 la venta está saldada y el backend
+   * rechaza cobrarla de nuevo — la UI no debería ofrecer el botón.
+   */
+  saldoPendiente: number;
 };
 
 export type VentaCompleta = {
@@ -893,10 +946,18 @@ export type VentaCobro = {
   id: number;
   idVenta: number;
   idCuota: number | null;
+  /** Número de la cuota imputada. `null` si el cobro fue contra la venta entera. */
+  nroCuota: number | null;
   idCanalPago: number;
-  canalPago: string;
+  /**
+   * Los nombres vienen de LEFT JOIN y son `null` si el canal, la cuenta o el
+   * banco se borraron después. El cobro sigue en el historial igual: pasó.
+   */
+  canalPago: string | null;
   idMoneda: number;
   idCuentaBancaria: number | null;
+  banco: string | null;
+  numeroCuenta: string | null;
   monto: number;
   fechaCobro: string;
   referencia: string | null;
@@ -1863,7 +1924,7 @@ export const api = {
   canalesPagos: {
     listar: () => request<ListaCanalesPagos>("/canales-pagos/listar"),
 
-    crear: (datos: { nombreCanal: string; descripcion?: string }) =>
+    crear: (datos: { nombreCanal: string; descripcion?: string; indBanco?: "S" | "N" }) =>
       request<{ id: number; ok: boolean }>("/canales-pagos/crear", {
         method: "POST",
         body: JSON.stringify(datos),
@@ -1872,7 +1933,7 @@ export const api = {
     /** Los campos ausentes no se modifican. */
     actualizar: (
       id: number,
-      datos: { nombreCanal?: string; descripcion?: string; activo?: Estado },
+      datos: { nombreCanal?: string; descripcion?: string; indBanco?: "S" | "N"; activo?: Estado },
     ) =>
       request<{ ok: boolean }>(`/canales-pagos/actualizar/${id}`, {
         method: "PUT",
@@ -3267,7 +3328,7 @@ export const api = {
       idSucursal: number;
       idUsuario: number;
       idCliente?: number;
-      idListaDescuentos?: number;
+      idListaDescuentos: number;
       idCondicionPago: number;
       idMoneda: number;
       fechaVenta: string;
@@ -3278,14 +3339,36 @@ export const api = {
         cantidad: number;
         precioUnitario: number;
         idIva?: number;
+        /**
+         * De qué lote sale la línea. **Obligatorio** salvo en artículos
+         * `ES_GASTO`: el backend rechaza la venta sin él, y valida que el lote
+         * sea de esta sucursal, del artículo, y que tenga existencia suficiente.
+         */
+        idLote?: number;
       }>;
     }) =>
-      request<{ id: number; lineas: number; total: number; ok: boolean }>("/ventas/crear", {
+      request<{
+        id: number;
+        /** El número de comprobante (`001-001-0000042`), no el id interno. */
+        numeroVenta: string;
+        lineas: number;
+        total: number;
+        ok: boolean;
+      }>("/ventas/crear", {
         method: "POST",
-        body: JSON.stringify(datos),
+        body: JSON.stringify({ ...datos, detalle: JSON.stringify(datos.detalle) }),
       }),
+    /**
+     * Borra la venta y **devuelve el stock** a los lotes de los que salió.
+     *
+     * `unidadesRepuestas` en 0 significa que la venta es anterior a
+     * `VENTAS_DETALLES_LOTES`: no hay reparto guardado, así que no hay dónde
+     * reponer. Se corrige con un inventario, no hay forma de deducirlo.
+     */
     eliminar: (id: number, idEmpresa: number) =>
-      request<{ ok: boolean }>(`/ventas/eliminar/${id}/${idEmpresa}`, { method: "DELETE" }),
+      request<{ ok: boolean; unidadesRepuestas: number }>(`/ventas/eliminar/${id}/${idEmpresa}`, {
+        method: "DELETE",
+      }),
   },
 
   ventasCobros: {
@@ -3306,6 +3389,15 @@ export const api = {
       request<{ id: number; ok: boolean }>("/ventas-cobros/crear", {
         method: "POST",
         body: JSON.stringify(datos),
+      }),
+    /**
+     * Borra el cobro y **devuelve el saldo a la venta**: el saldo se deriva de
+     * la suma de cobros, y el backend además le resta el monto a la cuota
+     * imputada y la reabre si deja de estar cubierta.
+     */
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean; idVenta: number }>(`/ventas-cobros/eliminar/${id}/${idEmpresa}`, {
+        method: "DELETE",
       }),
   },
 };
