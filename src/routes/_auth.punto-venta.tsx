@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronRight, Minus, Plus, Search, ShoppingCart, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -26,6 +26,16 @@ type Linea = Articulo & { cantidadVenta: number; precio: string };
 const hoy = () => new Date().toISOString().slice(0, 19);
 const dinero = (valor: number) =>
   new Intl.NumberFormat("es-PY", { maximumFractionDigits: 2 }).format(valor);
+const numeroPrecio = (valor: string) => {
+  const limpio = valor.trim().replace(/\s/g, "");
+  if (limpio.includes(",")) return Number(limpio.replace(/\./g, "").replace(",", "."));
+  if (/^\d{1,3}(\.\d{3})+$/.test(limpio)) return Number(limpio.replace(/\./g, ""));
+  return Number(limpio.replace(/,/g, ""));
+};
+const precioVisible = (valor: string) => {
+  const numero = numeroPrecio(valor);
+  return Number.isFinite(numero) ? dinero(numero) : valor;
+};
 const errorTexto = (error: unknown) =>
   error instanceof ApiError ? error.message : "No se pudo completar la venta";
 
@@ -43,10 +53,20 @@ function PuntoVentaPage() {
   const [idTalonario, setIdTalonario] = useState("");
   const [observacion, setObservacion] = useState("");
 
-  const articulos = useQuery({
+  const articulos = useInfiniteQuery({
     queryKey: ["pos-articulos", empresa?.id ?? null, sucursal?.id ?? null, busqueda],
-    queryFn: () =>
-      api.articulos.listar({ idEmpresa: empresa!.id, busqueda, pagina: 1, tamanio: 30 }),
+    queryFn: ({ pageParam }) =>
+      api.articulos.listar({
+        idEmpresa: empresa!.id,
+        busqueda,
+        pagina: pageParam,
+        tamanio: 50,
+      }),
+    initialPageParam: 1,
+    getNextPageParam: (ultimaPagina) =>
+      ultimaPagina.pagina * ultimaPagina.tamanio < ultimaPagina.total
+        ? ultimaPagina.pagina + 1
+        : undefined,
     enabled: empresa !== null && sucursal !== null,
   });
   const clientes = useQuery({ queryKey: ["personas"], queryFn: () => api.personas.listar() });
@@ -70,9 +90,10 @@ function PuntoVentaPage() {
     enabled: empresa !== null && sucursal !== null,
   });
   const listaElegida = (listas.data?.items ?? []).find((lista) => String(lista.id) === idLista);
+  const articulosDisponibles = articulos.data?.pages.flatMap((pagina) => pagina.items) ?? [];
   const descuento = listaElegida?.porcentajeDescuento ?? 0;
   const subtotal = carrito.reduce(
-    (suma, linea) => suma + linea.cantidadVenta * Number(linea.precio || 0),
+    (suma, linea) => suma + linea.cantidadVenta * (numeroPrecio(linea.precio) || 0),
     0,
   );
   const totalDescuento = Math.round(subtotal * descuento) / 100;
@@ -97,7 +118,7 @@ function PuntoVentaPage() {
         idSucursal: sucursal!.id,
         idUsuario: usuario!.id,
         ...(idCliente ? { idCliente: Number(idCliente) } : {}),
-        idListaDescuentos: Number(idLista),
+        ...(idLista ? { idListaDescuentos: Number(idLista) } : {}),
         idCondicionPago: Number(idCondicion),
         idMoneda: Number(idMoneda),
         fechaVenta: hoy(),
@@ -106,7 +127,7 @@ function PuntoVentaPage() {
         detalle: carrito.map((linea) => ({
           idArticulo: linea.id,
           cantidad: linea.cantidadVenta,
-          precioUnitario: Number(linea.precio),
+          precioUnitario: numeroPrecio(linea.precio),
         })),
       }),
     onSuccess: () => {
@@ -124,8 +145,10 @@ function PuntoVentaPage() {
     sucursal &&
     usuario &&
     carrito.length > 0 &&
-    carrito.every((linea) => Number(linea.precio) >= 0 && linea.precio !== "") &&
-    idLista &&
+    carrito.every((linea) => {
+      const precio = numeroPrecio(linea.precio);
+      return linea.precio.trim() !== "" && Number.isFinite(precio) && precio >= 0;
+    }) &&
     idCondicion &&
     idMoneda &&
     idTalonario;
@@ -166,49 +189,61 @@ function PuntoVentaPage() {
                   />
                 </div>
               </div>
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                {(articulos.data?.items ?? []).map((articulo) => (
-                  <article
-                    key={articulo.id}
-                    className="surface-card flex min-h-40 flex-col justify-between p-4 transition-colors hover:border-primary/50"
-                  >
-                    <div>
-                      <div className="flex items-start justify-between gap-2">
-                        <h2 className="line-clamp-2 font-semibold text-foreground">
-                          {articulo.nombreArticulo}
-                        </h2>
-                        <Badge variant={articulo.cantidadStock > 0 ? "outline" : "destructive"}>
-                          {dinero(articulo.cantidadStock)}
-                        </Badge>
-                      </div>
-                      <p className="mt-1 text-xs text-muted-foreground">
+              <div className="surface-card max-h-[calc(100vh-13rem)] divide-y divide-border overflow-y-auto">
+                {articulosDisponibles.map((articulo) => (
+                  <article key={articulo.id} className="flex items-center gap-3 p-3 transition-colors hover:bg-muted/40 sm:px-4">
+                    <div className="min-w-0 flex-1">
+                      <h2 className="break-words text-xs font-semibold leading-tight text-foreground">
+                        {articulo.nombreArticulo}
+                      </h2>
+                      <p className="break-words text-[0.7rem] leading-tight text-muted-foreground">
                         {articulo.codigoArticulo || "Sin código"}
                       </p>
+                      {articulo.descripcion && (
+                        <p className="mt-1 break-words text-[0.7rem] leading-tight text-muted-foreground/80">
+                          {articulo.descripcion}
+                        </p>
+                      )}
                     </div>
+                    <Badge className="shrink-0" variant={articulo.cantidadStock > 0 ? "outline" : "destructive"}>
+                      {dinero(articulo.cantidadStock)} disp.
+                    </Badge>
                     <Button
-                      className="mt-4 w-full"
+                      className="shrink-0"
                       variant="secondary"
                       disabled={articulo.cantidadStock <= 0}
                       onClick={() => agregar(articulo)}
                     >
                       <Plus className="size-4" />
-                      Agregar
+                      <span className="hidden sm:inline">Agregar</span>
                     </Button>
                   </article>
                 ))}
+                {articulos.hasNextPage && (
+                  <div className="flex justify-center p-3">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => articulos.fetchNextPage()}
+                      disabled={articulos.isFetchingNextPage}
+                    >
+                      {articulos.isFetchingNextPage ? "Cargando..." : "Mostrar más artículos"}
+                    </Button>
+                  </div>
+                )}
               </div>
               {articulos.isError && (
                 <p className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
                   No se pudieron cargar los artículos.
                 </p>
               )}
-              {!articulos.isPending && !articulos.isError && articulos.data?.items.length === 0 && (
+              {!articulos.isPending && !articulos.isError && articulosDisponibles.length === 0 && (
                 <div className="surface-card p-12 text-center text-sm text-muted-foreground">
                   No hay artículos que coincidan con la búsqueda.
                 </div>
               )}
             </section>
-            <aside className="surface-card overflow-hidden lg:sticky lg:top-5">
+            <aside className="surface-card max-h-[calc(100vh-6rem)] overflow-y-auto lg:sticky lg:top-5">
               <div className="border-b border-border bg-card px-5 py-4">
                 <h2 className="font-semibold text-foreground">Venta actual</h2>
                 <p className="mt-1 text-xs text-muted-foreground">
@@ -225,7 +260,7 @@ function PuntoVentaPage() {
                   carrito.map((linea) => (
                     <div key={linea.id} className="rounded-lg border border-border p-3">
                       <div className="flex items-start justify-between gap-2">
-                        <p className="min-w-0 flex-1 truncate text-sm font-medium">
+                        <p className="min-w-0 flex-1 break-words text-xs font-medium leading-tight">
                           {linea.nombreArticulo}
                         </p>
                         <Button
@@ -273,14 +308,14 @@ function PuntoVentaPage() {
                         <Input
                           value={linea.precio}
                           onChange={(e) => actualizar(linea.id, { precio: e.target.value })}
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          placeholder="Precio"
+                          onBlur={() => actualizar(linea.id, { precio: precioVisible(linea.precio) })}
+                          type="text"
+                          inputMode="decimal"
+                          placeholder="0,00"
                           className="h-8"
                         />
                         <span className="text-right text-sm font-semibold">
-                          {dinero(linea.cantidadVenta * Number(linea.precio || 0))}
+                          {dinero(linea.cantidadVenta * (numeroPrecio(linea.precio) || 0))}
                         </span>
                       </div>
                     </div>
@@ -301,11 +336,15 @@ function PuntoVentaPage() {
                   </SelectContent>
                 </Select>
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
-                  <Select value={idLista} onValueChange={setIdLista}>
+                  <Select
+                    value={idLista || "__ninguna__"}
+                    onValueChange={(valor) => setIdLista(valor === "__ninguna__" ? "" : valor)}
+                  >
                     <SelectTrigger>
                       <SelectValue placeholder="Lista de descuentos" />
                     </SelectTrigger>
                     <SelectContent>
+                      <SelectItem value="__ninguna__">Sin descuento</SelectItem>
                       {(listas.data?.items ?? [])
                         .filter((lista: ListaDescuentos) => esActivo(lista.vigente))
                         .map((lista) => (

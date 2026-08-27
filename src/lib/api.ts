@@ -3267,7 +3267,7 @@ export const api = {
       idSucursal: number;
       idUsuario: number;
       idCliente?: number;
-      idListaDescuentos: number;
+      idListaDescuentos?: number;
       idCondicionPago: number;
       idMoneda: number;
       fechaVenta: string;
