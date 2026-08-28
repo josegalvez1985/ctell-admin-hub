@@ -259,8 +259,17 @@ function HomePage() {
           ))}
         </section>
 
-        <div className="grid gap-4 xl:grid-cols-3">
-          <section className="surface-card xl:col-span-2">
+        {/* `min-w-0` en la grilla y en las dos secciones: un item de grid vale
+            `min-width: auto` por defecto, o sea que NO puede achicarse por debajo
+            del ancho mínimo de su contenido. En el celular alcanzaba con un monto
+            largo o el nombre de un artículo para que la columna creciera más que
+            la pantalla y toda la home quedara con scroll horizontal y una franja
+            en blanco al costado. El `truncate` de adentro no servía de nada
+            mientras el contenedor pudiera estirarse. El `overflow-hidden` es la
+            red: lo que igual no entre se recorta dentro de la tarjeta en vez de
+            empujar el ancho del documento. */}
+        <div className="grid min-w-0 gap-4 xl:grid-cols-3">
+          <section className="surface-card min-w-0 overflow-hidden xl:col-span-2">
             <div className="flex items-center justify-between border-b border-border px-4 py-4 sm:px-5">
               <h2 className="text-base font-semibold text-foreground">Últimos movimientos</h2>
               <Button variant="ghost" size="sm">
@@ -307,7 +316,7 @@ function HomePage() {
             </ul>
           </section>
 
-          <section className="surface-card p-4 sm:p-5">
+          <section className="surface-card min-w-0 overflow-hidden p-4 sm:p-5">
             <h2 className="text-base font-semibold text-foreground">Stock crítico</h2>
             <p className="mt-1 text-xs text-muted-foreground">
               Artículos con menos de {datos?.umbralCritico ?? 5} unidades disponibles.
