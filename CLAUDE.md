@@ -54,6 +54,7 @@ ctell-admin-hub/
 │   ├── lib/
 │   │   ├── api.ts            Cliente HTTP contra ORDS
 │   │   ├── moneda.ts         Formato y parseo es-PY, en un solo lugar
+│   │   ├── exportar.ts       Excel y PDF de un listado, con las mismas columnas
 │   │   └── uso-paginas.ts    Conteo de uso por página (localStorage)
 │   ├── router.tsx            Configuración del router
 │   └── styles.css            Design system: variables de color en oklch
@@ -215,6 +216,7 @@ Las columnas `ACTIVO` son `VARCHAR2(1)` con valores `'A'` o `'I'`. **Este códig
 - **`_auth.ventas.tsx`:** "/ventas" → Comprobantes emitidos: ver detalle y eliminar. **No** se editan.
 - **`_auth.cobros.tsx`:** "/cobros" → Cobros de ventas, historial y baja.
 - **`_auth.pagos.tsx`:** "/pagos" → Pagos a proveedores. Espejo de cobros.
+- **`_auth.existencias.tsx`:** "/existencias" → Consulta de existencia de artículos, con exportación a Excel y PDF. Es una CONSULTA: no da de alta ni edita nada.
 - **`_auth.configuracion.tsx`:** "/configuracion" → Preferencias (tema, acento).
 
 > Las páginas nuevas hay que **darlas de alta en administración** con su ruta: `PAGINAS` es data, no hay seed en SQL. El ícono se resuelve por nombre normalizado contra `menu-iconos.ts`.
@@ -228,6 +230,29 @@ Todo campo de dinero usa `<InputMoneda>`, que **separa los miles mientras se esc
 Nunca `Number(texto)` sobre un monto: `Number("34.200")` da **34,2** y guarda un importe mil veces menor sin ningún error a la vista. Fue exactamente el bug que había en compras, inventarios, lotes y cuentas bancarias.
 
 Al precargar un campo desde un número va `formatearMoneda(n)`, no `String(n)`: `String(34200.5)` da `"34200.5"` con punto decimal de JS, que el componente leería como separador de miles.
+
+### Exportar un listado: `lib/exportar.ts`
+
+Un listado que se baja a Excel y a PDF declara sus columnas **una sola vez**
+(`ColumnaExport<T>`) y de ahí salen los dos archivos. Declararlas por separado
+garantiza que tarde o temprano el Excel tenga una columna que el PDF no.
+
+- **`descargarExcel`** hace un `.xlsx` de verdad, no un CSV renombrado: las
+  cantidades entran como número y se pueden sumar en la planilla.
+- **`abrirPdf`** abre el PDF en una pestaña nueva. **La pestaña se abre en la
+  primera línea, antes de cualquier `await`**: los bloqueadores de ventanas
+  emergentes sólo dejan pasar el `window.open` que ocurre dentro del click, así
+  que el handler que la llama tampoco puede ser `async`. Si igual la bloquean,
+  el archivo se descarga.
+- **El guaraní (`₲`) no existe en las fuentes de fábrica de jsPDF** y sale como
+  un cuadrito: en un PDF, poné "Gs." en el título de la columna y mandá el
+  número pelado.
+- Las dos librerías entran con `import()` dinámico y quedan en su propio chunk:
+  no las paga quien nunca exporta.
+
+La primera pantalla que lo usa es `/existencias`, que además trae el catálogo
+entero paginando de a 200 en vez de ofrecer "Mostrar más" — en una consulta que
+se exporta, **lo que sale en el archivo tiene que ser exactamente lo que se ve**.
 
 ### Canal de pago: `IND_BANCO`, no el nombre
 
@@ -347,11 +372,12 @@ Ver [docs/GUIA-IMPLEMENTACION.md](docs/GUIA-IMPLEMENTACION.md) — explica cómo
 - **Montos:** `<InputMoneda>` para cargar, `numeroMoneda()` para parsear, `formatearMoneda()` para mostrar. Nunca `Number()` sobre un monto.
 - **Totales:** derivarlos del detalle, no guardarlos en la cabecera.
 - **Toda baja que movió stock o plata tiene que revertirlo**, o rechazarse con 409 si no puede.
-- **Los helpers privados del *body* de un paquete no se pueden llamar desde SQL** (`PLS-00231`): calcular en una variable PL/SQL y usar la variable en el `INSERT`/`UPDATE`. Este error se cometió dos veces — si vas a llamar un helper dentro de una sentencia SQL, mirá primero dónde está declarado.
+- **Los helpers privados del _body_ de un paquete no se pueden llamar desde SQL** (`PLS-00231`): calcular en una variable PL/SQL y usar la variable en el `INSERT`/`UPDATE`. Este error se cometió dos veces — si vas a llamar un helper dentro de una sentencia SQL, mirá primero dónde está declarado.
 - **`RETURNING CLOB` no va en una asignación PL/SQL suelta** (`PLS-00684`): usar `SELECT ... INTO x FROM DUAL`.
 - **Un `UNIQUE` sobre texto necesita el texto normalizado**, o no aplica: para Oracle `/Ventas` y `/ventas` son distintos. Normalizar en una función privada antes de guardar, y traducir el `DUP_VAL_ON_INDEX` a un 409 que diga qué hacer.
 
 Las tres están explicadas con ejemplos en [GUIA-IMPLEMENTACION.md](docs/GUIA-IMPLEMENTACION.md#37-trampas-de-plsql-que-se-repiten).
+
 - **Hash de contraseñas:** `STANDARD_HASH` SHA-256 hoy (débil frente a fuerza bruta). Si conseguís `GRANT EXECUTE ON SYS.DBMS_CRYPTO`, migra a PBKDF2 (versión lista en comentario dentro de `HASH_PASSWORD`). Migrar invalida hashes existentes.
 
 ## Comandos

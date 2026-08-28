@@ -24,6 +24,7 @@ import { Route as AuthConfiguracionRouteImport } from './routes/_auth.configurac
 import { Route as AuthCuentasBancariasRouteImport } from './routes/_auth.cuentas-bancarias'
 import { Route as AuthDepartamentosRouteImport } from './routes/_auth.departamentos'
 import { Route as AuthEmpresasRouteImport } from './routes/_auth.empresas'
+import { Route as AuthExistenciasRouteImport } from './routes/_auth.existencias'
 import { Route as AuthFacturasComprasRouteImport } from './routes/_auth.facturas-compras'
 import { Route as AuthHomeRouteImport } from './routes/_auth.home'
 import { Route as AuthInstitucionesRouteImport } from './routes/_auth.instituciones'
@@ -117,6 +118,11 @@ const AuthDepartamentosRoute = AuthDepartamentosRouteImport.update({
 const AuthEmpresasRoute = AuthEmpresasRouteImport.update({
   id: '/empresas',
   path: '/empresas',
+  getParentRoute: () => AuthRoute,
+} as any)
+const AuthExistenciasRoute = AuthExistenciasRouteImport.update({
+  id: '/existencias',
+  path: '/existencias',
   getParentRoute: () => AuthRoute,
 } as any)
 const AuthFacturasComprasRoute = AuthFacturasComprasRouteImport.update({
@@ -230,6 +236,7 @@ export interface FileRoutesByFullPath {
   '/cuentas-bancarias': typeof AuthCuentasBancariasRoute
   '/departamentos': typeof AuthDepartamentosRoute
   '/empresas': typeof AuthEmpresasRoute
+  '/existencias': typeof AuthExistenciasRoute
   '/facturas-compras': typeof AuthFacturasComprasRoute
   '/home': typeof AuthHomeRoute
   '/instituciones': typeof AuthInstitucionesRoute
@@ -265,6 +272,7 @@ export interface FileRoutesByTo {
   '/cuentas-bancarias': typeof AuthCuentasBancariasRoute
   '/departamentos': typeof AuthDepartamentosRoute
   '/empresas': typeof AuthEmpresasRoute
+  '/existencias': typeof AuthExistenciasRoute
   '/facturas-compras': typeof AuthFacturasComprasRoute
   '/home': typeof AuthHomeRoute
   '/instituciones': typeof AuthInstitucionesRoute
@@ -302,6 +310,7 @@ export interface FileRoutesById {
   '/_auth/cuentas-bancarias': typeof AuthCuentasBancariasRoute
   '/_auth/departamentos': typeof AuthDepartamentosRoute
   '/_auth/empresas': typeof AuthEmpresasRoute
+  '/_auth/existencias': typeof AuthExistenciasRoute
   '/_auth/facturas-compras': typeof AuthFacturasComprasRoute
   '/_auth/home': typeof AuthHomeRoute
   '/_auth/instituciones': typeof AuthInstitucionesRoute
@@ -339,6 +348,7 @@ export interface FileRouteTypes {
     | '/cuentas-bancarias'
     | '/departamentos'
     | '/empresas'
+    | '/existencias'
     | '/facturas-compras'
     | '/home'
     | '/instituciones'
@@ -374,6 +384,7 @@ export interface FileRouteTypes {
     | '/cuentas-bancarias'
     | '/departamentos'
     | '/empresas'
+    | '/existencias'
     | '/facturas-compras'
     | '/home'
     | '/instituciones'
@@ -410,6 +421,7 @@ export interface FileRouteTypes {
     | '/_auth/cuentas-bancarias'
     | '/_auth/departamentos'
     | '/_auth/empresas'
+    | '/_auth/existencias'
     | '/_auth/facturas-compras'
     | '/_auth/home'
     | '/_auth/instituciones'
@@ -541,6 +553,13 @@ declare module '@tanstack/react-router' {
       path: '/empresas'
       fullPath: '/empresas'
       preLoaderRoute: typeof AuthEmpresasRouteImport
+      parentRoute: typeof AuthRoute
+    }
+    '/_auth/existencias': {
+      id: '/_auth/existencias'
+      path: '/existencias'
+      fullPath: '/existencias'
+      preLoaderRoute: typeof AuthExistenciasRouteImport
       parentRoute: typeof AuthRoute
     }
     '/_auth/facturas-compras': {
@@ -693,6 +712,7 @@ interface AuthRouteChildren {
   AuthCuentasBancariasRoute: typeof AuthCuentasBancariasRoute
   AuthDepartamentosRoute: typeof AuthDepartamentosRoute
   AuthEmpresasRoute: typeof AuthEmpresasRoute
+  AuthExistenciasRoute: typeof AuthExistenciasRoute
   AuthFacturasComprasRoute: typeof AuthFacturasComprasRoute
   AuthHomeRoute: typeof AuthHomeRoute
   AuthInstitucionesRoute: typeof AuthInstitucionesRoute
@@ -728,6 +748,7 @@ const AuthRouteChildren: AuthRouteChildren = {
   AuthCuentasBancariasRoute: AuthCuentasBancariasRoute,
   AuthDepartamentosRoute: AuthDepartamentosRoute,
   AuthEmpresasRoute: AuthEmpresasRoute,
+  AuthExistenciasRoute: AuthExistenciasRoute,
   AuthFacturasComprasRoute: AuthFacturasComprasRoute,
   AuthHomeRoute: AuthHomeRoute,
   AuthInstitucionesRoute: AuthInstitucionesRoute,

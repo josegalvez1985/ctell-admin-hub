@@ -91,6 +91,7 @@ src/
 │   ├── _auth.ventas.tsx         "/ventas"        → comprobantes: ver y eliminar
 │   ├── _auth.cobros.tsx         "/cobros"        → cobros de ventas
 │   ├── _auth.pagos.tsx          "/pagos"         → pagos a proveedores
+│   ├── _auth.existencias.tsx    "/existencias"   → consulta de stock + Excel/PDF
 │   ├── _auth.configuracion.tsx  "/configuracion" → preferencias
 │   └── _auth.<tabla>.tsx        una por cada ABM
 ├── components/
@@ -223,7 +224,7 @@ Endpoints agregados:
 - `GET/POST /bancos/listar` y `/bancos/crear`, más `PUT/DELETE` sobre
   `/bancos/actualizar/:id` y `/bancos/eliminar/:id`.
 - `GET /cuentas-bancarias/listar?idEmpresa=...`, `POST
-  /cuentas-bancarias/crear`, `PUT /cuentas-bancarias/actualizar/:id` y
+/cuentas-bancarias/crear`, `PUT /cuentas-bancarias/actualizar/:id` y
   `DELETE /cuentas-bancarias/eliminar/:id/:idEmpresa`.
 
 ### Aislamiento por empresa

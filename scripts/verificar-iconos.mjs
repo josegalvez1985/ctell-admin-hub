@@ -53,6 +53,13 @@ const SINONIMOS = [
     "articulos ubicaciones",
     "articulos por ubicacion",
   ],
+  [
+    "existencias",
+    "existencia",
+    "existencia de articulos",
+    "existencias de articulos",
+    "consulta de existencias",
+  ],
   ["inventarios", "inventario"],
   ["ordenes", "ordenes de compra"],
   ["facturas de compra", "facturas compras"],

@@ -46,6 +46,7 @@ import {
   MapPin,
   Package,
   PackageCheck,
+  PackageSearch,
   PiggyBank,
   Percent,
   Receipt,
@@ -188,6 +189,15 @@ const ICONOS_PAGINA: Record<string, LucideIcon> = {
   usuarios: UserCog,
   articulos: Package,
   productos: Package,
+  // La lupa sobre la caja: es la CONSULTA de cuánto hay, no el ABM del
+  // artículo (Package) ni la asignación a una ubicación (PackageCheck). Los
+  // tres son de la misma familia a propósito — hablan del mismo objeto— y se
+  // distinguen por lo que se hace con él.
+  existencias: PackageSearch,
+  existencia: PackageSearch,
+  "existencia de articulos": PackageSearch,
+  "existencias de articulos": PackageSearch,
+  "consulta de existencias": PackageSearch,
   // Banknote y no Coins: Coins ya es "cobros", y con el mismo ícono no se
   // distinguiría la moneda —la divisa— del movimiento de caja.
   monedas: Banknote,

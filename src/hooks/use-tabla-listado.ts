@@ -40,13 +40,24 @@ export function useTablaListado<T>(
     const { campo, direccion } = orden;
     const factor = direccion === "asc" ? 1 : -1;
 
-    // toString() antes de comparar: cubre tanto columnas de texto como
-    // numéricas (el id de País, por ejemplo) sin dos ramas de código.
-    // localeCompare respeta acentos y mayúsculas como espera alguien
-    // leyendo en español ("Á" ordena con "A", no después de "Z").
-    return [...filtrados].sort(
-      (a, b) => factor * String(a[campo] ?? "").localeCompare(String(b[campo] ?? ""), "es"),
-    );
+    return [...filtrados].sort((a, b) => {
+      const izq = a[campo];
+      const der = b[campo];
+
+      // Los números se comparan como números. Pasándolos por String() —que es
+      // lo que hacía este sort para todo— la comparación es alfabética y 10
+      // queda antes que 9. En una columna de ids casi no se nota; en una de
+      // existencias o de importes, ordenar de mayor a menor devuelve cualquier
+      // cosa.
+      if (typeof izq === "number" && typeof der === "number") {
+        return factor * (izq - der);
+      }
+
+      // El resto va como texto. localeCompare respeta acentos y mayúsculas como
+      // espera alguien leyendo en español ("Á" ordena con "A", no después de
+      // "Z").
+      return factor * String(izq ?? "").localeCompare(String(der ?? ""), "es");
+    });
   }, [filtrados, orden]);
 
   function alternarOrden(campo: keyof T) {
