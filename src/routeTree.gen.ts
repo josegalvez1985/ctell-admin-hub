@@ -14,6 +14,7 @@ import { Route as AuthRouteImport } from './routes/_auth'
 import { Route as AuthAdministracionRouteImport } from './routes/_auth.administracion'
 import { Route as AuthArticulosRouteImport } from './routes/_auth.articulos'
 import { Route as AuthArticulosUbicacionesRouteImport } from './routes/_auth.articulos-ubicaciones'
+import { Route as AuthAsistenciasRouteImport } from './routes/_auth.asistencias'
 import { Route as AuthBancosRouteImport } from './routes/_auth.bancos'
 import { Route as AuthCanalesPagosRouteImport } from './routes/_auth.canales-pagos'
 import { Route as AuthCategoriasRouteImport } from './routes/_auth.categorias'
@@ -70,6 +71,11 @@ const AuthArticulosUbicacionesRoute =
     path: '/articulos-ubicaciones',
     getParentRoute: () => AuthRoute,
   } as any)
+const AuthAsistenciasRoute = AuthAsistenciasRouteImport.update({
+  id: '/asistencias',
+  path: '/asistencias',
+  getParentRoute: () => AuthRoute,
+} as any)
 const AuthBancosRoute = AuthBancosRouteImport.update({
   id: '/bancos',
   path: '/bancos',
@@ -226,6 +232,7 @@ export interface FileRoutesByFullPath {
   '/administracion': typeof AuthAdministracionRoute
   '/articulos': typeof AuthArticulosRoute
   '/articulos-ubicaciones': typeof AuthArticulosUbicacionesRoute
+  '/asistencias': typeof AuthAsistenciasRoute
   '/bancos': typeof AuthBancosRoute
   '/canales-pagos': typeof AuthCanalesPagosRoute
   '/categorias': typeof AuthCategoriasRoute
@@ -262,6 +269,7 @@ export interface FileRoutesByTo {
   '/administracion': typeof AuthAdministracionRoute
   '/articulos': typeof AuthArticulosRoute
   '/articulos-ubicaciones': typeof AuthArticulosUbicacionesRoute
+  '/asistencias': typeof AuthAsistenciasRoute
   '/bancos': typeof AuthBancosRoute
   '/canales-pagos': typeof AuthCanalesPagosRoute
   '/categorias': typeof AuthCategoriasRoute
@@ -300,6 +308,7 @@ export interface FileRoutesById {
   '/_auth/administracion': typeof AuthAdministracionRoute
   '/_auth/articulos': typeof AuthArticulosRoute
   '/_auth/articulos-ubicaciones': typeof AuthArticulosUbicacionesRoute
+  '/_auth/asistencias': typeof AuthAsistenciasRoute
   '/_auth/bancos': typeof AuthBancosRoute
   '/_auth/canales-pagos': typeof AuthCanalesPagosRoute
   '/_auth/categorias': typeof AuthCategoriasRoute
@@ -338,6 +347,7 @@ export interface FileRouteTypes {
     | '/administracion'
     | '/articulos'
     | '/articulos-ubicaciones'
+    | '/asistencias'
     | '/bancos'
     | '/canales-pagos'
     | '/categorias'
@@ -374,6 +384,7 @@ export interface FileRouteTypes {
     | '/administracion'
     | '/articulos'
     | '/articulos-ubicaciones'
+    | '/asistencias'
     | '/bancos'
     | '/canales-pagos'
     | '/categorias'
@@ -411,6 +422,7 @@ export interface FileRouteTypes {
     | '/_auth/administracion'
     | '/_auth/articulos'
     | '/_auth/articulos-ubicaciones'
+    | '/_auth/asistencias'
     | '/_auth/bancos'
     | '/_auth/canales-pagos'
     | '/_auth/categorias'
@@ -483,6 +495,13 @@ declare module '@tanstack/react-router' {
       path: '/articulos-ubicaciones'
       fullPath: '/articulos-ubicaciones'
       preLoaderRoute: typeof AuthArticulosUbicacionesRouteImport
+      parentRoute: typeof AuthRoute
+    }
+    '/_auth/asistencias': {
+      id: '/_auth/asistencias'
+      path: '/asistencias'
+      fullPath: '/asistencias'
+      preLoaderRoute: typeof AuthAsistenciasRouteImport
       parentRoute: typeof AuthRoute
     }
     '/_auth/bancos': {
@@ -702,6 +721,7 @@ interface AuthRouteChildren {
   AuthAdministracionRoute: typeof AuthAdministracionRoute
   AuthArticulosRoute: typeof AuthArticulosRoute
   AuthArticulosUbicacionesRoute: typeof AuthArticulosUbicacionesRoute
+  AuthAsistenciasRoute: typeof AuthAsistenciasRoute
   AuthBancosRoute: typeof AuthBancosRoute
   AuthCanalesPagosRoute: typeof AuthCanalesPagosRoute
   AuthCategoriasRoute: typeof AuthCategoriasRoute
@@ -738,6 +758,7 @@ const AuthRouteChildren: AuthRouteChildren = {
   AuthAdministracionRoute: AuthAdministracionRoute,
   AuthArticulosRoute: AuthArticulosRoute,
   AuthArticulosUbicacionesRoute: AuthArticulosUbicacionesRoute,
+  AuthAsistenciasRoute: AuthAsistenciasRoute,
   AuthBancosRoute: AuthBancosRoute,
   AuthCanalesPagosRoute: AuthCanalesPagosRoute,
   AuthCategoriasRoute: AuthCategoriasRoute,

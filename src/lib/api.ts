@@ -295,6 +295,53 @@ export type ListaProfesores = {
   total: number;
 };
 
+/**
+ * Una marcación de asistencia: **una fila por entrada/salida, no por día.**
+ *
+ * El UNIQUE de la tabla es sobre las claves de entrada y salida, no sobre
+ * (profesor, fecha): un profesor puede marcar varias veces el mismo día. La
+ * pantalla las agrupa por fecha para armar la grilla.
+ */
+export type AsistenciaProfesor = {
+  id: number;
+  idProfesor: number;
+  profesor: string;
+  numeroCi: string;
+  idInstitucion: number;
+  /** `null` si la institución fue borrada. */
+  institucion: string | null;
+  /** ISO `YYYY-MM-DD`. */
+  fecha: string;
+  /** `HH:MM`, o `null` si todavía no marcó. */
+  horaEntrada: string | null;
+  horaSalida: string | null;
+  /**
+   * Minutos entre entrada y salida.
+   *
+   * **`null` significa incompleto**, no cero: falta una de las dos marcas. Un 0
+   * sería una jornada de duración nula, que es un caso distinto y hay que poder
+   * distinguirlo para marcarlo en el reporte.
+   *
+   * Vienen en minutos y no en horas porque la conversión depende de la duración
+   * de la hora cátedra, que se carga en la pantalla.
+   */
+  minutos: number | null;
+  /** `'S'` si se marcó sin conexión: la hora es la del teléfono, no la del servidor. */
+  entradaOffline: "S" | "N";
+  salidaOffline: "S" | "N";
+  marcadoEnEntrada: string | null;
+  marcadoEnSalida: string | null;
+  latitud: string | null;
+  longitud: string | null;
+  latitudSalida: string | null;
+  longitudSalida: string | null;
+};
+
+export type ListaAsistenciasProfesores = {
+  items: AsistenciaProfesor[];
+  total: number;
+};
+
 export type Empresa = {
   id: number;
   nombreEmpresa: string;
@@ -1020,7 +1067,8 @@ export type Venta = {
 
 export type VentaCompleta = {
   cabecera: Omit<Venta, "cliente" | "lineas"> & {
-    idListaDescuentos: number;
+    /** `null` en las ventas hechas sin lista, a precio de etiqueta. */
+    idListaDescuentos: number | null;
     idCondicionPago: number;
   };
   detalle: VentaDetalle[];
@@ -2298,6 +2346,30 @@ export const api = {
       }),
   },
 
+  /**
+   * Asistencias de profesores. **Sólo lectura**: la marcación la hace la app del
+   * profesor, así que no hay alta, edición ni baja.
+   *
+   * Los importes no vienen de acá — el precio por hora y la duración de la hora
+   * cátedra se cargan en la pantalla del reporte.
+   */
+  asistenciasProfesores: {
+    listar: (params: {
+      idEmpresa: number;
+      anio?: number | undefined;
+      mes?: number | undefined;
+      idProfesor?: number | undefined;
+      idInstitucion?: number | undefined;
+    }) => {
+      const q = new URLSearchParams({ idEmpresa: String(params.idEmpresa) });
+      if (params.anio) q.set("anio", String(params.anio));
+      if (params.mes) q.set("mes", String(params.mes));
+      if (params.idProfesor) q.set("idProfesor", String(params.idProfesor));
+      if (params.idInstitucion) q.set("idInstitucion", String(params.idInstitucion));
+      return request<ListaAsistenciasProfesores>(`/asistencias-profesores/listar?${q}`);
+    },
+  },
+
   empresas: {
     /** Sin `idCiudad` devuelve las empresas de todas las ciudades. */
     listar: (params: { idCiudad?: number } = {}) => {
@@ -3467,7 +3539,12 @@ export const api = {
       idSucursal: number;
       idUsuario: number;
       idCliente?: number;
-      idListaDescuentos: number;
+      /**
+       * Opcional: sin lista, la venta va a precio de etiqueta y el backend
+       * aplica 0% de descuento. Mandar una que no exista o que no esté vigente
+       * para `fechaVenta` se rechaza con 400.
+       */
+      idListaDescuentos?: number;
       idCondicionPago: number;
       idMoneda: number;
       fechaVenta: string;

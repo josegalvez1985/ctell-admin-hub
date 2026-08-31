@@ -8,8 +8,7 @@ import { toast } from "sonner";
 import { z } from "zod";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
-import { SelectorModal } from "@/components/ctell/SelectorModal";
-import { SIN_FILTRO, TableHeadFiltrable } from "@/components/ctell/TableHeadFiltrable";
+import { useEmpresa } from "@/components/ctell/empresa-provider";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
 import { useTablaListado } from "@/hooks/use-tabla-listado";
 import { api, ApiError, esActivo, type Estado, type Sucursal } from "@/lib/api";
@@ -56,9 +55,6 @@ import {
 } from "@/components/ui/table";
 
 const schema = z.object({
-  // El combobox devuelve strings: el id se valida como texto no vacío y se
-  // convierte a número recién al enviar.
-  idEmpresa: z.string().min(1, "Elegí una empresa"),
   nombreSucursal: z.string().trim().min(1, "Obligatorio").max(200, "Máximo 200 caracteres"),
   direccion: z.string().trim().max(500, "Máximo 500 caracteres"),
   activo: z.boolean(),
@@ -78,28 +74,24 @@ const MENSAJE_ERROR = (error: unknown, fallback: string) =>
 const POR_PAGINA = 20;
 
 function SucursalesPage() {
+  const { empresa } = useEmpresa();
   const queryClient = useQueryClient();
   const [editando, setEditando] = useState<Sucursal | null>(null);
   const [creando, setCreando] = useState(false);
   const [aEliminar, setAEliminar] = useState<Sucursal | null>(null);
-  const [filtroEmpresa, setFiltroEmpresa] = useState<string>(SIN_FILTRO);
 
-  // El endpoint trae todas las sucursales y el filtro se aplica acá abajo,
-  // sobre la columna Empresa. Cambiar de empresa no dispara un viaje a la red.
+  // Sólo las sucursales de la empresa activa, y el recorte lo hace el backend
+  // —no la pantalla—: traer las de todas para esconder casi todas manda por la
+  // red datos de empresas que nadie está mirando.
+  //
+  // Es la MISMA queryKey que usa `sucursal-provider`, así que las dos comparten
+  // la caché y un alta acá refresca también el selector de sucursal del header.
   const { data, isPending, isError, error } = useQuery({
-    queryKey: ["sucursales", null],
-    queryFn: () => api.sucursales.listar(),
-  });
-
-  const sucursalesFiltradas = (data?.items ?? []).filter(
-    (s) => filtroEmpresa === SIN_FILTRO || String(s.idEmpresa) === filtroEmpresa,
-  );
-
-  // Las empresas alimentan el filtro y el formulario. Misma queryKey que usa
-  // la página de Empresas al listar sin filtrar, así se comparte la caché.
-  const { data: empresas } = useQuery({
-    queryKey: ["empresas", null],
-    queryFn: () => api.empresas.listar(),
+    queryKey: ["sucursales", empresa?.id ?? null],
+    queryFn: () => api.sucursales.listar({ idEmpresa: empresa!.id }),
+    // El provider de empresa hidrata después de montar: sin esto la primera
+    // petición saldría sin idEmpresa y traería las de todas las empresas.
+    enabled: empresa !== null,
   });
 
   const eliminar = useMutation({
@@ -117,21 +109,17 @@ function SucursalesPage() {
 
   // Búsqueda por cualquier campo visible + orden por click en el header.
   // Ver el criterio general en la guía de frontend, sección "Listados".
+  // Buscar por empresa ya no tiene sentido —todas las filas son de la misma—;
+  // la dirección sí distingue una sucursal de otra.
   const { busqueda, setBusqueda, orden, alternarOrden, resultado, termino } = useTablaListado(
-    sucursalesFiltradas,
-    (s) => [s.nombreSucursal, s.empresa, esActivo(s.activo) ? "Activo" : "Inactivo"],
+    data?.items ?? [],
+    (s) => [s.nombreSucursal, s.direccion, esActivo(s.activo) ? "Activo" : "Inactivo"],
   );
 
-  const empresasOpciones = (empresas?.items ?? []).map((e) => ({
-    valor: String(e.id),
-    etiqueta: e.nombreEmpresa,
-    descripcion: e.ruc ?? undefined,
-  }));
-
-  // Cuántas filas se están mostrando. Se resetea al cambiar el filtro o la
-  // búsqueda: seguir en "80 de 90" tras filtrar a 12 perdería el sentido.
+  // Cuántas filas se están mostrando. Se resetea al cambiar la búsqueda:
+  // seguir en "80 de 90" tras filtrar a 12 perdería el sentido.
   const [visibles, setVisibles] = useState(POR_PAGINA);
-  const claveVista = `${filtroEmpresa}|${termino}`;
+  const claveVista = termino;
   const [claveAnterior, setClaveAnterior] = useState(claveVista);
   if (claveVista !== claveAnterior) {
     // Ajuste de estado en render, no useEffect: React re-renderiza antes de
@@ -150,22 +138,21 @@ function SucursalesPage() {
           <div>
             <h1 className="text-2xl font-bold text-foreground sm:text-3xl">Sucursales</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Sucursales de cada empresa del sistema.
+              Sucursales de {empresa?.nombreEmpresa ?? "la empresa activa"}.
             </p>
           </div>
-          <Button onClick={() => setCreando(true)}>
+          <Button onClick={() => setCreando(true)} disabled={empresa === null}>
             <Plus className="size-4" />
             Nueva sucursal
           </Button>
         </div>
 
-        {/* El filtro por empresa vive en el header de su columna. */}
         <div className="relative">
           <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={busqueda}
             onChange={(e) => setBusqueda(e.target.value)}
-            placeholder="Buscar por sucursal o empresa…"
+            placeholder="Buscar por sucursal o dirección…"
             className="pl-9"
           />
         </div>
@@ -189,12 +176,10 @@ function SucursalesPage() {
             <p className="text-sm text-muted-foreground">
               {termino
                 ? `Sin resultados para "${busqueda.trim()}".`
-                : filtroEmpresa === SIN_FILTRO
-                  ? "Todavía no hay sucursales cargadas."
-                  : "Esa empresa todavía no tiene sucursales cargadas."}
+                : "Esta empresa todavía no tiene sucursales cargadas."}
             </p>
             {!termino && (
-              <Button className="mt-4" onClick={() => setCreando(true)}>
+              <Button className="mt-4" onClick={() => setCreando(true)} disabled={empresa === null}>
                 <Plus className="size-4" />
                 Cargar la primera
               </Button>
@@ -216,7 +201,9 @@ function SucursalesPage() {
                       <p className="truncate font-semibold text-foreground">
                         {sucursal.nombreSucursal}
                       </p>
-                      <p className="mt-0.5 text-xs text-muted-foreground">{sucursal.empresa}</p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        {sucursal.direccion ?? "Sin dirección"}
+                      </p>
                     </div>
                     <Badge variant={activo ? "secondary" : "outline"} className="shrink-0">
                       {activo ? "Activo" : "Inactivo"}
@@ -260,19 +247,12 @@ function SucursalesPage() {
                   >
                     Sucursal
                   </TableHeadOrdenable>
-                  <TableHeadFiltrable
-                    direccion={orden?.campo === "empresa" ? orden.direccion : null}
-                    onOrdenar={() => alternarOrden("empresa")}
-                    opciones={empresasOpciones.map((e) => ({
-                      valor: e.valor,
-                      etiqueta: e.etiqueta,
-                    }))}
-                    valor={filtroEmpresa}
-                    onFiltrar={setFiltroEmpresa}
-                    buscarPlaceholder="Buscar empresa…"
+                  <TableHeadOrdenable
+                    direccion={orden?.campo === "direccion" ? orden.direccion : null}
+                    onClick={() => alternarOrden("direccion")}
                   >
-                    Empresa
-                  </TableHeadFiltrable>
+                    Dirección
+                  </TableHeadOrdenable>
                   <TableHeadOrdenable
                     direccion={orden?.campo === "activo" ? orden.direccion : null}
                     onClick={() => alternarOrden("activo")}
@@ -291,7 +271,9 @@ function SucursalesPage() {
                       <TableCell className="font-medium text-foreground">
                         {sucursal.nombreSucursal}
                       </TableCell>
-                      <TableCell className="text-muted-foreground">{sucursal.empresa}</TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {sucursal.direccion ?? "—"}
+                      </TableCell>
                       <TableCell>
                         <Badge variant={activo ? "secondary" : "outline"}>
                           {activo ? "Activo" : "Inactivo"}
@@ -339,16 +321,13 @@ function SucursalesPage() {
           <p className="text-center text-xs text-muted-foreground">
             Mostrando {mostrados.length} de {resultado.length} sucursal
             {resultado.length === 1 ? "" : "es"}
-            {termino || filtroEmpresa !== SIN_FILTRO ? ` (${data.items.length} en total)` : ""}
+            {termino ? ` (${data.items.length} en total)` : ""}
           </p>
         )}
 
         <SucursalFormDialog
           open={creando || editando !== null}
           sucursal={editando}
-          // Al crear con una empresa filtrada, esa empresa viene
-          // preseleccionada: es la que la persona está mirando.
-          idEmpresaPorDefecto={filtroEmpresa === SIN_FILTRO ? undefined : Number(filtroEmpresa)}
           onClose={() => {
             setCreando(false);
             setEditando(null);
@@ -391,34 +370,21 @@ function SucursalesPage() {
 function SucursalFormDialog({
   open,
   sucursal,
-  idEmpresaPorDefecto,
   onClose,
 }: {
   open: boolean;
   sucursal: Sucursal | null;
-  idEmpresaPorDefecto: number | undefined;
   onClose: () => void;
 }) {
+  const { empresa } = useEmpresa();
   const queryClient = useQueryClient();
   const esEdicion = sucursal !== null;
-
-  const { data: empresas, isPending: cargandoEmpresas } = useQuery({
-    queryKey: ["empresas", null],
-    queryFn: () => api.empresas.listar(),
-  });
-
-  const empresasOpciones = (empresas?.items ?? []).map((e) => ({
-    valor: String(e.id),
-    etiqueta: e.nombreEmpresa,
-    descripcion: e.ruc ?? undefined,
-  }));
 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     // Sin defaults React avisa por inputs no controlados. Un alta nace activa:
     // cargar una sucursal para dejarla inactiva de entrada no tiene sentido.
     values: {
-      idEmpresa: String(sucursal?.idEmpresa ?? idEmpresaPorDefecto ?? ""),
       nombreSucursal: sucursal?.nombreSucursal ?? "",
       direccion: sucursal?.direccion ?? "",
       activo: sucursal ? esActivo(sucursal.activo) : true,
@@ -434,15 +400,19 @@ function SucursalFormDialog({
         ...(v.direccion ? { direccion: v.direccion } : {}),
       };
 
+      // La empresa no se elige: la sucursal es siempre de la empresa activa.
+      // En edición sale de la propia fila —que ya vino acotada a esa empresa—
+      // y no del provider, para que la sucursal no se mude de empresa si
+      // alguien cambia de empresa con el diálogo abierto.
       return esEdicion
         ? api.sucursales.actualizar(sucursal.id, {
-            idEmpresa: Number(v.idEmpresa),
+            idEmpresa: sucursal.idEmpresa,
             nombreSucursal: v.nombreSucursal,
             activo,
             ...opcionales,
           })
         : api.sucursales.crear({
-            idEmpresa: Number(v.idEmpresa),
+            idEmpresa: empresa!.id,
             nombreSucursal: v.nombreSucursal,
             ...opcionales,
           });
@@ -466,35 +436,12 @@ function SucursalFormDialog({
           <DialogDescription>
             {esEdicion
               ? "Modificá los datos de la sucursal."
-              : "Agregá una sucursal a una empresa."}
+              : `Agregá una sucursal a ${empresa?.nombreEmpresa ?? "la empresa activa"}.`}
           </DialogDescription>
         </DialogHeader>
 
         <Form {...form}>
           <form onSubmit={form.handleSubmit((v) => guardar.mutate(v))} className="space-y-4">
-            <FormField
-              control={form.control}
-              name="idEmpresa"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Empresa</FormLabel>
-                  <FormControl>
-                    <SelectorModal
-                      opciones={empresasOpciones}
-                      value={field.value}
-                      onChange={field.onChange}
-                      placeholder="Elegí una empresa"
-                      titulo="Elegí una empresa"
-                      buscarPlaceholder="Buscar empresa…"
-                      cargando={cargandoEmpresas}
-                    />
-                  </FormControl>
-                  <FormDescription>La sucursal pertenece a esta empresa.</FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
             <FormField
               control={form.control}
               name="nombreSucursal"
@@ -569,7 +516,7 @@ export const Route = createFileRoute("/_auth/sucursales")({
   head: () => ({
     meta: [
       { title: tituloPagina("Sucursales") },
-      { name: "description", content: "Sucursales por empresa del sistema." },
+      { name: "description", content: "Sucursales de la empresa activa." },
     ],
   }),
   component: SucursalesPage,

@@ -30,6 +30,13 @@ const ARCHIVO = join(raiz, "src/components/ctell/menu-iconos.ts");
  * propósito. Cada grupo se colapsa en un solo "dueño" antes de buscar choques.
  */
 const SINONIMOS = [
+  [
+    "asistencias",
+    "asistencia",
+    "asistencias de profesores",
+    "asistencia de profesores",
+    "reporte de asistencias",
+  ],
   ["modulos", "modulo"],
   ["paginas", "pagina"],
   ["permisos", "permiso"],

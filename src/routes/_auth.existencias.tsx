@@ -42,8 +42,24 @@ export const Route = createFileRoute("/_auth/existencias")({
 const MENSAJE_ERROR = (error: unknown, fallback: string) =>
   error instanceof ApiError ? error.message : fallback;
 
-/** El techo que acepta `/articulos/listar`. Pedir más no trae más. */
-const POR_PAGINA = 200;
+/**
+ * Cuántos artículos se piden por vuelta.
+ *
+ * NO es el techo del endpoint (200), y bajarlo es deliberado: ORDS devuelve el
+ * CLOB del listado por un parámetro tipado como STRING, que tope en 4000 BYTES.
+ * Una página de 200 artículos —con DESCRIPCION de hasta 1000 caracteres cada
+ * uno— pasa larguísimo ese límite y el bind falla DESPUÉS de que el PL/SQL
+ * terminó bien: por eso el error llegaba como un 500 sin diagnóstico, que el
+ * WHEN OTHERS del paquete ni siquiera alcanzaba a registrar.
+ *
+ * Con 50 la página entra holgada. El costo es una petición más cada 50
+ * artículos, que en una pantalla que ya trae el catálogo completo no se nota.
+ *
+ * El arreglo de fondo es publicar el parámetro de salida como CLOB en vez de
+ * STRING; hasta que eso se confirme contra esta instalación de ORDS, el tamaño
+ * de página es lo que mantiene la respuesta por debajo del techo.
+ */
+const POR_PAGINA = 50;
 
 /**
  * Tope de páginas a traer. 10.000 artículos es un catálogo enorme para este
@@ -61,9 +77,9 @@ const MAX_PAGINAS = 50;
  * **lo que se exporta es exactamente lo que se ve**, con los mismos filtros
  * aplicados.
  *
- * Se pagina de a 200 —el techo del endpoint— y no de una sola vez: traer el
- * catálogo entero en una petición es lo que hacía fallar a `/articulos/listar`
- * con 500, porque cada fila puede llevar una descripción de 1000 caracteres.
+ * Se pagina de a `POR_PAGINA` y no de una sola vez: una respuesta grande hace
+ * fallar a `/articulos/listar` con 500 por el techo de 4000 bytes del bind de
+ * ORDS. Ver la nota de `POR_PAGINA`.
  */
 async function traerCatalogo(idEmpresa: number): Promise<Articulo[]> {
   const todos: Articulo[] = [];

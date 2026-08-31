@@ -6,6 +6,28 @@
 -- Precio manual por linea. Cuotas: 30/60/90 dias son vencimientos acumulados.
 --
 --------------------------------------------------------------------------------
+-- LA LISTA DE DESCUENTOS ES OPCIONAL
+--
+-- Una venta sin lista es una venta a precio de etiqueta, que es el caso mas
+-- comun del mostrador. Antes era obligatoria y el cajero tenia que elegir una
+-- lista de 0% para poder cobrar: un dato inventado para satisfacer una
+-- validacion, que es justo lo que no hay que pedir.
+--
+-- Sin lista, ID_LISTA_DESCUENTOS queda NULL y el porcentaje es 0. El detalle
+-- guarda PORCENTAJE_DESCUENTO 0 y MONTO_DESCUENTO 0, asi que los totales
+-- derivados no cambian de forma.
+--
+-- LA COLUMNA TIENE QUE ACEPTAR NULL. Si el DDL la creo NOT NULL, correr una vez
+-- en APEX antes que este archivo:
+--
+--   ALTER TABLE VENTAS_CABECERAS MODIFY (ID_LISTA_DESCUENTOS NULL);
+--
+-- Se verifica con:
+--
+--   SELECT NULLABLE FROM USER_TAB_COLUMNS
+--    WHERE TABLE_NAME = 'VENTAS_CABECERAS' AND COLUMN_NAME = 'ID_LISTA_DESCUENTOS';
+--
+--------------------------------------------------------------------------------
 -- LOS TOTALES NO SE GUARDAN: SE CALCULAN
 --
 -- VENTAS_CABECERAS no tiene MONTO_SUBTOTAL, MONTO_DESCUENTO, MONTO_IVA ni
@@ -233,7 +255,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_VENTAS AS
     l_talonario := TO_NUMBER(NULLIF(p_id_talonario, ''));
     l_fecha     := TO_TIMESTAMP(NULLIF(p_fecha_venta, ''), 'YYYY-MM-DD"T"HH24:MI:SS');
     IF l_sesion IS NULL THEN p_status_code := 401; p_resultado := '{"error":"Sesion invalida o vencida"}'; RETURN; END IF;
-    IF l_empresa IS NULL OR l_sucursal IS NULL OR l_usuario IS NULL OR l_condicion IS NULL OR l_moneda IS NULL OR l_talonario IS NULL OR l_lista IS NULL OR p_detalle IS NULL THEN
+    -- l_lista NO entra aca: sin lista de descuentos la venta va a precio de
+    -- etiqueta, con 0% de descuento. Ver la nota de la cabecera.
+    IF l_empresa IS NULL OR l_sucursal IS NULL OR l_usuario IS NULL OR l_condicion IS NULL OR l_moneda IS NULL OR l_talonario IS NULL OR p_detalle IS NULL THEN
       p_status_code := 400; p_resultado := '{"error":"Faltan datos obligatorios de la venta"}'; RETURN;
     END IF;
 
@@ -249,9 +273,26 @@ CREATE OR REPLACE PACKAGE BODY PKG_VENTAS AS
     IF l_nro > l_final_talonario THEN p_status_code := 409; p_resultado := '{"error":"El talonario no tiene numeros disponibles"}'; ROLLBACK; RETURN; END IF;
     l_numero := l_establecimiento || '-' || l_punto || '-' || LPAD(TO_CHAR(l_nro), 7, '0');
 
-    SELECT PORCENTAJE_DESCUENTO INTO l_porcentaje FROM LISTAS_DESCUENTOS
-     WHERE ID_LISTA_PRECIOS = l_lista AND ID_EMPRESA = l_empresa
-       AND FECHA_VIGENCIA_DESDE <= l_fecha AND (FECHA_VIGENCIA_HASTA IS NULL OR FECHA_VIGENCIA_HASTA >= l_fecha);
+    -- Sin lista, l_porcentaje se queda en el 0 con que nace. El SELECT no puede
+    -- salir igual con l_lista NULL: no devolveria filas, y el NO_DATA_FOUND del
+    -- handler global lo reportaria como "la lista no existe" —un 409 por un dato
+    -- que justamente es opcional—.
+    --
+    -- Cuando SI viene una lista, el NO_DATA_FOUND se captura aca y se traduce a
+    -- un mensaje que dice el caso real: el id puede no existir, ser de otra
+    -- empresa, o estar fuera de vigencia para la fecha de la venta.
+    IF l_lista IS NOT NULL THEN
+      BEGIN
+        SELECT PORCENTAJE_DESCUENTO INTO l_porcentaje FROM LISTAS_DESCUENTOS
+         WHERE ID_LISTA_PRECIOS = l_lista AND ID_EMPRESA = l_empresa
+           AND FECHA_VIGENCIA_DESDE <= l_fecha AND (FECHA_VIGENCIA_HASTA IS NULL OR FECHA_VIGENCIA_HASTA >= l_fecha);
+      EXCEPTION WHEN NO_DATA_FOUND THEN
+        ROLLBACK; p_status_code := 400;
+        p_resultado := '{"error":"La lista de descuentos no existe o no esta vigente para la fecha de la venta"}';
+        RETURN;
+      END;
+    END IF;
+
     SELECT NVL(DIAS_PAGO, 0), NVL(CANTIDAD_CUOTAS, 1) INTO l_dias, l_cuotas FROM CONDICIONES_PAGO WHERE ID_CONDICION = l_condicion;
 
     -- La cabecera va sin montos: son la suma del detalle y se derivan al leer.
@@ -333,7 +374,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_VENTAS AS
     p_resultado := JSON_OBJECT('id' VALUE l_id, 'numeroVenta' VALUE l_numero, 'lineas' VALUE l_lineas, 'total' VALUE l_total, 'ok' VALUE 'true' FORMAT JSON);
   EXCEPTION
     WHEN DUP_VAL_ON_INDEX THEN ROLLBACK; p_status_code := 409; p_resultado := '{"error":"El numero de venta ya existe o un articulo aparece dos veces en el detalle"}';
-    WHEN NO_DATA_FOUND THEN ROLLBACK; p_status_code := 409; p_resultado := '{"error":"El talonario, la lista de descuentos o la condicion de pago no existe"}';
+    -- La lista ya no figura: su NO_DATA_FOUND se captura arriba, con un mensaje
+    -- propio. Lo que puede caer aca es el talonario o la condicion de pago.
+    WHEN NO_DATA_FOUND THEN ROLLBACK; p_status_code := 409; p_resultado := '{"error":"El talonario o la condicion de pago no existe"}';
     WHEN OTHERS THEN ROLLBACK; p_status_code := 500; APEX_DEBUG.ERROR('PKG_VENTAS.INSERTAR: ' || SQLERRM); p_resultado := '{"error":"Error al crear la venta"}';
   END INSERTAR;
 

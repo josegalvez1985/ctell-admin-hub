@@ -224,3 +224,422 @@ export async function abrirPdf<T>({
     throw error;
   }
 }
+
+/* -------------------------------------------------------------------------- */
+/* Planilla mensual: la grilla de días con encabezado y totales                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Un reporte con FORMA, no una lista de filas.
+ *
+ * `descargarExcel` y `abrirPdf` sirven para un listado: mismas columnas, una
+ * fila por registro. Una planilla mensual es otra cosa — tiene un encabezado
+ * con los datos del período, columnas agrupadas de a pares (Ent./Sal.), una
+ * fila por día del mes incluidos los que no tienen marcas, y un bloque de
+ * totales abajo. Nada de eso entra en `ColumnaExport`.
+ *
+ * Por eso son funciones aparte y no un parámetro más de las otras: forzar los
+ * dos formatos en una sola API dejaría una función con la mitad de los
+ * parámetros ignorados según el caso.
+ */
+export type FilaPlanilla = {
+  /** Número de día del mes. */
+  dia: number;
+  /** "Lun", "Mar"… */
+  diaSemana: string;
+  /** Marcas del día, en orden. Una posición vacía es un par sin usar. */
+  marcas: Array<{ entrada: string | null; salida: string | null }>;
+  /** Horas cátedra del día. 0 si no trabajó. */
+  horas: number;
+  /** Sábado o domingo: se pinta distinto. */
+  finDeSemana: boolean;
+};
+
+export type DatosPlanilla = {
+  profesor: string;
+  institucion: string;
+  /** "Junio 2026" */
+  periodo: string;
+  /** Minutos que dura una hora cátedra. */
+  horaCatedra: number;
+  precioHora: number;
+  filas: FilaPlanilla[];
+  /** Cuántos pares Ent./Sal. mostrar. */
+  columnasMarca: number;
+  totalHoras: number;
+  totalImporte: number;
+  /** IVA contenido en `totalImporte`, no un importe a sumarle. */
+  totalIva: number;
+  /**
+   * Renglones en blanco del bloque "Actividad extra".
+   *
+   * Ese bloque NO sale de la base: no hay tabla que lo respalde. Se imprime
+   * vacío para completarlo a mano sobre el papel, que es como se usa hoy. En 0
+   * el bloque no se dibuja.
+   */
+  filasActividadExtra?: number;
+};
+
+/** El azul del logo en RGB: jsPDF no entiende las variables oklch del tema. */
+const AZUL: [number, number, number] = [19, 98, 192];
+/** Amarillo suave de las celdas de carga, como la planilla de papel. */
+const CREMA = "#FFF9E6";
+/** Celeste de la columna de totales. */
+const CELESTE = "#DCE9F7";
+/** Gris del fin de semana. */
+const GRIS = "#EFEFEF";
+
+/**
+ * La planilla mensual como `.xlsx`, con la forma de la planilla de papel.
+ *
+ * Usa el modo `sheetData` de write-excel-file —filas de celdas sueltas— y no el
+ * modo `columns`/`schema`: ese último produce una tabla uniforme, y acá cada
+ * zona tiene su propio ancho, color y combinación de celdas.
+ */
+export async function descargarPlanillaExcel(datos: DatosPlanilla): Promise<void> {
+  const { default: writeXlsxFile } = await import("write-excel-file/browser");
+
+  const n = datos.columnasMarca;
+  // Día, Fecha, (Ent./Sal.) × n, Total horas
+  const anchoTotal = 2 + n * 2 + 1;
+
+  /** Fila de `anchoTotal` celdas, rellenando con null lo que no se usa. */
+  const completar = (celdas: unknown[]): unknown[] => [
+    ...celdas,
+    ...Array<null>(Math.max(0, anchoTotal - celdas.length)).fill(null),
+  ];
+
+  const filas: unknown[][] = [];
+
+  // --- Encabezado ---------------------------------------------------------
+  const rotulo = (texto: string) => ({
+    value: texto,
+    fontWeight: "bold" as const,
+    backgroundColor: CELESTE,
+    align: "right" as const,
+  });
+
+  filas.push(
+    completar([
+      rotulo("Profesor/a"),
+      { value: datos.profesor, columnSpan: Math.max(1, n), fontWeight: "bold" as const },
+    ]),
+  );
+  filas.push(
+    completar([rotulo("Institución"), { value: datos.institucion, columnSpan: Math.max(1, n) }]),
+  );
+  filas.push(completar([rotulo("Mes"), { value: datos.periodo }]));
+  filas.push(completar([rotulo("Hora cátedra (min)"), { value: datos.horaCatedra, type: Number }]));
+  filas.push(completar([]));
+
+  // --- Cabecera de la grilla ----------------------------------------------
+  // Dos filas: la de arriba numera los pares, la de abajo dice Ent./Sal.
+  const cabecera1: unknown[] = [
+    {
+      value: "Día",
+      fontWeight: "bold" as const,
+      backgroundColor: "#FFF200",
+      align: "center" as const,
+      rowSpan: 2,
+    },
+    {
+      value: "Fecha",
+      fontWeight: "bold" as const,
+      backgroundColor: "#FFF200",
+      align: "center" as const,
+      rowSpan: 2,
+    },
+  ];
+  for (let i = 0; i < n; i++) {
+    cabecera1.push(
+      {
+        value: i + 1,
+        type: Number,
+        fontWeight: "bold" as const,
+        align: "center" as const,
+        columnSpan: 2,
+      },
+      null,
+    );
+  }
+  cabecera1.push({
+    value: "Total Cant. Hs.",
+    fontWeight: "bold" as const,
+    backgroundColor: CELESTE,
+    align: "center" as const,
+    rowSpan: 2,
+  });
+  filas.push(cabecera1);
+
+  // Las celdas de la fila combinada van en null: la librería las ignora, pero
+  // tienen que estar para que las columnas no se corran.
+  const cabecera2: unknown[] = [null, null];
+  for (let i = 0; i < n; i++) {
+    cabecera2.push(
+      { value: "Ent.", fontWeight: "bold" as const, align: "center" as const },
+      { value: "Sal.", fontWeight: "bold" as const, align: "center" as const },
+    );
+  }
+  cabecera2.push(null);
+  filas.push(cabecera2);
+
+  // --- Un renglón por día del mes -----------------------------------------
+  for (const fila of datos.filas) {
+    const fondo = fila.finDeSemana ? GRIS : CREMA;
+    const celdas: unknown[] = [
+      { value: fila.diaSemana, align: "center" as const, backgroundColor: fondo },
+      { value: fila.dia, type: Number, align: "center" as const, backgroundColor: fondo },
+    ];
+    for (let i = 0; i < n; i++) {
+      const marca = fila.marcas[i];
+      // null y no "" en la celda sin dato: una cadena vacía deja la celda
+      // "ocupada" con texto y los filtros de Excel la cuentan como un valor.
+      celdas.push(
+        marca?.entrada
+          ? { value: marca.entrada, type: String, align: "center" as const, backgroundColor: fondo }
+          : { value: null, backgroundColor: fondo },
+        marca?.salida
+          ? { value: marca.salida, type: String, align: "center" as const, backgroundColor: fondo }
+          : { value: null, backgroundColor: fondo },
+      );
+    }
+    celdas.push(
+      fila.horas > 0
+        ? {
+            // Número y no "3,00": la columna tiene que poder sumarse en la
+            // planilla, que es la mitad del sentido de bajarla a Excel.
+            value: fila.horas,
+            type: Number,
+            align: "center" as const,
+            backgroundColor: CELESTE,
+          }
+        : { value: null, backgroundColor: CELESTE },
+    );
+    filas.push(celdas);
+  }
+
+  // --- Resumen ------------------------------------------------------------
+  filas.push(completar([]));
+  const resumen: Array<[string, number]> = [
+    ["TOTAL HORAS TRABAJADAS", datos.totalHoras],
+    ["IMPORTE POR HORA", datos.precioHora],
+    ["IMPORTE TOTAL", datos.totalImporte],
+    ["IVA INCLUIDO", datos.totalIva],
+  ];
+  for (const [etiqueta, valor] of resumen) {
+    filas.push(
+      completar([
+        {
+          value: etiqueta,
+          fontWeight: "bold" as const,
+          columnSpan: 2,
+          align: "right" as const,
+        },
+        null,
+        { value: valor, type: Number, fontWeight: "bold" as const },
+      ]),
+    );
+  }
+
+  // --- Actividad extra: renglones en blanco para llenar a mano -------------
+  const filasExtra = datos.filasActividadExtra ?? 0;
+  if (filasExtra > 0) {
+    filas.push(completar([]));
+    filas.push(
+      completar([
+        {
+          value: "ACTIVIDAD EXTRA",
+          fontWeight: "bold" as const,
+          backgroundColor: "#F8D7DA",
+          align: "center" as const,
+          columnSpan: 6,
+        },
+      ]),
+    );
+    filas.push(
+      completar(
+        ["Colegio", "Fecha", "Concepto", "Hs. Trab.", "Pago por Hs.", "Importe"].map((t) => ({
+          value: t,
+          fontWeight: "bold" as const,
+          backgroundColor: "#F8D7DA",
+          align: "center" as const,
+        })),
+      ),
+    );
+    // Celdas vacías CON fondo: un renglón sin color no se distingue del resto
+    // de la hoja y deja de leerse como un espacio para completar.
+    for (let i = 0; i < filasExtra; i++) {
+      filas.push(
+        completar(Array.from({ length: 6 }, () => ({ value: null, backgroundColor: CREMA }))),
+      );
+    }
+  }
+
+  const columns = [
+    { width: 8 },
+    { width: 8 },
+    ...Array.from({ length: n * 2 }, () => ({ width: 7 })),
+    { width: 14 },
+  ];
+
+  // La v4 devuelve `{ toBlob, toFile }` en vez de aceptar un `fileName` entre
+  // las opciones. Los ejemplos que andan dando vueltas siguen siendo los de v1.
+  await writeXlsxFile(filas as never, { columns, sheet: "Planilla" }).toFile(
+    `planilla-${datos.periodo.replace(/\s+/g, "-").toLowerCase()}-${marcaDeTiempo().archivo}.xlsx`,
+  );
+}
+
+/** Separador de miles es-PY, sin símbolo: para los totales del PDF. */
+function formatearNumero(valor: number): string {
+  return new Intl.NumberFormat("es-PY", { maximumFractionDigits: 0 }).format(Math.round(valor));
+}
+
+/**
+ * La misma planilla en PDF, apaisada.
+ *
+ * La pestaña se abre en la primera línea, antes de cualquier `await`: los
+ * bloqueadores sólo dejan pasar el `window.open` que ocurre dentro del click.
+ */
+export async function abrirPlanillaPdf(datos: DatosPlanilla): Promise<void> {
+  const pestania = window.open("", "_blank");
+  if (pestania) {
+    pestania.document.write(
+      '<title>Generando</title><p style="font:16px system-ui;padding:2rem">Generando el PDF…</p>',
+    );
+    pestania.document.close();
+  }
+
+  try {
+    const [{ jsPDF }, { default: autoTable }] = await Promise.all([
+      import("jspdf"),
+      import("jspdf-autotable"),
+    ]);
+
+    const tiempo = marcaDeTiempo();
+    // `orientation: "landscape"` explícito y no el atajo `{ orientation }`:
+    // escrito así resolvería contra `window.orientation`, que es un número.
+    const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+    const anchoPagina = doc.internal.pageSize.getWidth();
+    const n = datos.columnasMarca;
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(14);
+    doc.text("Planilla de asistencia", 40, 40);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor(60);
+    doc.text(`Profesor/a: ${datos.profesor}`, 40, 58);
+    doc.text(`Institución: ${datos.institucion}`, 40, 70);
+    doc.text(`Mes: ${datos.periodo}`, anchoPagina - 260, 58);
+    doc.text(`Hora cátedra: ${datos.horaCatedra} min`, anchoPagina - 260, 70);
+
+    // Dos filas de cabecera: los pares numerados arriba, Ent./Sal. abajo.
+    const head1: unknown[] = [
+      { content: "Día", rowSpan: 2, styles: { valign: "middle" } },
+      { content: "Fecha", rowSpan: 2, styles: { valign: "middle" } },
+    ];
+    for (let i = 0; i < n; i++) {
+      head1.push({ content: String(i + 1), colSpan: 2, styles: { halign: "center" } });
+    }
+    head1.push({ content: "Total Hs.", rowSpan: 2, styles: { valign: "middle" } });
+
+    const head2: string[] = [];
+    for (let i = 0; i < n; i++) head2.push("Ent.", "Sal.");
+
+    const body = datos.filas.map((fila) => {
+      const celdas: string[] = [fila.diaSemana, String(fila.dia)];
+      for (let i = 0; i < n; i++) {
+        const marca = fila.marcas[i];
+        celdas.push(marca?.entrada ?? "", marca?.salida ?? "");
+      }
+      celdas.push(fila.horas > 0 ? fila.horas.toFixed(2) : "");
+      return celdas;
+    });
+
+    autoTable(doc, {
+      startY: 84,
+      head: [head1, head2] as never,
+      body,
+      styles: { fontSize: 7, cellPadding: 2, overflow: "linebreak", halign: "center" },
+      headStyles: { fillColor: AZUL, textColor: 255, fontStyle: "bold", halign: "center" },
+      // El fin de semana en gris: sin marcarlo, un sábado vacío se lee igual que
+      // un día laboral sin marcar, que sí es un problema.
+      didParseCell: (celda) => {
+        if (celda.section === "body") {
+          const fila = datos.filas[celda.row.index];
+          if (fila?.finDeSemana) celda.cell.styles.fillColor = [239, 239, 239];
+        }
+      },
+      margin: { left: 40, right: 40, bottom: 60 },
+      // El pie va por página y no una sola vez al final: un reporte impreso se
+      // desarma, y cada hoja suelta tiene que decir de cuándo es.
+      didDrawPage: (datosHoja) => {
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(8);
+        doc.setTextColor(140);
+        const alto = doc.internal.pageSize.getHeight();
+        doc.text(`Emitido el ${tiempo.legible}`, 40, alto - 22);
+        doc.text(`Página ${datosHoja.pageNumber}`, anchoPagina - 40, alto - 22, { align: "right" });
+      },
+    });
+
+    // El bloque de totales, debajo de la grilla.
+    const finTabla = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY;
+    autoTable(doc, {
+      startY: finTabla + 14,
+      // "Gs." en el rótulo y el número pelado: el guaraní (₲) no existe en las
+      // fuentes de fábrica de jsPDF y saldría como un cuadrito.
+      body: [
+        ["TOTAL HORAS TRABAJADAS", datos.totalHoras.toFixed(2)],
+        ["IMPORTE POR HORA Gs.", formatearNumero(datos.precioHora)],
+        ["IMPORTE TOTAL Gs.", formatearNumero(datos.totalImporte)],
+        ["IVA INCLUIDO Gs.", formatearNumero(datos.totalIva)],
+      ],
+      theme: "grid",
+      styles: { fontSize: 9, cellPadding: 4 },
+      columnStyles: {
+        0: { fontStyle: "bold", cellWidth: 200 },
+        1: { halign: "right", cellWidth: 120 },
+      },
+      margin: { left: 40 },
+      tableWidth: 320,
+    });
+
+    // El bloque de actividad extra, en blanco para completar a mano.
+    const filasExtra = datos.filasActividadExtra ?? 0;
+    if (filasExtra > 0) {
+      const finTotales = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable
+        .finalY;
+      autoTable(doc, {
+        startY: finTotales + 14,
+        head: [["Colegio", "Fecha", "Concepto", "Hs. Trab.", "Pago por Hs.", "Importe Gs."]],
+        body: Array.from({ length: filasExtra }, () => ["", "", "", "", "", ""]),
+        theme: "grid",
+        styles: { fontSize: 8, cellPadding: 6, minCellHeight: 18 },
+        // Rosa suave, como el bloque de la planilla de papel.
+        headStyles: { fillColor: [248, 215, 218], textColor: 40, fontStyle: "bold" },
+        margin: { left: 40, right: 40 },
+      });
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9);
+      doc.setTextColor(60);
+      doc.text("ACTIVIDAD EXTRA", 40, finTotales + 8);
+    }
+
+    const url = URL.createObjectURL(doc.output("blob"));
+    if (pestania) {
+      pestania.location.href = url;
+    } else {
+      // Bloqueada: que al menos se lleve el archivo.
+      const enlace = document.createElement("a");
+      enlace.href = url;
+      enlace.download = `planilla-${tiempo.archivo}.pdf`;
+      enlace.click();
+    }
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  } catch (error) {
+    if (pestania) pestania.close();
+    throw error;
+  }
+}

@@ -19,6 +19,7 @@ import {
   Boxes,
   Building,
   Building2,
+  CalendarCheck,
   CalendarClock,
   CircleDot,
   ClipboardCheck,
@@ -193,6 +194,14 @@ const ICONOS_PAGINA: Record<string, LucideIcon> = {
   // artículo (Package) ni la asignación a una ubicación (PackageCheck). Los
   // tres son de la misma familia a propósito — hablan del mismo objeto— y se
   // distinguen por lo que se hace con él.
+  // CalendarCheck y no ClipboardCheck: lo que define a la asistencia es el DÍA
+  // en que se marcó, no el acto de tildar una lista. ClipboardCheck ya está
+  // tomado por inventarios.
+  asistencias: CalendarCheck,
+  asistencia: CalendarCheck,
+  "asistencias de profesores": CalendarCheck,
+  "asistencia de profesores": CalendarCheck,
+  "reporte de asistencias": CalendarCheck,
   existencias: PackageSearch,
   existencia: PackageSearch,
   "existencia de articulos": PackageSearch,

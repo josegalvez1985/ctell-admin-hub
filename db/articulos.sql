@@ -461,9 +461,24 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
                  -- El NVL interno cubre las filas cargadas antes de que
                  -- existiera la columna, que la tienen en null: ahi se asume que
                  -- no se consumio nada.
+                 -- EL STOCK SE ACOTA A LA EMPRESA, como todo lo demas.
+                 --
+                 -- Sin el filtro, un articulo que existe en dos empresas sumaba
+                 -- los lotes de LAS DOS: el reporte de existencias mostraba —y
+                 -- exportaba a Excel— un stock que no era el de la empresa
+                 -- conectada. Y como la subconsulta corre UNA VEZ POR FILA, sin
+                 -- poder apoyarse en el indice por empresa, con ?tamanio=200
+                 -- el trabajo se multiplicaba hasta devolver 500.
+                 --
+                 -- Se correlaciona con a.ID_EMPRESA y no con l_id_empresa
+                 -- para que el filtro siga aplicando cuando el parametro no
+                 -- viene: sin idEmpresa el listado trae todas las empresas, y
+                 -- ahi lo correcto es que cada articulo sume los lotes de LA
+                 -- SUYA, no que el filtro se apague.
                  'cantidadStock'        VALUE NVL((SELECT SUM(NVL(l.CANTIDAD_DISPON, l.CANTIDAD))
                                                      FROM LOTES l
-                                                    WHERE l.ID_ARTICULO = a.ID_ARTICULO), 0),
+                                                    WHERE l.ID_ARTICULO = a.ID_ARTICULO
+                                                      AND l.ID_EMPRESA  = a.ID_EMPRESA), 0),
                  'cantidadMinima'       VALUE a.CANTIDAD_MINIMA,
                  -- SÓLO LECTURA: ningún endpoint la escribe. La va a estampar el
                  -- proceso de inventario cuando exista; hasta entonces llega
@@ -478,11 +493,20 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
                                                        'YYYY-MM-DD"T"HH24:MI:SS'),
                  -- El BLOB no entra en el JSON, pero el frontend necesita saber
                  -- si pedir /articulos/imagen/:id o dibujar el marcador.
-                 -- GETLENGTH > 0 y no "IS NOT NULL": una fila puede tener un
-                 -- BLOB vacío, que no sirve como imagen.
+                 --
+                 -- IS NOT NULL y no DBMS_LOB.GETLENGTH(a.IMAGEN) > 0: GETLENGTH
+                 -- es una llamada PL/SQL que ABRE EL BLOB de cada fila para
+                 -- medirlo. En una pagina de 200 articulos con imagen eso es
+                 -- abrir 200 LOBs para responder un true/false, y es parte de lo
+                 -- que hacia caer el listado con 500 al subir el tamanio de
+                 -- pagina. IS NOT NULL lo resuelve mirando solo el locator.
+                 --
+                 -- Lo que se pierde: una fila con un BLOB vacio (0 bytes) ahora
+                 -- dice 'true' y el frontend pide la imagen. No es un problema:
+                 -- /articulos/imagen/:id filtra los vacios y devuelve 404, y
+                 -- <ImagenArticulo> ya cae al marcador ante un error de carga.
                  'tieneImagen'          VALUE CASE
                                                 WHEN a.IMAGEN IS NOT NULL
-                                                 AND DBMS_LOB.GETLENGTH(a.IMAGEN) > 0
                                                 THEN 'true' ELSE 'false'
                                               END FORMAT JSON,
                  -- 'S' gasto, 'N' articulo de stock. El ELSE cubre dos casos con

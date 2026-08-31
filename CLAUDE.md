@@ -29,7 +29,6 @@ ctell-admin-hub/
 │   ├── facturas-compras.sql  PKG_FACTURAS_COMPRAS: compras (crea lotes)
 │   ├── facturas-compras-pagos.sql  PKG_FACTURAS_COMPRAS_PAGOS: pagos a proveedores
 │   ├── dashboard.sql         PKG_DASHBOARD: los indicadores de la home
-│   ├── verificar.sql         Sólo lectura: chequea que el backend quedó consistente
 │   └── [table].sql           Cada tabla nueva va aquí
 ├── src/
 │   ├── routes/               Rutas por archivo (TanStack Router)
@@ -141,15 +140,15 @@ El alta de usuarios y `/auth/recuperar` mandan la contraseña por mail vía
 
 #### Punto de venta y cobros — `/ventas`, `/ventas-cobros`
 
-| Método   | Ruta                                     | Qué hace                              |
-| -------- | ---------------------------------------- | ------------------------------------- |
-| `GET`    | `/ventas/listar`                         | Listado con totales y saldo derivados |
-| `GET`    | `/ventas/obtener/:id/:idEmpresa`         | Cabecera, detalle con lote, cuotas    |
-| `POST`   | `/ventas/crear`                          | Venta completa en una transacción     |
-| `DELETE` | `/ventas/eliminar/:id/:idEmpresa`        | Borra y **repone el stock**           |
-| `GET`    | `/ventas-cobros/listar/:idVenta/:idEmp`  | Historial de cobros                   |
-| `POST`   | `/ventas-cobros/crear`                   | Cobro, validado contra el saldo       |
-| `DELETE` | `/ventas-cobros/eliminar/:id/:idEmpresa` | Borra y devuelve el saldo             |
+| Método   | Ruta                                     | Qué hace                                                                                                   |
+| -------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `GET`    | `/ventas/listar`                         | Listado con totales y saldo derivados                                                                      |
+| `GET`    | `/ventas/obtener/:id/:idEmpresa`         | Cabecera, detalle con lote, cuotas                                                                         |
+| `POST`   | `/ventas/crear`                          | Venta completa en una transacción. `idListaDescuentos` es **opcional**: sin lista, precio de etiqueta y 0% |
+| `DELETE` | `/ventas/eliminar/:id/:idEmpresa`        | Borra y **repone el stock**                                                                                |
+| `GET`    | `/ventas-cobros/listar/:idVenta/:idEmp`  | Historial de cobros                                                                                        |
+| `POST`   | `/ventas-cobros/crear`                   | Cobro, validado contra el saldo                                                                            |
+| `DELETE` | `/ventas-cobros/eliminar/:id/:idEmpresa` | Borra y devuelve el saldo                                                                                  |
 
 #### Compras y pagos — `/facturas-compras`, `/compras-pagos`
 
@@ -192,6 +191,24 @@ donde `neto = cantidad * precio - descuento`. Con una línea de 110.000 al 10%: 
 
 `FACTURAS_COMPRAS_DET.ID_LOTE` es el espejo de `VENTAS_DETALLES.ID_LOTE`, en el otro sentido.
 
+### El DDL manda, no los comentarios
+
+Los archivos de `db/` **no crean tablas**, así que describen la estructura de
+memoria y pueden quedar desactualizados. Antes de asumir que una columna es
+obligatoria, verificalo:
+
+```sql
+SELECT COLUMN_NAME, NULLABLE, DATA_TYPE FROM USER_TAB_COLUMNS
+ WHERE TABLE_NAME = 'VENTAS_CABECERAS' ORDER BY COLUMN_ID;
+```
+
+`VENTAS_CABECERAS.ID_LISTA_DESCUENTOS` siempre aceptó NULL, pero tres capas del
+código la trataban como obligatoria y el `COMMENT ON COLUMN` decía "OBLIGATORIO"
+contradiciendo a la propia columna. **Un `COMMENT` no es una restricción.**
+
+Ojo también: una columna con `FOREIGN KEY` **acepta NULL** mientras no tenga
+`NOT NULL` — la FK sólo valida las filas que traen valor.
+
 ### Estado: `'A'` (activo) / `'I'` (inactivo)
 
 Las columnas `ACTIVO` son `VARCHAR2(1)` con valores `'A'` o `'I'`. **Este código viaja en el JSON sin traducción**. No hacía falta traducir a 1/0 (generaba `ORA-01722` en conversiones fallidas) y la presente unificación vale para **todas** las tablas.
@@ -217,6 +234,7 @@ Las columnas `ACTIVO` son `VARCHAR2(1)` con valores `'A'` o `'I'`. **Este códig
 - **`_auth.cobros.tsx`:** "/cobros" → Cobros de ventas, historial y baja.
 - **`_auth.pagos.tsx`:** "/pagos" → Pagos a proveedores. Espejo de cobros.
 - **`_auth.existencias.tsx`:** "/existencias" → Consulta de existencia de artículos, con exportación a Excel y PDF. Es una CONSULTA: no da de alta ni edita nada.
+- **`_auth.sucursales.tsx`:** "/sucursales" → Sucursales **de la empresa activa**. El recorte lo hace el backend (`?idEmpresa=`), con la misma queryKey que `sucursal-provider` para compartir caché. No hay selector de empresa: el alta va a la activa.
 - **`_auth.configuracion.tsx`:** "/configuracion" → Preferencias (tema, acento).
 
 > Las páginas nuevas hay que **darlas de alta en administración** con su ruta: `PAGINAS` es data, no hay seed en SQL. El ícono se resuelve por nombre normalizado contra `menu-iconos.ts`.
@@ -251,8 +269,13 @@ garantiza que tarde o temprano el Excel tenga una columna que el PDF no.
   no las paga quien nunca exporta.
 
 La primera pantalla que lo usa es `/existencias`, que además trae el catálogo
-entero paginando de a 200 en vez de ofrecer "Mostrar más" — en una consulta que
-se exporta, **lo que sale en el archivo tiene que ser exactamente lo que se ve**.
+entero paginando en vez de ofrecer "Mostrar más" — en una consulta que se
+exporta, **lo que sale en el archivo tiene que ser exactamente lo que se ve**.
+
+**Pide de a 50, no de a 200 aunque el backend lo acepte.** ORDS devuelve el JSON
+por un parámetro tipado `STRING`, con techo de 4000 bytes: una página de 200
+artículos con descripciones largas lo pasa y la petición muere con un 500 que el
+`WHEN OTHERS` no llega a registrar, porque el PL/SQL ya había terminado bien.
 
 ### Canal de pago: `IND_BANCO`, no el nombre
 
@@ -403,4 +426,6 @@ Las tres están explicadas con ejemplos en [GUIA-IMPLEMENTACION.md](docs/GUIA-IM
 8. **Los totales se derivan**, no se guardan en la cabecera.
 9. **El precio incluye IVA:** se desglosa, nunca se suma.
 10. **Comprar crea lotes, vender los descuenta, borrar revierte** — o se rechaza con 409.
-11. **`db/verificar.sql`** corre entero, no modifica nada y dice si el backend quedó consistente. Es lo primero después de ejecutar cambios en APEX.
+11. **Mirá la salida al ejecutar en APEX.** Cada archivo termina con un bloque que consulta `USER_OBJECTS`/`USER_ERRORS`. Un paquete `INVALID` da un 500 mudo: el `WHEN OTHERS` no captura errores de compilación.
+12. **El techo de 4000 bytes pega en tres lugares** (agregado anidado, CLOB final, bind de ORDS). Si desanidaste y paginaste y sigue el 500, bajá el tamaño de página — no busques más en el SQL.
+13. **Filtrar por empresa incluye las subconsultas**, no sólo el `WHERE` principal.

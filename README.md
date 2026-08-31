@@ -73,13 +73,12 @@ db/                      Backend: un archivo SQL por tabla
 ├── lotes.sql            Partidas: cantidad, costo y vencimiento  ← ANTES que articulos
 ├── articulos.sql        Artículos + imagen (BLOB). Su stock SUMA los lotes
 ├── articulos-ubicaciones.sql  Cruce: en qué ubicaciones está cada artículo
-├── inventarios-triggers-ddl.sql  DDL aparte: corrige los triggers de INVENTARIOS
+├── inventarios-triggers-ddl.sql  ⚠️ DOCUMENTADO PERO AUSENTE — ver nota abajo
 ├── inventarios.sql      Conteos físicos con máquina de estados
 ├── facturas-compras.sql Cabecera + detalle. La primera TRANSACCIÓN del proyecto
 │                        Cada línea CREA UN LOTE: comprar hace entrar el stock
 ├── facturas-compras-pagos.sql  Pagos a proveedores. Espejo de ventas-cobros
-├── dashboard.sql        PKG_DASHBOARD: los indicadores de la home, en 1 consulta
-└── verificar.sql        Sólo lectura: dice si el backend quedó consistente
+└── dashboard.sql        PKG_DASHBOARD: los indicadores de la home, en 1 consulta
 
 src/
 ├── routes/              Rutas (el archivo define la URL)
@@ -247,6 +246,25 @@ Sin ese `AND`, un `PUT /articulos/actualizar/57` modificaba el artículo 57
 muestra los de tu empresa— pero sí llamando al endpoint directamente. El guard
 del cliente evita el acceso accidental; sólo el del backend evita el
 deliberado.
+
+**Y el filtro va también en las subconsultas que calculan un derivado.** Es el
+olvido más silencioso de todos: no da error, da **un número mal**.
+
+```sql
+-- ❌ Suma los lotes de TODAS las empresas
+'cantidadStock' VALUE NVL((SELECT SUM(NVL(l.CANTIDAD_DISPON, l.CANTIDAD))
+                             FROM LOTES l
+                            WHERE l.ID_ARTICULO = a.ID_ARTICULO), 0),
+
+-- ✅ Acotado a la empresa del artículo
+                            WHERE l.ID_ARTICULO = a.ID_ARTICULO
+                              AND l.ID_EMPRESA  = a.ID_EMPRESA), 0),
+```
+
+Un artículo cargado en dos empresas mostraba —y **exportaba a Excel**— la suma
+de las dos. Se correlaciona contra `a.ID_EMPRESA` y no contra la variable del
+parámetro, para que el filtro siga aplicando cuando el listado se pide sin
+`idEmpresa`.
 
 Tres detalles que hacen que el control no tenga puerta trasera:
 
@@ -482,6 +500,27 @@ usa ese y no repite la regla.
 > cambia el tipo a `'J'` sin mandar razón social puede ser válido (si ya la tenía)
 > o inválido. Por eso lee la fila actual antes de decidir.
 
+### El techo de 4000 bytes, en tres pisos
+
+Los listados devuelven el JSON por un `OUT CLOB`, y **el número 4000 aparece en
+tres lugares distintos**. Los tres dan el mismo 500 genérico:
+
+| Piso                    | Dónde pega                        | Se arregla con           |
+| ----------------------- | --------------------------------- | ------------------------ |
+| `JSON_OBJECT` anidado   | Resultado intermedio del agregado | Desanidar en subconsulta |
+| CLOB final muy grande   | El JSON completo                  | Paginar en el servidor   |
+| Bind `'STRING'` de ORDS | Al devolver la respuesta          | Pedir páginas más chicas |
+
+El tercero es el más difícil de ver: `ORDS.DEFINE_PARAMETER` publica la salida
+con `p_param_type => 'STRING'`, que topa en 4000 bytes. **El PL/SQL termina
+bien** y el error ocurre después, al leer el resultado — así que el
+`WHEN OTHERS` no registra nada y `APEX_DEBUG` tampoco.
+
+Por eso `/existencias` pide páginas de **50** y no de 200, aunque el backend
+acepte 200: ese techo es la defensa contra un `?tamanio=99999`, no un tamaño
+recomendado. Ver
+[el diagnóstico completo](docs/GUIA-IMPLEMENTACION.md#y-si-paginás-y-igual-da-500-es-el-bind-de-ords).
+
 ### Orden de ejecución
 
 Hay **seis dependencias reales**; el resto del orden es indistinto.
@@ -495,10 +534,22 @@ archivo se ejecute después.
    contraseñas—, así que sin él ninguno compila. Si sale `INVALID`, frená ahí.
 2. **`lotes.sql` antes que `articulos.sql`.** El listado de artículos hace un
    `SUM()` sobre `LOTES` para calcular el stock.
-3. **`inventarios-triggers-ddl.sql` antes que `inventarios.sql`.** Los triggers
+3. **`inventarios-triggers-ddl.sql` antes que `inventarios.sql`.**
+
+   > ⚠️ **Este archivo no está en el repo.** Se lo documenta acá y en la guía,
+   > pero `git log` no registra que haya existido nunca. Si los triggers de
+   > `INVENTARIOS` ya funcionan, el DDL se aplicó a mano y falta commitearlo;
+   > si no, hay que escribirlo. Verificalo con:
+   >
+   > ```sql
+   > SELECT TRIGGER_NAME, STATUS FROM USER_TRIGGERS WHERE TABLE_NAME = 'INVENTARIOS';
+   > ```
+
+   Los triggers
    que vinieron con el DDL original ajustaban la columna equivocada de `LOTES` y
    escribían una columna que ya no existe. Con los viejos, `PKG_INVENTARIOS`
    compila igual pero **procesar un conteo no mueve el stock**.
+
 4. **`iva.sql`, `personas.sql` y `condiciones-pago.sql` antes que
    `facturas-compras.sql`.** El listado de facturas hace JOIN contra las tres.
 5. **La tabla `FACTURAS_COMPRA_DET` antes que `iva.sql`**, y
@@ -1020,18 +1071,29 @@ Comprar crea lotes, vender los descuenta, borrar repone. Una venta con cobros o
 una compra ya vendida no se borran.
 Ver [Transacciones que mueven stock o plata](docs/GUIA-IMPLEMENTACION.md#36-transacciones-que-mueven-stock-o-plata).
 
-### Tres errores de PL/SQL que ya se cometieron
+### Cuatro errores de PL/SQL que ya se cometieron
 
 `PLS-00231` (helper privado del body usado dentro de un `INSERT`/`UPDATE`),
-`PLS-00684` (`RETURNING CLOB` en una asignación suelta) y `ORA-00932` (una
-función aplicada a una columna `LONG`). Salen del estilo normal del código de
-acá, así que conviene reconocerlos:
+`PLS-00684` (`RETURNING CLOB` en una asignación suelta), `ORA-00932` (una
+función aplicada a una columna `LONG`) y `ORA-00942` (un nombre de tabla mal
+escrito, que deja el paquete `INVALID` y da un 500 mudo). Salen del estilo
+normal del código de acá, así que conviene reconocerlos:
 [Trampas de PL/SQL](docs/GUIA-IMPLEMENTACION.md#37-trampas-de-plsql-que-se-repiten).
 
 ### Después de tocar `db/`
 
-Correr [db/verificar.sql](db/verificar.sql) entero en APEX. No modifica nada:
-chequea que los paquetes estén `VALID`, que existan las columnas que el código da
-por hechas, que los módulos ORDS tengan CORS, y ocho controles de datos donde
-**cero filas es lo correcto** (lotes en negativo, desgloses de IVA que no cuadran,
-ventas cobradas de más, cuotas cuyo pagado no coincide con sus movimientos).
+**Mirá la salida, no alcanza con ejecutar.** Cada archivo termina con un bloque
+de verificación que consulta `USER_OBJECTS` y `USER_ERRORS` para su paquete. Si
+dice `INVALID`, el endpoint va a devolver un **500 sin ningún mensaje útil**: el
+`WHEN OTHERS` no captura un error de compilación, porque el PL/SQL nunca llega a
+ejecutarse.
+
+```sql
+SELECT OBJECT_TYPE, STATUS FROM USER_OBJECTS WHERE OBJECT_NAME = 'PKG_IVA';
+SELECT LINE, POSITION, TEXT FROM USER_ERRORS WHERE NAME = 'PKG_IVA' ORDER BY SEQUENCE;
+```
+
+Así se descubrió que `db/iva.sql` escribía `FACTURAS_COMPRA_DET` en vez de
+`FACTURAS_COMPRAS_DET`: el paquete quedó `INVALID` desde que se ejecutó y nadie
+miró la salida. Ver
+[los errores de PL/SQL](docs/GUIA-IMPLEMENTACION.md#37-trampas-de-plsql-que-se-repiten).

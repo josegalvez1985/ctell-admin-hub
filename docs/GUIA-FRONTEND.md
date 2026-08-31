@@ -67,7 +67,7 @@ y se muestran sólo los registros activos de la sucursal. El POS envía únicame
 `idTalonario` a `api.ventas.crear`; nunca genera `numeroVenta` ni permite editar
 timbrado, establecimiento, punto de expedición o número actual. El backend
 resuelve esos datos al confirmar para evitar numeración duplicada.
->
+
 > Esto no es pereza, es la lección más cara de este proyecto. Implementar
 > Ciudades "parecido pero a mi manera" —columnas de más, otra `queryKey`, otra
 > forma de filtrar— costó media docena de idas y vueltas para terminar
@@ -108,6 +108,24 @@ import { useEmpresa } from "@/components/ctell/empresa-provider";
 
 const { empresa } = useEmpresa(); // { id, nombreEmpresa, tieneLogo } | null
 ```
+
+**Toda página cuya tabla tenga `ID_EMPRESA` se acota a la empresa activa**, y el
+recorte lo hace el backend, no la pantalla. Traer las filas de todas para
+esconder casi todas manda por la red datos de empresas que nadie está mirando, y
+tarde o temprano alguna se filtra en un total.
+
+Sucursales lo hacía al revés —traía todas y filtraba con un combo en el header
+de la columna Empresa— y se corrigió. Al acotar la consulta, tres cosas quedaron
+sin sentido y se fueron con ella:
+
+- **La columna Empresa**, que repetía el mismo valor en cada fila. La reemplazó
+  Dirección, un campo que ya venía en el JSON y no se mostraba.
+- **Su filtro**, que quedaba con una sola opción.
+- **El selector de empresa del formulario**, que dejaba crear una sucursal en
+  otra empresa — que después no aparecía en la lista. El alta va a la empresa
+  activa; en edición el id sale de la propia fila, no del provider, para que el
+  registro no se mude de empresa si alguien cambia de empresa con el diálogo
+  abierto.
 
 En una página por empresa hay **dos cosas que no se pueden olvidar**:
 
@@ -336,8 +354,8 @@ menú muestra el item pero el clic no lleva a ningún lado.
 
 `PAGINAS` tiene `UNIQUE (ID_MODULO, RUTA, ENTRADA)`: lo que no se puede es
 cargar la misma ruta **dos veces en el mismo módulo y la misma sección**. En
-otro módulo sí, y es deliberado — "Artículos" bajo *Stock* y también bajo
-*Compras* son dos entradas de menú al mismo destino, para dos perfiles que lo
+otro módulo sí, y es deliberado — "Artículos" bajo _Stock_ y también bajo
+_Compras_ son dos entradas de menú al mismo destino, para dos perfiles que lo
 buscan en lugares distintos.
 
 Por eso el alta **avisa en vez de bloquear**. El desplegable muestra dónde está
@@ -350,7 +368,7 @@ Cobros          /cobros
 
 **Se muestran, no se esconden.** Si la opción desaparece de la lista, el usuario
 no entiende por qué falta y termina cargándola con otro nombre o dudando de si
-existe; diciendo *dónde* está, decide él. Y como repetir en otro módulo es
+existe; diciendo _dónde_ está, decide él. Y como repetir en otro módulo es
 válido, sacarla sería directamente incorrecto.
 
 Cuando la combinación exacta ya existe —mismo módulo, misma ruta, misma
@@ -691,6 +709,51 @@ antes de pintar, así que la lista nunca se ve un frame con el valor viejo.
 El corte va sobre `resultado` —lo que ya salió de la búsqueda y el orden—, así
 que **buscar sigue buscando sobre todas las filas**, no sólo sobre las visibles.
 Tanto la tabla como las tarjetas de móvil iteran `mostrados`.
+
+### Una consulta que se exporta trae TODO, paginando de a 50
+
+"Mostrar más" sirve para un ABM, pero **no para una pantalla que se exporta**. Si
+la tabla muestra 20 filas y el Excel sale con 600 —o al revés—, nadie sabe cuál
+de los dos números creer.
+
+`/existencias` trae el catálogo entero y **lo que se exporta es exactamente lo
+que se ve**, con los mismos filtros aplicados:
+
+```tsx
+/**
+ * Cuántos artículos se piden por vuelta. NO es el techo del endpoint (200), y
+ * bajarlo es deliberado — ver abajo.
+ */
+const POR_PAGINA = 50;
+const MAX_PAGINAS = 50; // Corte de seguridad: 2.500 artículos
+
+async function traerCatalogo(idEmpresa: number): Promise<Articulo[]> {
+  const todos: Articulo[] = [];
+  for (let pagina = 1; pagina <= MAX_PAGINAS; pagina++) {
+    const respuesta = await api.articulos.listar({ idEmpresa, pagina, tamanio: POR_PAGINA });
+    todos.push(...respuesta.items);
+    // Dos cortes: el total del backend y una página incompleta. El segundo cubre
+    // el caso de que `total` venga mal — sin él, una página vacía repetida daría
+    // vueltas hasta MAX_PAGINAS.
+    if (todos.length >= respuesta.total || respuesta.items.length < POR_PAGINA) break;
+  }
+  return todos;
+}
+```
+
+> **No pidas `tamanio=200` aunque el backend lo acepte.** ORDS devuelve el JSON
+> por un parámetro tipado como `STRING`, con techo de **4000 bytes**. Una página
+> de 200 artículos con descripciones largas lo pasa y la petición muere con un
+> **500 sin diagnóstico** — el PL/SQL terminó bien, falla el bind al devolver.
+
+Ese 500 costó varias vueltas de encontrar: se le echó la culpa al `WHERE`, a una
+subconsulta y al largo de `DESCRIPCION` antes de dar con el bind. El detalle
+completo está en
+[GUIA-IMPLEMENTACION.md](GUIA-IMPLEMENTACION.md#y-si-paginás-y-igual-da-500-es-el-bind-de-ords).
+
+**La regla:** 50 por vuelta. Si una respuesta con textos largos igual falla,
+bajá a 25 antes de buscar el problema en otro lado. El costo de una petición más
+cada 50 filas es imperceptible; el de un reporte que no abre, no.
 
 ### El input de búsqueda
 
@@ -1516,8 +1579,8 @@ sentido mover el cursor.
 ### Nunca `Number()` sobre un monto
 
 ```ts
-Number("34.200")        // 34.2   ← un importe mil veces menor
-numeroMoneda("34.200")  // 34200
+Number("34.200"); // 34.2   ← un importe mil veces menor
+numeroMoneda("34.200"); // 34200
 ```
 
 No tira error: guarda el número mal y nadie se entera. Era el bug que había en

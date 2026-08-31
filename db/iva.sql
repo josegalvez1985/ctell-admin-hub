@@ -42,7 +42,7 @@
 -- correcto NO es editar: es crear una tasa nueva y dejar la vieja para los
 -- comprobantes historicos, que son los que se declararon con la tasa anterior.
 --
--- ELIMINAR es mas seguro de lo que parece: la FK de FACTURAS_COMPRA_DET impide
+-- ELIMINAR es mas seguro de lo que parece: la FK de FACTURAS_COMPRAS_DET impide
 -- borrar una tasa en uso (ORA-02292), que el procedimiento traduce a un 409 con
 -- un mensaje que explica el caso. Solo se pueden borrar las que no uso nadie.
 --
@@ -263,7 +263,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_IVA AS
                  -- toda la consulta para contar una columna seria mas fragil de
                  -- leer por ninguna ganancia.
                  'usos'         VALUE (SELECT COUNT(*)
-                                         FROM FACTURAS_COMPRA_DET d
+                                         FROM FACTURAS_COMPRAS_DET d
                                         WHERE d.ID_IVA = i.ID_IVA)
                  RETURNING CLOB
                ) AS fila,
@@ -660,7 +660,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_IVA AS
     -- usan. La FK igual lo impediria con ORA-02292, pero ese error no trae el
     -- numero, y "no se puede borrar" sin decir por que obliga a ir a buscarlo.
     SELECT COUNT(*) INTO l_usos
-      FROM FACTURAS_COMPRA_DET
+      FROM FACTURAS_COMPRAS_DET
      WHERE ID_IVA = l_id;
 
     IF l_usos > 0 THEN

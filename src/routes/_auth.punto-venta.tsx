@@ -78,6 +78,16 @@ const ivaContenido = (monto: number, tasa: Iva | undefined) => {
   if (!tasa.ivaDivision || tasa.ivaDivision <= 0) return 0;
   return Math.round((monto / tasa.ivaDivision) * 100) / 100;
 };
+/**
+ * Valor del combo de lista de descuentos para "sin descuento".
+ *
+ * Radix no acepta un `<SelectItem value="">`, así que la opción necesita un
+ * valor propio. Y hace falta poder ELEGIRLA —no alcanza con dejar el campo
+ * vacío—: una vez que el cajero elige una lista, el Select no se deselecciona
+ * solo, y sin esta opción no habría forma de volver atrás sin recargar.
+ */
+const SIN_DESCUENTO = "sin-descuento";
+
 const errorTexto = (error: unknown) =>
   error instanceof ApiError ? error.message : "No se pudo completar la venta";
 
@@ -256,7 +266,10 @@ function PuntoVentaPage() {
         idSucursal: sucursal!.id,
         idUsuario: usuario!.id,
         ...(idCliente ? { idCliente: Number(idCliente) } : {}),
-        idListaDescuentos: Number(idLista),
+        // Sin lista el campo no viaja: el backend lo toma como 0% y deja
+        // ID_LISTA_DESCUENTOS en NULL. Mandar Number("") daría 0, que es un id
+        // que no existe y haría fallar la venta entera.
+        ...(idLista && idLista !== SIN_DESCUENTO ? { idListaDescuentos: Number(idLista) } : {}),
         idCondicionPago: Number(idCondicion),
         idMoneda: Number(idMoneda),
         fechaVenta: hoy(),
@@ -302,7 +315,8 @@ function PuntoVentaPage() {
         dispoDeLinea(linea) >= linea.cantidadVenta
       );
     }) &&
-    idLista &&
+    // idLista NO se exige: una venta sin lista es una venta a precio de
+    // etiqueta. Antes obligaba a cargar una lista de 0% sólo para poder cobrar.
     idCondicion &&
     idMoneda &&
     idTalonario;
@@ -603,9 +617,12 @@ function PuntoVentaPage() {
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
                   <Select value={idLista} onValueChange={setIdLista}>
                     <SelectTrigger>
-                      <SelectValue placeholder="Lista de precios *" />
+                      {/* Sin asterisco: el campo dejó de ser obligatorio, y el
+                          placeholder dice qué pasa si no se toca. */}
+                      <SelectValue placeholder="Sin descuento" />
                     </SelectTrigger>
                     <SelectContent>
+                      <SelectItem value={SIN_DESCUENTO}>Sin descuento</SelectItem>
                       {(listas.data?.items ?? [])
                         .filter((lista: ListaDescuentos) => esActivo(lista.vigente))
                         .map((lista) => (

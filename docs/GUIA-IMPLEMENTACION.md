@@ -583,12 +583,12 @@ prueba, se cargó el catálogo real —cientos de filas, con `DESCRIPCION` de ha
 
 **Cómo distinguirlo del anidado**, que da el mismo síntoma:
 
-| Señal                                          | Anidado           | Volumen                  |
-| ---------------------------------------------- | ----------------- | ------------------------ |
-| Andaba y dejó de andar tras una carga de datos | No                | **Sí**                   |
-| Falla sin filtro pero anda filtrado            | Sí                | Sí                       |
-| El `JSON_OBJECT` está dentro del `JSON_ARRAYAGG` | Sí              | No                       |
-| Se arregla desanidando                         | Sí                | **No** — hay que paginar |
+| Señal                                            | Anidado | Volumen                  |
+| ------------------------------------------------ | ------- | ------------------------ |
+| Andaba y dejó de andar tras una carga de datos   | No      | **Sí**                   |
+| Falla sin filtro pero anda filtrado              | Sí      | Sí                       |
+| El `JSON_OBJECT` está dentro del `JSON_ARRAYAGG` | Sí      | No                       |
+| Se arregla desanidando                           | Sí      | **No** — hay que paginar |
 
 **La regla:** un listado de una tabla que puede crecer sin techo —artículos,
 personas, facturas, lotes— **se pagina en el servidor desde el principio**, no
@@ -621,13 +621,117 @@ SELECT JSON_ARRAYAGG(fila ORDER BY nombre RETURNING CLOB)
 Tres detalles que no son opcionales:
 
 1. **Techo al `tamanio`** (200). Sin tope, un `?tamanio=999999` reproduce
-   exactamente el 500 que la paginación viene a evitar.
+   exactamente el 500 que la paginación viene a evitar. **Pero 200 no es un
+   tamaño seguro de pedir** — ver la sección siguiente.
 2. **`total` cuenta las filas que pasan el filtro**, no las de la página ni la
    tabla entera: es lo que le dice al frontend si queda algo por traer.
 3. **La búsqueda y los filtros van en el SQL**, antes de paginar. Filtrando en
    el cliente sólo se mira lo ya traído, y una fila de la página 5 no aparece al
    buscarla. Ver `db/articulos.sql` y el `useInfiniteQuery` de
    `src/routes/_auth.articulos.tsx`.
+
+#### …y si paginás y IGUAL da 500, es el bind de ORDS
+
+Este es el tercer piso del mismo problema, y el más difícil de ver: **el PL/SQL
+está sano y aun así la petición falla.**
+
+`ORDS.DEFINE_PARAMETER` publica el `OUT CLOB` así:
+
+```sql
+p_name => 'resultado', p_bind_variable_name => 'resultado',
+p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
+```
+
+`p_param_type => 'STRING'` vincula ese CLOB a un `VARCHAR2`, **con techo de 4000
+bytes**. Es el mismo número de las dos secciones anteriores, pero pega en un
+lugar distinto: no dentro del SQL, sino **cuando ORDS lee el resultado**, ya
+terminado el procedimiento.
+
+Por eso el síntoma es tan opaco:
+
+- El paquete compila y `USER_ERRORS` está vacío.
+- El `WHEN OTHERS` **no registra nada**: el PL/SQL terminó bien, el error es
+  posterior.
+- `APEX_DEBUG` tampoco tiene la traza, por lo mismo.
+- El endpoint responde 200 con `?tamanio=20` y 500 con `?tamanio=200`.
+
+Pasó con `/articulos/listar` y costó varias vueltas: se le echó la culpa al
+`WHERE`, a una subconsulta y al largo de `DESCRIPCION` antes de encontrarlo.
+
+**Cómo reconocerlo:** si el listado ya está desanidado, ya pagina, y falla
+según el `tamanio` que le pidas, es esto. La prueba definitiva es correr el
+procedimiento sin ORDS (ver la sección siguiente) y mirar el largo:
+
+```sql
+DECLARE
+  l_status NUMBER; l_res CLOB;
+BEGIN
+  PKG_ARTICULOS.LISTAR('Bearer <token>', '21', NULL, NULL, '1', '200', l_status, l_res);
+  DBMS_OUTPUT.PUT_LINE('status: ' || l_status || ' | bytes: ' || DBMS_LOB.GETLENGTH(l_res));
+END;
+/
+```
+
+`status: 200` con más de 4000 bytes confirma el diagnóstico: el problema no está
+en el paquete.
+
+**El arreglo de fondo** sería publicar el parámetro como `p_param_type => 'CLOB'`.
+**No lo hagas sin verificar antes** que esta instalación lo acepta:
+`DEFINE_PARAMETER` valida `p_param_type` contra un check constraint con una
+lista cerrada de valores, y uno inválido lanza `ORA-02290` que **aborta
+`PUBLICAR_ENDPOINTS` a la mitad y deja el módulo sin ningún endpoint** — se cae
+la pantalla entera, no sólo la que falla. Ya pasó dos veces con el BLOB del logo
+de empresas (ver 3.2).
+
+La consulta que lo dice es `ALL_CONSTRAINTS` sobre `REST_PARAMS_PARAM_TYPE_CK`,
+pero **en APEX cloud suele volver vacía**: la constraint vive en el esquema
+`ORDS_METADATA`, al que el usuario del workspace no tiene acceso. Si no podés
+verla, la forma segura de probar es un módulo descartable:
+
+```sql
+BEGIN
+  ORDS.DEFINE_MODULE(p_module_name => 'zz_prueba', p_base_path => '/zz_prueba/');
+  ORDS.DEFINE_TEMPLATE(p_module_name => 'zz_prueba', p_pattern => 'x');
+  ORDS.DEFINE_HANDLER(p_module_name => 'zz_prueba', p_pattern => 'x', p_method => 'GET',
+    p_source_type => ORDS.source_type_plsql, p_source => 'BEGIN NULL; END;');
+  ORDS.DEFINE_PARAMETER(
+    p_module_name => 'zz_prueba', p_pattern => 'x', p_method => 'GET',
+    p_name => 'resultado', p_bind_variable_name => 'resultado',
+    p_source_type => 'RESPONSE', p_param_type => 'CLOB', p_access_method => 'OUT');
+  COMMIT;
+  DBMS_OUTPUT.PUT_LINE('CLOB ACEPTADO');
+EXCEPTION WHEN OTHERS THEN
+  ROLLBACK;
+  DBMS_OUTPUT.PUT_LINE('CLOB RECHAZADO: ' || SQLERRM);
+END;
+/
+-- Limpiar despues:
+BEGIN ORDS.DELETE_MODULE('zz_prueba'); COMMIT; END;
+/
+```
+
+**Mientras tanto, el rodeo es pedir páginas chicas.** `/existencias` pide de a
+**50**, no de a 200, y por eso funciona. El techo de 200 del backend sigue
+siendo correcto como defensa contra un `?tamanio=99999`, pero **200 no es un
+tamaño que convenga pedir**: es el máximo que el backend acepta, no el máximo
+que ORDS puede devolver.
+
+> **Regla práctica:** en una pantalla que trae el catálogo completo paginando,
+> pedí de a 50. Si una respuesta con textos largos sigue fallando, bajá a 25
+> antes de buscar el problema en el SQL.
+
+#### Resumen: los tres pisos del mismo 4000
+
+Los tres dan el mismo 500 genérico y se distinguen por qué los arregla:
+
+| Piso                    | Dónde pega                        | Se arregla con           |
+| ----------------------- | --------------------------------- | ------------------------ |
+| `JSON_OBJECT` anidado   | Resultado intermedio del agregado | Desanidar en subconsulta |
+| CLOB final muy grande   | El JSON completo                  | Paginar en el servidor   |
+| Bind `'STRING'` de ORDS | Al devolver la respuesta          | Pedir páginas más chicas |
+
+Si desanidaste y paginaste y sigue fallando, **no busques más en el SQL**: bajá
+el tamaño de página.
 
 ### Probar un procedimiento sin pasar por ORDS
 
@@ -725,6 +829,56 @@ de actualización y borrado también exigen ese id para aislar la fila.
 
 `BANCOS` no es una tabla por empresa: se comparte entre todas y sus endpoints
 no reciben `idEmpresa`.
+
+### El filtro por empresa va TAMBIÉN en las subconsultas
+
+> **Toda consulta que toque una tabla con `ID_EMPRESA` filtra por empresa.
+> Incluidas las subconsultas correlacionadas que calculan un derivado.**
+
+Es fácil poner el filtro en el `WHERE` principal y olvidarlo en la subconsulta
+que suma un total. El resultado no es un error: es **un número mal calculado que
+nadie detecta**, porque la pantalla se ve perfecta.
+
+Pasó en `/articulos/listar` con el stock:
+
+```sql
+-- ❌ Suma los lotes de TODAS las empresas
+'cantidadStock' VALUE NVL((SELECT SUM(NVL(l.CANTIDAD_DISPON, l.CANTIDAD))
+                             FROM LOTES l
+                            WHERE l.ID_ARTICULO = a.ID_ARTICULO), 0),
+
+-- ✅ Acotado a la empresa del artículo
+'cantidadStock' VALUE NVL((SELECT SUM(NVL(l.CANTIDAD_DISPON, l.CANTIDAD))
+                             FROM LOTES l
+                            WHERE l.ID_ARTICULO = a.ID_ARTICULO
+                              AND l.ID_EMPRESA  = a.ID_EMPRESA), 0),
+```
+
+Un artículo cargado en dos empresas mostraba —y **exportaba a Excel**— la suma
+de las dos. El reporte de existencias daba un número que no era el de la empresa
+conectada, sin ningún síntoma visible.
+
+**Correlacioná contra la columna de la tabla externa (`a.ID_EMPRESA`), no contra
+la variable del parámetro (`l_id_empresa`).** Así el filtro sigue aplicando
+cuando el listado se pide sin `idEmpresa`: cada fila suma lo de su propia
+empresa, en vez de que el filtro se apague justo en el caso más peligroso.
+
+De paso, el filtro deja usar el índice por empresa. Sin él la subconsulta —que
+corre **una vez por fila**— escanea de más, y eso empeora los problemas de
+volumen de la sección anterior.
+
+**Cómo auditarlo** en el archivo que estés escribiendo:
+
+```sh
+# Cada FROM <tabla> de una subconsulta debería tener su ID_EMPRESA cerca
+grep -n "FROM LOTES" db/*.sql
+```
+
+Las excepciones legítimas son los **catálogos globales**, que no tienen
+`ID_EMPRESA` y por lo tanto no se filtran: `PAISES`, `DEPARTAMENTOS`,
+`CIUDADES`, `BANCOS`, `IVA`, `CONDICIONES_PAGO`, `UNIDADES_MEDIDA` y
+`PERSONAS`. Si contás usos de un catálogo global cruzando empresas, está bien:
+es lo que corresponde.
 
 ### Punto de venta
 
@@ -1286,8 +1440,81 @@ asignación del trigger y hacela en el paquete.
 
 La regla es que los archivos de `db/` **no administran DDL**. Cuando hay que
 corregir triggers, el archivo va aparte y con otro nombre —
-[db/inventarios-triggers-ddl.sql](../db/inventarios-triggers-ddl.sql) — para que
+`db/inventarios-triggers-ddl.sql` (⚠️ **documentado pero ausente del repo** —
+ver la nota del README) — para que
 quede claro que no es el paquete y que se ejecuta una sola vez, antes.
+
+---
+
+## 3.5.1 El DDL manda, no los comentarios
+
+Los archivos de `db/` **no crean tablas**: el DDL se administra aparte. Eso
+significa que el archivo describe la tabla **de memoria**, y esa descripción
+puede quedar desactualizada.
+
+> **Antes de asumir que una columna es obligatoria, mirá el DDL real.**
+
+Pasó con `VENTAS_CABECERAS.ID_LISTA_DESCUENTOS`. Tres capas la trataban como
+obligatoria y el punto de venta no dejaba cobrar sin elegir una lista de
+descuentos — el cajero tenía que crear una lista de 0% para poder facturar. El
+DDL decía:
+
+```sql
+"ID_LISTA_DESCUENTOS" NUMBER,   -- sin NOT NULL: siempre aceptó NULL
+```
+
+La restricción no existía en la base. Estaba sólo en el código, y el
+`COMMENT ON COLUMN` de la tabla decía `OBLIGATORIO` contradiciendo a la columna.
+
+**Las consultas que lo resuelven:**
+
+```sql
+-- ¿Esta columna acepta NULL?
+SELECT COLUMN_NAME, NULLABLE, DATA_TYPE, DATA_LENGTH
+  FROM USER_TAB_COLUMNS
+ WHERE TABLE_NAME = 'VENTAS_CABECERAS'
+ ORDER BY COLUMN_ID;
+```
+
+Un `COMMENT` no es una restricción: describe la intención de quien lo escribió,
+y puede contradecir a la columna. **La columna manda.**
+
+Cuando un cambio necesite un `ALTER`, documentalo en la cabecera del archivo
+—con la sentencia y la consulta que verifica si hace falta— como hace
+`db/facturas-compras.sql` con `ID_LOTE`. Pero **verificá primero**: el `ALTER`
+puede ser innecesario.
+
+### Una FK no impide guardar NULL
+
+Detalle de Oracle que confunde: una columna con `FOREIGN KEY` **sí acepta NULL**
+mientras no tenga `NOT NULL`. La FK sólo valida las filas que traen un valor.
+
+Por eso `ID_LISTA_DESCUENTOS` puede quedar en NULL aunque referencie a
+`LISTAS_DESCUENTOS`, igual que `ID_CLIENTE` en la misma tabla.
+
+### Un dato opcional necesita su `SELECT INTO` protegido
+
+Al hacer opcional un parámetro, revisá si algún `SELECT ... INTO` lo usa: con la
+variable en NULL no devuelve filas y lanza `NO_DATA_FOUND`, que cae en el
+handler global y sale como un error equivocado.
+
+```sql
+-- ✅ El SELECT solo corre si hay dato, y su NO_DATA_FOUND dice el caso real
+IF l_lista IS NOT NULL THEN
+  BEGIN
+    SELECT PORCENTAJE_DESCUENTO INTO l_porcentaje FROM LISTAS_DESCUENTOS
+     WHERE ID_LISTA_PRECIOS = l_lista AND ID_EMPRESA = l_empresa;
+  EXCEPTION WHEN NO_DATA_FOUND THEN
+    ROLLBACK; p_status_code := 400;
+    p_resultado := '{"error":"La lista no existe o no esta vigente"}';
+    RETURN;
+  END;
+END IF;
+```
+
+Sin el `IF`, pedir una venta sin lista devolvía **409 "la lista de descuentos no
+existe"** — un error por un dato que justamente pasó a ser opcional. Y acordate
+de sacar el dato del mensaje del handler global, que ya no puede culparlo.
 
 ---
 
@@ -1334,13 +1561,13 @@ SELECT NVL(SUM(MONTO), 0) INTO l_cobrado FROM VENTAS_COBROS WHERE ID_VENTA = l_i
 
 ### Cuándo rechazar con 409
 
-| Situación                                     | Por qué no se permite                                  |
-| --------------------------------------------- | ------------------------------------------------------ |
-| Borrar una venta con cobros                   | El `DELETE` en cascada se lleva plata que entró         |
-| Borrar o editar una compra con pagos          | Ídem, y rehacer cuotas rompería la FK de los pagos      |
-| Borrar o editar una compra ya vendida en parte| Sacar del stock lo que ya salió lo deja bajo el físico  |
-| Cobrar o pagar de más                         | El saldo quedaría negativo                              |
-| Vender más de lo que tiene el lote            | No hay existencia que descontar                         |
+| Situación                                      | Por qué no se permite                                  |
+| ---------------------------------------------- | ------------------------------------------------------ |
+| Borrar una venta con cobros                    | El `DELETE` en cascada se lleva plata que entró        |
+| Borrar o editar una compra con pagos           | Ídem, y rehacer cuotas rompería la FK de los pagos     |
+| Borrar o editar una compra ya vendida en parte | Sacar del stock lo que ya salió lo deja bajo el físico |
+| Cobrar o pagar de más                          | El saldo quedaría negativo                             |
+| Vender más de lo que tiene el lote             | No hay existencia que descontar                        |
 
 En todos los casos el mensaje dice **qué hacer**, no sólo que no se puede:
 `"La venta tiene cobros registrados: anulalos antes de eliminarla"`.
@@ -1378,7 +1605,7 @@ Tres errores de compilación que aparecieron más de una vez en este proyecto. N
 son casos raros: salen del estilo normal del código de acá —helpers privados y
 `JSON_OBJECT` para armar la respuesta— así que conviene reconocerlos de memoria.
 
-### `PLS-00231`: una función privada del *body* no se puede usar en SQL
+### `PLS-00231`: una función privada del _body_ no se puede usar en SQL
 
 Sólo las declaradas en el **spec** del paquete valen dentro de una sentencia SQL.
 Una función definida sólo en el body sirve para PL/SQL, no para el `SET` de un
@@ -1404,6 +1631,37 @@ parte de la API.
 > Este error se cometió **dos veces**, la segunda después de haber escrito esta
 > misma nota. Si estás por llamar un helper dentro de una sentencia SQL, mirá
 > primero dónde está declarado.
+
+### `ORA-00942`: un nombre de tabla mal escrito no se ve hasta que se llama
+
+El paquete con una tabla inexistente en SQL estático **no compila**: queda
+`INVALID`, y la primera llamada devuelve `ORA-04063` que ORDS traduce a un **500
+sin ningún mensaje útil**. El `WHEN OTHERS` no lo captura: el error ocurre antes
+de entrar al procedimiento.
+
+Pasó en `db/iva.sql`, que era el único archivo del backend que escribía
+`FACTURAS_COMPRA_DET` en vez de `FACTURAS_COMPRAS_DET` (con S). Rompía
+`/iva/listar` y `/iva/eliminar` por igual.
+
+**Cómo se detecta al instante:** el bloque de verificación del final del archivo
+ya lo dice. Por eso hay que **mirar la salida**, no sólo ejecutar:
+
+```sql
+SELECT OBJECT_TYPE, STATUS FROM USER_OBJECTS WHERE OBJECT_NAME = 'PKG_IVA';
+SELECT LINE, POSITION, TEXT FROM USER_ERRORS WHERE NAME = 'PKG_IVA' ORDER BY SEQUENCE;
+```
+
+`INVALID` + un `ORA-00942` apuntando a una línea es exactamente esto.
+
+**Cómo evitarlo:** antes de escribir un nombre de tabla que no sea la propia,
+verificá cómo la escriben los demás archivos.
+
+```sh
+grep -rn "FACTURAS_COMPRAS_DET" db/ | head
+```
+
+Si tu archivo es el único que la nombra de una forma, la forma equivocada es la
+tuya.
 
 ### `PLS-00684`: `RETURNING CLOB` no va en una asignación suelta
 
@@ -1992,9 +2250,9 @@ Backend (`db/<tabla>.sql`):
       una pertenezca a la otra** y se devuelve 400 si no. Las FK sueltas no lo
       garantizan (ver [3.1.1](#311-tablas-por-empresa-y-sucursal))
 - [ ] **Si es `TALONARIOS`:** `NRO_ACTUAL` inicia dentro de
-  `[NRO_INICIAL, NRO_FINAL]`; sus datos fiscales sólo se copian a Ventas
-  desde el backend y el avance del número ocurre en la misma transacción
-  que la venta
+      `[NRO_INICIAL, NRO_FINAL]`; sus datos fiscales sólo se copian a Ventas
+      desde el backend y el avance del número ocurre en la misma transacción
+      que la venta
 - [ ] **Si el `ACTUALIZAR` puede romper una coherencia entre columnas**, se
       resuelven los valores finales (`NVL` contra la fila actual) **antes** de
       validar — no sólo los parámetros recibidos
