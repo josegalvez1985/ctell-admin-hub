@@ -1599,15 +1599,41 @@ JOIN MARCAS mc ON mc.ID_MARCA = a.ID_MARCA
 LEFT JOIN MARCAS mc ON mc.ID_MARCA = a.ID_MARCA
 ```
 
-### Un catálogo global no se valida por empresa
+### Una FK a otra tabla por empresa se valida a mano
 
-Las FK de este proyecto suelen pedir coherencia: que el profesor y la
-institución sean de la misma empresa (`VALIDAR_COHERENCIA` en
-`db/asistencias-profesores.sql`). **`MARCAS` no tiene `ID_EMPRESA`**, así que no
-hay nada que validar: cualquier marca sirve para cualquier empresa.
+**La FK no alcanza**: comprueba que la fila exista, no de quién es. Sin un
+control propio, un artículo de la empresa A puede quedar apuntando a una marca
+de la B — la pantalla no lo permite, pero el endpoint es público para cualquiera
+con sesión.
 
-Conviene decirlo en un comentario del archivo, o la ausencia del control se lee
-como un olvido.
+```sql
+-- Privado del body. TRUE si esa marca se puede usar en esa empresa.
+FUNCTION MARCA_VALIDA (p_id_marca IN NUMBER, p_id_empresa IN NUMBER) RETURN BOOLEAN IS
+  l_cuenta PLS_INTEGER;
+BEGIN
+  IF p_id_marca IS NULL THEN
+    RETURN TRUE;  -- Sin marca es valido: la columna es nullable.
+  END IF;
+
+  SELECT COUNT(*) INTO l_cuenta
+    FROM MARCAS
+   WHERE ID_MARCA = p_id_marca
+     AND (ID_EMPRESA = p_id_empresa OR ID_EMPRESA IS NULL);
+
+  RETURN l_cuenta > 0;
+END MARCA_VALIDA;
+```
+
+Se llama en un `IF` antes del `INSERT`/`UPDATE`, nunca dentro de la sentencia:
+una función privada del body no se puede usar en SQL (`PLS-00231`). Es el mismo
+control que `VALIDAR_COHERENCIA` hace en `db/asistencias-profesores.sql` con el
+profesor y la institución.
+
+**El `LEFT JOIN` del listado, en cambio, NO filtra por empresa.** Muestra el
+nombre de la marca que la fila realmente tiene: filtrar ahí haría que un artículo
+con una marca ajena —cargado antes del control— se viera _sin marca_ en vez de
+con la que tiene, y eso esconde el problema en lugar de mostrarlo. El lugar de la
+validación es la escritura, no la lectura.
 
 ### `NVL` en el `UPDATE` significa "no cambiar", no "desvincular"
 

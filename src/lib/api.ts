@@ -149,6 +149,33 @@ export type ListaMarcas = {
   total: number;
 };
 
+/**
+ * Código alternativo de un artículo: el del fabricante, el del proveedor, el
+ * del catálogo del vehículo.
+ *
+ * Un repuesto casi nunca se pide por el código interno, así que un artículo
+ * tiene varios de estos y se lo puede encontrar por cualquiera.
+ *
+ * **El código se guarda normalizado** (mayúsculas, sin espacios de sobra): el
+ * `UNIQUE` del DDL es sobre el texto crudo, y sin normalizar `abc` y `ABC`
+ * entrarían como dos códigos distintos del mismo artículo.
+ */
+export type CodigoEquivalente = {
+  id: number;
+  idEmpresa: number;
+  idArticulo: number;
+  /** Nombre del artículo: viene del JOIN, para la búsqueda por código. */
+  articulo: string;
+  codigoArticulo: string | null;
+  codigoEquivalente: string;
+  descripcion: string | null;
+};
+
+export type ListaCodigosEquivalentes = {
+  items: CodigoEquivalente[];
+  total: number;
+};
+
 export type CanalPago = {
   id: number;
   nombreCanal: string;
@@ -2152,6 +2179,66 @@ export const api = {
     /** Baja física: la tabla no tiene estado. Da 409 si algún artículo la usa. */
     eliminar: (id: number, idEmpresa: number) =>
       request<{ ok: boolean }>(`/marcas/eliminar/${id}/${idEmpresa}`, { method: "DELETE" }),
+  },
+
+  /**
+   * Códigos equivalentes de un artículo: los alias con los que se lo pide.
+   *
+   * Se gestionan desde la ficha del artículo y no en una pantalla propia:
+   * siempre se mira "los códigos de ESTE artículo".
+   */
+  codigosEquivalentes: {
+    /**
+     * Con `idArticulo`, los de ese artículo — que es lo que muestra la ficha.
+     *
+     * Sin él y con `busqueda`, los que coinciden en toda la empresa: sirve para
+     * responder "¿qué artículo es este código de fabricante?". Devuelve una
+     * **lista** porque el mismo código puede estar en dos artículos: el
+     * `UNIQUE` incluye el artículo a propósito.
+     */
+    listar: (params: {
+      idEmpresa: number;
+      idArticulo?: number | undefined;
+      busqueda?: string | undefined;
+    }) => {
+      const q = new URLSearchParams({ idEmpresa: String(params.idEmpresa) });
+      if (params.idArticulo) q.set("idArticulo", String(params.idArticulo));
+      if (params.busqueda?.trim()) q.set("busqueda", params.busqueda.trim());
+      return request<ListaCodigosEquivalentes>(`/codigos-equivalentes/listar?${q}`);
+    },
+
+    /** El backend sube el código a mayúsculas y recorta los espacios. */
+    crear: (datos: {
+      idEmpresa: number;
+      idArticulo: number;
+      codigoEquivalente: string;
+      descripcion?: string;
+    }) =>
+      request<{ id: number; ok: boolean }>("/codigos-equivalentes/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /**
+     * El artículo NO se puede cambiar: mover un código de un artículo a otro es
+     * borrarlo y crearlo, y así el `UNIQUE` se evalúa contra el correcto.
+     *
+     * `idEmpresa` es **obligatorio**: acota a cuál fila se aplica el cambio.
+     */
+    actualizar: (
+      id: number,
+      datos: { idEmpresa: number; codigoEquivalente: string; descripcion?: string },
+    ) =>
+      request<{ ok: boolean }>(`/codigos-equivalentes/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Baja física: nada cuelga de un código, no hay qué revertir. */
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/codigos-equivalentes/eliminar/${id}/${idEmpresa}`, {
+        method: "DELETE",
+      }),
   },
 
   canalesPagos: {

@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { createFileRoute } from "@tanstack/react-router";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ImageUp, Loader2, MapPin, Pencil, Plus, Search, Trash2 } from "lucide-react";
+import { Barcode, ImageUp, Loader2, MapPin, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
@@ -11,6 +11,7 @@ import { AppLayout } from "@/components/ctell/AppLayout";
 import { SelectorModal, type AltaRapida } from "@/components/ctell/SelectorModal";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
 import { ArticuloUbicacionesDialog } from "@/components/ctell/ArticuloUbicacionesDialog";
+import { CodigosEquivalentesDialog } from "@/components/ctell/CodigosEquivalentesDialog";
 import { ImagenArticulo } from "@/components/ctell/ImagenArticulo";
 import { SIN_FILTRO, TableHeadFiltrable } from "@/components/ctell/TableHeadFiltrable";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
@@ -159,6 +160,7 @@ function ArticulosPage() {
   // Artículo cuyas ubicaciones se están viendo. Va en diálogo y no en ruta
   // propia: siempre se mira "dónde está ESTE artículo".
   const [verUbicaciones, setVerUbicaciones] = useState<Articulo | null>(null);
+  const [verCodigos, setVerCodigos] = useState<Articulo | null>(null);
   const [filtroCategoria, setFiltroCategoria] = useState<string>(SIN_FILTRO);
   const [filtroMarca, setFiltroMarca] = useState<string>(SIN_FILTRO);
 
@@ -413,15 +415,26 @@ function ArticulosPage() {
                   </p>
 
                   <div className="mt-3 space-y-2 border-t border-border pt-3">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="w-full"
-                      onClick={() => setVerUbicaciones(articulo)}
-                    >
-                      <MapPin className="size-4" />
-                      Ubicaciones
-                    </Button>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1"
+                        onClick={() => setVerCodigos(articulo)}
+                      >
+                        <Barcode className="size-4" />
+                        Códigos
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1"
+                        onClick={() => setVerUbicaciones(articulo)}
+                      >
+                        <MapPin className="size-4" />
+                        Ubicaciones
+                      </Button>
+                    </div>
                     <div className="flex gap-2">
                       <Button
                         variant="outline"
@@ -560,6 +573,15 @@ function ArticulosPage() {
                           <Button
                             variant="ghost"
                             size="icon"
+                            title="Códigos equivalentes"
+                            aria-label={`Códigos equivalentes de ${articulo.nombreArticulo}`}
+                            onClick={() => setVerCodigos(articulo)}
+                          >
+                            <Barcode className="size-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
                             title="Ubicaciones"
                             aria-label={`Ubicaciones de ${articulo.nombreArticulo}`}
                             onClick={() => setVerUbicaciones(articulo)}
@@ -636,6 +658,12 @@ function ArticulosPage() {
         <ArticuloUbicacionesDialog
           articulo={verUbicaciones}
           onOpenChange={(abierto) => !abierto && setVerUbicaciones(null)}
+        />
+
+        {/* Los códigos con los que también se pide este repuesto. */}
+        <CodigosEquivalentesDialog
+          articulo={verCodigos}
+          onOpenChange={(abierto) => !abierto && setVerCodigos(null)}
         />
 
         <AlertDialog open={aEliminar !== null} onOpenChange={(o) => !o && setAEliminar(null)}>
@@ -775,6 +803,24 @@ function ArticuloFormDialog({
 }) {
   const queryClient = useQueryClient();
   const esEdicion = articulo !== null;
+  const [gestionarCodigos, setGestionarCodigos] = useState(false);
+
+  /**
+   * Los códigos equivalentes ya cargados, para mostrarlos acá mismo.
+   *
+   * MISMA queryKey que usa CodigosEquivalentesDialog: comparten la respuesta, y
+   * cuando ese diálogo agrega o borra uno, estos chips se actualizan solos.
+   *
+   * Sólo en edición: un artículo que todavía no existe no tiene id contra el
+   * cual colgar códigos.
+   */
+  const codigos = useQuery({
+    queryKey: ["codigos-equivalentes", idEmpresa, articulo?.id ?? null],
+    queryFn: () => api.codigosEquivalentes.listar({ idEmpresa, idArticulo: articulo!.id }),
+    enabled: esEdicion && open,
+  });
+
+  const codigosItems = codigos.data?.items ?? [];
 
   // Las tres listas son de la misma empresa: un artículo no puede usar la
   // categoría de otra empresa. Mismas queryKeys que sus páginas, así TanStack
@@ -1068,6 +1114,72 @@ function ArticuloFormDialog({
                       </FormItem>
                     )}
                   />
+
+                  {/* CÓDIGOS EQUIVALENTES — sólo en edición.
+
+                      Va en Identificación porque es otra forma de nombrar al
+                      artículo, igual que el código propio: es con lo que el
+                      cliente lo pide.
+
+                      Se muestran acá y se editan en su propio diálogo: son
+                      filas de otra tabla que se guardan al instante, mientras
+                      que este formulario recién guarda al apretar el botón.
+                      Mezclarlos en el mismo submit haría que "Cancelar" borrara
+                      unos cambios sí y otros no. */}
+                  {esEdicion && (
+                    <div className="rounded-lg border border-border p-3 sm:col-span-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-foreground">
+                            Códigos equivalentes
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            Los códigos con los que también se pide este repuesto.
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="shrink-0"
+                          onClick={() => setGestionarCodigos(true)}
+                        >
+                          <Barcode className="size-4" />
+                          Gestionar
+                        </Button>
+                      </div>
+
+                      <div className="mt-3">
+                        {codigos.isPending ? (
+                          <Skeleton className="h-6 w-40" />
+                        ) : codigosItems.length === 0 ? (
+                          <p className="text-xs text-muted-foreground">
+                            Todavía no tiene códigos cargados.
+                          </p>
+                        ) : (
+                          // Chips y no una lista: son cortos, y así se ven todos
+                          // de un vistazo sin ocupar media pantalla del
+                          // formulario. El detalle está en el diálogo.
+                          <ul className="flex flex-wrap gap-1.5">
+                            {codigosItems.map((codigo) => (
+                              <li key={codigo.id}>
+                                <Badge
+                                  variant="secondary"
+                                  className="font-mono font-normal"
+                                  // La referencia es lo que distingue un código
+                                  // de otro cuando se parecen; en el chip no
+                                  // entra, pero sí en el tooltip.
+                                  {...(codigo.descripcion ? { title: codigo.descripcion } : {})}
+                                >
+                                  {codigo.codigoEquivalente}
+                                </Badge>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </section>
@@ -1274,6 +1386,15 @@ function ArticuloFormDialog({
           </form>
         </Form>
       </DialogContent>
+
+      {/* Se abre ENCIMA de la ficha, y la ficha queda abierta detrás: al cerrar
+          los códigos se vuelve a lo que se estaba editando, sin perder lo
+          escrito. Los chips de arriba se refrescan solos porque comparten la
+          queryKey con este diálogo. */}
+      <CodigosEquivalentesDialog
+        articulo={gestionarCodigos ? articulo : null}
+        onOpenChange={(abierto) => !abierto && setGestionarCodigos(false)}
+      />
     </Dialog>
   );
 }

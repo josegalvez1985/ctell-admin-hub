@@ -234,7 +234,7 @@ Las columnas `ACTIVO` son `VARCHAR2(1)` con valores `'A'` o `'I'`. **Este códig
 - **`_auth.cobros.tsx`:** "/cobros" → Cobros de ventas, historial y baja.
 - **`_auth.pagos.tsx`:** "/pagos" → Pagos a proveedores. Espejo de cobros.
 - **`_auth.asistencias.tsx`:** "/asistencias" → Reporte de marcaciones de profesores. Dos vistas: **Planilla** (grilla del mes, agrupada por semana con `rowSpan`, se imprime y se firma) y **Detalle**. Tocar un día abre el modal con sus marcaciones, para editarlas, borrarlas o agregar una. Los combos de año y mes ofrecen **sólo períodos con datos**, que salen de `/asistencias-profesores/periodos`.
-- **`_auth.marcas.tsx`:** "/marcas" → ABM del catálogo de marcas. Es **global**: `MARCAS` no tiene `ID_EMPRESA`.
+- **`_auth.marcas.tsx`:** "/marcas" → ABM de marcas de artículos, **por empresa** (`useEmpresa()`, como el resto). Las filas con `ID_EMPRESA` en NULL son anteriores a esa columna y las ve toda empresa ("heredadas"): los filtros van como `(ID_EMPRESA = l_empresa OR ID_EMPRESA IS NULL)`.
 - **`_auth.existencias.tsx`:** "/existencias" → Consulta de existencia de artículos, con exportación a Excel y PDF. Es una CONSULTA: no da de alta ni edita nada.
 - **`_auth.sucursales.tsx`:** "/sucursales" → Sucursales **de la empresa activa**. El recorte lo hace el backend (`?idEmpresa=`), con la misma queryKey que `sucursal-provider` para compartir caché. No hay selector de empresa: el alta va a la activa.
 - **`_auth.configuracion.tsx`:** "/configuracion" → Preferencias (tema, acento).

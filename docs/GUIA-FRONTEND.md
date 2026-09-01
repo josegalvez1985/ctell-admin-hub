@@ -827,24 +827,32 @@ Dos detalles que cuestan un rato si se pasan por alto:
   render de arriba. Y tenerlo presente: un mes vacío deja de ser alcanzable, así
   que no se puede navegar hasta él para cargarle la primera marcación.
 
-### Un catálogo global no lleva la empresa en la queryKey
+### La empresa va en la queryKey de todo catálogo
 
-Casi todos los catálogos del proyecto son por empresa, y su queryKey lo refleja:
-`["categorias", empresa?.id]`. **`MARCAS` no tiene `ID_EMPRESA`**: la misma marca
-sirve para todas.
+`["categorias", empresa?.id]`, `["marcas", empresa?.id]`. **Todos** los
+catálogos del proyecto cuelgan de la empresa, así que la clave lo tiene que
+reflejar: sin ella, cambiar de empresa activa serviría la lista de la anterior
+desde la caché, y nadie relaciona ese síntoma con una queryKey.
 
 ```tsx
-// Sin empresa en la key: comparte caché con /marcas y con las demás pantallas
-// que la usen, y no hace falta esperar a que el provider hidrate para pedirla.
+const { empresa } = useEmpresa();
+
 const { data: marcas } = useQuery({
-  queryKey: ["marcas"],
-  queryFn: () => api.marcas.listar(),
+  queryKey: ["marcas", empresa?.id ?? null],
+  queryFn: () => api.marcas.listar({ idEmpresa: empresa!.id }),
+  // El provider hidrata después de montar: sin esto sale un pedido con
+  // `undefined` como empresa.
+  enabled: empresa !== null,
 });
 ```
 
-Meterle la empresa igual "por las dudas" no es inocuo: guarda una copia por cada
-empresa de una respuesta idéntica, y con el selector de empresa activo eso son
-pedidos repetidos de lo mismo.
+**Usá la MISMA clave en todas las pantallas** que consultan ese catálogo: la de
+Artículos, la de Existencias y su propio ABM comparten `["marcas", id]` y por lo
+tanto la respuesta. Por eso mismo, un alta desde cualquiera de ellas invalida la
+de todas.
+
+> `MARCAS` fue por un tiempo un catálogo global, sin empresa. Si ves un
+> `queryKey: ["marcas"]` pelado en un ejemplo viejo, está desactualizado.
 
 ### Agrupar filas de un reporte: `rowSpan` en las tres salidas
 
