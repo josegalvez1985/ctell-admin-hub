@@ -793,6 +793,109 @@ Dos cosas que hay que resolver al hacerlo:
 Los estados de carga y error siguen colgando de la consulta principal, no de
 esta: los combos no deben bloquear la pantalla.
 
+#### Cuando el filtro es el período, va un endpoint agregado
+
+Derivar las opciones del listado sirve mientras el recorte ya esté acotado. Con
+**el año y el mes** no alcanza: para saber qué meses tienen datos habría que
+pedir el año entero —miles de marcaciones bajando al navegador para calcular
+doce números—, y es justo el volumen que hace saltar el techo de bytes de ORDS.
+
+`/asistencias-profesores/periodos` devuelve **una fila por mes con datos**
+(`{anio, mes, cantidad}`). Es el mismo criterio que `/dashboard/resumen`: si el
+listado está paginado o es grande, el agregado se calcula en la base.
+
+```tsx
+// Una sola vez por empresa: la respuesta ya trae todos los años, así que
+// cambiar de año no dispara otra consulta.
+const periodos = useQuery({
+  queryKey: ["asistencias", "periodos", empresa?.id ?? null],
+  queryFn: () => api.asistenciasProfesores.periodos(empresa!.id),
+  enabled: empresa !== null,
+});
+```
+
+Dos detalles que cuestan un rato si se pasan por alto:
+
+- **La queryKey tiene que compartir prefijo con el listado.** `["asistencias",
+"periodos", id]` y no `["asistencias-periodos", id]`: TanStack compara las
+  keys **elemento por elemento**, no como texto, así que con la segunda forma el
+  `invalidateQueries(["asistencias"])` del alta no la alcanza y la primera
+  marcación de un mes nuevo no aparece en el combo hasta recargar la página.
+- **Si el combo sólo ofrece lo que existe, el estado inicial puede no existir.**
+  La pantalla arranca en el mes de hoy, que puede no tener nada cargado: hay que
+  caer al período más reciente con datos, con la misma corrección durante el
+  render de arriba. Y tenerlo presente: un mes vacío deja de ser alcanzable, así
+  que no se puede navegar hasta él para cargarle la primera marcación.
+
+### Un catálogo global no lleva la empresa en la queryKey
+
+Casi todos los catálogos del proyecto son por empresa, y su queryKey lo refleja:
+`["categorias", empresa?.id]`. **`MARCAS` no tiene `ID_EMPRESA`**: la misma marca
+sirve para todas.
+
+```tsx
+// Sin empresa en la key: comparte caché con /marcas y con las demás pantallas
+// que la usen, y no hace falta esperar a que el provider hidrate para pedirla.
+const { data: marcas } = useQuery({
+  queryKey: ["marcas"],
+  queryFn: () => api.marcas.listar(),
+});
+```
+
+Meterle la empresa igual "por las dudas" no es inocuo: guarda una copia por cada
+empresa de una respuesta idéntica, y con el selector de empresa activo eso son
+pedidos repetidos de lo mismo.
+
+### Agrupar filas de un reporte: `rowSpan` en las tres salidas
+
+La planilla de asistencias tiene una columna **Sem.** que abarca los días de su
+semana con una sola celda. La regla de corte se calcula **una vez** y viaja como
+dato (`FilaPlanilla.semana`), en vez de que cada salida la reimplemente:
+
+```tsx
+// Un solo helper alimenta la grilla y las dos exportaciones.
+function agruparPorSemana(dias) {
+  let semana = 1;
+  const conSemana = dias.map((d, i) => {
+    if (i > 0 && d.diaSemana === 1) semana += 1; // cada lunes abre una semana
+    return { ...d, semana };
+  });
+  // …además devuelve `abreSemana` y `diasDeLaSemana`, que es el rowSpan.
+}
+```
+
+**Las celdas tapadas por el span se manejan al revés en cada formato**, y es
+fácil equivocarse:
+
+| Salida                    | Filas cubiertas por el span              |
+| ------------------------- | ---------------------------------------- |
+| HTML / `write-excel-file` | Van como `null` — si no, se corren       |
+| PDF (`jspdf-autotable`)   | **No** llevan celda: autoTable las corre |
+
+Dos detalles que sólo se ven al mirar el resultado:
+
+- **La celda agrupada necesita fondo propio.** Si la fila que abre el grupo es
+  fin de semana —pasa en la primera semana del mes— hereda ese gris y la columna
+  queda de dos colores. En pantalla se resuelve con `bg-card`; en el PDF,
+  excluyendo la columna 0 del `didParseCell`.
+- **Una columna nueva desalinea el resto del Excel.** Hay que mover los anchos
+  de columna, los `null` de la segunda fila de cabecera y el `columnSpan` del
+  bloque de totales, o el importe cae una celda antes.
+
+### Líneas divisorias: un selector, no una clase por celda
+
+```tsx
+const COLUMNAS_DIVIDIDAS = "[&_th:not(:last-child)]:border-r [&_td:not(:last-child)]:border-r";
+```
+
+Se aplica al `<Table>` y alcanza a todas las celdas. Repetir `border-r` en cada
+`<TableHead>` y `<TableCell>` son treinta lugares donde ponerlo y uno donde
+olvidarse.
+
+- `:not(:last-child)` evita la línea pegada al filo de la tarjeta.
+- El color sale del reset global de `styles.css`, que da `--color-border` a todo:
+  `border-r` solo alcanza y sigue al tema claro y oscuro.
+
 ### Un documento que se firma sale uno por persona, no uno mezclado
 
 La planilla de asistencias se imprime y **se firma**: su encabezado dice
@@ -811,8 +914,10 @@ Hoy `asistencias` arma **una planilla por profesor** y las manda todas juntas:
 // lista tiene un solo elemento, que es el caso de siempre.
 const planillas: DatosPlanilla[] = useMemo(() => {
   const porProfesor = new Map<number, AsistenciaProfesor[]>();
-  for (const a of items) { /* agrupar */ }
-  return [...porProfesor.values()].map((marcas) => ({ /* … */ }));
+  for (const a of items) {
+    /* agrupar */
+  }
+  return [...porProfesor.values()].map((marcas) => ({/* … */}));
 }, [items, catedra, precio, periodo, diasDelMes, nombreProfesor]);
 ```
 
@@ -920,6 +1025,31 @@ Tres clicks en el mismo header: ascendente → descendente → vuelve al orden
 original que trajo el backend. El ícono cambia solo (flecha doble gris sin
 ordenar, arriba/abajo con la dirección activa).
 
+### Un reporte también se corrige: acciones desde la grilla
+
+La planilla de asistencias es la vista con la que se liquida, y es donde se ve
+el problema —un día en blanco, una entrada sin salida—. Antes había que cambiar
+a la vista Detalle y buscar esa fila entre las del mes entero.
+
+Tocar un día abre un modal con **las marcaciones de ese día** y sus acciones:
+
+- Es una **lista, no un formulario**: un día puede tener varias entradas y
+  salidas, y cuál corregir lo elige la persona.
+- **No duplica el formulario.** Delega en el mismo diálogo de carga y en la
+  misma confirmación de baja que usa la otra vista; dos formularios serían dos
+  validaciones que mantener sincronizadas.
+- **El modal del día queda abierto detrás.** El de edición se abre encima, y al
+  cerrarse se vuelve a ver el día actualizado — la lista se lee de `porDia` en
+  cada render, así que la invalidación de la mutación la refresca sola.
+- **La fila entera es clickeable, y además hay un `<button>` real** en la celda
+  del día: una fila con `onClick` es cómoda con el mouse pero no la alcanza
+  nadie con teclado ni la anuncia un lector de pantalla. El botón hace
+  `stopPropagation` para que el click no cuente dos veces.
+
+Si el alta hereda la fecha del filtro, conviene guardarla en su propio estado
+(`fechaAlta`) en vez de leer cuál modal está abierto: son cosas distintas y el
+acoplamiento se rompe apenas los diálogos se superponen.
+
 ### Diálogos con `<ul>` en vez de `<Table>`
 
 `UsuariosDialog`, `ModulosDialog` y `PaginasDialog` muestran una lista simple,
@@ -956,6 +1086,36 @@ const form = useForm<FormValues>({
 **Siempre `defaultValues` o `values`** — sin eso React avisa por inputs no
 controlados. Usá `values` cuando el formulario se reutiliza para editar
 registros distintos.
+
+### Los hijos de `ui/form` van DENTRO de un `<FormItem>`, o revientan
+
+`FormLabel`, `FormControl`, `FormDescription` y `FormMessage` llaman a
+`useFormField()`, que **lanza** si no encuentra el contexto de su campo. No es
+un warning: se lleva puesta la página entera y el `CatchBoundary` del root
+muestra _"This page didn't load"_ — con el formulario perfectamente escrito.
+
+El caso real fue una nota al pie del formulario, que no pertenece a ningún campo
+y por eso no tenía dónde colgarse:
+
+```tsx
+// MAL: tira abajo la página apenas se abre el diálogo
+<div className="grid gap-4 sm:grid-cols-2">…</div>
+<FormDescription>Dejá la salida vacía si todavía no salió.</FormDescription>
+
+// BIEN: es una nota del formulario, no de un campo
+<p className="text-[0.8rem] text-muted-foreground">
+  Dejá la salida vacía si todavía no salió.
+</p>
+```
+
+Esas son exactamente las clases que aplica `FormDescription`, así que se ve
+igual.
+
+Un `<Field>` propio que renderice el `<FormItem>` **sí** vale como contenedor
+aunque el JSX no lo muestre anidado: el contexto de React viaja por el árbol de
+render, no por cómo esté escrito.
+
+`npm run lint` lo detecta — ver `scripts/verificar-convenciones.mjs`.
 
 ### Un formulario entra en un pantallazo
 
@@ -1145,6 +1305,79 @@ const paisesOpciones = (paises?.items ?? []).map((p) => ({
 
 El `value` sigue siendo el `id` como string, igual que con `<Select>`: el
 `schema` de zod y la conversión a `Number(...)` al enviar no cambian.
+
+### Crear la opción que falta sin salir del formulario
+
+El caso: se está cargando un artículo y su marca todavía no existe. Sin esto hay
+que **descartar lo escrito**, ir a /marcas, crearla y empezar de nuevo — y eso
+pasa justo cuando la persona está cargando datos en serie.
+
+La prop `alta` de `SelectorModal` lo resuelve. Sin ella, el selector se comporta
+como siempre:
+
+```tsx
+<SelectorModal
+  opciones={marcasOpciones}
+  value={field.value}
+  onChange={field.onChange}
+  placeholder="Sin marca"
+  titulo="Elegí una marca"
+  cargando={cargandoMarcas}
+  alta={{
+    titulo: "Nueva marca",
+    etiquetaCampo: "Descripción",
+    placeholder: "Sakura",
+    crear: async (descripcion) => {
+      const { id } = await api.marcas.crear({ descripcion });
+      await queryClient.invalidateQueries({ queryKey: ["marcas"] });
+      return { valor: String(id), etiqueta: descripcion };
+    },
+  }}
+/>
+```
+
+Aparece en **tres lugares**, porque con uno solo no alcanza:
+
+| Dónde                         | Para quién                                                    |
+| ----------------------------- | ------------------------------------------------------------- |
+| Un "+" pegado al selector     | El que ya sabe que no existe y no quiere abrir la lista       |
+| "Crear «Sakura»" al no hallar | El que lo descubre buscando — arranca con lo que ya tipeó     |
+| Un botón al pie del modal     | El que revisó la lista entera; va fuera del área que scrollea |
+
+Al crear, **la opción queda elegida**: crearla y tener que buscarla después
+sería la mitad del trabajo.
+
+#### Lo que hay que saber para usarla
+
+**El selector no sabe de queries.** El `crear` lo arma el llamador: pega a su
+endpoint, invalida su catálogo y devuelve la opción. El id sale de la respuesta
+del POST, así que la opción se arma ahí mismo — esperar a que el refetch traiga
+el catálogo nuevo dejaría un hueco en el que el selector todavía no conoce el
+valor que acaba de recibir.
+
+**El campo NO es un `<form>`.** Esto vive dentro del formulario de la pantalla,
+y un form anidado no es HTML válido: el submit del de adentro dispararía el de
+afuera y guardaría el registro entero. Enter guarda con un `onKeyDown` y
+`preventDefault`.
+
+**Si falla, el diálogo no se cierra**: conserva lo tipeado para corregirlo. Un
+409 por nombre duplicado es el caso típico, y el mensaje del backend ya dice qué
+hacer.
+
+#### Cuándo NO ponerla
+
+**El alta rápida pide un solo campo.** Sirve para un catálogo simple, donde el
+resto de los datos es opcional o tiene default:
+
+| Catálogo                                                          | ¿Entra?                                  |
+| ----------------------------------------------------------------- | ---------------------------------------- |
+| Marcas, categorías, canales de pago, condiciones de pago, monedas | Sí                                       |
+| Unidades de medida                                                | No: `abreviatura` también es obligatoria |
+| Ubicaciones                                                       | No: exige zona, estante y nivel          |
+
+Forzar una entidad de varios campos obligatorios acá crea **filas a medio
+llenar** que después hay que ir a completar a mano, y nadie se acuerda. Esas
+necesitan su propio diálogo.
 
 **También en los filtros**, no sólo en el alta/edición. El filtro de columna
 (`TableHeadFiltrable`) abre el mismo modal desde el embudo del encabezado: no

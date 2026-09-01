@@ -38,9 +38,21 @@ Vite imprime la URL local al arrancar (normalmente `http://localhost:5173`).
 | `npm run dev`      | Servidor de desarrollo con HMR        |
 | `npm run build`    | Build de producción en `dist/client/` |
 | `npm run preview`  | Sirve el build ya generado            |
-| `npm run lint`     | ESLint + Prettier                     |
+| `npm run lint`     | ESLint + Prettier + los verificadores |
 | `npm run format`   | Aplica formato a todo el proyecto     |
 | `npx tsc --noEmit` | Verificación de tipos                 |
+
+`npm run lint` corre además dos chequeos propios, que también se pueden llamar
+sueltos:
+
+| Comando                          | Qué evita                                                         |
+| -------------------------------- | ----------------------------------------------------------------- |
+| `npm run verificar-iconos`       | Dos entradas del menú con el mismo ícono                          |
+| `npm run verificar-convenciones` | `:body` leído con `JSON_VALUE`, y hijos de `ui/form` sin contexto |
+
+Los dos casos del segundo ya nos costaron horas cada uno, y ninguno se ve al
+leer el código: uno responde un 400 con el body bien puesto y el otro tira abajo
+la página entera. Ver [`scripts/verificar-convenciones.mjs`](scripts/verificar-convenciones.mjs).
 
 ## Estructura
 
@@ -101,7 +113,7 @@ src/
 │   │   ├── LogoEmpresa.tsx       Logo con iniciales de respaldo
 │   │   ├── ImagenArticulo.tsx    Imagen con ícono de respaldo
 │   │   ├── TableHeadFiltrable.tsx / TableHeadOrdenable.tsx
-│   │   ├── Combobox.tsx          Selector con buscador
+│   │   ├── SelectorModal.tsx     Toda lista de valores, con alta al vuelo
 │   │   └── menu-iconos.ts        Íconos del menú, por nombre
 │   └── ui/              shadcn/ui (no editar a mano)
 ├── hooks/
@@ -178,6 +190,31 @@ casos porque la tabla no se comporta como una ficha:
 
 E `INVENTARIOS` **no tiene `/eliminar`** en absoluto — ver
 [Máquina de estados](#máquina-de-estados-inventarios).
+
+### Filas heredadas: una columna de empresa agregada tarde
+
+`MARCAS.ID_EMPRESA` se agregó **después** de que la tabla estuviera en uso, así
+que el catálogo tiene dos clases de fila:
+
+| Fila          | `ID_EMPRESA` | Quién la ve      |
+| ------------- | ------------ | ---------------- |
+| De la empresa | Cargado      | Sólo esa empresa |
+| **Heredada**  | `NULL`       | **Todas**        |
+
+Por eso cada filtro va como `(ID_EMPRESA = l_empresa OR ID_EMPRESA IS NULL)`.
+Con un filtro estricto, las heredadas desaparecen del combo de artículos **sin
+ningún error visible**, y los artículos que ya las usan quedan apuntando a una
+marca que nadie puede volver a elegir. Es el mismo criterio que
+`db/asistencias-profesores.sql` aplica a sus filas previas a la columna.
+
+**Ojo con el `COMMENT` del DDL**: dice "OBLIGATORIO", pero la columna no tiene
+`NOT NULL`, y una FK acepta NULL mientras no lo tenga. Un `COMMENT` no es una
+restricción — ver [El DDL manda](docs/GUIA-IMPLEMENTACION.md#351-el-ddl-manda-no-los-comentarios).
+
+`ARTICULOS.ID_MARCA` pasa entonces a validarse como las demás FK: el backend
+rechaza con 400 una marca de otra empresa. El bloque de verificación de
+[db/marcas.sql](db/marcas.sql) trae el `UPDATE` para asignar las heredadas y
+terminar la migración.
 
 ### Tablas por empresa
 
@@ -520,6 +557,28 @@ Por eso `/existencias` pide páginas de **50** y no de 200, aunque el backend
 acepte 200: ese techo es la defensa contra un `?tamanio=99999`, no un tamaño
 recomendado. Ver
 [el diagnóstico completo](docs/GUIA-IMPLEMENTACION.md#y-si-paginás-y-igual-da-500-es-el-bind-de-ords).
+
+### El JSON del body no se lee con `:body`
+
+**Síntoma: el `GET` y el `DELETE` andan, el `POST` y el `PUT` responden 400
+"son obligatorios"** — con el body perfectamente armado y visible en la pestaña
+Network.
+
+`:body` es el payload **crudo, como BLOB**: existe para subir archivos, y es lo
+único para lo que se usa en `db/` (`GUARDAR_IMAGEN`, `GUARDAR_FOTO`,
+`GUARDAR_LOGO`). Para un JSON, **ORDS ya crea un bind por cada clave de primer
+nivel** —`:idEmpresa`, `:fecha`— que se vinculan solos, sin `DEFINE_PARAMETER`,
+igual que los query params.
+
+Un `JSON_VALUE(p_body, '$.idEmpresa')` sobre ese BLOB devuelve NULL en todos los
+campos. El paquete compila **VALID** y el mensaje que vuelve es el 400 que uno
+mismo escribió, así que todo apunta al frontend. El listado y el `DELETE` siguen
+funcionando porque toman los parámetros de la ruta.
+
+`db/categorias.sql` es el patrón correcto, y lo verifica `npm run lint`.
+
+Del lado del cliente: **mandá siempre todas las claves**, con `""` cuando el
+valor está vacío. Una clave omitida deja el bind sin definir en vez de en NULL.
 
 ### Orden de ejecución
 
@@ -1065,6 +1124,15 @@ Ver [Columnas calculadas](docs/GUIA-IMPLEMENTACION.md#34-columnas-calculadas-lo-
 `Number(texto)`: `Number("34.200")` da **34,2** y guarda un importe mil veces
 menor sin ningún error a la vista.
 Ver [Montos](docs/GUIA-FRONTEND.md#721-montos-inputmoneda-y-libmonedats).
+
+**Una FK se puede crear desde el formulario que la usa.** `SelectorModal` acepta
+una prop `alta`: un "+" al lado del campo, y un "Crear «…»" cuando la búsqueda
+no encuentra nada. Se crea, queda elegida y se sigue cargando. Sin eso, que
+falte una marca obliga a descartar el artículo a medio llenar, ir a /marcas y
+empezar de nuevo. **Pide un solo campo**, así que sirve para un catálogo simple
+—marca, categoría— y no para uno con varios datos obligatorios, que quedaría a
+medio llenar.
+Ver [Crear la opción que falta](docs/GUIA-FRONTEND.md#crear-la-opción-que-falta-sin-salir-del-formulario).
 
 **Lo que una operación movió, su baja lo revierte — o se rechaza con 409.**
 Comprar crea lotes, vender los descuenta, borrar repone. Una venta con cobros o

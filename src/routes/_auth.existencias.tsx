@@ -137,6 +137,7 @@ const COLUMNAS: ColumnaExport<Articulo>[] = [
   { titulo: "Código", valor: (a) => a.codigoArticulo, ancho: 16 },
   { titulo: "Artículo", valor: (a) => a.nombreArticulo, ancho: 42 },
   { titulo: "Categoría", valor: (a) => a.categoria, ancho: 22 },
+  { titulo: "Marca", valor: (a) => a.marca, ancho: 20 },
   { titulo: "Unidad", valor: (a) => unidad(a) || null, ancho: 12 },
   { titulo: "Existencia", valor: (a) => a.cantidadStock, numerica: true, ancho: 13 },
   { titulo: "Mínimo", valor: (a) => a.cantidadMinima, numerica: true, ancho: 11 },
@@ -155,6 +156,7 @@ const COLUMNAS: ColumnaExport<Articulo>[] = [
 function ExistenciasPage() {
   const { empresa } = useEmpresa();
   const [filtroCategoria, setFiltroCategoria] = useState<string>(SIN_FILTRO);
+  const [filtroMarca, setFiltroMarca] = useState<string>(SIN_FILTRO);
   const [filtroSituacion, setFiltroSituacion] = useState<string>(SIN_FILTRO);
   const [filtroEstado, setFiltroEstado] = useState<string>(SIN_FILTRO);
   const [exportando, setExportando] = useState<"excel" | "pdf" | null>(null);
@@ -174,6 +176,14 @@ function ExistenciasPage() {
     enabled: empresa !== null,
   });
 
+  // Con la empresa en la clave: MARCAS cuelga de EMPRESAS. Comparte caché con
+  // /marcas y con la pantalla de Artículos.
+  const { data: marcas } = useQuery({
+    queryKey: ["marcas", empresa?.id ?? null],
+    queryFn: () => api.marcas.listar({ idEmpresa: empresa!.id }),
+    enabled: empresa !== null,
+  });
+
   const catalogo = data ?? [];
 
   // Búsqueda y orden en memoria: acá el catálogo está entero en el cliente, así
@@ -182,13 +192,14 @@ function ExistenciasPage() {
   // paginado del servidor.
   const { busqueda, setBusqueda, orden, alternarOrden, resultado } = useTablaListado<Articulo>(
     catalogo,
-    (a) => [a.codigoArticulo, a.nombreArticulo, a.categoria, a.unidadMedida],
+    (a) => [a.codigoArticulo, a.nombreArticulo, a.categoria, a.marca, a.unidadMedida],
   );
 
   // Los tres filtros de columna se aplican DESPUÉS de la búsqueda y el orden,
   // sobre el mismo array que después se exporta.
   const filas = resultado.filter((a) => {
     if (filtroCategoria !== SIN_FILTRO && String(a.idCategoria) !== filtroCategoria) return false;
+    if (filtroMarca !== SIN_FILTRO && String(a.idMarca) !== filtroMarca) return false;
     if (filtroEstado !== SIN_FILTRO && a.activo !== filtroEstado) return false;
     if (filtroSituacion === "bajo-minimo" && !bajoMinimo(a)) return false;
     if (filtroSituacion === "sin-existencia" && a.cantidadStock > 0) return false;
@@ -199,6 +210,11 @@ function ExistenciasPage() {
   const categoriasOpciones = (categorias?.items ?? []).map((c) => ({
     valor: String(c.id),
     etiqueta: c.nombreCategoria,
+  }));
+
+  const marcasOpciones = (marcas?.items ?? []).map((m) => ({
+    valor: String(m.id),
+    etiqueta: m.descripcion,
   }));
 
   // Los totales se cuentan sobre lo filtrado, no sobre el catálogo: son el
@@ -213,6 +229,10 @@ function ExistenciasPage() {
     if (filtroCategoria !== SIN_FILTRO) {
       const categoria = categoriasOpciones.find((c) => c.valor === filtroCategoria);
       partes.push(`Categoría: ${categoria?.etiqueta ?? filtroCategoria}`);
+    }
+    if (filtroMarca !== SIN_FILTRO) {
+      const marca = marcasOpciones.find((m) => m.valor === filtroMarca);
+      partes.push(`Marca: ${marca?.etiqueta ?? filtroMarca}`);
     }
     if (filtroSituacion !== SIN_FILTRO) {
       partes.push(
@@ -406,6 +426,7 @@ function ExistenciasPage() {
                       <p className="mt-0.5 truncate text-xs text-muted-foreground">
                         {articulo.codigoArticulo ? `${articulo.codigoArticulo} · ` : ""}
                         {articulo.categoria ?? "Sin categoría"}
+                        {articulo.marca ? ` · ${articulo.marca}` : ""}
                         {esGastoArticulo(articulo.esGasto) ? " · Gasto" : ""}
                       </p>
                     </div>
@@ -476,6 +497,16 @@ function ExistenciasPage() {
                   >
                     Categoría
                   </TableHeadFiltrable>
+                  <TableHeadFiltrable
+                    direccion={orden?.campo === "marca" ? orden.direccion : null}
+                    onOrdenar={() => alternarOrden("marca")}
+                    opciones={marcasOpciones}
+                    valor={filtroMarca}
+                    onFiltrar={setFiltroMarca}
+                    buscarPlaceholder="Buscar marca…"
+                  >
+                    Marca
+                  </TableHeadFiltrable>
                   {/* El filtro de situación vive en la columna Existencia
                       porque es sobre ese número que se pregunta "mostrame sólo
                       los que faltan". */}
@@ -537,6 +568,9 @@ function ExistenciasPage() {
                       </TableCell>
                       <TableCell className="text-muted-foreground">
                         {articulo.categoria ?? "—"}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {articulo.marca ?? "—"}
                       </TableCell>
                       <TableCell className="text-right">
                         <span

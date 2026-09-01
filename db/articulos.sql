@@ -9,8 +9,8 @@
 --   1. LISTAR      GET    /articulos/listar        (paginado; todos los
 --                                                   parámetros opcionales:
 --                                                   ?idEmpresa= &busqueda=
---                                                   &idCategoria= &pagina=
---                                                   &tamanio=)
+--                                                   &idCategoria= &idMarca=
+--                                                   &pagina= &tamanio=)
 --   2. INSERTAR    POST   /articulos/crear
 --   3. ACTUALIZAR  PUT    /articulos/actualizar/:id
 --   4. ELIMINAR    DELETE /articulos/eliminar/:id/:idEmpresa
@@ -24,11 +24,23 @@
 -- Base de los endpoints: https://oracleapex.com/ords/ctell/articulos/
 --
 -- Tabla (no la crea ni la altera; el DDL se administra aparte):
---   ARTICULOS  ID_ARTICULO, ID_EMPRESA, ID_CATEGORIA, ID_MONEDA,
+--   ARTICULOS  ID_ARTICULO, ID_EMPRESA, ID_CATEGORIA, ID_MARCA, ID_MONEDA,
 --              ID_UNIDAD_MEDIDA, CODIGO_ARTICULO, NOMBRE_ARTICULO,
 --              DESCRIPCION, CANTIDAD_MINIMA, ACTIVO,
 --              FECHA_CREACION, FECHA_ACTUALIZACION, IMAGEN,
 --              IMAGEN_MIME, FEC_ULTIMO_INVENTARIO, ES_GASTO
+--
+-- ID_MARCA es NULLABLE, con FK a MARCAS (ARTICULOS_FK_MARCA). MARCAS TAMBIEN
+-- cuelga de EMPRESAS, asi que se valida la coherencia como con las demas FK:
+-- MARCA_VALIDA rechaza con 400 una marca de otra empresa. La FK sola no
+-- alcanza — comprueba que exista, no de quien es.
+--
+-- Valen tambien las marcas HEREDADAS (MARCAS.ID_EMPRESA en NULL), que son las
+-- anteriores a esa columna y el catalogo ofrece a todas las empresas.
+--
+-- Todos los articulos cargados antes de la columna la tienen en NULL y el
+-- listado los devuelve con marca null. Por eso el JOIN es LEFT y el filtro
+-- ?idMarca= solo aplica cuando viene.
 --
 -- EL ARTICULO YA NO GUARDA PRECIOS NI STOCK. Se eliminaron del DDL
 -- PRECIO_ULTIMA_COMPRA, PRECIO_VENTA y CANTIDAD_STOCK: esos datos viven ahora
@@ -198,6 +210,7 @@ CREATE OR REPLACE PACKAGE PKG_ARTICULOS AS
     p_id_empresa    IN  VARCHAR2,
     p_busqueda      IN  VARCHAR2,
     p_id_categoria  IN  VARCHAR2,
+    p_id_marca      IN  VARCHAR2,
     p_pagina        IN  VARCHAR2,
     p_tamanio       IN  VARCHAR2,
     p_status_code   OUT NUMBER,
@@ -210,6 +223,7 @@ CREATE OR REPLACE PACKAGE PKG_ARTICULOS AS
     p_authorization        IN  VARCHAR2,
     p_id_empresa           IN  VARCHAR2,
     p_id_categoria         IN  VARCHAR2,
+    p_id_marca             IN  VARCHAR2,
     p_id_moneda            IN  VARCHAR2,
     p_id_unidad_medida     IN  VARCHAR2,
     p_codigo_articulo      IN  VARCHAR2,
@@ -227,6 +241,7 @@ CREATE OR REPLACE PACKAGE PKG_ARTICULOS AS
     p_id                   IN  VARCHAR2,
     p_id_empresa           IN  VARCHAR2,
     p_id_categoria         IN  VARCHAR2,
+    p_id_marca             IN  VARCHAR2,
     p_id_moneda            IN  VARCHAR2,
     p_id_unidad_medida     IN  VARCHAR2,
     p_codigo_articulo      IN  VARCHAR2,
@@ -341,11 +356,40 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     END IF;
   END MENSAJE_FK;
 
+  ------------------------------------------------------------------------------
+  -- Privado: true si esa marca se puede usar en esa empresa.
+  --
+  -- MARCAS paso a colgar de EMPRESAS, asi que una marca de otra empresa NO es
+  -- elegible. La FK sola no alcanza: valida que la marca exista, no de quien
+  -- es. Es el mismo control que PKG_ASISTENCIAS_PROFESORES hace con el profesor
+  -- y la institucion.
+  --
+  -- Las HEREDADAS (ID_EMPRESA en NULL) valen para todas: son las que ya estaban
+  -- cuando la columna no existia, y el listado de marcas se las ofrece a
+  -- cualquier empresa.
+  ------------------------------------------------------------------------------
+  FUNCTION MARCA_VALIDA (p_id_marca IN NUMBER, p_id_empresa IN NUMBER) RETURN BOOLEAN IS
+    l_cuenta PLS_INTEGER;
+  BEGIN
+    IF p_id_marca IS NULL THEN
+      RETURN TRUE;  -- Sin marca es un caso valido: la columna es nullable.
+    END IF;
+
+    SELECT COUNT(*)
+      INTO l_cuenta
+      FROM MARCAS
+     WHERE ID_MARCA = p_id_marca
+       AND (ID_EMPRESA = p_id_empresa OR ID_EMPRESA IS NULL);
+
+    RETURN l_cuenta > 0;
+  END MARCA_VALIDA;
+
   PROCEDURE LISTAR (
     p_authorization IN  VARCHAR2,
     p_id_empresa    IN  VARCHAR2,
     p_busqueda      IN  VARCHAR2,
     p_id_categoria  IN  VARCHAR2,
+    p_id_marca      IN  VARCHAR2,
     p_pagina        IN  VARCHAR2,
     p_tamanio       IN  VARCHAR2,
     p_status_code   OUT NUMBER,
@@ -354,6 +398,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     l_sesion       NUMBER;
     l_id_empresa   NUMBER;
     l_id_categoria NUMBER;
+    l_id_marca     NUMBER;
     l_busqueda     VARCHAR2(4000);
     l_pagina       NUMBER;
     l_tamanio      NUMBER;
@@ -374,6 +419,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     -- que TO_NUMBER la toque (si no, ORA-01722).
     l_id_empresa   := TO_NUMBER(NULLIF(p_id_empresa, ''));
     l_id_categoria := TO_NUMBER(NULLIF(p_id_categoria, ''));
+    l_id_marca     := TO_NUMBER(NULLIF(p_id_marca, ''));
 
     -- En minúsculas una sola vez acá, no por fila: el WHERE compara contra
     -- LOWER() de cada columna, así que subir el término también dentro del SQL
@@ -403,14 +449,15 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
       FROM ARTICULOS a
      WHERE (l_id_empresa   IS NULL OR a.ID_EMPRESA   = l_id_empresa)
        AND (l_id_categoria IS NULL OR a.ID_CATEGORIA = l_id_categoria)
+       AND (l_id_marca     IS NULL OR a.ID_MARCA     = l_id_marca)
        AND (l_busqueda IS NULL
             OR LOWER(a.NOMBRE_ARTICULO) LIKE '%' || l_busqueda || '%'
             OR LOWER(a.CODIGO_ARTICULO) LIKE '%' || l_busqueda || '%'
             OR LOWER(a.DESCRIPCION)     LIKE '%' || l_busqueda || '%');
 
-    -- LEFT JOIN en las TRES, no JOIN: las FK son nullables. Con el interno, un
-    -- artículo sin categoría (o sin moneda, o sin unidad) desaparecería del
-    -- listado sin ningún error visible.
+    -- LEFT JOIN en las CUATRO, no JOIN: las FK son nullables. Con el interno,
+    -- un artículo sin categoría (o sin moneda, sin unidad o sin marca)
+    -- desaparecería del listado sin ningún error visible.
     --
     -- Se devuelven los ids Y los nombres: el formulario necesita los ids para
     -- precargar los combobox, y la tabla los nombres para mostrarlos.
@@ -431,6 +478,18 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
                  'idEmpresa'            VALUE a.ID_EMPRESA,
                  'idCategoria'          VALUE a.ID_CATEGORIA,
                  'categoria'            VALUE c.NOMBRE_CATEGORIA,
+                 -- El JOIN a MARCAS NO filtra por empresa a proposito, aunque
+                 -- la tabla ahora la tenga: muestra el nombre de la marca que la
+                 -- fila REALMENTE tiene guardada. Filtrar aca haria que un
+                 -- articulo con una marca ajena —cargado antes de que existiera
+                 -- el control— se viera sin marca en vez de con la que tiene, y
+                 -- eso esconde el problema en lugar de mostrarlo.
+                 --
+                 -- Que no se pueda ASIGNAR una marca ajena lo garantiza
+                 -- MARCA_VALIDA en el alta y la edicion, que es donde
+                 -- corresponde.
+                 'idMarca'              VALUE a.ID_MARCA,
+                 'marca'                VALUE mc.DESCRIPCION,
                  'idMoneda'             VALUE a.ID_MONEDA,
                  'moneda'               VALUE m.NOMBRE_MONEDA,
                  'simboloMoneda'        VALUE m.SIMBOLO,
@@ -533,8 +592,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
           LEFT JOIN CATEGORIAS      c ON c.ID_CATEGORIA     = a.ID_CATEGORIA
           LEFT JOIN MONEDAS         m ON m.ID_MONEDA        = a.ID_MONEDA
           LEFT JOIN UNIDADES_MEDIDA u ON u.ID_UNIDAD_MEDIDA = a.ID_UNIDAD_MEDIDA
+          -- LEFT tambien acá: ID_MARCA es nullable, y con un JOIN interno todo
+          -- articulo sin marca —que son todos los cargados antes de la columna—
+          -- desapareceria del listado sin ningun error visible.
+          LEFT JOIN MARCAS          mc ON mc.ID_MARCA       = a.ID_MARCA
          WHERE (l_id_empresa   IS NULL OR a.ID_EMPRESA   = l_id_empresa)
            AND (l_id_categoria IS NULL OR a.ID_CATEGORIA = l_id_categoria)
+           AND (l_id_marca     IS NULL OR a.ID_MARCA     = l_id_marca)
            AND (l_busqueda IS NULL
                 OR LOWER(a.NOMBRE_ARTICULO) LIKE '%' || l_busqueda || '%'
                 OR LOWER(a.CODIGO_ARTICULO) LIKE '%' || l_busqueda || '%'
@@ -583,6 +647,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     p_authorization        IN  VARCHAR2,
     p_id_empresa           IN  VARCHAR2,
     p_id_categoria         IN  VARCHAR2,
+    p_id_marca             IN  VARCHAR2,
     p_id_moneda            IN  VARCHAR2,
     p_id_unidad_medida     IN  VARCHAR2,
     p_codigo_articulo      IN  VARCHAR2,
@@ -596,6 +661,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     l_sesion         NUMBER;
     l_id_empresa     NUMBER;
     l_id_categoria   NUMBER;
+    l_id_marca       NUMBER;
     l_id_moneda      NUMBER;
     l_id_unidad      NUMBER;
     l_minima         NUMBER;
@@ -613,6 +679,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     -- ORA-01722 lo captura el WHEN OTHERS de abajo y se traduce a 400.
     l_id_empresa    := TO_NUMBER(NULLIF(p_id_empresa, ''));
     l_id_categoria  := TO_NUMBER(NULLIF(p_id_categoria, ''));
+    -- La marca es OPCIONAL: la columna es nullable y no toda ficha la tiene.
+    l_id_marca      := TO_NUMBER(NULLIF(p_id_marca, ''));
     l_id_moneda     := TO_NUMBER(NULLIF(p_id_moneda, ''));
     l_id_unidad     := TO_NUMBER(NULLIF(p_id_unidad_medida, ''));
     l_minima        := TO_NUMBER(NULLIF(p_cantidad_minima, ''));
@@ -633,6 +701,14 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
       RETURN;
     END IF;
 
+    -- Se llama en un IF y no dentro del INSERT: una funcion privada del BODY no
+    -- se puede usar en una sentencia SQL (PLS-00231).
+    IF NOT MARCA_VALIDA(l_id_marca, l_id_empresa) THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"La marca no existe o no pertenece a esta empresa"}';
+      RETURN;
+    END IF;
+
     -- 'S' solo si llego 'S'; todo lo demas —ausente, vacio o un valor invalido—
     -- entra como 'N'. Se resuelve acá y no con un DEFAULT del DDL, que esa
     -- columna no tiene: sin esto un alta sin el campo dejaria NULL en la base y
@@ -646,13 +722,14 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     -- pisaría ese default y dejaría la columna en NULL, que después rompe
     -- cualquier comparación contra el stock.
     INSERT INTO ARTICULOS (
-      ID_EMPRESA, ID_CATEGORIA, ID_MONEDA, ID_UNIDAD_MEDIDA,
+      ID_EMPRESA, ID_CATEGORIA, ID_MARCA, ID_MONEDA, ID_UNIDAD_MEDIDA,
       CODIGO_ARTICULO, NOMBRE_ARTICULO, DESCRIPCION,
       CANTIDAD_MINIMA, ES_GASTO,
       ACTIVO, FECHA_CREACION, FECHA_ACTUALIZACION
     ) VALUES (
       l_id_empresa,
       l_id_categoria,
+      l_id_marca,
       l_id_moneda,
       l_id_unidad,
       TRIM(p_codigo_articulo),
@@ -699,6 +776,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     p_id                   IN  VARCHAR2,
     p_id_empresa           IN  VARCHAR2,
     p_id_categoria         IN  VARCHAR2,
+    p_id_marca             IN  VARCHAR2,
     p_id_moneda            IN  VARCHAR2,
     p_id_unidad_medida     IN  VARCHAR2,
     p_codigo_articulo      IN  VARCHAR2,
@@ -714,6 +792,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     l_id             NUMBER;
     l_id_empresa     NUMBER;
     l_id_categoria   NUMBER;
+    l_id_marca       NUMBER;
     l_id_moneda      NUMBER;
     l_id_unidad      NUMBER;
     l_minima         NUMBER;
@@ -730,6 +809,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     l_id            := TO_NUMBER(NULLIF(p_id, ''));
     l_id_empresa    := TO_NUMBER(NULLIF(p_id_empresa, ''));
     l_id_categoria  := TO_NUMBER(NULLIF(p_id_categoria, ''));
+    -- La marca es OPCIONAL: la columna es nullable y no toda ficha la tiene.
+    l_id_marca      := TO_NUMBER(NULLIF(p_id_marca, ''));
     l_id_moneda     := TO_NUMBER(NULLIF(p_id_moneda, ''));
     l_id_unidad     := TO_NUMBER(NULLIF(p_id_unidad_medida, ''));
     l_minima        := TO_NUMBER(NULLIF(p_cantidad_minima, ''));
@@ -737,6 +818,12 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     IF l_minima IS NOT NULL AND l_minima < 0 THEN
       p_status_code := 400;
       p_resultado := '{"error":"La cantidad minima no puede ser negativa"}';
+      RETURN;
+    END IF;
+
+    IF NOT MARCA_VALIDA(l_id_marca, l_id_empresa) THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"La marca no existe o no pertenece a esta empresa"}';
       RETURN;
     END IF;
 
@@ -762,10 +849,11 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
 
     -- NVL en cada columna: un parámetro ausente conserva el valor actual.
     --
-    -- Consecuencia en las tres FK: mandarlas vacías significa "no cambiar", NO
-    -- "desvincular". Es el mismo criterio que la ubicación en db/empresas.sql;
-    -- para poder quitarle la categoría a un artículo haría falta un centinela
-    -- explícito (un 0, por ejemplo) que hoy no existe.
+    -- Consecuencia en las CUATRO FK —categoría, marca, moneda y unidad—:
+    -- mandarlas vacías significa "no cambiar", NO "desvincular". Es el mismo
+    -- criterio que la ubicación en db/empresas.sql; para poder quitarle la
+    -- marca a un artículo haría falta un centinela explícito (un 0, por
+    -- ejemplo) que hoy no existe.
     -- AISLAMIENTO POR EMPRESA: el idEmpresa acota A CUAL fila se le aplica el
     -- cambio, no es solo un campo mas a modificar. Sin el WHERE, un PUT con el
     -- id de una fila de OTRA empresa la modificaba igual — la pantalla no lo
@@ -781,6 +869,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
 
     UPDATE ARTICULOS
        SET ID_CATEGORIA         = NVL(l_id_categoria, ID_CATEGORIA),
+           ID_MARCA             = NVL(l_id_marca, ID_MARCA),
            ID_MONEDA            = NVL(l_id_moneda, ID_MONEDA),
            ID_UNIDAD_MEDIDA     = NVL(l_id_unidad, ID_UNIDAD_MEDIDA),
            CODIGO_ARTICULO      = NVL(TRIM(p_codigo_articulo), CODIGO_ARTICULO),
@@ -984,7 +1073,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     );
 
     ----------------------------------------------------------------------------
-    -- GET /articulos/listar?idEmpresa=&busqueda=&idCategoria=&pagina=&tamanio=
+    -- GET /articulos/listar?idEmpresa=&busqueda=&idCategoria=&idMarca=&pagina=&tamanio=
     --
     -- Ninguno se declara con DEFINE_PARAMETER: los query params se vinculan
     -- solos al bind del mismo nombre.
@@ -999,7 +1088,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
       p_pattern     => 'listar',
       p_method      => 'GET',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_ARTICULOS.LISTAR(:authorization, :idEmpresa, :busqueda, :idCategoria, :pagina, :tamanio, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_ARTICULOS.LISTAR(:authorization, :idEmpresa, :busqueda, :idCategoria, :idMarca, :pagina, :tamanio, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
@@ -1030,7 +1119,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
       p_pattern     => 'crear',
       p_method      => 'POST',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_ARTICULOS.INSERTAR(:authorization, :idEmpresa, :idCategoria, :idMoneda, :idUnidadMedida, :codigoArticulo, :nombreArticulo, :descripcion, :cantidadMinima, :esGasto, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_ARTICULOS.INSERTAR(:authorization, :idEmpresa, :idCategoria, :idMarca, :idMoneda, :idUnidadMedida, :codigoArticulo, :nombreArticulo, :descripcion, :cantidadMinima, :esGasto, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
@@ -1060,7 +1149,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
       p_pattern     => 'actualizar/:id',
       p_method      => 'PUT',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_ARTICULOS.ACTUALIZAR(:authorization, :id, :idEmpresa, :idCategoria, :idMoneda, :idUnidadMedida, :codigoArticulo, :nombreArticulo, :descripcion, :cantidadMinima, :esGasto, :activo, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_ARTICULOS.ACTUALIZAR(:authorization, :id, :idEmpresa, :idCategoria, :idMarca, :idMoneda, :idUnidadMedida, :codigoArticulo, :nombreArticulo, :descripcion, :cantidadMinima, :esGasto, :activo, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
@@ -1207,6 +1296,26 @@ SELECT OBJECT_NAME, OBJECT_TYPE, STATUS
   FROM USER_OBJECTS
  WHERE OBJECT_NAME = 'PKG_ARTICULOS'
  ORDER BY OBJECT_TYPE;
+
+-- La columna nueva tiene que estar, o el paquete no compila: el SQL estatico
+-- que la nombra falla con ORA-00904 y el BODY queda INVALID.
+SELECT COLUMN_NAME, NULLABLE, DATA_TYPE
+  FROM USER_TAB_COLUMNS
+ WHERE TABLE_NAME = 'ARTICULOS'
+   AND COLUMN_NAME = 'ID_MARCA';
+
+-- Cuantos articulos tienen marca cargada. Los previos a la columna la tienen en
+-- NULL y el listado los devuelve con marca null, que la pantalla muestra como
+-- "Sin marca".
+SELECT COUNT(*) AS TOTAL,
+       COUNT(ID_MARCA) AS CON_MARCA
+  FROM ARTICULOS;
+
+-- El filtro ?idMarca= recorre ARTICULOS por una columna sin indice: el DDL crea
+-- IDX_ARTICULOS_CATEGORIA, _EMPRESA, _UNIDAD y _MONEDA, pero ninguno por marca.
+-- Con pocos articulos no se nota; cuando moleste, y por fuera de este archivo
+-- que no administra el DDL:
+--   CREATE INDEX IDX_ARTICULOS_MARCA ON ARTICULOS (ID_MARCA);
 
 -- Si algo salió INVALID arriba, acá está el motivo.
 SELECT NAME, LINE, POSITION, TEXT

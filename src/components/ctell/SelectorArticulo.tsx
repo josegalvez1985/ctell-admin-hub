@@ -1,5 +1,5 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
-import { Check, ChevronsUpDown, Loader2, Search } from "lucide-react";
+import { Check, ChevronsUpDown, Loader2, Plus, Search } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { DialogoAltaRapida, type AltaRapida } from "./SelectorModal";
 
 /**
  * Cuántos artículos trae cada página del selector. Es el mismo tamaño que usa
@@ -48,6 +49,7 @@ export function SelectorArticulo({
   placeholder = "Elegí un artículo",
   disabled = false,
   className,
+  alta,
 }: {
   idEmpresa: number;
   /** Id del artículo elegido, como string (""` = sin elegir). */
@@ -64,36 +66,64 @@ export function SelectorArticulo({
   placeholder?: string;
   disabled?: boolean;
   className?: string;
+  /**
+   * Deja crear el artículo que falta sin salir de la pantalla. Mismo mecanismo
+   * y mismo diálogo que `SelectorModal` — ver `AltaRapida`.
+   */
+  alta?: AltaRapida | undefined;
 }) {
   const [abierto, setAbierto] = useState(false);
+  const [creandoCon, setCreandoCon] = useState<string | null>(null);
+
+  const boton = (
+    <Button
+      type="button"
+      variant="outline"
+      role="combobox"
+      disabled={disabled}
+      onClick={() => setAbierto(true)}
+      className={cn(
+        // Igual que en SelectorModal: `h-auto` + `whitespace-normal` para que
+        // un nombre de artículo largo pase a una segunda línea en vez de
+        // desbordar el diálogo que contiene al selector.
+        "h-auto min-h-9 w-full justify-between whitespace-normal py-1.5 text-left font-normal",
+        className,
+      )}
+      {...(etiquetaSeleccionada ? { title: etiquetaSeleccionada } : {})}
+    >
+      <span
+        className={cn(
+          "line-clamp-2 min-w-0 flex-1 break-words",
+          !etiquetaSeleccionada && "text-muted-foreground",
+        )}
+      >
+        {etiquetaSeleccionada ?? placeholder}
+      </span>
+      <ChevronsUpDown className="ml-2 size-4 shrink-0 self-center opacity-50" />
+    </Button>
+  );
 
   return (
     <>
-      <Button
-        type="button"
-        variant="outline"
-        role="combobox"
-        disabled={disabled}
-        onClick={() => setAbierto(true)}
-        className={cn(
-          // Igual que en SelectorModal: `h-auto` + `whitespace-normal` para que
-          // un nombre de artículo largo pase a una segunda línea en vez de
-          // desbordar el diálogo que contiene al selector.
-          "h-auto min-h-9 w-full justify-between whitespace-normal py-1.5 text-left font-normal",
-          className,
-        )}
-        {...(etiquetaSeleccionada ? { title: etiquetaSeleccionada } : {})}
-      >
-        <span
-          className={cn(
-            "line-clamp-2 min-w-0 flex-1 break-words",
-            !etiquetaSeleccionada && "text-muted-foreground",
-          )}
-        >
-          {etiquetaSeleccionada ?? placeholder}
-        </span>
-        <ChevronsUpDown className="ml-2 size-4 shrink-0 self-center opacity-50" />
-      </Button>
+      {alta ? (
+        <div className="flex items-start gap-2">
+          {boton}
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="min-h-9 shrink-0"
+            disabled={disabled}
+            onClick={() => setCreandoCon("")}
+            title={alta.titulo}
+            aria-label={alta.titulo}
+          >
+            <Plus className="size-4" />
+          </Button>
+        </div>
+      ) : (
+        boton
+      )}
 
       {/* El contenido se monta sólo con el modal abierto: así la consulta no
           sale hasta que alguien va a elegir de verdad. Con varios selectores en
@@ -108,6 +138,21 @@ export function SelectorArticulo({
             onChange(valor, etiqueta);
             setAbierto(false);
           }}
+          {...(alta ? { onCrear: (termino: string) => setCreandoCon(termino) } : {})}
+          {...(alta ? { textoCrear: alta.titulo } : {})}
+        />
+      )}
+
+      {alta && (
+        <DialogoAltaRapida
+          alta={alta}
+          valorInicial={creandoCon}
+          onCerrar={() => setCreandoCon(null)}
+          onCreada={(opcion) => {
+            onChange(opcion.valor, opcion.etiqueta);
+            setCreandoCon(null);
+            setAbierto(false);
+          }}
         />
       )}
     </>
@@ -119,11 +164,16 @@ function DialogoArticulos({
   value,
   onCerrar,
   onElegir,
+  onCrear,
+  textoCrear = "Crear",
 }: {
   idEmpresa: number;
   value: string;
   onCerrar: () => void;
   onElegir: (valor: string, etiqueta: string) => void;
+  /** Recibe lo que se estaba buscando, para arrancar el alta con ese texto. */
+  onCrear?: ((termino: string) => void) | undefined;
+  textoCrear?: string;
 }) {
   // `busqueda` es lo que se tipea (inmediato) y `busquedaEnvio` lo que viaja al
   // servidor: sin la espera, cada tecla dispararía un request.
@@ -252,6 +302,23 @@ function DialogoArticulos({
           <p className="text-center text-xs text-muted-foreground">
             Mostrando {articulos.length} de {total} artículo{total === 1 ? "" : "s"}
           </p>
+        )}
+
+        {/* Fuera del área que scrollea: con el catálogo entero cargado, un botón
+            al final de la lista no se ve nunca. El término va como arranque del
+            alta — buscar algo y no encontrarlo es cuando hace falta crearlo. */}
+        {onCrear && (
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full"
+            onClick={() => onCrear(busqueda.trim())}
+          >
+            <Plus className="size-4" />
+            {articulos.length === 0 && busqueda.trim() !== ""
+              ? `Crear "${busqueda.trim()}"`
+              : textoCrear}
+          </Button>
         )}
       </DialogContent>
     </Dialog>

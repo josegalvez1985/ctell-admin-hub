@@ -233,6 +233,8 @@ Las columnas `ACTIVO` son `VARCHAR2(1)` con valores `'A'` o `'I'`. **Este códig
 - **`_auth.ventas.tsx`:** "/ventas" → Comprobantes emitidos: ver detalle y eliminar. **No** se editan.
 - **`_auth.cobros.tsx`:** "/cobros" → Cobros de ventas, historial y baja.
 - **`_auth.pagos.tsx`:** "/pagos" → Pagos a proveedores. Espejo de cobros.
+- **`_auth.asistencias.tsx`:** "/asistencias" → Reporte de marcaciones de profesores. Dos vistas: **Planilla** (grilla del mes, agrupada por semana con `rowSpan`, se imprime y se firma) y **Detalle**. Tocar un día abre el modal con sus marcaciones, para editarlas, borrarlas o agregar una. Los combos de año y mes ofrecen **sólo períodos con datos**, que salen de `/asistencias-profesores/periodos`.
+- **`_auth.marcas.tsx`:** "/marcas" → ABM del catálogo de marcas. Es **global**: `MARCAS` no tiene `ID_EMPRESA`.
 - **`_auth.existencias.tsx`:** "/existencias" → Consulta de existencia de artículos, con exportación a Excel y PDF. Es una CONSULTA: no da de alta ni edita nada.
 - **`_auth.sucursales.tsx`:** "/sucursales" → Sucursales **de la empresa activa**. El recorte lo hace el backend (`?idEmpresa=`), con la misma queryKey que `sucursal-provider` para compartir caché. No hay selector de empresa: el alta va a la activa.
 - **`_auth.configuracion.tsx`:** "/configuracion" → Preferencias (tema, acento).
@@ -395,6 +397,20 @@ Ver [docs/GUIA-IMPLEMENTACION.md](docs/GUIA-IMPLEMENTACION.md) — explica cómo
 - **Montos:** `<InputMoneda>` para cargar, `numeroMoneda()` para parsear, `formatearMoneda()` para mostrar. Nunca `Number()` sobre un monto.
 - **Totales:** derivarlos del detalle, no guardarlos en la cabecera.
 - **Toda baja que movió stock o plata tiene que revertirlo**, o rechazarse con 409 si no puede.
+- **El JSON del body NO se lee con `:body`.** `:body` es el payload crudo como
+  **BLOB** —sirve para subir archivos, nada más—. Para un JSON, ORDS crea un
+  bind por cada clave de primer nivel (`:idEmpresa`, `:fecha`), que se vinculan
+  solos sin `DEFINE_PARAMETER`. Un `JSON_VALUE(p_body, ...)` sobre él devuelve
+  NULL en todos los campos: el paquete compila VALID, el `GET` y el `DELETE`
+  andan (toman todo de la ruta) y sólo el `POST`/`PUT` responde 400 "son
+  obligatorios" con el body bien puesto. Del lado del cliente, mandar **todas**
+  las claves con `""` cuando están vacías: una clave omitida deja el bind sin
+  definir en vez de en NULL. Patrón correcto: `db/categorias.sql`.
+- **Los hijos de `ui/form` van dentro de un `<FormItem>`.** `FormLabel`,
+  `FormControl`, `FormDescription` y `FormMessage` llaman a `useFormField()`,
+  que **lanza** sin su contexto y tira abajo la página entera ("This page didn't
+  load"). Una nota del formulario que no pertenece a ningún campo va como
+  `<p className="text-[0.8rem] text-muted-foreground">`.
 - **Los helpers privados del _body_ de un paquete no se pueden llamar desde SQL** (`PLS-00231`): calcular en una variable PL/SQL y usar la variable en el `INSERT`/`UPDATE`. Este error se cometió dos veces — si vas a llamar un helper dentro de una sentencia SQL, mirá primero dónde está declarado.
 - **`RETURNING CLOB` no va en una asignación PL/SQL suelta** (`PLS-00684`): usar `SELECT ... INTO x FROM DUAL`.
 - **Un `UNIQUE` sobre texto necesita el texto normalizado**, o no aplica: para Oracle `/Ventas` y `/ventas` son distintos. Normalizar en una función privada antes de guardar, y traducir el `DUP_VAL_ON_INDEX` a un 409 que diga qué hacer.
@@ -410,7 +426,7 @@ Las tres están explicadas con ejemplos en [GUIA-IMPLEMENTACION.md](docs/GUIA-IM
 | `npm run dev`      | Servidor dev con HMR (proxy CORS incluido) |
 | `npm run build`    | Build de producción en `dist/client/`      |
 | `npm run preview`  | Sirve build ya generado                    |
-| `npm run lint`     | ESLint + Prettier                          |
+| `npm run lint`     | ESLint + Prettier + `verificar-*`          |
 | `npm run format`   | Aplica formato a todo                      |
 | `npx tsc --noEmit` | Type checking                              |
 
@@ -429,3 +445,7 @@ Las tres están explicadas con ejemplos en [GUIA-IMPLEMENTACION.md](docs/GUIA-IM
 11. **Mirá la salida al ejecutar en APEX.** Cada archivo termina con un bloque que consulta `USER_OBJECTS`/`USER_ERRORS`. Un paquete `INVALID` da un 500 mudo: el `WHEN OTHERS` no captura errores de compilación.
 12. **El techo de 4000 bytes pega en tres lugares** (agregado anidado, CLOB final, bind de ORDS). Si desanidaste y paginaste y sigue el 500, bajá el tamaño de página — no busques más en el SQL.
 13. **Filtrar por empresa incluye las subconsultas**, no sólo el `WHERE` principal.
+14. **`:body` es un BLOB, no el JSON.** Los campos llegan como binds sueltos por
+    nombre. Si el `DELETE` anda y el `UPDATE` no, es esto.
+15. **`npm run lint` corre `verificar-convenciones`**, que atrapa esa trampa y la
+    de `ui/form` sin contexto. Correlo antes de ejecutar nada en APEX.

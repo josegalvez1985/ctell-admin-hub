@@ -243,6 +243,14 @@ export async function abrirPdf<T>({
  * parámetros ignorados según el caso.
  */
 export type FilaPlanilla = {
+  /**
+   * Semana DEL MES a la que pertenece el día: 1 a 5, o 6.
+   *
+   * Viene calculada de afuera y no se deriva acá: quien arma los datos ya
+   * recorrió los días del mes, y así el archivo agrupa igual que la pantalla en
+   * vez de repetir la regla de corte por su cuenta.
+   */
+  semana: number;
   /** Número de día del mes. */
   dia: number;
   /** "Lun", "Mar"… */
@@ -279,6 +287,23 @@ export type DatosPlanilla = {
    */
   filasActividadExtra?: number;
 };
+
+/**
+ * Dónde empieza cada semana y cuántos días abarca.
+ *
+ * Es lo que necesitan las dos exportaciones para estirar una sola celda sobre
+ * los días de su semana: `rowSpan` en Excel, `rowSpan` en autoTable. Se calcula
+ * una vez acá y no en cada formato, así los dos archivos agrupan idéntico.
+ */
+function gruposDeSemana(filas: FilaPlanilla[]): Map<number, { inicio: number; cantidad: number }> {
+  const grupos = new Map<number, { inicio: number; cantidad: number }>();
+  filas.forEach((fila, i) => {
+    const grupo = grupos.get(fila.semana);
+    if (grupo) grupo.cantidad += 1;
+    else grupos.set(fila.semana, { inicio: i, cantidad: 1 });
+  });
+  return grupos;
+}
 
 /** El azul del logo en RGB: jsPDF no entiende las variables oklch del tema. */
 const AZUL: [number, number, number] = [19, 98, 192];
@@ -355,8 +380,9 @@ function armarPlanillaExcel(datos: DatosPlanilla): {
   profesor: string;
 } {
   const n = datos.columnasMarca;
-  // Día, Fecha, (Ent./Sal.) × n, Total horas
-  const anchoTotal = 2 + n * 2 + 1;
+  // Semana, Día, Fecha, (Ent./Sal.) × n, Total horas
+  const anchoTotal = 3 + n * 2 + 1;
+  const semanas = gruposDeSemana(datos.filas);
 
   /** Fila de `anchoTotal` celdas, rellenando con null lo que no se usa. */
   const completar = (celdas: unknown[]): unknown[] => [
@@ -390,6 +416,13 @@ function armarPlanillaExcel(datos: DatosPlanilla): {
   // --- Cabecera de la grilla ----------------------------------------------
   // Dos filas: la de arriba numera los pares, la de abajo dice Ent./Sal.
   const cabecera1: unknown[] = [
+    {
+      value: "Sem.",
+      fontWeight: "bold" as const,
+      backgroundColor: "#FFF200",
+      align: "center" as const,
+      rowSpan: 2,
+    },
     {
       value: "Día",
       fontWeight: "bold" as const,
@@ -428,7 +461,8 @@ function armarPlanillaExcel(datos: DatosPlanilla): {
 
   // Las celdas de la fila combinada van en null: la librería las ignora, pero
   // tienen que estar para que las columnas no se corran.
-  const cabecera2: unknown[] = [null, null];
+  // Una celda por cada columna de la cabecera1 que abarca las dos filas.
+  const cabecera2: unknown[] = [null, null, null];
   for (let i = 0; i < n; i++) {
     cabecera2.push(
       { value: "Ent.", fontWeight: "bold" as const, align: "center" as const },
@@ -439,9 +473,24 @@ function armarPlanillaExcel(datos: DatosPlanilla): {
   filas.push(cabecera2);
 
   // --- Un renglón por día del mes -----------------------------------------
-  for (const fila of datos.filas) {
+  for (const [indice, fila] of datos.filas.entries()) {
     const fondo = fila.finDeSemana ? GRIS : CREMA;
+    const grupo = semanas.get(fila.semana);
     const celdas: unknown[] = [
+      // La celda de la semana se escribe una sola vez, en su primer día, y se
+      // estira sobre el resto con rowSpan. Las filas que quedan tapadas van en
+      // null: la librería las ignora, pero tienen que estar o las columnas se
+      // corren. Sin backgroundColor a propósito, para que no herede el gris de
+      // un fin de semana que abra el grupo.
+      grupo && grupo.inicio === indice
+        ? {
+            value: fila.semana,
+            type: Number,
+            align: "center" as const,
+            alignVertical: "center" as const,
+            rowSpan: grupo.cantidad,
+          }
+        : null,
       { value: fila.diaSemana, align: "center" as const, backgroundColor: fondo },
       { value: fila.dia, type: Number, align: "center" as const, backgroundColor: fondo },
     ];
@@ -487,9 +536,12 @@ function armarPlanillaExcel(datos: DatosPlanilla): {
         {
           value: etiqueta,
           fontWeight: "bold" as const,
-          columnSpan: 2,
+          // Tres y no dos: la columna de semana se sumó adelante, y sin esto el
+          // importe caería una celda antes de donde está la grilla.
+          columnSpan: 3,
           align: "right" as const,
         },
+        null,
         null,
         { value: valor, type: Number, fontWeight: "bold" as const },
       ]),
@@ -530,7 +582,10 @@ function armarPlanillaExcel(datos: DatosPlanilla): {
     }
   }
 
+  // Semana, Día, Fecha, los pares Ent./Sal. y el total. Tiene que haber tantos
+  // anchos como columnas tiene la grilla, o Excel las corre.
   const columnas = [
+    { width: 6 },
     { width: 8 },
     { width: 8 },
     ...Array.from({ length: n * 2 }, () => ({ width: 7 })),
@@ -632,6 +687,7 @@ function dibujarPlanilla(
 
     // Dos filas de cabecera: los pares numerados arriba, Ent./Sal. abajo.
     const head1: unknown[] = [
+      { content: "Sem.", rowSpan: 2, styles: { valign: "middle" } },
       { content: "Día", rowSpan: 2, styles: { valign: "middle" } },
       { content: "Fecha", rowSpan: 2, styles: { valign: "middle" } },
     ];
@@ -643,8 +699,24 @@ function dibujarPlanilla(
     const head2: string[] = [];
     for (let i = 0; i < n; i++) head2.push("Ent.", "Sal.");
 
-    const body = datos.filas.map((fila) => {
-      const celdas: string[] = [fila.diaSemana, String(fila.dia)];
+    const semanas = gruposDeSemana(datos.filas);
+
+    const body = datos.filas.map((fila, indice) => {
+      const grupo = semanas.get(fila.semana);
+      const celdas: unknown[] = [];
+
+      // La celda de la semana se emite SÓLO en su primer día, con rowSpan:
+      // autoTable corre las demás filas una columna a la izquierda solo, así
+      // que las tapadas no llevan celda (al revés que en Excel, donde van null).
+      if (grupo && grupo.inicio === indice) {
+        celdas.push({
+          content: String(fila.semana),
+          rowSpan: grupo.cantidad,
+          styles: { valign: "middle", fontStyle: "bold" },
+        });
+      }
+
+      celdas.push(fila.diaSemana, String(fila.dia));
       for (let i = 0; i < n; i++) {
         const marca = fila.marcas[i];
         celdas.push(marca?.entrada ?? "", marca?.salida ?? "");
@@ -656,7 +728,7 @@ function dibujarPlanilla(
     autoTable(doc, {
       startY: 84,
       head: [head1, head2] as never,
-      body,
+      body: body as never,
       styles: { fontSize: 7, cellPadding: 2, overflow: "linebreak", halign: "center" },
       headStyles: { fillColor: AZUL, textColor: 255, fontStyle: "bold", halign: "center" },
       // El fin de semana en gris: sin marcarlo, un sábado vacío se lee igual que
@@ -664,7 +736,12 @@ function dibujarPlanilla(
       didParseCell: (celda) => {
         if (celda.section === "body") {
           const fila = datos.filas[celda.row.index];
-          if (fila?.finDeSemana) celda.cell.styles.fillColor = [239, 239, 239];
+          // La columna 0 es la de la semana: abarca varios días con rowSpan, así
+          // que pintarla del gris del sábado que abre el grupo dejaría la
+          // columna de dos colores. Mismo criterio que la grilla en pantalla.
+          if (fila?.finDeSemana && celda.column.index > 0) {
+            celda.cell.styles.fillColor = [239, 239, 239];
+          }
         }
       },
       margin: { left: 40, right: 40, bottom: 60 },

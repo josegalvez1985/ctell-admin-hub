@@ -128,12 +128,20 @@ export type ListaPaises = {
  * Marca de un artículo (Sony, LG, Nike).
  *
  * **No tiene `activo`**: es la única tabla del proyecto sin columna de estado,
- * así que no hay baja lógica — se elimina o no existe. Tampoco tiene
- * `idEmpresa`: es un catálogo global, la misma marca sirve a todas las empresas.
+ * así que no hay baja lógica — se elimina o no existe.
  */
 export type Marca = {
   id: number;
   descripcion: string;
+  /**
+   * Empresa dueña, o `null` si es **heredada**.
+   *
+   * `MARCAS.ID_EMPRESA` se agregó después de que la tabla estuviera en uso: las
+   * filas anteriores la tienen vacía y el backend se las ofrece a **todas** las
+   * empresas, para que no desaparezcan del combo ni dejen huérfanos a los
+   * artículos que ya las usan.
+   */
+  idEmpresa: number | null;
 };
 
 export type ListaMarcas = {
@@ -357,6 +365,20 @@ export type AsistenciaProfesor = {
 export type ListaAsistenciasProfesores = {
   items: AsistenciaProfesor[];
   total: number;
+};
+
+/**
+ * Un mes que tiene marcaciones, con cuántas.
+ *
+ * Alimenta los combos del reporte. Viene de su propio endpoint y no se deduce
+ * del listado: para saber qué meses del año tienen datos habría que pedir el
+ * año entero —miles de marcaciones— y contarlas acá.
+ */
+export type PeriodoAsistencias = {
+  anio: number;
+  /** 1 a 12. */
+  mes: number;
+  cantidad: number;
 };
 
 export type Empresa = {
@@ -1236,12 +1258,21 @@ export type Articulo = {
   /** Empresa dueña del artículo. Sale de la empresa activa de la sesión. */
   idEmpresa: number;
   /**
-   * Las tres relaciones son OPCIONALES: un artículo puede cargarse sin
-   * categoría, sin moneda o sin unidad. Los nombres vienen del LEFT JOIN, así
-   * que son null cuando el id lo es.
+   * Las cuatro relaciones son OPCIONALES: un artículo puede cargarse sin
+   * categoría, sin marca, sin moneda o sin unidad. Los nombres vienen del LEFT
+   * JOIN, así que son null cuando el id lo es.
    */
   idCategoria: number | null;
   categoria: string | null;
+  /**
+   * Marca del artículo. `MARCAS` cuelga de la empresa, así que sólo se puede
+   * asignar una de la empresa activa (o una heredada, sin empresa): el backend
+   * rechaza el resto con 400.
+   *
+   * Null en todos los artículos cargados antes de que existiera la columna.
+   */
+  idMarca: number | null;
+  marca: string | null;
   idMoneda: number | null;
   moneda: string | null;
   simboloMoneda: string | null;
@@ -2082,33 +2113,45 @@ export const api = {
   },
 
   /**
-   * Catálogo global de marcas. Sin `idEmpresa` en ninguna operación: la misma
-   * marca sirve a todas las empresas.
+   * Marcas de artículos, **por empresa**.
+   *
+   * `MARCAS.ID_EMPRESA` se agregó después de que la tabla estuviera en uso: las
+   * filas anteriores la tienen en null y el backend se las ofrece a todas las
+   * empresas —"heredadas"—, para que no desaparezcan del combo ni dejen
+   * huérfanos a los artículos que ya las usan.
    */
   marcas: {
-    /** Sin `busqueda` devuelve el catálogo entero, que es acotado. */
-    listar: (params: { busqueda?: string | undefined } = {}) => {
-      const q = new URLSearchParams();
+    /**
+     * Las marcas de la empresa **más las heredadas** (`idEmpresa` en null).
+     *
+     * `idEmpresa` es obligatorio: `MARCAS` dejó de ser un catálogo global. Sin
+     * `busqueda` devuelve el catálogo entero, que es acotado.
+     */
+    listar: (params: { idEmpresa: number; busqueda?: string | undefined }) => {
+      const q = new URLSearchParams({ idEmpresa: String(params.idEmpresa) });
       if (params.busqueda) q.set("busqueda", params.busqueda);
-      const cadena = q.toString();
-      return request<ListaMarcas>(`/marcas/listar${cadena ? `?${cadena}` : ""}`);
+      return request<ListaMarcas>(`/marcas/listar?${q}`);
     },
 
-    crear: (datos: { descripcion: string }) =>
+    crear: (datos: { idEmpresa: number; descripcion: string }) =>
       request<{ id: number; ok: boolean }>("/marcas/crear", {
         method: "POST",
         body: JSON.stringify(datos),
       }),
 
-    actualizar: (id: number, datos: { descripcion: string }) =>
+    /**
+     * `idEmpresa` es **obligatorio**: no es un dato más a guardar, acota a cuál
+     * fila se aplica el cambio. Una marca de otra empresa devuelve 404.
+     */
+    actualizar: (id: number, datos: { idEmpresa: number; descripcion: string }) =>
       request<{ ok: boolean }>(`/marcas/actualizar/${id}`, {
         method: "PUT",
         body: JSON.stringify(datos),
       }),
 
     /** Baja física: la tabla no tiene estado. Da 409 si algún artículo la usa. */
-    eliminar: (id: number) =>
-      request<{ ok: boolean }>(`/marcas/eliminar/${id}`, { method: "DELETE" }),
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/marcas/eliminar/${id}/${idEmpresa}`, { method: "DELETE" }),
   },
 
   canalesPagos: {
@@ -2423,7 +2466,10 @@ export const api = {
      * con la fecha del día. Mandar un ISO completo desde acá haría que una
      * diferencia de zona horaria corriera el día.
      *
-     * `horaSalida` puede omitirse: una entrada sin salida es un estado válido.
+     * `horaSalida` va vacía —no omitida— cuando el profesor entró y todavía no
+     * salió: ORDS crea un bind por cada clave del JSON, y una clave que no
+     * viene deja el bind sin definir. El backend trata la cadena vacía como
+     * NULL.
      */
     crear: (datos: {
       idEmpresa: number;
@@ -2465,6 +2511,17 @@ export const api = {
       request<{ ok: boolean }>(`/asistencias-profesores/eliminar/${id}/${idEmpresa}`, {
         method: "DELETE",
       }),
+
+    /**
+     * Los años y meses que tienen marcaciones, con cuántas cada uno.
+     *
+     * Una fila por mes, sin paginar: el resultado es chico por naturaleza
+     * —cuántos meses puede haber— y se pide una sola vez por empresa.
+     */
+    periodos: (idEmpresa: number) =>
+      request<{ items: PeriodoAsistencias[] }>(
+        `/asistencias-profesores/periodos?idEmpresa=${idEmpresa}`,
+      ),
   },
 
   empresas: {
@@ -3119,8 +3176,8 @@ export const api = {
      * Artículos de una empresa. `idEmpresa` sale de la empresa activa de la
      * sesión (`useEmpresa()`), no de un filtro de la pantalla.
      *
-     * PAGINADO EN EL SERVIDOR, 20 por página. `busqueda` e `idCategoria` van al
-     * backend y filtran en SQL: filtrando en el cliente sólo se miraría lo ya
+     * PAGINADO EN EL SERVIDOR, 20 por página. `busqueda`, `idCategoria` e
+     * `idMarca` van al backend y filtran en SQL: filtrando en el cliente sólo se miraría lo ya
      * traído, y un artículo de la página 5 no aparecería al buscarlo.
      *
      * `encodeURIComponent` en la búsqueda: un código como "LYP/GLD-6085" lleva
@@ -3134,6 +3191,7 @@ export const api = {
         idEmpresa?: number | undefined;
         busqueda?: string | undefined;
         idCategoria?: number | undefined;
+        idMarca?: number | undefined;
         pagina?: number | undefined;
         tamanio?: number | undefined;
       } = {},
@@ -3143,6 +3201,7 @@ export const api = {
       if (params.busqueda?.trim())
         partes.push(`busqueda=${encodeURIComponent(params.busqueda.trim())}`);
       if (params.idCategoria) partes.push(`idCategoria=${params.idCategoria}`);
+      if (params.idMarca) partes.push(`idMarca=${params.idMarca}`);
       if (params.pagina) partes.push(`pagina=${params.pagina}`);
       if (params.tamanio) partes.push(`tamanio=${params.tamanio}`);
       const q = partes.length > 0 ? `?${partes.join("&")}` : "";
@@ -3151,7 +3210,7 @@ export const api = {
 
     /**
      * Sólo `idEmpresa` y `nombreArticulo` son obligatorios; el resto no. Las
-     * tres relaciones (categoría, moneda, unidad) pueden omitirse.
+     * cuatro relaciones (categoría, marca, moneda, unidad) pueden omitirse.
      *
      * **No hay precios ni stock**: se eliminaron de la tabla. El costo vive en
      * cada lote (`api.lotes`) y el stock es la suma de sus cantidades.
@@ -3160,6 +3219,7 @@ export const api = {
       idEmpresa: number;
       nombreArticulo: string;
       idCategoria?: number;
+      idMarca?: number;
       idMoneda?: number;
       idUnidadMedida?: number;
       codigoArticulo?: string;
@@ -3183,6 +3243,7 @@ export const api = {
         /** OBLIGATORIO: acota a cuál fila se aplica el cambio, no es un dato a guardar. Sin él, 400. */
         idEmpresa: number;
         idCategoria?: number;
+        idMarca?: number;
         idMoneda?: number;
         idUnidadMedida?: number;
         codigoArticulo?: string;

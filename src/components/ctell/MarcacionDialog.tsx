@@ -141,15 +141,17 @@ export function MarcacionDialog({
 
   const guardar = useMutation({
     mutationFn: (valores: FormValues) => {
-      // Las horas vacías se omiten en vez de mandarse como "": el backend las
-      // trata como NULL, que es lo que significa "no marcó".
+      // Las horas vacías van como "" y NO se omiten: ORDS arma un bind por cada
+      // clave del JSON, así que una clave ausente deja el bind sin definir en
+      // vez de en NULL. El backend hace NULLIF(TRIM(...), '') y la interpreta
+      // como "no marcó", que es lo que significa.
       const datos = {
         idEmpresa,
         idProfesor: Number(valores.idProfesor),
         idInstitucion: Number(valores.idInstitucion),
         fecha: valores.fecha,
-        ...(valores.horaEntrada !== "" ? { horaEntrada: valores.horaEntrada } : {}),
-        ...(valores.horaSalida !== "" ? { horaSalida: valores.horaSalida } : {}),
+        horaEntrada: valores.horaEntrada,
+        horaSalida: valores.horaSalida,
       };
       return marcacion
         ? api.asistenciasProfesores.actualizar(marcacion.id, datos)
@@ -282,9 +284,13 @@ export function MarcacionDialog({
               />
             </div>
 
-            <FormDescription>
+            {/* Un <p> y no <FormDescription>: esa nota es del formulario entero y
+                no de un campo, y FormDescription llama a useFormField(), que LANZA
+                fuera de un <FormField>. Suelto, tiraba abajo la página al abrir el
+                diálogo. */}
+            <p className="text-[0.8rem] text-muted-foreground">
               Dejá la salida vacía si el profesor entró y todavía no salió.
-            </FormDescription>
+            </p>
 
             <DialogFooter>
               <Button type="button" variant="outline" onClick={onCerrar}>

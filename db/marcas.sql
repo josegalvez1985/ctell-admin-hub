@@ -7,7 +7,7 @@
 --   1. LISTAR      GET    /marcas/listar        (?busqueda= opcional)
 --   2. INSERTAR    POST   /marcas/crear
 --   3. ACTUALIZAR  PUT    /marcas/actualizar/:id
---   4. ELIMINAR    DELETE /marcas/eliminar/:id
+--   4. ELIMINAR    DELETE /marcas/eliminar/:id/:idEmpresa
 --
 -- Se ejecuta una sola vez en la hoja de trabajo SQL de APEX, conectado con el
 -- esquema del workspace. REQUIERE db/auth.sql EJECUTADO ANTES: usa PKG_AUTH
@@ -16,19 +16,34 @@
 -- Base de los endpoints: https://oracleapex.com/ords/ctell/marcas/
 --
 -- Tabla (no la crea ni la altera; el DDL se administra aparte):
---   MARCAS  ID_MARCA, DESCRIPCION, FECHA_CREACION, FECHA_ACTUALIZACION
+--   MARCAS  ID_MARCA, ID_EMPRESA, DESCRIPCION, FECHA_CREACION,
+--           FECHA_ACTUALIZACION
 --
 --------------------------------------------------------------------------------
--- ES UN CATALOGO GLOBAL: NO CUELGA DE NINGUNA EMPRESA
+-- CUELGA DE LA EMPRESA — Y LAS FILAS VIEJAS NO
 --
--- La tabla no tiene ID_EMPRESA, asi que "Sony" o "Nike" es la misma marca para
--- todas las empresas del sistema. Por eso sus endpoints NO reciben idEmpresa ni
--- acotan por el, igual que PAISES, DEPARTAMENTOS, CIUDADES, IVA o
--- CONDICIONES_PAGO.
+-- ID_EMPRESA se agrego DESPUES de que la tabla estuviera en uso, asi que el
+-- catalogo tiene dos clases de fila:
 --
--- La contrapartida: una marca que da de alta una empresa la ven todas. Es lo
--- correcto para un catalogo de fabricantes, pero conviene tenerlo presente
--- antes de agregar cualquier dato que sea propio de una sola.
+--   - Las de una empresa: ID_EMPRESA cargado. Solo las ve esa empresa.
+--   - Las HEREDADAS: ID_EMPRESA en NULL. Las ve TODAS, porque son las que ya
+--     estaban cuando la columna no existia.
+--
+-- Todos los filtros van entonces como:
+--
+--   (ID_EMPRESA = l_empresa OR ID_EMPRESA IS NULL)
+--
+-- Con un filtro estricto las heredadas desapareceran del combo de articulos
+-- —sin ningun error visible— y los articulos que ya las usan quedarian
+-- apuntando a una marca que nadie puede volver a elegir. Es el mismo criterio
+-- que db/asistencias-profesores.sql aplica a sus filas previas a la columna.
+--
+-- OJO CON EL COMMENT DEL DDL: dice "OBLIGATORIO", pero la columna NO tiene
+-- NOT NULL y la FK acepta NULL mientras no lo tenga. Un COMMENT no es una
+-- restriccion — ver la seccion 3.5.1 de docs/GUIA-IMPLEMENTACION.md.
+--
+-- El bloque de verificacion del final trae el UPDATE para asignar las
+-- heredadas y terminar la migracion.
 --
 --------------------------------------------------------------------------------
 -- NO TIENE COLUMNA ACTIVO, Y ESO CAMBIA EL ABM
@@ -42,7 +57,11 @@
 -- —como el resto del sistema— y no inventar un estado por otro camino.
 --
 --------------------------------------------------------------------------------
--- LA DESCRIPCION ES UNICA, PERO EL DDL NO LO IMPONE
+-- LA DESCRIPCION ES UNICA POR EMPRESA, PERO EL DDL NO LO IMPONE
+--
+-- La unicidad es POR EMPRESA, no global: dos empresas pueden tener cada una su
+-- "Sakura" y son marcas separadas. Sin ese recorte, la segunda empresa que la
+-- cargara recibiria un 409 por una fila que ni siquiera puede ver.
 --
 -- El DDL no declara UNIQUE sobre DESCRIPCION, asi que hoy se pueden cargar dos
 -- veces "Sony". El paquete lo verifica a mano antes de insertar y devuelve 409,
@@ -51,8 +70,10 @@
 --
 -- Es un control de aplicacion, no una restriccion: dos sesiones simultaneas
 -- podrian pasar las dos. Si el duplicado importa de verdad, va un
---   CREATE UNIQUE INDEX UX_MARCAS_DESC ON MARCAS (UPPER(TRIM(DESCRIPCION)));
--- en el DDL, y aca se captura el DUP_VAL_ON_INDEX.
+--   CREATE UNIQUE INDEX UX_MARCAS_DESC
+--     ON MARCAS (ID_EMPRESA, UPPER(TRIM(DESCRIPCION)));
+-- en el DDL —con la empresa adentro, o dos empresas no podrian repetir una
+-- marca— y aca se captura el DUP_VAL_ON_INDEX.
 --
 --------------------------------------------------------------------------------
 -- CORS: ORIGINS_ALLOWED es POR MODULO, no a nivel de workspace. Se declara en
@@ -84,6 +105,7 @@ CREATE OR REPLACE PACKAGE PKG_MARCAS AS
   -- habria que hacerlo.
   PROCEDURE LISTAR (
     p_authorization IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_busqueda      IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
@@ -91,6 +113,7 @@ CREATE OR REPLACE PACKAGE PKG_MARCAS AS
 
   PROCEDURE INSERTAR (
     p_authorization IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_descripcion   IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
@@ -99,6 +122,7 @@ CREATE OR REPLACE PACKAGE PKG_MARCAS AS
   PROCEDURE ACTUALIZAR (
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_descripcion   IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
@@ -107,6 +131,7 @@ CREATE OR REPLACE PACKAGE PKG_MARCAS AS
   PROCEDURE ELIMINAR (
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   );
@@ -161,22 +186,34 @@ CREATE OR REPLACE PACKAGE BODY PKG_MARCAS AS
   END BORRAR_MODULO;
 
   ------------------------------------------------------------------------------
-  -- Privado: true si ya hay otra marca con esa descripcion.
+  -- Privado: true si ya hay otra marca con esa descripcion EN ESA EMPRESA.
   --
   -- Compara en MAYUSCULAS y sin espacios de sobra: sin normalizar, 'Sony' y
   -- 'SONY ' pasarian como distintas y el control no serviria.
   --
+  -- LA UNICIDAD ES POR EMPRESA, no global: dos empresas distintas pueden tener
+  -- cada una su "Sakura", y son marcas separadas. Sin el filtro, la segunda
+  -- empresa que la cargara recibiria un 409 por una fila que no puede ni ver.
+  --
+  -- Las marcas heredadas (ID_EMPRESA en NULL) tambien cuentan: el listado las
+  -- muestra a todas las empresas, asi que permitir un duplicado dejaria dos
+  -- entradas iguales en el mismo combo.
+  --
   -- p_id_excluir permite reusarla en el ACTUALIZAR, donde la fila que se esta
   -- editando no debe chocar consigo misma.
   ------------------------------------------------------------------------------
-  FUNCTION YA_EXISTE (p_descripcion IN VARCHAR2, p_id_excluir IN NUMBER DEFAULT NULL)
-    RETURN BOOLEAN IS
+  FUNCTION YA_EXISTE (
+    p_descripcion IN VARCHAR2,
+    p_id_empresa  IN NUMBER,
+    p_id_excluir  IN NUMBER DEFAULT NULL
+  ) RETURN BOOLEAN IS
     l_cuenta PLS_INTEGER;
   BEGIN
     SELECT COUNT(*)
       INTO l_cuenta
       FROM MARCAS
      WHERE UPPER(TRIM(DESCRIPCION)) = UPPER(TRIM(p_descripcion))
+       AND (ID_EMPRESA = p_id_empresa OR ID_EMPRESA IS NULL)
        AND (p_id_excluir IS NULL OR ID_MARCA <> p_id_excluir);
 
     RETURN l_cuenta > 0;
@@ -184,11 +221,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_MARCAS AS
 
   PROCEDURE LISTAR (
     p_authorization IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_busqueda      IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
     l_sesion   NUMBER;
+    l_empresa  NUMBER;
     l_busqueda VARCHAR2(200);
     l_total    NUMBER;
     l_items    CLOB;
@@ -203,11 +242,29 @@ CREATE OR REPLACE PACKAGE BODY PKG_MARCAS AS
     -- Un parametro ausente llega como cadena vacia, no como NULL: NULLIF lo
     -- convierte antes de que el LIKE lo tome como un filtro real.
     l_busqueda := NULLIF(TRIM(p_busqueda), '');
+    l_empresa  := TO_NUMBER(NULLIF(p_id_empresa, ''));
 
+    IF l_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
+      RETURN;
+    END IF;
+
+    -- EL FILTRO INCLUYE LAS FILAS CON ID_EMPRESA EN NULL.
+    --
+    -- La columna se agrego despues, asi que todas las marcas cargadas hasta
+    -- entonces la tienen vacia. Con un filtro estricto desapareceran del combo
+    -- de articulos —sin ningun error— y los articulos que ya las usan quedarian
+    -- apuntando a una marca que nadie puede volver a elegir.
+    --
+    -- Se las trata como HEREDADAS: visibles para todas las empresas hasta que
+    -- alguien las asigne. El bloque de verificacion del final trae el UPDATE
+    -- para hacerlo.
     SELECT COUNT(*)
       INTO l_total
       FROM MARCAS
-     WHERE (l_busqueda IS NULL
+     WHERE (ID_EMPRESA = l_empresa OR ID_EMPRESA IS NULL)
+       AND (l_busqueda IS NULL
             OR UPPER(DESCRIPCION) LIKE '%' || UPPER(l_busqueda) || '%');
 
     -- El JSON_OBJECT se arma en una subconsulta y el JSON_ARRAYAGG agrega esa
@@ -219,12 +276,17 @@ CREATE OR REPLACE PACKAGE BODY PKG_MARCAS AS
       FROM (
         SELECT JSON_OBJECT(
                  'id'          VALUE ID_MARCA,
-                 'descripcion' VALUE DESCRIPCION
+                 'descripcion' VALUE DESCRIPCION,
+                 -- Viaja para que la pantalla pueda distinguir una marca propia
+                 -- de una heredada: null es de todas, y editarla la toca para
+                 -- las demas empresas tambien.
+                 'idEmpresa'   VALUE ID_EMPRESA
                  RETURNING CLOB
                ) AS fila,
                UPPER(DESCRIPCION) AS orden
           FROM MARCAS
-         WHERE (l_busqueda IS NULL
+         WHERE (ID_EMPRESA = l_empresa OR ID_EMPRESA IS NULL)
+           AND (l_busqueda IS NULL
                 OR UPPER(DESCRIPCION) LIKE '%' || UPPER(l_busqueda) || '%')
       );
 
@@ -251,17 +313,27 @@ CREATE OR REPLACE PACKAGE BODY PKG_MARCAS AS
 
   PROCEDURE INSERTAR (
     p_authorization IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_descripcion   IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
-    l_sesion NUMBER;
-    l_id     NUMBER;
+    l_sesion  NUMBER;
+    l_empresa NUMBER;
+    l_id      NUMBER;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
       p_status_code := 401;
       p_resultado := '{"error":"Sesion invalida o vencida"}';
+      RETURN;
+    END IF;
+
+    l_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
+
+    IF l_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
       RETURN;
     END IF;
 
@@ -281,14 +353,16 @@ CREATE OR REPLACE PACKAGE BODY PKG_MARCAS AS
 
     -- Se llama en un IF y no dentro del INSERT: una funcion privada del BODY no
     -- se puede usar en una sentencia SQL (PLS-00231).
-    IF YA_EXISTE(p_descripcion) THEN
+    IF YA_EXISTE(p_descripcion, l_empresa) THEN
       p_status_code := 409;
       p_resultado := '{"error":"Ya existe una marca con esa descripcion"}';
       RETURN;
     END IF;
 
-    INSERT INTO MARCAS (DESCRIPCION)
-    VALUES (TRIM(p_descripcion))
+    -- La empresa se guarda SIEMPRE: las filas con ID_EMPRESA en NULL son las
+    -- heredadas de antes de la columna, no algo que este endpoint deba crear.
+    INSERT INTO MARCAS (ID_EMPRESA, DESCRIPCION)
+    VALUES (l_empresa, TRIM(p_descripcion))
     RETURNING ID_MARCA INTO l_id;
 
     COMMIT;
@@ -313,12 +387,14 @@ CREATE OR REPLACE PACKAGE BODY PKG_MARCAS AS
   PROCEDURE ACTUALIZAR (
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_descripcion   IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
-    l_sesion NUMBER;
-    l_id     NUMBER;
+    l_sesion  NUMBER;
+    l_empresa NUMBER;
+    l_id      NUMBER;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -329,11 +405,14 @@ CREATE OR REPLACE PACKAGE BODY PKG_MARCAS AS
 
     -- Las conversiones van DENTRO del BEGIN, nunca en el DECLARE: alli correrian
     -- antes de que exista el EXCEPTION y el error escaparia del procedimiento.
-    l_id := TO_NUMBER(NULLIF(p_id, ''));
+    l_id      := TO_NUMBER(NULLIF(p_id, ''));
+    l_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
 
-    IF l_id IS NULL THEN
+    -- El idEmpresa no es un dato mas a guardar: acota A CUAL fila se aplica el
+    -- cambio. Sin el, un PUT con el id de otra empresa la modificaria igual.
+    IF l_id IS NULL OR l_empresa IS NULL THEN
       p_status_code := 400;
-      p_resultado := '{"error":"id es obligatorio"}';
+      p_resultado := '{"error":"id e idEmpresa son obligatorios"}';
       RETURN;
     END IF;
 
@@ -351,19 +430,26 @@ CREATE OR REPLACE PACKAGE BODY PKG_MARCAS AS
 
     -- Excluyendo la propia fila: sin eso, guardar sin cambiar el nombre daria
     -- 409 contra si misma.
-    IF YA_EXISTE(p_descripcion, l_id) THEN
+    IF YA_EXISTE(p_descripcion, l_empresa, l_id) THEN
       p_status_code := 409;
       p_resultado := '{"error":"Ya existe otra marca con esa descripcion"}';
       RETURN;
     END IF;
 
+    -- ID_EMPRESA NO va en el SET: poder cambiarla permitiria mover la marca a
+    -- otra empresa, que es justo lo que el WHERE impide. Las heredadas (NULL)
+    -- se dejan editar desde cualquier empresa: son de todas hasta que alguien
+    -- las asigne.
     UPDATE MARCAS
        SET DESCRIPCION         = TRIM(p_descripcion),
            FECHA_ACTUALIZACION = SYSTIMESTAMP
-     WHERE ID_MARCA = l_id;
+     WHERE ID_MARCA = l_id
+       AND (ID_EMPRESA = l_empresa OR ID_EMPRESA IS NULL);
 
     IF SQL%ROWCOUNT = 0 THEN
       ROLLBACK;
+      -- 404 y no 403: decir "existe pero es de otra empresa" confirmaria que
+      -- el id existe, que es lo que no deberia poder averiguarse.
       p_status_code := 404;
       p_resultado := '{"error":"La marca no existe"}';
       RETURN;
@@ -388,11 +474,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_MARCAS AS
   PROCEDURE ELIMINAR (
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
-    l_sesion NUMBER;
-    l_id     NUMBER;
+    l_sesion  NUMBER;
+    l_empresa NUMBER;
+    l_id      NUMBER;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -401,17 +489,23 @@ CREATE OR REPLACE PACKAGE BODY PKG_MARCAS AS
       RETURN;
     END IF;
 
-    l_id := TO_NUMBER(NULLIF(p_id, ''));
+    l_id      := TO_NUMBER(NULLIF(p_id, ''));
+    l_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
 
-    IF l_id IS NULL THEN
+    IF l_id IS NULL OR l_empresa IS NULL THEN
       p_status_code := 400;
-      p_resultado := '{"error":"id es obligatorio"}';
+      p_resultado := '{"error":"id e idEmpresa son obligatorios"}';
       RETURN;
     END IF;
 
     -- Baja FISICA: la tabla no tiene columna de estado, asi que no hay baja
     -- logica posible. Ver la nota del encabezado.
-    DELETE FROM MARCAS WHERE ID_MARCA = l_id;
+    --
+    -- Acotada a la empresa, igual que el UPDATE: sin eso, cualquiera con sesion
+    -- podia borrar la marca de otra empresa mandando su id.
+    DELETE FROM MARCAS
+     WHERE ID_MARCA = l_id
+       AND (ID_EMPRESA = l_empresa OR ID_EMPRESA IS NULL);
 
     IF SQL%ROWCOUNT = 0 THEN
       ROLLBACK;
@@ -474,7 +568,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_MARCAS AS
       p_pattern     => 'listar',
       p_method      => 'GET',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_MARCAS.LISTAR(:authorization, :busqueda, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_MARCAS.LISTAR(:authorization, :idEmpresa, :busqueda, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
@@ -502,7 +596,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_MARCAS AS
       p_pattern     => 'crear',
       p_method      => 'POST',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_MARCAS.INSERTAR(:authorization, :descripcion, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_MARCAS.INSERTAR(:authorization, :idEmpresa, :descripcion, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
@@ -530,7 +624,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_MARCAS AS
       p_pattern     => 'actualizar/:id',
       p_method      => 'PUT',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_MARCAS.ACTUALIZAR(:authorization, :id, :descripcion, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_MARCAS.ACTUALIZAR(:authorization, :id, :idEmpresa, :descripcion, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
@@ -549,32 +643,32 @@ CREATE OR REPLACE PACKAGE BODY PKG_MARCAS AS
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
     ----------------------------------------------------------------------------
-    -- DELETE /marcas/eliminar/:id
+    -- DELETE /marcas/eliminar/:id/:idEmpresa
     --
     -- Sin idEmpresa: es un catalogo global, no cuelga de ninguna empresa.
     ----------------------------------------------------------------------------
-    ORDS.DEFINE_TEMPLATE(p_module_name => 'marcas', p_pattern => 'eliminar/:id');
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'marcas', p_pattern => 'eliminar/:id/:idEmpresa');
 
     ORDS.DEFINE_HANDLER(
       p_module_name => 'marcas',
-      p_pattern     => 'eliminar/:id',
+      p_pattern     => 'eliminar/:id/:idEmpresa',
       p_method      => 'DELETE',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_MARCAS.ELIMINAR(:authorization, :id, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_MARCAS.ELIMINAR(:authorization, :id, :idEmpresa, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'marcas', p_pattern => 'eliminar/:id', p_method => 'DELETE',
+      p_module_name => 'marcas', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE',
       p_name => 'authorization', p_bind_variable_name => 'authorization',
       p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'marcas', p_pattern => 'eliminar/:id', p_method => 'DELETE',
+      p_module_name => 'marcas', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE',
       p_name => 'resultado', p_bind_variable_name => 'resultado',
       p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'marcas', p_pattern => 'eliminar/:id', p_method => 'DELETE',
+      p_module_name => 'marcas', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE',
       p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
@@ -619,7 +713,8 @@ SELECT NAME, STATUS, ORIGINS_ALLOWED
   FROM USER_ORDS_MODULES
  WHERE NAME = 'marcas';
 
--- Cuatro filas: listar GET, crear POST, actualizar/:id PUT, eliminar/:id DELETE.
+-- Cuatro filas: listar GET, crear POST, actualizar/:id PUT,
+-- eliminar/:id/:idEmpresa DELETE.
 SELECT t.URI_TEMPLATE, h.METHOD
   FROM USER_ORDS_TEMPLATES t
   JOIN USER_ORDS_HANDLERS  h ON h.TEMPLATE_ID = t.ID
@@ -627,16 +722,50 @@ SELECT t.URI_TEMPLATE, h.METHOD
  WHERE m.NAME = 'marcas'
  ORDER BY t.URI_TEMPLATE, h.METHOD;
 
--- Duplicados que hayan entrado antes de que existiera el control del paquete.
--- Tiene que volver VACIO; si trae filas, hay que unificarlas a mano antes de
--- agregar el UNIQUE al DDL.
-SELECT UPPER(TRIM(DESCRIPCION)) AS DESCRIPCION, COUNT(*) AS VECES
+-- La columna nueva tiene que estar, o el paquete no compila: el SQL estatico
+-- que la nombra falla con ORA-00904 y el BODY queda INVALID.
+SELECT COLUMN_NAME, NULLABLE, DATA_TYPE
+  FROM USER_TAB_COLUMNS
+ WHERE TABLE_NAME = 'MARCAS'
+   AND COLUMN_NAME = 'ID_EMPRESA';
+
+-- Cuantas marcas quedaron HEREDADAS (ID_EMPRESA en NULL). El listado las
+-- muestra a todas las empresas a proposito, pero conviene asignarlas:
+--
+--   Si todas las marcas son de una sola empresa:
+--     UPDATE MARCAS SET ID_EMPRESA = <id> WHERE ID_EMPRESA IS NULL;
+--
+--   Si hay varias, se puede deducir por los articulos que las usan:
+--     UPDATE MARCAS m SET ID_EMPRESA =
+--       (SELECT MIN(a.ID_EMPRESA) FROM ARTICULOS a WHERE a.ID_MARCA = m.ID_MARCA)
+--      WHERE m.ID_EMPRESA IS NULL
+--        AND EXISTS (SELECT 1 FROM ARTICULOS a WHERE a.ID_MARCA = m.ID_MARCA);
+--
+-- Una marca usada por articulos de DOS empresas no se puede repartir: hay que
+-- duplicarla y reapuntar los articulos de una de ellas.
+SELECT COUNT(*) AS TOTAL,
+       COUNT(ID_EMPRESA) AS CON_EMPRESA,
+       COUNT(*) - COUNT(ID_EMPRESA) AS HEREDADAS
+  FROM MARCAS;
+
+-- Marcas usadas por articulos de mas de una empresa: son las que hay que
+-- duplicar antes de asignar. Tiene que volver VACIO.
+SELECT m.ID_MARCA, m.DESCRIPCION, COUNT(DISTINCT a.ID_EMPRESA) AS EMPRESAS
+  FROM MARCAS m
+  JOIN ARTICULOS a ON a.ID_MARCA = m.ID_MARCA
+ WHERE m.ID_EMPRESA IS NULL
+ GROUP BY m.ID_MARCA, m.DESCRIPCION
+HAVING COUNT(DISTINCT a.ID_EMPRESA) > 1;
+
+-- Duplicados dentro de una misma empresa. Tiene que volver VACIO; si trae
+-- filas, hay que unificarlas a mano antes de agregar el UNIQUE al DDL.
+SELECT ID_EMPRESA, UPPER(TRIM(DESCRIPCION)) AS DESCRIPCION, COUNT(*) AS VECES
   FROM MARCAS
- GROUP BY UPPER(TRIM(DESCRIPCION))
+ GROUP BY ID_EMPRESA, UPPER(TRIM(DESCRIPCION))
 HAVING COUNT(*) > 1
  ORDER BY VECES DESC;
 
 -- El catalogo, para confirmar que el listado devuelve lo esperado.
-SELECT ID_MARCA, DESCRIPCION, FECHA_CREACION
+SELECT ID_MARCA, ID_EMPRESA, DESCRIPCION, FECHA_CREACION
   FROM MARCAS
- ORDER BY UPPER(DESCRIPCION);
+ ORDER BY ID_EMPRESA NULLS FIRST, UPPER(DESCRIPCION);

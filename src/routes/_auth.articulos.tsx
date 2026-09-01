@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import { z } from "zod";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
-import { SelectorModal } from "@/components/ctell/SelectorModal";
+import { SelectorModal, type AltaRapida } from "@/components/ctell/SelectorModal";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
 import { ArticuloUbicacionesDialog } from "@/components/ctell/ArticuloUbicacionesDialog";
 import { ImagenArticulo } from "@/components/ctell/ImagenArticulo";
@@ -90,6 +90,7 @@ const schema = z.object({
   descripcion: z.string().trim().max(1000, "Máximo 1000 caracteres"),
   // Los combobox devuelven strings; vacío significa "sin asignar".
   idCategoria: z.string(),
+  idMarca: z.string(),
   idMoneda: z.string(),
   idUnidadMedida: z.string(),
   // Lo único numérico que se carga acá. Los precios y el stock salieron de la
@@ -159,6 +160,7 @@ function ArticulosPage() {
   // propia: siempre se mira "dónde está ESTE artículo".
   const [verUbicaciones, setVerUbicaciones] = useState<Articulo | null>(null);
   const [filtroCategoria, setFiltroCategoria] = useState<string>(SIN_FILTRO);
+  const [filtroMarca, setFiltroMarca] = useState<string>(SIN_FILTRO);
 
   // Los artículos son POR EMPRESA: la que se eligió al iniciar sesión.
   const { empresa } = useEmpresa();
@@ -185,12 +187,19 @@ function ArticulosPage() {
   // vez de agregar filas.
   const { data, isPending, isError, error, fetchNextPage, hasNextPage, isFetchingNextPage } =
     useInfiniteQuery({
-      queryKey: ["articulos", empresa?.id ?? null, busquedaEnvio.trim(), filtroCategoria],
+      queryKey: [
+        "articulos",
+        empresa?.id ?? null,
+        busquedaEnvio.trim(),
+        filtroCategoria,
+        filtroMarca,
+      ],
       queryFn: ({ pageParam }) =>
         api.articulos.listar({
           idEmpresa: empresa!.id,
           busqueda: busquedaEnvio,
           idCategoria: filtroCategoria === SIN_FILTRO ? undefined : Number(filtroCategoria),
+          idMarca: filtroMarca === SIN_FILTRO ? undefined : Number(filtroMarca),
           pagina: pageParam,
           tamanio: POR_PAGINA,
         }),
@@ -210,6 +219,15 @@ function ArticulosPage() {
   const { data: categorias } = useQuery({
     queryKey: ["categorias", empresa?.id ?? null],
     queryFn: () => api.categorias.listar({ idEmpresa: empresa!.id }),
+    enabled: empresa !== null,
+  });
+
+  // La empresa VA en la queryKey: MARCAS cuelga de EMPRESAS, así que cada una
+  // ve su propia lista —más las heredadas, sin empresa asignada—. Misma clave
+  // que usa la página de Marcas, así se comparte la respuesta.
+  const { data: marcas } = useQuery({
+    queryKey: ["marcas", empresa?.id ?? null],
+    queryFn: () => api.marcas.listar({ idEmpresa: empresa!.id }),
     enabled: empresa !== null,
   });
 
@@ -265,6 +283,11 @@ function ArticulosPage() {
   const categoriasOpciones = (categorias?.items ?? []).map((c) => ({
     valor: String(c.id),
     etiqueta: c.nombreCategoria,
+  }));
+
+  const marcasOpciones = (marcas?.items ?? []).map((m) => ({
+    valor: String(m.id),
+    etiqueta: m.descripcion,
   }));
 
   // El total del backend son las filas que pasan el filtro, no las traídas.
@@ -332,9 +355,9 @@ function ArticulosPage() {
             <p className="text-sm text-muted-foreground">
               {termino
                 ? `Sin resultados para "${busqueda.trim()}".`
-                : filtroCategoria === SIN_FILTRO
+                : filtroCategoria === SIN_FILTRO && filtroMarca === SIN_FILTRO
                   ? "Esta empresa todavía no tiene artículos cargados."
-                  : "Esa categoría todavía no tiene artículos cargados."}
+                  : "Ningún artículo cumple con los filtros aplicados."}
             </p>
             {!termino && (
               <Button className="mt-4" onClick={() => setCreando(true)}>
@@ -365,6 +388,7 @@ function ArticulosPage() {
                       <p className="mt-0.5 text-xs text-muted-foreground">
                         {articulo.codigoArticulo ? `${articulo.codigoArticulo} · ` : ""}
                         {articulo.categoria ?? "Sin categoría"}
+                        {articulo.marca ? ` · ${articulo.marca}` : ""}
                         {/* Texto y no un Badge: la tarjeta ya tiene el de estado
                             arriba, y dos badges compitiendo en 360px se leen
                             como si fueran lo mismo. */}
@@ -448,6 +472,16 @@ function ArticulosPage() {
                   >
                     Categoría
                   </TableHeadFiltrable>
+                  <TableHeadFiltrable
+                    direccion={orden?.campo === "marca" ? orden.direccion : null}
+                    onOrdenar={() => alternarOrden("marca")}
+                    opciones={marcasOpciones}
+                    valor={filtroMarca}
+                    onFiltrar={setFiltroMarca}
+                    buscarPlaceholder="Buscar marca…"
+                  >
+                    Marca
+                  </TableHeadFiltrable>
                   {/* Sin columna de precio: los precios salieron de ARTICULOS y
                       viven en cada lote. El stock sigue, pero ahora es la suma
                       de los lotes que calcula el backend. */}
@@ -500,6 +534,9 @@ function ArticulosPage() {
                       </TableCell>
                       <TableCell className="text-muted-foreground">
                         {articulo.categoria ?? "—"}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {articulo.marca ?? "—"}
                       </TableCell>
                       <TableCell>
                         <span className={bajoMinimo ? "font-semibold text-destructive" : ""}>
@@ -754,11 +791,55 @@ function ArticuloFormDialog({
     queryKey: ["unidades-medida", idEmpresa],
     queryFn: () => api.unidadesMedida.listar({ idEmpresa }),
   });
+  // Con idEmpresa, igual que el resto de los catálogos: MARCAS cuelga de
+  // EMPRESAS. Comparte caché con /marcas y con el filtro del listado.
+  const { data: marcas, isPending: cargandoMarcas } = useQuery({
+    queryKey: ["marcas", idEmpresa],
+    queryFn: () => api.marcas.listar({ idEmpresa }),
+  });
 
   const categoriasOpciones = (categorias?.items ?? []).map((c) => ({
     valor: String(c.id),
     etiqueta: c.nombreCategoria,
   }));
+  const marcasOpciones = (marcas?.items ?? []).map((m) => ({
+    valor: String(m.id),
+    etiqueta: m.descripcion,
+  }));
+
+  /**
+   * Crear la marca o la categoría que falta sin salir del formulario.
+   *
+   * Cada una invalida SU catálogo y devuelve la opción, que el selector deja
+   * elegida. Sin esto hay que descartar el artículo a medio cargar, ir a
+   * /marcas, crearla y empezar de nuevo.
+   *
+   * El id llega en la respuesta del POST, así que la opción se arma acá mismo:
+   * esperar a que el refetch traiga el catálogo nuevo dejaría un hueco en el
+   * que el selector todavía no conoce el valor que acaba de recibir.
+   */
+  const altaMarca: AltaRapida = {
+    titulo: "Nueva marca",
+    campos: [{ nombre: "descripcion", etiqueta: "Descripción", placeholder: "Sakura" }],
+    crear: async (v) => {
+      const descripcion = v["descripcion"] ?? "";
+      const { id } = await api.marcas.crear({ idEmpresa, descripcion });
+      await queryClient.invalidateQueries({ queryKey: ["marcas"] });
+      return { valor: String(id), etiqueta: descripcion };
+    },
+  };
+
+  const altaCategoria: AltaRapida = {
+    titulo: "Nueva categoría",
+    campos: [{ nombre: "nombreCategoria", etiqueta: "Nombre", placeholder: "Filtros" }],
+    crear: async (v) => {
+      const nombreCategoria = v["nombreCategoria"] ?? "";
+      const { id } = await api.categorias.crear({ idEmpresa, nombreCategoria });
+      await queryClient.invalidateQueries({ queryKey: ["categorias"] });
+      return { valor: String(id), etiqueta: nombreCategoria };
+    },
+  };
+
   const monedasOpciones = (monedas?.items ?? []).map((m) => ({
     valor: String(m.id),
     etiqueta: m.nombreMoneda,
@@ -780,6 +861,7 @@ function ArticuloFormDialog({
       codigoArticulo: articulo?.codigoArticulo ?? "",
       descripcion: articulo?.descripcion ?? "",
       idCategoria: articulo?.idCategoria ? String(articulo.idCategoria) : "",
+      idMarca: articulo?.idMarca ? String(articulo.idMarca) : "",
       idMoneda: articulo?.idMoneda ? String(articulo.idMoneda) : "",
       idUnidadMedida: articulo?.idUnidadMedida ? String(articulo.idUnidadMedida) : "",
       cantidadMinima: articulo ? String(articulo.cantidadMinima) : "0",
@@ -805,6 +887,7 @@ function ArticuloFormDialog({
         ...(v.codigoArticulo ? { codigoArticulo: v.codigoArticulo } : {}),
         ...(v.descripcion ? { descripcion: v.descripcion } : {}),
         ...(v.idCategoria ? { idCategoria: Number(v.idCategoria) } : {}),
+        ...(v.idMarca ? { idMarca: Number(v.idMarca) } : {}),
         ...(v.idMoneda ? { idMoneda: Number(v.idMoneda) } : {}),
         ...(v.idUnidadMedida ? { idUnidadMedida: Number(v.idUnidadMedida) } : {}),
         ...(v.cantidadMinima ? { cantidadMinima: Number(v.cantidadMinima) } : {}),
@@ -928,6 +1011,33 @@ function ArticuloFormDialog({
                             titulo="Elegí una categoría"
                             buscarPlaceholder="Buscar categoría…"
                             cargando={cargandoCategorias}
+                            alta={altaCategoria}
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  {/* Al lado de la categoría porque las dos dicen QUÉ ES el
+                      artículo. Opcional: la columna es nullable y hay fichas
+                      —todas las anteriores a ella— que no tienen marca. */}
+                  <FormField
+                    control={form.control}
+                    name="idMarca"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Marca</FormLabel>
+                        <FormControl>
+                          <SelectorModal
+                            opciones={marcasOpciones}
+                            value={field.value}
+                            onChange={field.onChange}
+                            placeholder="Sin marca"
+                            titulo="Elegí una marca"
+                            buscarPlaceholder="Buscar marca…"
+                            cargando={cargandoMarcas}
+                            alta={altaMarca}
                           />
                         </FormControl>
                         <FormMessage />

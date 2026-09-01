@@ -4,8 +4,8 @@
 -- Requiere db/auth.sql, PROFESORES e INSTITUCIONES, y el DDL de
 -- ASISTENCIAS_PROFESORES con la columna ID_EMPRESA.
 --
--- Endpoints: /asistencias-profesores/listar, /crear, /actualizar/:id,
---            /eliminar/:id/:idEmpresa
+-- Endpoints: /asistencias-profesores/listar, /periodos, /crear,
+--            /actualizar/:id, /eliminar/:id/:idEmpresa
 --
 --------------------------------------------------------------------------------
 -- LA CARGA NORMAL ES LA APP; ESTE MODULO ADEMAS PERMITE CORREGIRLA A MANO
@@ -98,6 +98,24 @@ CREATE OR REPLACE PACKAGE PKG_ASISTENCIAS_PROFESORES AS
     p_resultado      OUT CLOB
   );
 
+  ----------------------------------------------------------------------------
+  -- PERIODOS CON MARCACIONES
+  --
+  -- Anio, mes y cuantas marcaciones tiene cada uno. Alimenta los combos del
+  -- reporte, para no ofrecer meses que devuelven una pantalla vacia.
+  --
+  -- Es un endpoint aparte y NO se deduce de LISTAR: para saber que meses del
+  -- anio tienen datos habria que pedir el anio entero —miles de marcaciones—
+  -- y contarlas en el navegador. Esto devuelve una fila por mes, que es lo
+  -- unico que el combo necesita.
+  ----------------------------------------------------------------------------
+  PROCEDURE PERIODOS (
+    p_authorization  IN  VARCHAR2,
+    p_id_empresa     IN  VARCHAR2,
+    p_status_code    OUT NUMBER,
+    p_resultado      OUT CLOB
+  );
+
   ------------------------------------------------------------------------------
   -- CARGA MANUAL
   --
@@ -112,9 +130,30 @@ CREATE OR REPLACE PACKAGE PKG_ASISTENCIAS_PROFESORES AS
   -- Requieren sesion valida (VALIDAR_TOKEN), no rol de administrador: el acceso
   -- lo deciden los permisos de pagina, igual que el listado.
   ------------------------------------------------------------------------------
+  ----------------------------------------------------------------------------
+  -- LOS CAMPOS DEL JSON LLEGAN SUELTOS, NO COMO `:body`
+  --
+  -- ORDS parsea el JSON del body y crea un bind por cada clave de primer nivel:
+  -- :idEmpresa, :idProfesor, :fecha, etc. `:body` es OTRA cosa — el payload
+  -- CRUDO, y viene como BLOB. Pasarlo a un parametro CLOB y buscarle adentro
+  -- con JSON_VALUE devolvia NULL en todos los campos, asi que el alta y la
+  -- edicion respondian 400 "son obligatorios" con el body correctamente puesto.
+  --
+  -- El resto de los modulos del proyecto siempre lo hizo asi; los unicos `:body`
+  -- que quedan son los de subir imagenes, que si son BLOB de verdad.
+  --
+  -- Todos entran como VARCHAR2 y se convierten adentro, igual que los query
+  -- params: un bind tipado obliga a ORDS a convertir antes del handler, y ahi
+  -- un error no lo captura ningun WHEN OTHERS.
+  ----------------------------------------------------------------------------
   PROCEDURE INSERTAR (
     p_authorization  IN  VARCHAR2,
-    p_body           IN  CLOB,
+    p_id_empresa     IN  VARCHAR2,
+    p_id_profesor    IN  VARCHAR2,
+    p_id_institucion IN  VARCHAR2,
+    p_fecha          IN  VARCHAR2,
+    p_hora_entrada   IN  VARCHAR2,
+    p_hora_salida    IN  VARCHAR2,
     p_status_code    OUT NUMBER,
     p_resultado      OUT CLOB
   );
@@ -122,7 +161,12 @@ CREATE OR REPLACE PACKAGE PKG_ASISTENCIAS_PROFESORES AS
   PROCEDURE ACTUALIZAR (
     p_authorization  IN  VARCHAR2,
     p_id             IN  VARCHAR2,
-    p_body           IN  CLOB,
+    p_id_empresa     IN  VARCHAR2,
+    p_id_profesor    IN  VARCHAR2,
+    p_id_institucion IN  VARCHAR2,
+    p_fecha          IN  VARCHAR2,
+    p_hora_entrada   IN  VARCHAR2,
+    p_hora_salida    IN  VARCHAR2,
     p_status_code    OUT NUMBER,
     p_resultado      OUT CLOB
   );
@@ -348,6 +392,77 @@ CREATE OR REPLACE PACKAGE BODY PKG_ASISTENCIAS_PROFESORES AS
       p_resultado := '{"error":"Error al listar las asistencias"}';
   END LISTAR;
 
+  PROCEDURE PERIODOS (
+    p_authorization  IN  VARCHAR2,
+    p_id_empresa     IN  VARCHAR2,
+    p_status_code    OUT NUMBER,
+    p_resultado      OUT CLOB
+  ) IS
+    l_sesion  NUMBER;
+    l_empresa NUMBER;
+    l_items   CLOB;
+  BEGIN
+    l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
+    IF l_sesion IS NULL THEN
+      p_status_code := 401;
+      p_resultado := '{"error":"Sesion invalida o vencida"}';
+      RETURN;
+    END IF;
+
+    l_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
+
+    IF l_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
+      RETURN;
+    END IF;
+
+    -- El JSON_OBJECT va en la subconsulta y el JSON_ARRAYAGG agrega esa columna,
+    -- que ya viene tipada como CLOB. Anidado, el intermedio del agregado se
+    -- materializa como VARCHAR2 y revienta a los 4000 bytes. Mismo patron que
+    -- LISTAR.
+    --
+    -- Aca SI se usa EXTRACT sobre la columna, al reves que en LISTAR: esto es
+    -- un GROUP BY sobre todas las marcaciones de la empresa, asi que el indice
+    -- por fecha no se iba a usar igual. Lo que importa es que el RESULTADO es
+    -- chico —una fila por mes con datos— y por eso no hace falta paginarlo.
+    --
+    -- El filtro por empresa es el mismo del LISTAR, con las filas viejas que
+    -- tienen ID_EMPRESA en NULL cayendo a la empresa del profesor. Si no, los
+    -- meses historicos no aparecerian en el combo y no habria forma de llegar
+    -- a ellos.
+    SELECT JSON_ARRAYAGG(fila ORDER BY anio DESC, mes DESC RETURNING CLOB)
+      INTO l_items
+      FROM (
+        SELECT JSON_OBJECT(
+                 'anio'     VALUE EXTRACT(YEAR  FROM a.FECHA_ASISTENCIA),
+                 'mes'      VALUE EXTRACT(MONTH FROM a.FECHA_ASISTENCIA),
+                 'cantidad' VALUE COUNT(*)
+                 RETURNING CLOB
+               ) AS fila,
+               EXTRACT(YEAR  FROM a.FECHA_ASISTENCIA) AS anio,
+               EXTRACT(MONTH FROM a.FECHA_ASISTENCIA) AS mes
+          FROM ASISTENCIAS_PROFESORES a
+          JOIN PROFESORES p ON p.ID_PROFESOR = a.ID_PROFESOR
+         WHERE (a.ID_EMPRESA = l_empresa OR (a.ID_EMPRESA IS NULL AND p.ID_EMPRESA = l_empresa))
+           AND a.FECHA_ASISTENCIA IS NOT NULL
+         GROUP BY EXTRACT(YEAR FROM a.FECHA_ASISTENCIA), EXTRACT(MONTH FROM a.FECHA_ASISTENCIA)
+      );
+
+    p_status_code := 200;
+    -- NVL: JSON_ARRAYAGG devuelve NULL sin filas, no un array vacio, y el
+    -- frontend reventaria al iterar "items":null.
+    SELECT JSON_OBJECT('items' VALUE NVL(l_items, TO_CLOB('[]')) FORMAT JSON RETURNING CLOB)
+      INTO p_resultado
+      FROM DUAL;
+  EXCEPTION
+    WHEN OTHERS THEN
+      p_status_code := 500;
+      APEX_DEBUG.ERROR('PKG_ASISTENCIAS_PROFESORES.PERIODOS: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
+                       DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
+      p_resultado := '{"error":"Error al listar los periodos"}';
+  END PERIODOS;
+
   ------------------------------------------------------------------------------
   -- Privado: arma un TIMESTAMP a partir de la fecha del dia y una hora 'HH24:MI'.
   --
@@ -405,7 +520,12 @@ CREATE OR REPLACE PACKAGE BODY PKG_ASISTENCIAS_PROFESORES AS
 
   PROCEDURE INSERTAR (
     p_authorization  IN  VARCHAR2,
-    p_body           IN  CLOB,
+    p_id_empresa     IN  VARCHAR2,
+    p_id_profesor    IN  VARCHAR2,
+    p_id_institucion IN  VARCHAR2,
+    p_fecha          IN  VARCHAR2,
+    p_hora_entrada   IN  VARCHAR2,
+    p_hora_salida    IN  VARCHAR2,
     p_status_code    OUT NUMBER,
     p_resultado      OUT CLOB
   ) IS
@@ -430,11 +550,11 @@ CREATE OR REPLACE PACKAGE BODY PKG_ASISTENCIAS_PROFESORES AS
 
     -- Las conversiones van DENTRO del BEGIN, nunca en el DECLARE: alli correrian
     -- antes de que exista el EXCEPTION y el error escaparia del procedimiento.
-    l_empresa     := TO_NUMBER(NULLIF(JSON_VALUE(p_body, '$.idEmpresa'), ''));
-    l_profesor    := TO_NUMBER(NULLIF(JSON_VALUE(p_body, '$.idProfesor'), ''));
-    l_institucion := TO_NUMBER(NULLIF(JSON_VALUE(p_body, '$.idInstitucion'), ''));
-    l_hora_ent    := NULLIF(TRIM(JSON_VALUE(p_body, '$.horaEntrada')), '');
-    l_hora_sal    := NULLIF(TRIM(JSON_VALUE(p_body, '$.horaSalida')), '');
+    l_empresa     := TO_NUMBER(NULLIF(p_id_empresa, ''));
+    l_profesor    := TO_NUMBER(NULLIF(p_id_profesor, ''));
+    l_institucion := TO_NUMBER(NULLIF(p_id_institucion, ''));
+    l_hora_ent    := NULLIF(TRIM(p_hora_entrada), '');
+    l_hora_sal    := NULLIF(TRIM(p_hora_salida), '');
 
     IF l_empresa IS NULL OR l_profesor IS NULL OR l_institucion IS NULL THEN
       p_status_code := 400;
@@ -443,7 +563,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ASISTENCIAS_PROFESORES AS
     END IF;
 
     BEGIN
-      l_fecha := TO_DATE(JSON_VALUE(p_body, '$.fecha'), 'YYYY-MM-DD');
+      l_fecha := TO_DATE(NULLIF(TRIM(p_fecha), ''), 'YYYY-MM-DD');
     EXCEPTION
       WHEN OTHERS THEN
         l_fecha := NULL;
@@ -505,7 +625,12 @@ CREATE OR REPLACE PACKAGE BODY PKG_ASISTENCIAS_PROFESORES AS
   PROCEDURE ACTUALIZAR (
     p_authorization  IN  VARCHAR2,
     p_id             IN  VARCHAR2,
-    p_body           IN  CLOB,
+    p_id_empresa     IN  VARCHAR2,
+    p_id_profesor    IN  VARCHAR2,
+    p_id_institucion IN  VARCHAR2,
+    p_fecha          IN  VARCHAR2,
+    p_hora_entrada   IN  VARCHAR2,
+    p_hora_salida    IN  VARCHAR2,
     p_status_code    OUT NUMBER,
     p_resultado      OUT CLOB
   ) IS
@@ -529,11 +654,11 @@ CREATE OR REPLACE PACKAGE BODY PKG_ASISTENCIAS_PROFESORES AS
     END IF;
 
     l_id          := TO_NUMBER(NULLIF(p_id, ''));
-    l_empresa     := TO_NUMBER(NULLIF(JSON_VALUE(p_body, '$.idEmpresa'), ''));
-    l_profesor    := TO_NUMBER(NULLIF(JSON_VALUE(p_body, '$.idProfesor'), ''));
-    l_institucion := TO_NUMBER(NULLIF(JSON_VALUE(p_body, '$.idInstitucion'), ''));
-    l_hora_ent    := NULLIF(TRIM(JSON_VALUE(p_body, '$.horaEntrada')), '');
-    l_hora_sal    := NULLIF(TRIM(JSON_VALUE(p_body, '$.horaSalida')), '');
+    l_empresa     := TO_NUMBER(NULLIF(p_id_empresa, ''));
+    l_profesor    := TO_NUMBER(NULLIF(p_id_profesor, ''));
+    l_institucion := TO_NUMBER(NULLIF(p_id_institucion, ''));
+    l_hora_ent    := NULLIF(TRIM(p_hora_entrada), '');
+    l_hora_sal    := NULLIF(TRIM(p_hora_salida), '');
 
     -- El idEmpresa no es un dato mas a guardar: acota A CUAL FILA se aplica el
     -- cambio, igual que en el DELETE. Sin el, un PUT podria tocar la marcacion
@@ -545,7 +670,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ASISTENCIAS_PROFESORES AS
     END IF;
 
     BEGIN
-      l_fecha := TO_DATE(JSON_VALUE(p_body, '$.fecha'), 'YYYY-MM-DD');
+      l_fecha := TO_DATE(NULLIF(TRIM(p_fecha), ''), 'YYYY-MM-DD');
     EXCEPTION
       WHEN OTHERS THEN
         l_fecha := NULL;
@@ -727,6 +852,36 @@ CREATE OR REPLACE PACKAGE BODY PKG_ASISTENCIAS_PROFESORES AS
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
     ----------------------------------------------------------------------------
+    -- GET /asistencias-profesores/periodos?idEmpresa=
+    --
+    -- Los meses que tienen marcaciones, para los combos del reporte.
+    ----------------------------------------------------------------------------
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'asistencias-profesores', p_pattern => 'periodos');
+
+    ORDS.DEFINE_HANDLER(
+      p_module_name => 'asistencias-profesores',
+      p_pattern     => 'periodos',
+      p_method      => 'GET',
+      p_source_type => ORDS.source_type_plsql,
+      p_source      => 'BEGIN PKG_ASISTENCIAS_PROFESORES.PERIODOS(:authorization, :idEmpresa, :status_code, :resultado); END;'
+    );
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'asistencias-profesores', p_pattern => 'periodos', p_method => 'GET',
+      p_name => 'authorization', p_bind_variable_name => 'authorization',
+      p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'asistencias-profesores', p_pattern => 'periodos', p_method => 'GET',
+      p_name => 'resultado', p_bind_variable_name => 'resultado',
+      p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'asistencias-profesores', p_pattern => 'periodos', p_method => 'GET',
+      p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
+      p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
+
+    ----------------------------------------------------------------------------
     -- POST /asistencias-profesores/crear
     ----------------------------------------------------------------------------
     ORDS.DEFINE_TEMPLATE(p_module_name => 'asistencias-profesores', p_pattern => 'crear');
@@ -736,7 +891,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ASISTENCIAS_PROFESORES AS
       p_pattern     => 'crear',
       p_method      => 'POST',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_ASISTENCIAS_PROFESORES.INSERTAR(:authorization, :body, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_ASISTENCIAS_PROFESORES.INSERTAR(:authorization, :idEmpresa, :idProfesor, :idInstitucion, :fecha, :horaEntrada, :horaSalida, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
@@ -767,7 +922,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ASISTENCIAS_PROFESORES AS
       p_pattern     => 'actualizar/:id',
       p_method      => 'PUT',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_ASISTENCIAS_PROFESORES.ACTUALIZAR(:authorization, :id, :body, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_ASISTENCIAS_PROFESORES.ACTUALIZAR(:authorization, :id, :idEmpresa, :idProfesor, :idInstitucion, :fecha, :horaEntrada, :horaSalida, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
@@ -847,7 +1002,7 @@ SELECT NAME, STATUS, ORIGINS_ALLOWED
   FROM USER_ORDS_MODULES
  WHERE NAME = 'asistencias-profesores';
 
--- Cuatro filas: listar GET, crear POST, actualizar/:id PUT,
+-- Cinco filas: listar GET, periodos GET, crear POST, actualizar/:id PUT,
 -- eliminar/:id/:idEmpresa DELETE.
 SELECT t.URI_TEMPLATE, h.METHOD
   FROM USER_ORDS_TEMPLATES t
@@ -881,6 +1036,15 @@ SELECT LINE, TEXT
 SELECT COUNT(*) AS SIN_EMPRESA
   FROM ASISTENCIAS_PROFESORES
  WHERE ID_EMPRESA IS NULL;
+
+-- Los periodos con marcaciones, que es lo que alimenta los combos del reporte.
+-- Si esto vuelve vacio, el combo de mes queda con el mes en curso y nada mas.
+SELECT EXTRACT(YEAR FROM FECHA_ASISTENCIA)  AS ANIO,
+       EXTRACT(MONTH FROM FECHA_ASISTENCIA) AS MES,
+       COUNT(*)                             AS CANTIDAD
+  FROM ASISTENCIAS_PROFESORES
+ GROUP BY EXTRACT(YEAR FROM FECHA_ASISTENCIA), EXTRACT(MONTH FROM FECHA_ASISTENCIA)
+ ORDER BY ANIO DESC, MES DESC;
 
 -- Marcaciones incompletas: entrada sin salida en un dia ya cerrado. Cero es lo
 -- esperable; si hay filas, el reporte las va a mostrar marcadas.

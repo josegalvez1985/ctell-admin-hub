@@ -5,9 +5,10 @@ import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
-import { SelectorModal } from "@/components/ctell/SelectorModal";
+import { SelectorModal, type AltaRapida } from "@/components/ctell/SelectorModal";
 import { SelectorArticulo } from "@/components/ctell/SelectorArticulo";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
+import { useSucursal } from "@/components/ctell/sucursal-provider";
 import { SIN_FILTRO, TableHeadFiltrable } from "@/components/ctell/TableHeadFiltrable";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
 import { useTablaListado } from "@/hooks/use-tabla-listado";
@@ -372,6 +373,7 @@ function AsignarDialog({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  const { sucursal } = useSucursal();
   const [idArticulo, setIdArticulo] = useState("");
   // El nombre del artículo elegido, para el botón del selector: el listado
   // viene paginado, así que no se puede resolver el id contra una lista local.
@@ -390,6 +392,65 @@ function AsignarDialog({
     queryFn: () => api.ubicaciones.listar({ idEmpresa }),
     enabled: open,
   });
+
+  /**
+   * Crear el artículo que falta, sin salir del diálogo.
+   *
+   * Un campo: `nombreArticulo` es lo único que el backend exige además de la
+   * empresa. La ficha nace mínima —sin código, categoría ni marca— y se
+   * completa después en Artículos; acá lo que importa es no perder la ubicación
+   * que se estaba por asignar.
+   */
+  const altaArticulo: AltaRapida = {
+    titulo: "Nuevo artículo",
+    campos: [{ nombre: "nombreArticulo", etiqueta: "Nombre", placeholder: "Filtro de aceite" }],
+    crear: async (v) => {
+      const nombreArticulo = v["nombreArticulo"] ?? "";
+      const { id } = await api.articulos.crear({ idEmpresa, nombreArticulo });
+      await queryClient.invalidateQueries({ queryKey: ["articulos"] });
+      return { valor: String(id), etiqueta: nombreArticulo };
+    },
+  };
+
+  /**
+   * Crear la ubicación que falta, sin salir del diálogo.
+   *
+   * Tres campos y no uno: `zona`, `estante` y `nivel` son los tres obligatorios
+   * del backend, y son justamente los que forman su nombre —"A-3-2"—. Con menos,
+   * la fila queda sin identidad.
+   *
+   * **Va a la sucursal ACTIVA.** El selector lista las ubicaciones de todas las
+   * sucursales de la empresa, así que hay que decirlo: por eso la sucursal
+   * aparece en la descripción del diálogo y no como un cuarto campo, que sería
+   * una decisión más para algo que ya está elegido arriba en la pantalla.
+   */
+  const altaUbicacion: AltaRapida | undefined = sucursal
+    ? {
+        titulo: "Nueva ubicación",
+        descripcion: `Se crea en ${sucursal.nombreSucursal} y queda elegida.`,
+        campos: [
+          { nombre: "zona", etiqueta: "Zona", placeholder: "A" },
+          { nombre: "estante", etiqueta: "Estante", tipo: "numero", placeholder: "3" },
+          { nombre: "nivel", etiqueta: "Nivel", tipo: "numero", placeholder: "2" },
+        ],
+        crear: async (v) => {
+          const zona = v["zona"] ?? "";
+          const estante = Number(v["estante"]);
+          const nivel = Number(v["nivel"]);
+          const { id } = await api.ubicaciones.crear({
+            idEmpresa,
+            idSucursal: sucursal.id,
+            zona,
+            estante,
+            nivel,
+          });
+          // La clave con "todas" es la de este selector; la otra la usa la
+          // página de Ubicaciones. Se invalida el prefijo para refrescar ambas.
+          await queryClient.invalidateQueries({ queryKey: ["ubicaciones"] });
+          return { valor: String(id), etiqueta: etiquetaUbicacion(zona, estante, nivel) };
+        },
+      }
+    : undefined;
 
   /** Las ubicaciones que ese artículo todavía no tiene asignadas. */
   const opcionesUbicaciones = useMemo(() => {
@@ -451,6 +512,7 @@ function AsignarDialog({
                 // nuevo: se limpia para no mandar un par que daría 409.
                 setIdUbicacion("");
               }}
+              alta={altaArticulo}
             />
           </div>
 
@@ -470,7 +532,11 @@ function AsignarDialog({
                       : "Elegí una ubicación"
               }
               buscarPlaceholder="Buscar zona…"
-              disabled={ubicaciones.isPending || !idArticulo || opcionesUbicaciones.length === 0}
+              // Ya NO se deshabilita cuando no quedan ubicaciones libres: con el
+              // alta rápida, ese es justamente el momento en que hay algo que
+              // hacer. Sin artículo elegido sí, porque la lista depende de él.
+              disabled={ubicaciones.isPending || !idArticulo}
+              {...(altaUbicacion ? { alta: altaUbicacion } : {})}
             />
             {ubicaciones.data?.items.length === 0 && !ubicaciones.isPending && (
               <p className="text-xs text-muted-foreground">

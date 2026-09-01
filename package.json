@@ -8,8 +8,9 @@
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "preview": "vite preview",
-    "lint": "eslint . && npm run verificar-iconos",
+    "lint": "eslint . && npm run verificar-iconos && npm run verificar-convenciones",
     "verificar-iconos": "node scripts/verificar-iconos.mjs",
+    "verificar-convenciones": "node scripts/verificar-convenciones.mjs",
     "format": "prettier --write ."
   },
   "dependencies": {

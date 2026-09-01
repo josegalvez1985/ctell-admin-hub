@@ -33,6 +33,14 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -61,6 +69,7 @@ import {
   type DatosPlanilla,
 } from "@/lib/exportar";
 import { tituloPagina } from "@/lib/marca";
+import { cn } from "@/lib/utils";
 import { formatearMoneda, numeroMoneda } from "@/lib/moneda";
 
 const MENSAJE_ERROR = (error: unknown, fallback: string) =>
@@ -91,6 +100,15 @@ const MESES = [
 
 /** Lunes a domingo. `getDay()` devuelve 0 para domingo, de ahí el orden. */
 const DIAS = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
+
+/**
+ * El mismo orden, con el nombre completo.
+ *
+ * La grilla usa la forma corta porque ahí manda el ancho de la columna; el
+ * título del modal del día tiene lugar de sobra, y "Jueves" se lee mejor que
+ * "Jue" cuando es lo primero que aparece al abrirlo.
+ */
+const DIAS_LARGOS = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
 
 /**
  * Fecha ISO (`YYYY-MM-DD`) → `Date` local.
@@ -150,6 +168,26 @@ function AsistenciasPage() {
   const [editando, setEditando] = useState<AsistenciaProfesor | null>(null);
   const [aEliminar, setAEliminar] = useState<AsistenciaProfesor | null>(null);
 
+  /**
+   * El día cuyo modal está abierto, en ISO, o `null`.
+   *
+   * Es la puerta a las acciones desde la planilla: la vista que se mira para
+   * liquidar es esta, y es donde se ve el problema —un día en blanco, una
+   * entrada sin salida—, pero hasta ahora había que cambiar a Detalle y buscar
+   * la fila entre las del mes entero para poder corregirlo.
+   */
+  const [diaAbierto, setDiaAbierto] = useState<string | null>(null);
+
+  /**
+   * Con qué fecha arranca el alta: la del día que se abrió, si vino de ahí.
+   *
+   * En `null` cae en `fechaSugerida`, que es el comportamiento del botón de
+   * arriba. Se guarda aparte y no se lee `diaAbierto` porque son cosas
+   * distintas: el modal del día puede quedar abierto detrás mientras se carga,
+   * y el alta ya tiene su fecha decidida desde que se abrió.
+   */
+  const [fechaAlta, setFechaAlta] = useState<string | null>(null);
+
   // Los dos parámetros del cálculo. Viven en la pantalla y no en la base: ver
   // la nota de db/asistencias-profesores.sql.
   const [precioHora, setPrecioHora] = useState("");
@@ -175,6 +213,28 @@ function AsistenciasPage() {
         anio: Number(anio),
         mes: Number(mes),
       }),
+    enabled: empresa !== null,
+  });
+
+  /**
+   * Los meses que tienen marcaciones, para no ofrecer meses vacíos.
+   *
+   * Endpoint propio y no `listar` sin mes: para saber qué meses del año tienen
+   * datos habría que traer el año entero —miles de marcaciones— y contarlas
+   * acá. Esto devuelve una fila por mes.
+   *
+   * Se pide una vez por empresa y no por período: la respuesta ya trae todos
+   * los años, así que cambiar de año no dispara otra consulta.
+   *
+   * La queryKey arranca con "asistencias" —y no con una propia— para que el
+   * `invalidateQueries(["asistencias"])` del alta y de la baja también la
+   * refresque: sin eso, la primera marcación de un mes nuevo no aparecería en
+   * el combo hasta recargar la página. Las keys se comparan elemento por
+   * elemento, así que "asistencias-periodos" no habría entrado en ese prefijo.
+   */
+  const periodos = useQuery({
+    queryKey: ["asistencias", "periodos", empresa?.id ?? null],
+    queryFn: () => api.asistenciasProfesores.periodos(empresa!.id),
     enabled: empresa !== null,
   });
 
@@ -249,6 +309,52 @@ function AsistenciasPage() {
     !delPeriodo.isPending &&
     !profesoresConMarcas.some((p) => String(p.id) === idProfesor);
   if (profesorFueraDeLista) setIdProfesor(TODOS);
+
+  const itemsPeriodos = useMemo(() => periodos.data?.items ?? [], [periodos.data?.items]);
+
+  /**
+   * Los años que tienen marcaciones.
+   *
+   * Salen de la tabla y NO de un rango alrededor de hoy: un combo con seis años
+   * fijos obliga a probarlos de a uno para encontrar dónde hay datos, y un año
+   * vacío no se distingue de un filtro mal puesto.
+   *
+   * Tampoco se agrega el año en curso cuando no tiene marcaciones: la lista es
+   * lo que hay cargado, sin excepciones.
+   */
+  const aniosDisponibles = useMemo(
+    () => [...new Set(itemsPeriodos.map((p) => p.anio))].sort((a, b) => b - a),
+    [itemsPeriodos],
+  );
+
+  /** Los meses con marcaciones del año elegido, de enero a diciembre. */
+  const mesesDisponibles = useMemo(
+    () =>
+      [...new Set(itemsPeriodos.filter((p) => String(p.anio) === anio).map((p) => p.mes))].sort(
+        (a, b) => a - b,
+      ),
+    [itemsPeriodos, anio],
+  );
+
+  /**
+   * El período arranca en hoy, que puede no tener ninguna marcación.
+   *
+   * Cuando el año o el mes elegidos no están entre los que hay cargados, se cae
+   * al más reciente con datos. Sin esto la pantalla abre vacía sobre un mes que
+   * el propio combo ya no ofrece, y no hay forma de saber dónde sí hay algo.
+   *
+   * Es el mismo patrón que corrige la institución y el profesor unas líneas más
+   * abajo: se ajusta el estado en el render, sin pedir nada.
+   */
+  const anioFueraDeLista = aniosDisponibles.length > 0 && !aniosDisponibles.includes(Number(anio));
+  if (anioFueraDeLista) setAnio(String(aniosDisponibles[0]));
+
+  // El `!anioFueraDeLista` importa: en el render en que el año todavía es el
+  // viejo, `mesesDisponibles` es el del año viejo y el mes saltaría a un valor
+  // que el año nuevo no tiene.
+  const mesFueraDeLista =
+    !anioFueraDeLista && mesesDisponibles.length > 0 && !mesesDisponibles.includes(Number(mes));
+  if (mesFueraDeLista) setMes(String(mesesDisponibles[mesesDisponibles.length - 1]));
 
   const catedra = Number(duracionCatedra) || 60;
   const precio = numeroMoneda(precioHora) || 0;
@@ -426,10 +532,13 @@ function AsistenciasPage() {
           // Por profesor y no el máximo global: si otro tuvo 4 marcas en un día,
           // no tiene por qué agregar dos columnas vacías a esta planilla.
           columnasMarca: Math.max(2, ...[...diasProfesor.values()].map((l) => l.length)),
-          filas: diasDelMes.map(({ dia, iso, diaSemana }) => {
+          // La misma agrupación que la grilla de la pantalla: el archivo tiene
+          // que salir con la forma de lo que se está mirando.
+          filas: agruparPorSemana(diasDelMes).map(({ dia, iso, diaSemana, semana }) => {
             const marcas = diasProfesor.get(iso) ?? [];
             const minutos = marcas.reduce((s, m) => s + (m.minutos ?? 0), 0);
             return {
+              semana,
               dia,
               diaSemana: DIAS[diaSemana] ?? "",
               marcas: marcas.map((m) => ({ entrada: m.horaEntrada, salida: m.horaSalida })),
@@ -481,8 +590,9 @@ function AsistenciasPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `hoy` es un new Date() por render
   }, [anio, mes]);
 
-  function abrirAlta() {
+  function abrirAlta(fecha?: string) {
     setEditando(null);
+    setFechaAlta(fecha ?? null);
     setDialogoAbierto(true);
   }
 
@@ -490,6 +600,13 @@ function AsistenciasPage() {
     setEditando(a);
     setDialogoAbierto(true);
   }
+
+  /** "Jueves 12 de junio de 2026", para el encabezado del modal del día. */
+  const tituloDia = useMemo(() => {
+    if (diaAbierto === null) return "";
+    const d = fechaLocal(diaAbierto);
+    return `${DIAS_LARGOS[d.getDay()]} ${d.getDate()} de ${MESES[d.getMonth()]?.toLowerCase()} de ${d.getFullYear()}`;
+  }, [diaAbierto]);
 
   /**
    * La exportación sigue a la vista activa.
@@ -528,7 +645,6 @@ function AsistenciasPage() {
     promesa.catch((error) => toast.error(MENSAJE_ERROR(error, "No se pudo generar el PDF")));
   }
 
-  const anios = Array.from({ length: 6 }, (_, i) => hoy.getFullYear() - 4 + i);
   const sinDatos = !asistencias.isPending && !asistencias.isError && items.length === 0;
 
   return (
@@ -538,14 +654,14 @@ function AsistenciasPage() {
           <div>
             <h1 className="text-2xl font-bold text-foreground sm:text-3xl">Asistencias</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Marcaciones de profesores por período. Es una consulta: no da de alta ni edita.
+              Marcaciones de profesores por período. Tocá un día de la planilla para corregirlo.
             </p>
           </div>
           {/* El título dice qué formato sale, que depende de la vista activa:
               exportar algo distinto de lo que se está mirando es lo que un
               reporte no puede hacer. */}
           <div className="flex gap-2">
-            <Button onClick={abrirAlta} disabled={empresa === null}>
+            <Button onClick={() => abrirAlta()} disabled={empresa === null}>
               <Plus className="size-4" />
               Nueva marcación
             </Button>
@@ -593,7 +709,7 @@ function AsistenciasPage() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {anios.map((a) => (
+                {aniosDisponibles.map((a) => (
                   <SelectItem key={a} value={String(a)}>
                     {a}
                   </SelectItem>
@@ -609,9 +725,9 @@ function AsistenciasPage() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {MESES.map((nombre, i) => (
-                  <SelectItem key={nombre} value={String(i + 1)}>
-                    {nombre}
+                {mesesDisponibles.map((n) => (
+                  <SelectItem key={n} value={String(n)}>
+                    {MESES[n - 1]}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -671,6 +787,19 @@ function AsistenciasPage() {
             <InputMoneda value={precioHora} onChange={setPrecioHora} placeholder="60.000" />
           </label>
         </div>
+
+        {periodos.isError && (
+          <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-3 text-center text-sm text-destructive">
+            No se pudieron cargar los períodos con marcaciones, así que los combos de año y mes
+            quedan vacíos. {MENSAJE_ERROR(periodos.error, "Reintentá en unos segundos")}
+          </p>
+        )}
+
+        {!periodos.isPending && !periodos.isError && aniosDisponibles.length === 0 && (
+          <p className="rounded-lg border border-border bg-muted px-3 py-6 text-center text-sm text-muted-foreground">
+            No hay ninguna marcación cargada para esta empresa.
+          </p>
+        )}
 
         {asistencias.isPending && (
           <div className="space-y-2">
@@ -776,6 +905,7 @@ function AsistenciasPage() {
                     porDia={porDia}
                     maxMarcas={maxMarcas}
                     catedra={catedra}
+                    onAbrirDia={setDiaAbierto}
                   />
                 ) : (
                   <Detalle
@@ -791,6 +921,25 @@ function AsistenciasPage() {
           </>
         )}
 
+        {/* El modal del día queda ABAJO en el stack: al editar o eliminar desde
+            acá, el diálogo correspondiente se abre encima y al cerrarse se
+            vuelve a ver el día ya actualizado, sin tener que abrirlo de nuevo. */}
+        <MarcacionesDelDia
+          abierto={diaAbierto !== null}
+          titulo={tituloDia}
+          // Se lee de `porDia` en cada render y no de una copia: así, al borrar
+          // una marcación, la lista de abajo se actualiza sola cuando la query
+          // se invalida.
+          marcas={diaAbierto !== null ? (porDia.get(diaAbierto) ?? []) : []}
+          catedra={catedra}
+          precio={precio}
+          onCerrar={() => setDiaAbierto(null)}
+          onEditar={abrirEdicion}
+          onEliminar={setAEliminar}
+          onAgregar={() => diaAbierto !== null && abrirAlta(diaAbierto)}
+          puedeAgregar={empresa !== null}
+        />
+
         {empresa !== null && (
           <MarcacionDialog
             abierto={dialogoAbierto}
@@ -803,7 +952,7 @@ function AsistenciasPage() {
             // contrapartida de no traer los catálogos completos.
             profesores={profesoresConMarcas}
             instituciones={institucionesConMarcas}
-            fechaSugerida={fechaSugerida}
+            fechaSugerida={fechaAlta ?? fechaSugerida}
           />
         )}
 
@@ -861,6 +1010,54 @@ function Kpi({
 }
 
 /**
+ * Líneas verticales entre columnas, para toda una tabla de una vez.
+ *
+ * Va como selector sobre los descendientes y no como clase en cada
+ * `<TableHead>` y `<TableCell>`: entre las dos grillas son casi treinta lugares
+ * donde repetir lo mismo, y uno donde olvidarse.
+ *
+ * `:not(:last-child)` deja la última columna sin borde, que si no dibuja una
+ * línea pegada al filo de la tarjeta. El color sale del reset global de
+ * `styles.css`, que le da `--color-border` a todo: `border-r` solo alcanza, y
+ * sigue al tema claro y oscuro sin tocar nada más.
+ */
+const COLUMNAS_DIVIDIDAS = "[&_th:not(:last-child)]:border-r [&_td:not(:last-child)]:border-r";
+
+/**
+ * Agrupa los días del mes en semanas, cortando los LUNES.
+ *
+ * La semana es la **del mes** (1 a 5 o 6), no la del año: en una planilla
+ * mensual que se firma, "semana 3" se entiende solo, mientras que la semana ISO
+ * —"semana 27"— obliga a un calendario para saber de qué días habla.
+ *
+ * La primera semana suele estar cortada: si el mes arranca un jueves, la
+ * semana 1 tiene cuatro días. Se cuenta igual como semana, porque son los días
+ * que efectivamente se trabajaron dentro de ese mes.
+ *
+ * Devuelve, por día, su número de semana y cuántos días tiene esa semana — lo
+ * segundo es el `rowSpan` de la celda que los agrupa.
+ */
+function agruparPorSemana(dias: Array<{ dia: number; iso: string; diaSemana: number }>) {
+  let semana = 1;
+  const conSemana = dias.map((d, i) => {
+    // `getDay()` da 1 para el lunes. El primer día del mes abre la semana 1 sea
+    // el día que sea, de ahí el `i > 0`.
+    if (i > 0 && d.diaSemana === 1) semana += 1;
+    return { ...d, semana };
+  });
+
+  const cuantosDias = new Map<number, number>();
+  for (const d of conSemana) cuantosDias.set(d.semana, (cuantosDias.get(d.semana) ?? 0) + 1);
+
+  return conSemana.map((d, i) => ({
+    ...d,
+    // La celda se dibuja una sola vez por semana, en su primer día.
+    abreSemana: i === 0 || conSemana[i - 1]?.semana !== d.semana,
+    diasDeLaSemana: cuantosDias.get(d.semana) ?? 1,
+  }));
+}
+
+/**
  * La grilla del mes: una fila por día, con los pares Ent./Sal. al costado.
  *
  * Muestra TODOS los días —incluidos los sin marca— porque es la vista que se
@@ -875,17 +1072,21 @@ function Planilla({
   porDia,
   maxMarcas,
   catedra,
+  onAbrirDia,
 }: {
   dias: Array<{ dia: number; iso: string; diaSemana: number }>;
   porDia: Map<string, AsistenciaProfesor[]>;
   maxMarcas: number;
   catedra: number;
+  /** Abre el modal con las marcaciones de ese día. */
+  onAbrirDia: (iso: string) => void;
 }) {
   return (
     <div className="surface-card overflow-x-auto">
-      <Table>
+      <Table className={COLUMNAS_DIVIDIDAS}>
         <TableHeader>
           <TableRow>
+            <TableHead className="w-14 text-center">Sem.</TableHead>
             <TableHead className="w-20">Día</TableHead>
             <TableHead className="w-24">Fecha</TableHead>
             {Array.from({ length: maxMarcas }, (_, i) => (
@@ -896,6 +1097,7 @@ function Planilla({
             <TableHead className="text-right">Horas</TableHead>
           </TableRow>
           <TableRow>
+            <TableHead />
             <TableHead />
             <TableHead />
             {Array.from({ length: maxMarcas }, (_, i) => [
@@ -910,54 +1112,225 @@ function Planilla({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {dias.map(({ dia, iso, diaSemana }) => {
-            const marcas = porDia.get(iso) ?? [];
-            const finDeSemana = diaSemana === 0 || diaSemana === 6;
-            const minutos = marcas.reduce((s, m) => s + (m.minutos ?? 0), 0);
-            const horas = minutos > 0 ? aHorasCatedra(minutos, catedra) : 0;
+          {agruparPorSemana(dias).map(
+            ({ dia, iso, diaSemana, semana, abreSemana, diasDeLaSemana }) => {
+              const marcas = porDia.get(iso) ?? [];
+              const finDeSemana = diaSemana === 0 || diaSemana === 6;
+              const minutos = marcas.reduce((s, m) => s + (m.minutos ?? 0), 0);
+              const horas = minutos > 0 ? aHorasCatedra(minutos, catedra) : 0;
 
-            return (
-              <TableRow
-                key={iso}
-                // El fin de semana en gris: sin marcarlo, un sábado vacío se lee
-                // igual que un día laboral sin marcar, que sí es un problema.
-                className={finDeSemana ? "bg-muted/40" : undefined}
-              >
-                <TableCell className="text-xs text-muted-foreground">{DIAS[diaSemana]}</TableCell>
-                <TableCell className="font-medium">{dia}</TableCell>
-                {Array.from({ length: maxMarcas }, (_, i) => {
-                  const m = marcas[i];
-                  return [
-                    <TableCell key={`e${i}`} className="text-center text-sm tabular-nums">
-                      {m?.horaEntrada ?? ""}
-                      {m?.entradaOffline === "S" && <IconoOffline />}
-                    </TableCell>,
-                    <TableCell key={`s${i}`} className="text-center text-sm tabular-nums">
-                      {m && m.horaEntrada && !m.horaSalida ? (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <AlertTriangle className="mx-auto size-4 text-warning" />
-                          </TooltipTrigger>
-                          <TooltipContent>Entró y no marcó salida</TooltipContent>
-                        </Tooltip>
-                      ) : (
-                        <>
-                          {m?.horaSalida ?? ""}
-                          {m?.salidaOffline === "S" && <IconoOffline />}
-                        </>
-                      )}
-                    </TableCell>,
-                  ];
-                })}
-                <TableCell className="text-right font-medium tabular-nums">
-                  {horas > 0 ? horas.toFixed(2) : ""}
-                </TableCell>
-              </TableRow>
-            );
-          })}
+              return (
+                <TableRow
+                  key={iso}
+                  onClick={() => onAbrirDia(iso)}
+                  className={cn(
+                    // Toda la fila abre el día: el objetivo es grande y no obliga a
+                    // apuntarle a una celda de dos dígitos.
+                    "cursor-pointer transition-colors hover:bg-accent/60",
+                    // El fin de semana en gris: sin marcarlo, un sábado vacío se lee
+                    // igual que un día laboral sin marcar, que sí es un problema.
+                    finDeSemana && "bg-muted/40",
+                  )}
+                >
+                  {/* Una sola celda por semana, estirada sobre sus días con
+                    rowSpan. `bg-card` explícito para que no herede el gris de la
+                    fila cuando la semana arranca un sábado —pasa en la primera
+                    semana del mes— y quede una columna de dos colores. */}
+                  {abreSemana && (
+                    <TableCell
+                      rowSpan={diasDeLaSemana}
+                      className="bg-card text-center align-middle text-sm font-medium text-muted-foreground"
+                    >
+                      {semana}
+                    </TableCell>
+                  )}
+                  <TableCell className="text-xs text-muted-foreground">{DIAS[diaSemana]}</TableCell>
+                  <TableCell className="font-medium">
+                    {/* Un <button> de verdad dentro de la celda: la fila clickeable
+                      es cómoda con el mouse, pero no la alcanza nadie que navegue
+                      con el teclado ni la anuncia un lector de pantalla.
+                      `stopPropagation` evita que el click cuente dos veces. */}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onAbrirDia(iso);
+                      }}
+                      className="rounded px-1 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      title={`Ver las marcaciones del ${dia}`}
+                    >
+                      {dia}
+                    </button>
+                  </TableCell>
+                  {Array.from({ length: maxMarcas }, (_, i) => {
+                    const m = marcas[i];
+                    return [
+                      <TableCell key={`e${i}`} className="text-center text-sm tabular-nums">
+                        {m?.horaEntrada ?? ""}
+                        {m?.entradaOffline === "S" && <IconoOffline />}
+                      </TableCell>,
+                      <TableCell key={`s${i}`} className="text-center text-sm tabular-nums">
+                        {m && m.horaEntrada && !m.horaSalida ? (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <AlertTriangle className="mx-auto size-4 text-warning" />
+                            </TooltipTrigger>
+                            <TooltipContent>Entró y no marcó salida</TooltipContent>
+                          </Tooltip>
+                        ) : (
+                          <>
+                            {m?.horaSalida ?? ""}
+                            {m?.salidaOffline === "S" && <IconoOffline />}
+                          </>
+                        )}
+                      </TableCell>,
+                    ];
+                  })}
+                  <TableCell className="text-right font-medium tabular-nums">
+                    {horas > 0 ? horas.toFixed(2) : ""}
+                  </TableCell>
+                </TableRow>
+              );
+            },
+          )}
         </TableBody>
       </Table>
     </div>
+  );
+}
+
+/**
+ * Las marcaciones de UN día, con sus acciones.
+ *
+ * Se abre desde la planilla, que es la vista con la que se liquida: ahí se ve
+ * el problema —un día en blanco, una entrada sin salida— y hasta ahora había
+ * que cambiar a Detalle y buscar esa fila entre las del mes entero.
+ *
+ * Es una LISTA y no un formulario directo: un día puede tener varias
+ * marcaciones —se entra y se sale más de una vez— y cuál corregir lo elige la
+ * persona. Con el día vacío queda sólo el botón de agregar, que es lo único
+ * que se puede hacer ahí.
+ *
+ * No guarda ni borra nada por su cuenta: delega en el mismo diálogo de carga y
+ * en la misma confirmación de baja que usa la vista Detalle. Duplicar el
+ * formulario acá habría dejado dos validaciones que mantener sincronizadas.
+ */
+function MarcacionesDelDia({
+  abierto,
+  titulo,
+  marcas,
+  catedra,
+  precio,
+  onCerrar,
+  onEditar,
+  onEliminar,
+  onAgregar,
+  puedeAgregar,
+}: {
+  abierto: boolean;
+  titulo: string;
+  marcas: AsistenciaProfesor[];
+  catedra: number;
+  precio: number;
+  onCerrar: () => void;
+  onEditar: (a: AsistenciaProfesor) => void;
+  onEliminar: (a: AsistenciaProfesor) => void;
+  onAgregar: () => void;
+  /** Sin empresa activa no hay a qué empresa cargarle la marcación. */
+  puedeAgregar: boolean;
+}) {
+  const minutos = marcas.reduce((s, m) => s + (m.minutos ?? 0), 0);
+  const horas = aHorasCatedra(minutos, catedra);
+
+  return (
+    <Dialog open={abierto} onOpenChange={(v) => !v && onCerrar()}>
+      <DialogContent className="sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle>{titulo}</DialogTitle>
+          <DialogDescription>
+            {marcas.length === 0
+              ? "Sin marcaciones este día."
+              : `${marcas.length} marcación(es) · ${horas.toFixed(2)} hs cátedra${
+                  precio > 0 ? ` · ${formatearMoneda(Math.round(horas * precio))} Gs.` : ""
+                }`}
+          </DialogDescription>
+        </DialogHeader>
+
+        {marcas.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-border px-3 py-8 text-center text-sm text-muted-foreground">
+            No hay ninguna marcación cargada para este día.
+          </p>
+        ) : (
+          // Con muchas marcaciones en un día el modal no puede crecer sin
+          // límite: la lista scrollea y el pie con las acciones queda fijo.
+          <ul className="max-h-[50vh] space-y-2 overflow-y-auto">
+            {marcas.map((m) => {
+              const horasFila = m.minutos === null ? null : aHorasCatedra(m.minutos, catedra);
+              return (
+                <li
+                  key={m.id}
+                  className="flex items-center justify-between gap-3 rounded-lg border border-border p-3"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate font-medium text-foreground">{m.profesor}</p>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {m.institucion ?? "Sin institución"}
+                    </p>
+                    {/* <div> y no <p>: adentro va un Badge, que renderiza un <div>,
+                        y el HTML no admite un <div> dentro de un <p>. */}
+                    <div className="mt-1 text-sm tabular-nums">
+                      {m.horaEntrada ?? "—"}
+                      {m.entradaOffline === "S" && <IconoOffline />}
+                      <span className="mx-1.5 text-muted-foreground">→</span>
+                      {m.horaSalida ?? "—"}
+                      {m.salidaOffline === "S" && <IconoOffline />}
+                      {horasFila === null ? (
+                        <Badge variant="outline" className="ml-2 text-warning">
+                          Incompleta
+                        </Badge>
+                      ) : (
+                        <span className="ml-2 text-muted-foreground">
+                          {horasFila.toFixed(2)} hs
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 gap-1">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => onEditar(m)}
+                      title="Editar la marcación"
+                    >
+                      <Pencil className="size-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => onEliminar(m)}
+                      title="Eliminar la marcación"
+                      className="text-destructive hover:text-destructive"
+                    >
+                      <Trash2 className="size-4" />
+                    </Button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onCerrar}>
+            Cerrar
+          </Button>
+          <Button onClick={onAgregar} disabled={!puedeAgregar}>
+            <Plus className="size-4" />
+            Agregar marcación
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -989,7 +1362,7 @@ function Detalle({
 }) {
   return (
     <div className="surface-card overflow-x-auto">
-      <Table>
+      <Table className={COLUMNAS_DIVIDIDAS}>
         <TableHeader>
           <TableRow>
             <TableHead>Fecha</TableHead>

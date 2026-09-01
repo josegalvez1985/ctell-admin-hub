@@ -20,6 +20,7 @@ de plantilla para todo lo demás.
    - [Cabecera y detalle: una transacción](#33-cabecera-y-detalle-una-transacción)
    - [Columnas calculadas: lo que no se guarda](#34-columnas-calculadas-lo-que-no-se-guarda)
    - [Máquinas de estado y triggers](#35-máquinas-de-estado-y-triggers)
+   - [Agregar una columna a una tabla que ya existe](#352-agregar-una-columna-a-una-tabla-que-ya-existe)
    - [Transacciones que mueven stock o plata](#36-transacciones-que-mueven-stock-o-plata)
    - [Trampas de PL/SQL que se repiten](#37-trampas-de-plsql-que-se-repiten)
    - [Un `UNIQUE` sobre texto necesita el texto normalizado](#38-un-unique-sobre-texto-necesita-el-texto-normalizado)
@@ -751,12 +752,16 @@ END;
 /
 ```
 
-### Parámetros: las dos trampas que ya nos costaron caro
+### Parámetros: las tres trampas que ya nos costaron caro
 
 Los query params llegan como **texto**, y hay que convertirlos. Pero convertir
-mal produce un 500 sin mensaje que es dificilísimo de diagnosticar. Estas dos
+mal produce un 500 sin mensaje que es dificilísimo de diagnosticar. Estas tres
 reglas no son estilo: son la diferencia entre un endpoint que anda y uno que
 muere.
+
+> Las dos primeras las verifica `npm run lint` sólo de a ratos; la tercera la
+> chequea `scripts/verificar-convenciones.mjs` en cada lint. Si tocás handlers,
+> corré el lint antes de ejecutar nada en APEX.
 
 #### 1. Un parámetro ausente llega como cadena vacía, no como NULL
 
@@ -796,6 +801,47 @@ DECLARE
 BEGIN
   l_pagina := TO_NUMBER(NULLIF(:pagina, ''));
 ```
+
+#### 3. El JSON del body NO se lee con `:body`
+
+Es la que más tiempo nos costó, y la más difícil de ver: **el endpoint responde
+400 "son obligatorios" con el body perfectamente armado.**
+
+`:body` es el payload **crudo, como BLOB**. Existe para subir archivos — es lo
+que usan `GUARDAR_IMAGEN`, `GUARDAR_FOTO` y `GUARDAR_LOGO`, y ahí está bien.
+Para un JSON, en cambio, **ORDS ya lo parsea y crea un bind por cada clave de
+primer nivel**, igual que con los query params:
+
+```sql
+-- MAL: p_body recibe un BLOB, y JSON_VALUE devuelve NULL en TODOS los campos
+p_source => 'BEGIN PKG_X.ACTUALIZAR(:authorization, :id, :body, :status_code, :resultado); END;'
+...
+  l_empresa := TO_NUMBER(NULLIF(JSON_VALUE(p_body, '$.idEmpresa'), ''));
+
+-- BIEN: cada clave del JSON es su propio bind, como VARCHAR2
+p_source => 'BEGIN PKG_X.ACTUALIZAR(:authorization, :id, :idEmpresa, :fecha, :status_code, :resultado); END;'
+...
+  l_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
+```
+
+Los binds del body **no se declaran con `DEFINE_PARAMETER`**, igual que los
+query params: se vinculan solos por nombre. Ver `db/categorias.sql`, que es el
+patrón que sigue todo el resto del proyecto.
+
+**Por qué se tarda tanto en encontrarlo:**
+
+- El `GET` y el `DELETE` **siguen andando**, porque toman todo de la ruta. El
+  síntoma que llega es _"el delete funciona, el update no"_, que suena a un
+  problema del `UPDATE` y no del binding.
+- El body viaja bien: se ve entero en la pestaña Network del navegador.
+- El paquete compila **VALID**: no hay ningún error que mirar.
+- El mensaje que vuelve es el 400 que vos mismo escribiste, así que parece que
+  el frontend está mandando mal los datos.
+
+**Y el corolario, del lado del cliente:** mandá siempre todas las claves, con
+`""` cuando el valor está vacío. Como ORDS arma un bind por clave, una clave
+omitida deja el bind **sin definir** en vez de en NULL. El PL/SQL las normaliza
+con `NULLIF(TRIM(p_x), '')`.
 
 ### Verificación al final del archivo
 
@@ -1515,6 +1561,89 @@ END IF;
 Sin el `IF`, pedir una venta sin lista devolvía **409 "la lista de descuentos no
 existe"** — un error por un dato que justamente pasó a ser opcional. Y acordate
 de sacar el dato del mensaje del handler global, que ya no puede culparlo.
+
+---
+
+## 3.5.2 Agregar una columna a una tabla que ya existe
+
+El DDL se administra aparte, así que cuando aparece una columna nueva el trabajo
+es **reflejarla**, no crearla. El caso que sirve de guía es `ARTICULOS.ID_MARCA`,
+una FK nullable contra un catálogo.
+
+Recorrido completo, en orden:
+
+| Paso | Archivo          | Qué se toca                                                          |
+| ---- | ---------------- | -------------------------------------------------------------------- |
+| 1    | `db/[tabla].sql` | El `SELECT` del listado: campo en el `JSON_OBJECT` + `LEFT JOIN`     |
+| 2    | `db/[tabla].sql` | Filtro opcional en el `WHERE` — **y en el del `COUNT`, que es otro** |
+| 3    | `db/[tabla].sql` | `INSERTAR` y `ACTUALIZAR`: spec, body, conversión, `INSERT`/`UPDATE` |
+| 4    | `db/[tabla].sql` | Los `p_source`, que enumeran los binds **por posición**              |
+| 5    | `src/lib/api.ts` | El tipo, y los parámetros de `listar`, `crear` y `actualizar`        |
+| 6    | `src/routes/…`   | Schema zod, `values`, campo, columna, filtro y mutación              |
+| 7    | Otras pantallas  | Las que listan la misma tabla — `/existencias`, en este caso         |
+
+El paso 7 es el que se olvida: `ARTICULOS` lo listan **dos** pantallas, y la
+columna nueva tiene que aparecer en las dos o el reporte contradice a la ficha.
+
+### El `LEFT JOIN` no es opcional
+
+Una FK nullable con `JOIN` interno hace **desaparecer del listado** todas las
+filas que todavía no tienen el dato — que son todas las anteriores a la columna.
+Sin ningún error: simplemente devuelve menos filas.
+
+```sql
+-- MAL: los articulos sin marca dejan de existir
+JOIN MARCAS mc ON mc.ID_MARCA = a.ID_MARCA
+
+-- BIEN
+LEFT JOIN MARCAS mc ON mc.ID_MARCA = a.ID_MARCA
+```
+
+### Un catálogo global no se valida por empresa
+
+Las FK de este proyecto suelen pedir coherencia: que el profesor y la
+institución sean de la misma empresa (`VALIDAR_COHERENCIA` en
+`db/asistencias-profesores.sql`). **`MARCAS` no tiene `ID_EMPRESA`**, así que no
+hay nada que validar: cualquier marca sirve para cualquier empresa.
+
+Conviene decirlo en un comentario del archivo, o la ausencia del control se lee
+como un olvido.
+
+### `NVL` en el `UPDATE` significa "no cambiar", no "desvincular"
+
+```sql
+ID_MARCA = NVL(l_id_marca, ID_MARCA)
+```
+
+Mandar la marca vacía **conserva la que tenía**. Es el criterio de todas las FK
+del proyecto y hay que conocerlo: hoy no existe forma de quitarle la marca a un
+artículo desde la API, y resolverlo pediría un centinela explícito (un 0) para
+todas las relaciones a la vez.
+
+### Un filtro nuevo puede pedir un índice nuevo
+
+`?idMarca=` recorre `ARTICULOS` por una columna que el DDL **no** indexó —sí
+tiene `IDX_ARTICULOS_CATEGORIA`, `_EMPRESA`, `_UNIDAD` y `_MONEDA`—. Con pocas
+filas no se nota. Se anota en el bloque de verificación del archivo, para que
+esté a mano cuando moleste:
+
+```sql
+-- CREATE INDEX IDX_ARTICULOS_MARCA ON ARTICULOS (ID_MARCA);
+```
+
+No se ejecuta desde `db/`: esos archivos no administran el DDL.
+
+### Verificar que la columna existe, antes que nada
+
+Si el `ALTER TABLE` no se corrió, el SQL estático que la nombra falla con
+`ORA-00904` y **el paquete entero queda `INVALID`** — o sea que deja de andar
+todo, no sólo lo nuevo. Va en el bloque de verificación del archivo:
+
+```sql
+SELECT COLUMN_NAME, NULLABLE, DATA_TYPE
+  FROM USER_TAB_COLUMNS
+ WHERE TABLE_NAME = 'ARTICULOS' AND COLUMN_NAME = 'ID_MARCA';
+```
 
 ---
 

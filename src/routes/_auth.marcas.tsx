@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { z } from "zod";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
+import { useEmpresa } from "@/components/ctell/empresa-provider";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
 import { useTablaListado } from "@/hooks/use-tabla-listado";
 import { api, ApiError, type Marca } from "@/lib/api";
@@ -71,19 +72,22 @@ export const Route = createFileRoute("/_auth/marcas")({
 
 function MarcasPage() {
   const queryClient = useQueryClient();
+  const { empresa } = useEmpresa();
   const [editando, setEditando] = useState<Marca | null>(null);
   const [creando, setCreando] = useState(false);
   const [aEliminar, setAEliminar] = useState<Marca | null>(null);
 
-  // Sin `idEmpresa` en la queryKey: es un catálogo global, la misma lista sirve
-  // para todas las empresas y no hay que reconsultarla al cambiar de una a otra.
+  // La empresa VA en la queryKey: MARCAS dejó de ser un catálogo global, así
+  // que cada empresa ve su propia lista —más las heredadas— y al cambiar de
+  // empresa hay que volver a consultar.
   const { data, isPending, isError, error } = useQuery({
-    queryKey: ["marcas"],
-    queryFn: () => api.marcas.listar(),
+    queryKey: ["marcas", empresa?.id ?? null],
+    queryFn: () => api.marcas.listar({ idEmpresa: empresa!.id }),
+    enabled: empresa !== null,
   });
 
   const eliminar = useMutation({
-    mutationFn: (marca: Marca) => api.marcas.eliminar(marca.id),
+    mutationFn: (marca: Marca) => api.marcas.eliminar(marca.id, empresa!.id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["marcas"] });
       toast.success("Marca eliminada");
@@ -110,10 +114,10 @@ function MarcasPage() {
           <div>
             <h1 className="text-2xl font-bold text-foreground sm:text-3xl">Marcas</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Catálogo de marcas de artículos, compartido por todas las empresas.
+              Marcas de artículos de esta empresa. Las que no tienen empresa asignada las ven todas.
             </p>
           </div>
-          <Button onClick={() => setCreando(true)}>
+          <Button onClick={() => setCreando(true)} disabled={empresa === null}>
             <Plus className="size-4" />
             Nueva marca
           </Button>
@@ -242,14 +246,17 @@ function MarcasPage() {
           </div>
         )}
 
-        <MarcaDialog
-          abierto={creando || editando !== null}
-          onCerrar={() => {
-            setCreando(false);
-            setEditando(null);
-          }}
-          marca={editando}
-        />
+        {empresa !== null && (
+          <MarcaDialog
+            abierto={creando || editando !== null}
+            onCerrar={() => {
+              setCreando(false);
+              setEditando(null);
+            }}
+            marca={editando}
+            idEmpresa={empresa.id}
+          />
+        )}
 
         <AlertDialog open={aEliminar !== null} onOpenChange={(v) => !v && setAEliminar(null)}>
           <AlertDialogContent>
@@ -287,10 +294,12 @@ function MarcaDialog({
   abierto,
   onCerrar,
   marca,
+  idEmpresa,
 }: {
   abierto: boolean;
   onCerrar: () => void;
   marca: Marca | null;
+  idEmpresa: number;
 }) {
   const queryClient = useQueryClient();
   const editando = marca !== null;
@@ -310,8 +319,8 @@ function MarcaDialog({
   const guardar = useMutation({
     mutationFn: (valores: FormValues) =>
       marca
-        ? api.marcas.actualizar(marca.id, { descripcion: valores.descripcion })
-        : api.marcas.crear({ descripcion: valores.descripcion }),
+        ? api.marcas.actualizar(marca.id, { idEmpresa, descripcion: valores.descripcion })
+        : api.marcas.crear({ idEmpresa, descripcion: valores.descripcion }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["marcas"] });
       toast.success(editando ? "Marca actualizada" : "Marca creada");
@@ -329,7 +338,7 @@ function MarcaDialog({
         <DialogHeader>
           <DialogTitle>{editando ? "Editar marca" : "Nueva marca"}</DialogTitle>
           <DialogDescription>
-            El nombre del fabricante del artículo. Ej: Sony, LG, Nike.
+            El nombre del fabricante del artículo. Ej: Sakura, VIC, filter.
           </DialogDescription>
         </DialogHeader>
 
@@ -346,7 +355,7 @@ function MarcaDialog({
                 <FormItem>
                   <FormLabel>Descripción</FormLabel>
                   <FormControl>
-                    <Input autoFocus placeholder="Sony" {...field} />
+                    <Input autoFocus placeholder="Filter" {...field} />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
