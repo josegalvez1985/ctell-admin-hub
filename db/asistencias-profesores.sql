@@ -4,12 +4,48 @@
 -- Requiere db/auth.sql, PROFESORES e INSTITUCIONES, y el DDL de
 -- ASISTENCIAS_PROFESORES con la columna ID_EMPRESA.
 --
--- Endpoints: /asistencias-profesores/listar
+-- Endpoints: /asistencias-profesores/listar, /crear, /actualizar/:id,
+--            /eliminar/:id/:idEmpresa
 --
--- ES SOLO LECTURA. La marcacion la hace la app del profesor, no este modulo:
--- aca no hay INSERTAR, ACTUALIZAR ni ELIMINAR a proposito. Un ABM permitiria
--- editar a mano una marcacion con GPS y hora de origen, que es justamente el
--- dato que hace confiable al registro.
+--------------------------------------------------------------------------------
+-- LA CARGA NORMAL ES LA APP; ESTE MODULO ADEMAS PERMITE CORREGIRLA A MANO
+--
+-- El origen de los datos sigue siendo la app del profesor, que marca con GPS y
+-- hora del dispositivo. El ABM manual existe para corregir lo que la app no
+-- registro: una entrada sin salida, un dia que no se marco, una fila duplicada.
+--
+-- LO QUE ESTO IMPLICA, EXPLICITO: una marcacion cargada o editada a mano queda
+-- INDISTINGUIBLE de una tomada con GPS al mirar el reporte. La tabla no guarda
+-- quien la toco ni cuando se edito, asi que ante una discusion de liquidacion el
+-- registro ya no separa una de otra. Fue una decision tomada a conciencia,
+-- priorizando poder corregir sin friccion.
+--
+-- Lo unico que queda como rastro es indirecto: las filas cargadas a mano no
+-- llevan LATITUD/LONGITUD ni MARCADO_EN_*, porque este modulo no los escribe.
+-- Una fila sin GPS es, casi seguro, una fila manual — pero las marcaciones
+-- viejas de la app tampoco los tienen, asi que no sirve como prueba.
+--
+-- Si algun dia hace falta trazabilidad de verdad, el camino es agregar al DDL
+-- ID_USUARIO_CARGA y ORIGEN ('APP'/'MANUAL'), no deducirlo de los NULL.
+--
+--------------------------------------------------------------------------------
+-- QUIEN ENTRA VE TODAS LAS MARCACIONES. NO FILTRAR POR USUARIO.
+--
+-- El acceso al reporte lo deciden los PERMISOS DE PAGINA (USUARIO_PAGINAS), no
+-- este paquete: quien tenga habilitada la pagina ve todas las marcaciones de la
+-- empresa. Por eso alcanza con VALIDAR_TOKEN —sesion valida— y NO se usa
+-- VALIDAR_TOKEN_ADMIN ni se compara el idProfesor pedido contra el usuario
+-- logueado.
+--
+-- Hubo una version publicada en ORDS que SI comparaba, y devolvia
+-- 403 "Solo podes ver tus propias asistencias" para cualquier profesor que no
+-- fuera el del usuario. Nunca estuvo en este archivo: se ejecuto en la hoja SQL
+-- de APEX y el repo quedo desincronizado. El sintoma era enganoso — el reporte
+-- "andaba" con un profesor y fallaba con el resto — y el 403 no se podia
+-- rastrear leyendo el codigo, porque el mensaje no existia en el repo.
+--
+-- Un reporte de liquidacion que solo muestra al propio profesor no sirve para
+-- nada: justamente se usa para comparar y liquidar a TODOS.
 --
 --------------------------------------------------------------------------------
 -- LOS IMPORTES NO SE CALCULAN ACA
@@ -58,6 +94,43 @@ CREATE OR REPLACE PACKAGE PKG_ASISTENCIAS_PROFESORES AS
     p_mes            IN  VARCHAR2,
     p_id_profesor    IN  VARCHAR2,
     p_id_institucion IN  VARCHAR2,
+    p_status_code    OUT NUMBER,
+    p_resultado      OUT CLOB
+  );
+
+  ------------------------------------------------------------------------------
+  -- CARGA MANUAL
+  --
+  -- Alta, edicion y baja a mano de una marcacion, para corregir lo que la app
+  -- no registro: una entrada sin salida, un dia que no se marco, una fila
+  -- duplicada.
+  --
+  -- Las filas cargadas por aca NO llevan GPS ni marca de origen: LATITUD,
+  -- LONGITUD, MARCADO_EN_* y las CLAVE_* quedan en NULL, que es como se
+  -- distinguen de una marcacion real si alguna vez hace falta mirarlas.
+  --
+  -- Requieren sesion valida (VALIDAR_TOKEN), no rol de administrador: el acceso
+  -- lo deciden los permisos de pagina, igual que el listado.
+  ------------------------------------------------------------------------------
+  PROCEDURE INSERTAR (
+    p_authorization  IN  VARCHAR2,
+    p_body           IN  CLOB,
+    p_status_code    OUT NUMBER,
+    p_resultado      OUT CLOB
+  );
+
+  PROCEDURE ACTUALIZAR (
+    p_authorization  IN  VARCHAR2,
+    p_id             IN  VARCHAR2,
+    p_body           IN  CLOB,
+    p_status_code    OUT NUMBER,
+    p_resultado      OUT CLOB
+  );
+
+  PROCEDURE ELIMINAR (
+    p_authorization  IN  VARCHAR2,
+    p_id             IN  VARCHAR2,
+    p_id_empresa     IN  VARCHAR2,
     p_status_code    OUT NUMBER,
     p_resultado      OUT CLOB
   );
@@ -275,6 +348,333 @@ CREATE OR REPLACE PACKAGE BODY PKG_ASISTENCIAS_PROFESORES AS
       p_resultado := '{"error":"Error al listar las asistencias"}';
   END LISTAR;
 
+  ------------------------------------------------------------------------------
+  -- Privado: arma un TIMESTAMP a partir de la fecha del dia y una hora 'HH24:MI'.
+  --
+  -- La hora viaja como texto y no como timestamp completo porque el formulario
+  -- pide "07:30", no una fecha con hora: componerla aca evita que el frontend
+  -- tenga que armar un ISO y que una zona horaria le corra el dia.
+  --
+  -- Devuelve NULL con hora vacia: una marcacion sin salida es un estado valido
+  -- (el profesor entro y todavia no salio).
+  ------------------------------------------------------------------------------
+  FUNCTION ARMAR_HORA (p_fecha IN DATE, p_hora IN VARCHAR2) RETURN TIMESTAMP IS
+  BEGIN
+    IF p_hora IS NULL OR TRIM(p_hora) IS NULL THEN
+      RETURN NULL;
+    END IF;
+    RETURN TO_TIMESTAMP(TO_CHAR(p_fecha, 'YYYY-MM-DD') || ' ' || TRIM(p_hora),
+                        'YYYY-MM-DD HH24:MI');
+  END ARMAR_HORA;
+
+  ------------------------------------------------------------------------------
+  -- Privado: valida que el profesor y la institucion existan y sean de la
+  -- empresa indicada.
+  --
+  -- Las FK garantizan que existan, pero NO que sean de la misma empresa: sin
+  -- esto se podria cargar una marcacion de un profesor de la empresa A en una
+  -- institucion de la B. Es el mismo control que hace PKG_UBICACIONES.
+  --
+  -- Devuelve el mensaje de error, o NULL si esta todo bien.
+  ------------------------------------------------------------------------------
+  FUNCTION VALIDAR_COHERENCIA (
+    p_id_empresa     IN NUMBER,
+    p_id_profesor    IN NUMBER,
+    p_id_institucion IN NUMBER
+  ) RETURN VARCHAR2 IS
+    l_cuenta PLS_INTEGER;
+  BEGIN
+    SELECT COUNT(*) INTO l_cuenta
+      FROM PROFESORES
+     WHERE ID_PROFESOR = p_id_profesor
+       AND ID_EMPRESA  = p_id_empresa;
+    IF l_cuenta = 0 THEN
+      RETURN 'El profesor no existe o no pertenece a esta empresa';
+    END IF;
+
+    SELECT COUNT(*) INTO l_cuenta
+      FROM INSTITUCIONES
+     WHERE ID_INSTITUCION = p_id_institucion
+       AND ID_EMPRESA     = p_id_empresa;
+    IF l_cuenta = 0 THEN
+      RETURN 'La institucion no existe o no pertenece a esta empresa';
+    END IF;
+
+    RETURN NULL;
+  END VALIDAR_COHERENCIA;
+
+  PROCEDURE INSERTAR (
+    p_authorization  IN  VARCHAR2,
+    p_body           IN  CLOB,
+    p_status_code    OUT NUMBER,
+    p_resultado      OUT CLOB
+  ) IS
+    l_sesion      NUMBER;
+    l_empresa     NUMBER;
+    l_profesor    NUMBER;
+    l_institucion NUMBER;
+    l_fecha       DATE;
+    l_entrada     TIMESTAMP;
+    l_salida      TIMESTAMP;
+    l_error       VARCHAR2(400);
+    l_id          NUMBER;
+    l_hora_ent    VARCHAR2(10);
+    l_hora_sal    VARCHAR2(10);
+  BEGIN
+    l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
+    IF l_sesion IS NULL THEN
+      p_status_code := 401;
+      p_resultado := '{"error":"Sesion invalida o vencida"}';
+      RETURN;
+    END IF;
+
+    -- Las conversiones van DENTRO del BEGIN, nunca en el DECLARE: alli correrian
+    -- antes de que exista el EXCEPTION y el error escaparia del procedimiento.
+    l_empresa     := TO_NUMBER(NULLIF(JSON_VALUE(p_body, '$.idEmpresa'), ''));
+    l_profesor    := TO_NUMBER(NULLIF(JSON_VALUE(p_body, '$.idProfesor'), ''));
+    l_institucion := TO_NUMBER(NULLIF(JSON_VALUE(p_body, '$.idInstitucion'), ''));
+    l_hora_ent    := NULLIF(TRIM(JSON_VALUE(p_body, '$.horaEntrada')), '');
+    l_hora_sal    := NULLIF(TRIM(JSON_VALUE(p_body, '$.horaSalida')), '');
+
+    IF l_empresa IS NULL OR l_profesor IS NULL OR l_institucion IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa, idProfesor e idInstitucion son obligatorios"}';
+      RETURN;
+    END IF;
+
+    BEGIN
+      l_fecha := TO_DATE(JSON_VALUE(p_body, '$.fecha'), 'YYYY-MM-DD');
+    EXCEPTION
+      WHEN OTHERS THEN
+        l_fecha := NULL;
+    END;
+
+    IF l_fecha IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"La fecha es obligatoria y va en formato YYYY-MM-DD"}';
+      RETURN;
+    END IF;
+
+    l_error := VALIDAR_COHERENCIA(l_empresa, l_profesor, l_institucion);
+    IF l_error IS NOT NULL THEN
+      p_status_code := 400;
+      p_resultado := JSON_OBJECT('error' VALUE l_error);
+      RETURN;
+    END IF;
+
+    -- Se calcula en variables y no dentro del INSERT: una funcion privada del
+    -- BODY no se puede llamar desde una sentencia SQL (PLS-00231).
+    BEGIN
+      l_entrada := ARMAR_HORA(l_fecha, l_hora_ent);
+      l_salida  := ARMAR_HORA(l_fecha, l_hora_sal);
+    EXCEPTION
+      WHEN OTHERS THEN
+        p_status_code := 400;
+        p_resultado := '{"error":"La hora va en formato HH:MM (24 horas)"}';
+        RETURN;
+    END;
+
+    IF l_entrada IS NOT NULL AND l_salida IS NOT NULL AND l_salida <= l_entrada THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"La salida tiene que ser posterior a la entrada"}';
+      RETURN;
+    END IF;
+
+    -- LATITUD, LONGITUD, MARCADO_EN_* y CLAVE_* quedan en NULL: esta fila no la
+    -- tomo la app, se cargo a mano.
+    INSERT INTO ASISTENCIAS_PROFESORES (
+      ID_EMPRESA, ID_PROFESOR, ID_INSTITUCION, FECHA_ASISTENCIA,
+      HORA_ENTRADA, HORA_SALIDA, ENTRADA_OFFLINE, SALIDA_OFFLINE
+    ) VALUES (
+      l_empresa, l_profesor, l_institucion, l_fecha,
+      l_entrada, l_salida, 'N', 'N'
+    ) RETURNING ID_ASISTENCIA INTO l_id;
+
+    COMMIT;
+    p_status_code := 201;
+    p_resultado := JSON_OBJECT('id' VALUE l_id, 'ok' VALUE 'true' FORMAT JSON);
+  EXCEPTION
+    WHEN OTHERS THEN
+      ROLLBACK;
+      p_status_code := 500;
+      APEX_DEBUG.ERROR('PKG_ASISTENCIAS_PROFESORES.INSERTAR: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
+                       DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
+      p_resultado := '{"error":"Error al guardar la marcacion"}';
+  END INSERTAR;
+
+  PROCEDURE ACTUALIZAR (
+    p_authorization  IN  VARCHAR2,
+    p_id             IN  VARCHAR2,
+    p_body           IN  CLOB,
+    p_status_code    OUT NUMBER,
+    p_resultado      OUT CLOB
+  ) IS
+    l_sesion      NUMBER;
+    l_id          NUMBER;
+    l_empresa     NUMBER;
+    l_profesor    NUMBER;
+    l_institucion NUMBER;
+    l_fecha       DATE;
+    l_entrada     TIMESTAMP;
+    l_salida      TIMESTAMP;
+    l_error       VARCHAR2(400);
+    l_hora_ent    VARCHAR2(10);
+    l_hora_sal    VARCHAR2(10);
+  BEGIN
+    l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
+    IF l_sesion IS NULL THEN
+      p_status_code := 401;
+      p_resultado := '{"error":"Sesion invalida o vencida"}';
+      RETURN;
+    END IF;
+
+    l_id          := TO_NUMBER(NULLIF(p_id, ''));
+    l_empresa     := TO_NUMBER(NULLIF(JSON_VALUE(p_body, '$.idEmpresa'), ''));
+    l_profesor    := TO_NUMBER(NULLIF(JSON_VALUE(p_body, '$.idProfesor'), ''));
+    l_institucion := TO_NUMBER(NULLIF(JSON_VALUE(p_body, '$.idInstitucion'), ''));
+    l_hora_ent    := NULLIF(TRIM(JSON_VALUE(p_body, '$.horaEntrada')), '');
+    l_hora_sal    := NULLIF(TRIM(JSON_VALUE(p_body, '$.horaSalida')), '');
+
+    -- El idEmpresa no es un dato mas a guardar: acota A CUAL FILA se aplica el
+    -- cambio, igual que en el DELETE. Sin el, un PUT podria tocar la marcacion
+    -- de otra empresa.
+    IF l_id IS NULL OR l_empresa IS NULL OR l_profesor IS NULL OR l_institucion IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"id, idEmpresa, idProfesor e idInstitucion son obligatorios"}';
+      RETURN;
+    END IF;
+
+    BEGIN
+      l_fecha := TO_DATE(JSON_VALUE(p_body, '$.fecha'), 'YYYY-MM-DD');
+    EXCEPTION
+      WHEN OTHERS THEN
+        l_fecha := NULL;
+    END;
+
+    IF l_fecha IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"La fecha es obligatoria y va en formato YYYY-MM-DD"}';
+      RETURN;
+    END IF;
+
+    l_error := VALIDAR_COHERENCIA(l_empresa, l_profesor, l_institucion);
+    IF l_error IS NOT NULL THEN
+      p_status_code := 400;
+      p_resultado := JSON_OBJECT('error' VALUE l_error);
+      RETURN;
+    END IF;
+
+    BEGIN
+      l_entrada := ARMAR_HORA(l_fecha, l_hora_ent);
+      l_salida  := ARMAR_HORA(l_fecha, l_hora_sal);
+    EXCEPTION
+      WHEN OTHERS THEN
+        p_status_code := 400;
+        p_resultado := '{"error":"La hora va en formato HH:MM (24 horas)"}';
+        RETURN;
+    END;
+
+    IF l_entrada IS NOT NULL AND l_salida IS NOT NULL AND l_salida <= l_entrada THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"La salida tiene que ser posterior a la entrada"}';
+      RETURN;
+    END IF;
+
+    -- ID_EMPRESA NO va en el SET: poder cambiarla permitiria mover la fila a
+    -- otra empresa, que es justo lo que el WHERE impide. Va en el WHERE, y la
+    -- condicion contempla las filas viejas que la tienen en NULL, igual que el
+    -- LISTAR.
+    UPDATE ASISTENCIAS_PROFESORES a
+       SET ID_PROFESOR         = l_profesor,
+           ID_INSTITUCION      = l_institucion,
+           FECHA_ASISTENCIA    = l_fecha,
+           HORA_ENTRADA        = l_entrada,
+           HORA_SALIDA         = l_salida,
+           FECHA_ACTUALIZACION = SYSTIMESTAMP
+     WHERE a.ID_ASISTENCIA = l_id
+       AND (a.ID_EMPRESA = l_empresa
+            OR (a.ID_EMPRESA IS NULL
+                AND EXISTS (SELECT 1 FROM PROFESORES p
+                             WHERE p.ID_PROFESOR = a.ID_PROFESOR
+                               AND p.ID_EMPRESA  = l_empresa)));
+
+    IF SQL%ROWCOUNT = 0 THEN
+      ROLLBACK;
+      -- 404 y no 403: decir "existe pero no es tuya" confirmaria que el id
+      -- existe, que es lo que no deberia poder averiguarse.
+      p_status_code := 404;
+      p_resultado := '{"error":"No se encontro la marcacion"}';
+      RETURN;
+    END IF;
+
+    COMMIT;
+    p_status_code := 200;
+    p_resultado := JSON_OBJECT('ok' VALUE 'true' FORMAT JSON);
+  EXCEPTION
+    WHEN OTHERS THEN
+      ROLLBACK;
+      p_status_code := 500;
+      APEX_DEBUG.ERROR('PKG_ASISTENCIAS_PROFESORES.ACTUALIZAR: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
+                       DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
+      p_resultado := '{"error":"Error al actualizar la marcacion"}';
+  END ACTUALIZAR;
+
+  PROCEDURE ELIMINAR (
+    p_authorization  IN  VARCHAR2,
+    p_id             IN  VARCHAR2,
+    p_id_empresa     IN  VARCHAR2,
+    p_status_code    OUT NUMBER,
+    p_resultado      OUT CLOB
+  ) IS
+    l_sesion  NUMBER;
+    l_id      NUMBER;
+    l_empresa NUMBER;
+  BEGIN
+    l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
+    IF l_sesion IS NULL THEN
+      p_status_code := 401;
+      p_resultado := '{"error":"Sesion invalida o vencida"}';
+      RETURN;
+    END IF;
+
+    l_id      := TO_NUMBER(NULLIF(p_id, ''));
+    l_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
+
+    IF l_id IS NULL OR l_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"id e idEmpresa son obligatorios"}';
+      RETURN;
+    END IF;
+
+    -- La baja es FISICA: la tabla no tiene columna de estado, y una marcacion
+    -- inactiva no significa nada — o paso o no paso.
+    DELETE FROM ASISTENCIAS_PROFESORES a
+     WHERE a.ID_ASISTENCIA = l_id
+       AND (a.ID_EMPRESA = l_empresa
+            OR (a.ID_EMPRESA IS NULL
+                AND EXISTS (SELECT 1 FROM PROFESORES p
+                             WHERE p.ID_PROFESOR = a.ID_PROFESOR
+                               AND p.ID_EMPRESA  = l_empresa)));
+
+    IF SQL%ROWCOUNT = 0 THEN
+      ROLLBACK;
+      p_status_code := 404;
+      p_resultado := '{"error":"No se encontro la marcacion"}';
+      RETURN;
+    END IF;
+
+    COMMIT;
+    p_status_code := 200;
+    p_resultado := JSON_OBJECT('ok' VALUE 'true' FORMAT JSON);
+  EXCEPTION
+    WHEN OTHERS THEN
+      ROLLBACK;
+      p_status_code := 500;
+      APEX_DEBUG.ERROR('PKG_ASISTENCIAS_PROFESORES.ELIMINAR: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
+                       DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
+      p_resultado := '{"error":"Error al eliminar la marcacion"}';
+  END ELIMINAR;
+
   PROCEDURE PUBLICAR_ENDPOINTS IS
   BEGIN
     BORRAR_MODULO;
@@ -326,6 +726,94 @@ CREATE OR REPLACE PACKAGE BODY PKG_ASISTENCIAS_PROFESORES AS
       p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
+    ----------------------------------------------------------------------------
+    -- POST /asistencias-profesores/crear
+    ----------------------------------------------------------------------------
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'asistencias-profesores', p_pattern => 'crear');
+
+    ORDS.DEFINE_HANDLER(
+      p_module_name => 'asistencias-profesores',
+      p_pattern     => 'crear',
+      p_method      => 'POST',
+      p_source_type => ORDS.source_type_plsql,
+      p_source      => 'BEGIN PKG_ASISTENCIAS_PROFESORES.INSERTAR(:authorization, :body, :status_code, :resultado); END;'
+    );
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'asistencias-profesores', p_pattern => 'crear', p_method => 'POST',
+      p_name => 'authorization', p_bind_variable_name => 'authorization',
+      p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'asistencias-profesores', p_pattern => 'crear', p_method => 'POST',
+      p_name => 'resultado', p_bind_variable_name => 'resultado',
+      p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'asistencias-profesores', p_pattern => 'crear', p_method => 'POST',
+      p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
+      p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
+
+    ----------------------------------------------------------------------------
+    -- PUT /asistencias-profesores/actualizar/:id
+    --
+    -- El idEmpresa va en el BODY, no en la ruta: acota a cual fila se aplica el
+    -- cambio. Es el mismo criterio del resto de las tablas por empresa.
+    ----------------------------------------------------------------------------
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'asistencias-profesores', p_pattern => 'actualizar/:id');
+
+    ORDS.DEFINE_HANDLER(
+      p_module_name => 'asistencias-profesores',
+      p_pattern     => 'actualizar/:id',
+      p_method      => 'PUT',
+      p_source_type => ORDS.source_type_plsql,
+      p_source      => 'BEGIN PKG_ASISTENCIAS_PROFESORES.ACTUALIZAR(:authorization, :id, :body, :status_code, :resultado); END;'
+    );
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'asistencias-profesores', p_pattern => 'actualizar/:id', p_method => 'PUT',
+      p_name => 'authorization', p_bind_variable_name => 'authorization',
+      p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'asistencias-profesores', p_pattern => 'actualizar/:id', p_method => 'PUT',
+      p_name => 'resultado', p_bind_variable_name => 'resultado',
+      p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'asistencias-profesores', p_pattern => 'actualizar/:id', p_method => 'PUT',
+      p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
+      p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
+
+    ----------------------------------------------------------------------------
+    -- DELETE /asistencias-profesores/eliminar/:id/:idEmpresa
+    ----------------------------------------------------------------------------
+    ORDS.DEFINE_TEMPLATE(
+      p_module_name => 'asistencias-profesores', p_pattern => 'eliminar/:id/:idEmpresa');
+
+    ORDS.DEFINE_HANDLER(
+      p_module_name => 'asistencias-profesores',
+      p_pattern     => 'eliminar/:id/:idEmpresa',
+      p_method      => 'DELETE',
+      p_source_type => ORDS.source_type_plsql,
+      p_source      => 'BEGIN PKG_ASISTENCIAS_PROFESORES.ELIMINAR(:authorization, :id, :idEmpresa, :status_code, :resultado); END;'
+    );
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'asistencias-profesores', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE',
+      p_name => 'authorization', p_bind_variable_name => 'authorization',
+      p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'asistencias-profesores', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE',
+      p_name => 'resultado', p_bind_variable_name => 'resultado',
+      p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'asistencias-profesores', p_pattern => 'eliminar/:id/:idEmpresa', p_method => 'DELETE',
+      p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
+      p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
+
     COMMIT;
   END PUBLICAR_ENDPOINTS;
 
@@ -359,12 +847,30 @@ SELECT NAME, STATUS, ORIGINS_ALLOWED
   FROM USER_ORDS_MODULES
  WHERE NAME = 'asistencias-profesores';
 
--- Una fila: listar GET.
+-- Cuatro filas: listar GET, crear POST, actualizar/:id PUT,
+-- eliminar/:id/:idEmpresa DELETE.
 SELECT t.URI_TEMPLATE, h.METHOD
   FROM USER_ORDS_TEMPLATES t
   JOIN USER_ORDS_HANDLERS  h ON h.TEMPLATE_ID = t.ID
   JOIN USER_ORDS_MODULES   m ON m.ID = t.MODULE_ID
- WHERE m.NAME = 'asistencias-profesores';
+ WHERE m.NAME = 'asistencias-profesores'
+ ORDER BY t.URI_TEMPLATE, h.METHOD;
+
+-- TIENE QUE VOLVER VACIO. Si devuelve filas, el paquete COMPILADO en la base no
+-- es este archivo: quedo publicada una version que filtra por usuario y responde
+-- 403 "Solo podes ver tus propias asistencias" para todo profesor que no sea el
+-- del que consulta. Ver la nota del encabezado. La cura es reejecutar este
+-- archivo entero (con `npm run dev` frenado).
+--
+-- Se mira USER_SOURCE y no el comportamiento porque el sintoma es intermitente
+-- por naturaleza: con el profesor propio el endpoint responde 200 y todo
+-- parece sano.
+SELECT LINE, TEXT
+  FROM USER_SOURCE
+ WHERE NAME = 'PKG_ASISTENCIAS_PROFESORES'
+   AND (UPPER(TEXT) LIKE '%PROPIAS ASISTENCIAS%'
+     OR UPPER(TEXT) LIKE '%VALIDAR_TOKEN_ADMIN%')
+ ORDER BY LINE;
 
 -- Cuantas asistencias tienen ID_EMPRESA en NULL (filas previas a la columna).
 -- El LISTAR las incluye igual via la empresa del profesor, pero conviene

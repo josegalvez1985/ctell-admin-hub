@@ -33,6 +33,7 @@ import { Route as AuthInventariosRouteImport } from './routes/_auth.inventarios'
 import { Route as AuthIvaRouteImport } from './routes/_auth.iva'
 import { Route as AuthListasDescuentosRouteImport } from './routes/_auth.listas-descuentos'
 import { Route as AuthLotesRouteImport } from './routes/_auth.lotes'
+import { Route as AuthMarcasRouteImport } from './routes/_auth.marcas'
 import { Route as AuthMenuRouteImport } from './routes/_auth.menu'
 import { Route as AuthMonedasRouteImport } from './routes/_auth.monedas'
 import { Route as AuthPagosRouteImport } from './routes/_auth.pagos'
@@ -166,6 +167,11 @@ const AuthLotesRoute = AuthLotesRouteImport.update({
   path: '/lotes',
   getParentRoute: () => AuthRoute,
 } as any)
+const AuthMarcasRoute = AuthMarcasRouteImport.update({
+  id: '/marcas',
+  path: '/marcas',
+  getParentRoute: () => AuthRoute,
+} as any)
 const AuthMenuRoute = AuthMenuRouteImport.update({
   id: '/menu',
   path: '/menu',
@@ -251,6 +257,7 @@ export interface FileRoutesByFullPath {
   '/iva': typeof AuthIvaRoute
   '/listas-descuentos': typeof AuthListasDescuentosRoute
   '/lotes': typeof AuthLotesRoute
+  '/marcas': typeof AuthMarcasRoute
   '/menu': typeof AuthMenuRoute
   '/monedas': typeof AuthMonedasRoute
   '/pagos': typeof AuthPagosRoute
@@ -288,6 +295,7 @@ export interface FileRoutesByTo {
   '/iva': typeof AuthIvaRoute
   '/listas-descuentos': typeof AuthListasDescuentosRoute
   '/lotes': typeof AuthLotesRoute
+  '/marcas': typeof AuthMarcasRoute
   '/menu': typeof AuthMenuRoute
   '/monedas': typeof AuthMonedasRoute
   '/pagos': typeof AuthPagosRoute
@@ -327,6 +335,7 @@ export interface FileRoutesById {
   '/_auth/iva': typeof AuthIvaRoute
   '/_auth/listas-descuentos': typeof AuthListasDescuentosRoute
   '/_auth/lotes': typeof AuthLotesRoute
+  '/_auth/marcas': typeof AuthMarcasRoute
   '/_auth/menu': typeof AuthMenuRoute
   '/_auth/monedas': typeof AuthMonedasRoute
   '/_auth/pagos': typeof AuthPagosRoute
@@ -366,6 +375,7 @@ export interface FileRouteTypes {
     | '/iva'
     | '/listas-descuentos'
     | '/lotes'
+    | '/marcas'
     | '/menu'
     | '/monedas'
     | '/pagos'
@@ -403,6 +413,7 @@ export interface FileRouteTypes {
     | '/iva'
     | '/listas-descuentos'
     | '/lotes'
+    | '/marcas'
     | '/menu'
     | '/monedas'
     | '/pagos'
@@ -441,6 +452,7 @@ export interface FileRouteTypes {
     | '/_auth/iva'
     | '/_auth/listas-descuentos'
     | '/_auth/lotes'
+    | '/_auth/marcas'
     | '/_auth/menu'
     | '/_auth/monedas'
     | '/_auth/pagos'
@@ -630,6 +642,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthLotesRouteImport
       parentRoute: typeof AuthRoute
     }
+    '/_auth/marcas': {
+      id: '/_auth/marcas'
+      path: '/marcas'
+      fullPath: '/marcas'
+      preLoaderRoute: typeof AuthMarcasRouteImport
+      parentRoute: typeof AuthRoute
+    }
     '/_auth/menu': {
       id: '/_auth/menu'
       path: '/menu'
@@ -740,6 +759,7 @@ interface AuthRouteChildren {
   AuthIvaRoute: typeof AuthIvaRoute
   AuthListasDescuentosRoute: typeof AuthListasDescuentosRoute
   AuthLotesRoute: typeof AuthLotesRoute
+  AuthMarcasRoute: typeof AuthMarcasRoute
   AuthMenuRoute: typeof AuthMenuRoute
   AuthMonedasRoute: typeof AuthMonedasRoute
   AuthPagosRoute: typeof AuthPagosRoute
@@ -777,6 +797,7 @@ const AuthRouteChildren: AuthRouteChildren = {
   AuthIvaRoute: AuthIvaRoute,
   AuthListasDescuentosRoute: AuthListasDescuentosRoute,
   AuthLotesRoute: AuthLotesRoute,
+  AuthMarcasRoute: AuthMarcasRoute,
   AuthMenuRoute: AuthMenuRoute,
   AuthMonedasRoute: AuthMonedasRoute,
   AuthPagosRoute: AuthPagosRoute,

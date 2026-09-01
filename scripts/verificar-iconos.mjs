@@ -37,6 +37,7 @@ const SINONIMOS = [
     "asistencia de profesores",
     "reporte de asistencias",
   ],
+  ["marcas", "marca"],
   ["modulos", "modulo"],
   ["paginas", "pagina"],
   ["permisos", "permiso"],

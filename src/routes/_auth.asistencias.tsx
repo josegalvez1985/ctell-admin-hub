@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   CalendarDays,
@@ -8,7 +8,10 @@ import {
   FileText,
   LayoutGrid,
   MapPin,
+  Pencil,
+  Plus,
   Table2,
+  Trash2,
   WifiOff,
 } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -17,6 +20,17 @@ import { toast } from "sonner";
 import { AppLayout } from "@/components/ctell/AppLayout";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
 import { InputMoneda } from "@/components/ctell/InputMoneda";
+import { MarcacionDialog } from "@/components/ctell/MarcacionDialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -122,40 +136,119 @@ export const Route = createFileRoute("/_auth/asistencias")({
 
 function AsistenciasPage() {
   const { empresa } = useEmpresa();
+  const queryClient = useQueryClient();
   const hoy = new Date();
 
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1));
+  const [idInstitucion, setIdInstitucion] = useState(TODOS);
   const [idProfesor, setIdProfesor] = useState(TODOS);
   const [vista, setVista] = useState<"planilla" | "detalle">("planilla");
+
+  // Carga manual. `editando` en null con el diálogo abierto es un alta.
+  const [dialogoAbierto, setDialogoAbierto] = useState(false);
+  const [editando, setEditando] = useState<AsistenciaProfesor | null>(null);
+  const [aEliminar, setAEliminar] = useState<AsistenciaProfesor | null>(null);
 
   // Los dos parámetros del cálculo. Viven en la pantalla y no en la base: ver
   // la nota de db/asistencias-profesores.sql.
   const [precioHora, setPrecioHora] = useState("");
   const [duracionCatedra, setDuracionCatedra] = useState("60");
 
-  // `/profesores/listar` no pagina: devuelve todos los de la empresa. Se piden
-  // sólo los activos porque el filtro es para elegir a quién liquidar, y un
-  // profesor dado de baja no debería aparecer en esa lista.
-  const profesores = useQuery({
-    queryKey: ["profesores", empresa?.id ?? null, "A"],
-    queryFn: () => api.profesores.listar({ idEmpresa: empresa!.id, activo: "A" }),
-    enabled: empresa !== null,
-  });
-
-  const asistencias = useQuery({
-    queryKey: ["asistencias", empresa?.id ?? null, anio, mes, idProfesor],
+  /**
+   * Las marcaciones del período SIN filtrar por institución ni profesor.
+   *
+   * De acá salen las dos listas de los combos, y por eso no se puede reusar
+   * `asistencias`: esa ya viene filtrada, así que elegir una institución dejaría
+   * el combo con esa sola opción y no habría cómo volver a otra.
+   *
+   * Tampoco salen de `/instituciones/listar` ni de `/profesores/listar`: esos
+   * traen los catálogos completos y ofrecerían decenas de opciones que en el mes
+   * elegido no tienen ninguna marcación — elegir una devuelve una pantalla
+   * vacía, y no hay forma de saber cuál sí tiene sin probarlas de a una.
+   */
+  const delPeriodo = useQuery({
+    queryKey: ["asistencias", empresa?.id ?? null, anio, mes, "periodo-completo"],
     queryFn: () =>
       api.asistenciasProfesores.listar({
         idEmpresa: empresa!.id,
         anio: Number(anio),
         mes: Number(mes),
+      }),
+    enabled: empresa !== null,
+  });
+
+  const asistencias = useQuery({
+    queryKey: ["asistencias", empresa?.id ?? null, anio, mes, idInstitucion, idProfesor],
+    queryFn: () =>
+      api.asistenciasProfesores.listar({
+        idEmpresa: empresa!.id,
+        anio: Number(anio),
+        mes: Number(mes),
+        ...(idInstitucion !== TODOS ? { idInstitucion: Number(idInstitucion) } : {}),
         ...(idProfesor !== TODOS ? { idProfesor: Number(idProfesor) } : {}),
       }),
     enabled: empresa !== null,
   });
 
   const items = useMemo(() => asistencias.data?.items ?? [], [asistencias.data?.items]);
+
+  const itemsPeriodo = useMemo(() => delPeriodo.data?.items ?? [], [delPeriodo.data?.items]);
+
+  /** Las instituciones con al menos una marcación en el período. */
+  const institucionesConMarcas = useMemo(() => {
+    const mapa = new Map<number, string>();
+    for (const a of itemsPeriodo) {
+      if (a.idInstitucion !== null && !mapa.has(a.idInstitucion)) {
+        mapa.set(a.idInstitucion, a.institucion ?? `Institución ${a.idInstitucion}`);
+      }
+    }
+    return [...mapa.entries()]
+      .map(([id, nombre]) => ({ id, nombre }))
+      .sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+  }, [itemsPeriodo]);
+
+  /**
+   * Los profesores con marcaciones, acotados a la institución elegida.
+   *
+   * Es el subfiltro: elegida una institución, el combo ofrece sólo a quienes
+   * dieron clase ahí. Sin institución, todos los del período.
+   */
+  const profesoresConMarcas = useMemo(() => {
+    const mapa = new Map<number, string>();
+    for (const a of itemsPeriodo) {
+      if (idInstitucion !== TODOS && String(a.idInstitucion) !== idInstitucion) continue;
+      if (!mapa.has(a.idProfesor)) mapa.set(a.idProfesor, a.profesor);
+    }
+    return [...mapa.entries()]
+      .map(([id, nombre]) => ({ id, nombre }))
+      .sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+  }, [itemsPeriodo, idInstitucion]);
+
+  /**
+   * Si el profesor elegido no da clase en la institución elegida, el filtro
+   * queda en una combinación sin resultados y la pantalla se ve vacía sin
+   * explicar por qué. Se vuelve a "Todos" en cuanto deja de ser una opción.
+   *
+   * Se compara contra la lista ya calculada y no se pide nada: es corregir el
+   * estado, no un efecto sobre datos externos.
+   */
+  // Al cambiar de mes la institución elegida puede no tener marcaciones en el
+  // nuevo período: quedaría filtrando por algo que ya no está en la lista.
+  const institucionFueraDeLista =
+    idInstitucion !== TODOS &&
+    !delPeriodo.isPending &&
+    !institucionesConMarcas.some((i) => String(i.id) === idInstitucion);
+  if (institucionFueraDeLista) setIdInstitucion(TODOS);
+
+  // El `!isPending` importa: mientras la consulta del período está en vuelo la
+  // lista está vacía, y sin esa guarda el filtro se resetearía solo cada vez que
+  // se cambia de mes.
+  const profesorFueraDeLista =
+    idProfesor !== TODOS &&
+    !delPeriodo.isPending &&
+    !profesoresConMarcas.some((p) => String(p.id) === idProfesor);
+  if (profesorFueraDeLista) setIdProfesor(TODOS);
 
   const catedra = Number(duracionCatedra) || 60;
   const precio = numeroMoneda(precioHora) || 0;
@@ -221,10 +314,15 @@ function AsistenciasPage() {
     [porDia],
   );
 
-  const profesorElegido = (profesores.data?.items ?? []).find((p) => String(p.id) === idProfesor);
-  const nombreProfesor = profesorElegido
-    ? `${profesorElegido.nombre} ${profesorElegido.apellido}`
-    : "Todos los profesores";
+  // Los nombres salen de las mismas listas que alimentan los combos: el nombre
+  // que ya viene en la marcación, sin volver a pedir el catálogo.
+  const nombreProfesor =
+    profesoresConMarcas.find((p) => String(p.id) === idProfesor)?.nombre ?? "Todos los profesores";
+
+  const nombreInstitucion =
+    institucionesConMarcas.find((i) => String(i.id) === idInstitucion)?.nombre ??
+    "Todas las instituciones";
+
   const periodo = `${MESES[Number(mes) - 1]} ${anio}`;
 
   const columnas: ColumnaExport<AsistenciaProfesor>[] = [
@@ -269,7 +367,7 @@ function AsistenciasPage() {
   ];
 
   const subtitulos = [
-    `${nombreProfesor} · ${periodo}`,
+    `${nombreProfesor} · ${nombreInstitucion} · ${periodo}`,
     `Hora cátedra: ${catedra} min · Precio por hora: ${formatearMoneda(precio)} Gs.`,
     `Total: ${totales.horas.toFixed(2)} hs en ${totales.dias} día(s) · Importe: ${formatearMoneda(Math.round(totales.importe))} Gs.`,
   ];
@@ -277,50 +375,121 @@ function AsistenciasPage() {
   const nombreArchivo = `asistencias-${anio}-${String(mes).padStart(2, "0")}`;
 
   /**
-   * Los datos con la forma de la planilla de papel.
+   * Una planilla POR PROFESOR, con la forma de la planilla de papel.
    *
    * Se arma acá y no dentro de `exportar.ts` porque depende de la hora cátedra
    * y del precio, que son parámetros de esta pantalla.
+   *
+   * Es una lista y no un solo objeto porque la planilla se firma de a una
+   * persona: filtrando por institución salen todos los que dieron clase ahí, y
+   * cada uno necesita la suya. Con un profesor elegido la lista tiene un solo
+   * elemento, que es el caso de siempre.
    */
-  const datosPlanilla: DatosPlanilla = {
-    profesor: nombreProfesor,
-    // La institución sale de las marcas, no de un filtro: si el profesor marcó
-    // en más de una, se listan todas en vez de mostrar una sola y mentir.
-    institucion: [...new Set(items.map((a) => a.institucion).filter(Boolean))].join(" · ") || "—",
-    periodo,
-    horaCatedra: catedra,
-    precioHora: precio,
-    columnasMarca: maxMarcas,
-    filas: diasDelMes.map(({ dia, iso, diaSemana }) => {
-      const marcas = porDia.get(iso) ?? [];
-      const minutos = marcas.reduce((s, m) => s + (m.minutos ?? 0), 0);
-      return {
-        dia,
-        diaSemana: DIAS[diaSemana] ?? "",
-        marcas: marcas.map((m) => ({ entrada: m.horaEntrada, salida: m.horaSalida })),
-        horas: minutos > 0 ? Number(aHorasCatedra(minutos, catedra).toFixed(2)) : 0,
-        finDeSemana: diaSemana === 0 || diaSemana === 6,
-      };
-    }),
-    totalHoras: Number(totales.horas.toFixed(2)),
-    totalImporte: totales.importe,
-    totalIva: totales.iva,
-    // Seis renglones en blanco: el bloque no sale de la base y se completa a
-    // mano sobre el papel. Es la misma cantidad que trae la planilla actual.
-    filasActividadExtra: 6,
-  };
+  const planillas: DatosPlanilla[] = useMemo(() => {
+    // Agrupar preservando el orden en que llegan del backend (fecha, entrada):
+    // así las planillas salen en un orden estable y no en el del hash.
+    const porProfesor = new Map<number, AsistenciaProfesor[]>();
+    for (const a of items) {
+      const lista = porProfesor.get(a.idProfesor);
+      if (lista) lista.push(a);
+      else porProfesor.set(a.idProfesor, [a]);
+    }
+
+    return [...porProfesor.values()]
+      .sort((a, b) => (a[0]?.profesor ?? "").localeCompare(b[0]?.profesor ?? "", "es"))
+      .map((marcasProfesor) => {
+        // Los totales se recalculan sobre las marcas de ESTE profesor: los de
+        // la pantalla son del período entero y acá firma una sola persona.
+        let minutosTotales = 0;
+        for (const a of marcasProfesor) minutosTotales += a.minutos ?? 0;
+        const horas = aHorasCatedra(minutosTotales, catedra);
+        const importe = horas * precio;
+
+        const diasProfesor = new Map<string, AsistenciaProfesor[]>();
+        for (const a of marcasProfesor) {
+          const lista = diasProfesor.get(a.fecha);
+          if (lista) lista.push(a);
+          else diasProfesor.set(a.fecha, [a]);
+        }
+
+        return {
+          profesor: marcasProfesor[0]?.profesor ?? nombreProfesor,
+          // Con el filtro de institución puesto es esa; sin filtro, todas
+          // aquellas donde este profesor marcó. Sale de las marcas y no del
+          // filtro para no afirmar una institución en la que no estuvo.
+          institucion:
+            [...new Set(marcasProfesor.map((a) => a.institucion).filter(Boolean))].join(" · ") ||
+            "—",
+          periodo,
+          horaCatedra: catedra,
+          precioHora: precio,
+          // Por profesor y no el máximo global: si otro tuvo 4 marcas en un día,
+          // no tiene por qué agregar dos columnas vacías a esta planilla.
+          columnasMarca: Math.max(2, ...[...diasProfesor.values()].map((l) => l.length)),
+          filas: diasDelMes.map(({ dia, iso, diaSemana }) => {
+            const marcas = diasProfesor.get(iso) ?? [];
+            const minutos = marcas.reduce((s, m) => s + (m.minutos ?? 0), 0);
+            return {
+              dia,
+              diaSemana: DIAS[diaSemana] ?? "",
+              marcas: marcas.map((m) => ({ entrada: m.horaEntrada, salida: m.horaSalida })),
+              horas: minutos > 0 ? Number(aHorasCatedra(minutos, catedra).toFixed(2)) : 0,
+              finDeSemana: diaSemana === 0 || diaSemana === 6,
+            };
+          }),
+          totalHoras: Number(horas.toFixed(2)),
+          totalImporte: importe,
+          // El IVA se DESGLOSA de un precio que ya lo incluye, igual que en el
+          // resto del sistema. Mismo criterio que `totales`.
+          totalIva: importe - Math.round((importe / 1.1) * 100) / 100,
+          // Seis renglones en blanco: el bloque no sale de la base y se completa
+          // a mano sobre el papel. Es la misma cantidad que trae la planilla
+          // actual.
+          filasActividadExtra: 6,
+        };
+      });
+  }, [items, catedra, precio, periodo, diasDelMes, nombreProfesor]);
+
+  const exportaPlanilla = vista === "planilla";
+  const exportarBloqueado = items.length === 0;
+
+  const eliminar = useMutation({
+    mutationFn: (a: AsistenciaProfesor) => api.asistenciasProfesores.eliminar(a.id, empresa!.id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["asistencias"] });
+      toast.success("Marcación eliminada");
+      setAEliminar(null);
+    },
+    onError: (e) => {
+      toast.error(MENSAJE_ERROR(e, "No se pudo eliminar"));
+      setAEliminar(null);
+    },
+  });
 
   /**
-   * La planilla es de UNA persona: es la que se imprime y se firma.
+   * El alta arranca en el período que se está mirando, no en hoy.
    *
-   * Su encabezado dice "Profesor/a: …", así que con el filtro en "Todos" ese
-   * dato sería falso — y la grilla mezclaría en un mismo renglón las marcas de
-   * gente distinta, que es peor que no exportar. El listado del Detalle sí
-   * admite varios: tiene una columna Profesor en cada fila.
+   * Si alguien está corrigiendo agosto, la marcación que va a cargar es de
+   * agosto: ofrecerle la fecha de hoy lo obliga a corregirla siempre, y una
+   * fecha fuera del período elegido desaparece del listado apenas se guarda.
    */
-  const planillaHabilitada = idProfesor !== TODOS;
-  const exportaPlanilla = vista === "planilla";
-  const exportarBloqueado = items.length === 0 || (exportaPlanilla && !planillaHabilitada);
+  const fechaSugerida = useMemo(() => {
+    const primero = `${anio}-${String(mes).padStart(2, "0")}-01`;
+    const hoyIso = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, "0")}-${String(hoy.getDate()).padStart(2, "0")}`;
+    // Si el período elegido es el mes en curso, hoy; si no, el primero del mes.
+    return hoyIso.startsWith(`${anio}-${String(mes).padStart(2, "0")}`) ? hoyIso : primero;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `hoy` es un new Date() por render
+  }, [anio, mes]);
+
+  function abrirAlta() {
+    setEditando(null);
+    setDialogoAbierto(true);
+  }
+
+  function abrirEdicion(a: AsistenciaProfesor) {
+    setEditando(a);
+    setDialogoAbierto(true);
+  }
 
   /**
    * La exportación sigue a la vista activa.
@@ -333,7 +502,7 @@ function AsistenciasPage() {
   async function exportarExcel() {
     try {
       if (exportaPlanilla) {
-        await descargarPlanillaExcel(datosPlanilla);
+        await descargarPlanillaExcel(planillas);
       } else {
         await descargarExcel({ nombreArchivo, hoja: "Asistencias", columnas, filas: items });
       }
@@ -347,7 +516,7 @@ function AsistenciasPage() {
   // click. Con un `await` antes, el navegador ya no lo asocia al gesto.
   function exportarPdf() {
     const promesa = exportaPlanilla
-      ? abrirPlanillaPdf(datosPlanilla)
+      ? abrirPlanillaPdf(planillas)
       : abrirPdf({
           nombreArchivo,
           titulo: "Reporte de asistencias",
@@ -376,16 +545,20 @@ function AsistenciasPage() {
               exportar algo distinto de lo que se está mirando es lo que un
               reporte no puede hacer. */}
           <div className="flex gap-2">
+            <Button onClick={abrirAlta} disabled={empresa === null}>
+              <Plus className="size-4" />
+              Nueva marcación
+            </Button>
             <Button
               variant="outline"
               onClick={exportarExcel}
               disabled={exportarBloqueado}
               title={
-                exportaPlanilla && !planillaHabilitada
-                  ? "Elegí un profesor para bajar la planilla"
-                  : exportaPlanilla
-                    ? "Planilla del mes en Excel"
-                    : "Listado de marcaciones en Excel"
+                exportaPlanilla
+                  ? planillas.length > 1
+                    ? `Una planilla por profesor (${planillas.length}) en Excel`
+                    : "Planilla del mes en Excel"
+                  : "Listado de marcaciones en Excel"
               }
             >
               <FileSpreadsheet className="size-4" />
@@ -396,11 +569,11 @@ function AsistenciasPage() {
               onClick={exportarPdf}
               disabled={exportarBloqueado}
               title={
-                exportaPlanilla && !planillaHabilitada
-                  ? "Elegí un profesor para bajar la planilla"
-                  : exportaPlanilla
-                    ? "Planilla del mes en PDF"
-                    : "Listado de marcaciones en PDF"
+                exportaPlanilla
+                  ? planillas.length > 1
+                    ? `Una planilla por profesor (${planillas.length}) en PDF`
+                    : "Planilla del mes en PDF"
+                  : "Listado de marcaciones en PDF"
               }
             >
               <FileText className="size-4" />
@@ -412,7 +585,7 @@ function AsistenciasPage() {
         {/* Filtros y parámetros del cálculo, juntos: los cinco cambian lo que se
             ve, y separarlos obligaría a buscar en dos lugares por qué cambió un
             total. */}
-        <div className="surface-card grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-5">
+        <div className="surface-card grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-6">
           <label className="space-y-1.5">
             <span className="text-xs font-medium text-muted-foreground">Año</span>
             <Select value={anio} onValueChange={setAnio}>
@@ -446,6 +619,23 @@ function AsistenciasPage() {
           </label>
 
           <label className="space-y-1.5">
+            <span className="text-xs font-medium text-muted-foreground">Institución</span>
+            <Select value={idInstitucion} onValueChange={setIdInstitucion}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={TODOS}>Todas las instituciones</SelectItem>
+                {institucionesConMarcas.map((i) => (
+                  <SelectItem key={i.id} value={String(i.id)}>
+                    {i.nombre}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </label>
+
+          <label className="space-y-1.5">
             <span className="text-xs font-medium text-muted-foreground">Profesor</span>
             <Select value={idProfesor} onValueChange={setIdProfesor}>
               <SelectTrigger>
@@ -453,9 +643,9 @@ function AsistenciasPage() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value={TODOS}>Todos los profesores</SelectItem>
-                {(profesores.data?.items ?? []).map((p) => (
+                {profesoresConMarcas.map((p) => (
                   <SelectItem key={p.id} value={String(p.id)}>
-                    {p.nombre} {p.apellido}
+                    {p.nombre}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -535,14 +725,15 @@ function AsistenciasPage() {
             {sinDatos ? (
               <div className="surface-card px-3 py-16 text-center">
                 <p className="text-sm text-muted-foreground">
-                  No hay marcaciones para {nombreProfesor.toLowerCase()} en {periodo}.
+                  No hay marcaciones para {nombreProfesor.toLowerCase()} en{" "}
+                  {nombreInstitucion.toLowerCase()} en {periodo}.
                 </p>
               </div>
             ) : (
               <>
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-sm text-muted-foreground">
-                    {nombreProfesor} · {periodo}
+                    {nombreProfesor} · {nombreInstitucion} · {periodo}
                   </p>
                   {/* Dos vistas de lo mismo: la planilla se imprime y se firma;
                       el detalle sirve para revisar y auditar. */}
@@ -566,13 +757,16 @@ function AsistenciasPage() {
                   </div>
                 </div>
 
-                {/* El tooltip del botón no alcanza: en móvil no hay hover, y un
-                    botón gris sin motivo se lee como que algo está roto. */}
-                {exportaPlanilla && !planillaHabilitada && (
+                {/* Con varios profesores la exportación ya no se bloquea: sale
+                    una planilla por cada uno. Se avisa igual porque la pantalla
+                    muestra la grilla mezclada y el archivo NO — sin esto, la
+                    diferencia entre lo que se ve y lo que se baja sorprende. */}
+                {exportaPlanilla && planillas.length > 1 && (
                   <p className="flex items-center gap-2 rounded-lg border border-border bg-muted px-3 py-2 text-sm text-muted-foreground">
                     <AlertTriangle className="size-4 shrink-0 text-warning" />
-                    La planilla se emite por profesor: elegí uno arriba para poder exportarla. La
-                    vista Detalle sí se exporta con todos.
+                    Hay {planillas.length} profesores en el período: al exportar sale una planilla
+                    para cada uno, en un solo archivo. Elegí un profesor arriba para ver su grilla
+                    sola.
                   </p>
                 )}
 
@@ -584,12 +778,56 @@ function AsistenciasPage() {
                     catedra={catedra}
                   />
                 ) : (
-                  <Detalle items={items} catedra={catedra} precio={precio} />
+                  <Detalle
+                    items={items}
+                    catedra={catedra}
+                    precio={precio}
+                    onEditar={abrirEdicion}
+                    onEliminar={setAEliminar}
+                  />
                 )}
               </>
             )}
           </>
         )}
+
+        {empresa !== null && (
+          <MarcacionDialog
+            abierto={dialogoAbierto}
+            onCerrar={() => setDialogoAbierto(false)}
+            marcacion={editando}
+            idEmpresa={empresa.id}
+            // Los combos del diálogo ofrecen el catálogo del período, igual que
+            // los filtros. Para un alta de un profesor que todavía no marcó
+            // nunca hay que elegir un mes donde sí aparezca — es la
+            // contrapartida de no traer los catálogos completos.
+            profesores={profesoresConMarcas}
+            instituciones={institucionesConMarcas}
+            fechaSugerida={fechaSugerida}
+          />
+        )}
+
+        <AlertDialog open={aEliminar !== null} onOpenChange={(v) => !v && setAEliminar(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>¿Eliminar la marcación?</AlertDialogTitle>
+              <AlertDialogDescription>
+                {aEliminar
+                  ? `${aEliminar.profesor} · ${aEliminar.fecha} · ${aEliminar.horaEntrada ?? "sin entrada"} a ${aEliminar.horaSalida ?? "sin salida"}. Esta acción no se puede deshacer.`
+                  : ""}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancelar</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => aEliminar && eliminar.mutate(aEliminar)}
+                disabled={eliminar.isPending}
+              >
+                Eliminar
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </main>
     </AppLayout>
   );
@@ -740,10 +978,14 @@ function Detalle({
   items,
   catedra,
   precio,
+  onEditar,
+  onEliminar,
 }: {
   items: AsistenciaProfesor[];
   catedra: number;
   precio: number;
+  onEditar: (a: AsistenciaProfesor) => void;
+  onEliminar: (a: AsistenciaProfesor) => void;
 }) {
   return (
     <div className="surface-card overflow-x-auto">
@@ -758,6 +1000,7 @@ function Detalle({
             <TableHead className="text-right">Horas</TableHead>
             <TableHead className="text-right">Importe</TableHead>
             <TableHead className="text-center">Ubic.</TableHead>
+            <TableHead className="text-right">Acciones</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -810,6 +1053,27 @@ function Detalle({
                   ) : (
                     <span className="text-muted-foreground">—</span>
                   )}
+                </TableCell>
+                <TableCell className="text-right">
+                  <div className="flex justify-end gap-1">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => onEditar(a)}
+                      title="Editar la marcación"
+                    >
+                      <Pencil className="size-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => onEliminar(a)}
+                      title="Eliminar la marcación"
+                      className="text-destructive hover:text-destructive"
+                    >
+                      <Trash2 className="size-4" />
+                    </Button>
+                  </div>
                 </TableCell>
               </TableRow>
             );

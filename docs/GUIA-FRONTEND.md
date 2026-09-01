@@ -755,6 +755,89 @@ completo está en
 bajá a 25 antes de buscar el problema en otro lado. El costo de una petición más
 cada 50 filas es imperceptible; el de un reporte que no abre, no.
 
+### Un filtro ofrece lo que tiene datos, no el catálogo entero
+
+En una consulta por período, poblar los combos con `/instituciones/listar` y
+`/profesores/listar` ofrece **decenas de opciones que en ese mes no tienen
+ninguna marcación**. Elegir una devuelve una pantalla vacía, y no hay forma de
+saber cuáles sí tienen sin probarlas de a una.
+
+`asistencias` las deriva de una consulta del período **sin filtrar**:
+
+```tsx
+// De acá salen los dos combos. No se puede reusar la consulta principal: esa ya
+// viene filtrada, así que al elegir una institución el combo quedaría con esa
+// sola opción y no habría cómo volver a otra.
+const delPeriodo = useQuery({
+  queryKey: ["asistencias", empresa?.id ?? null, anio, mes, "periodo-completo"],
+  queryFn: () => api.asistenciasProfesores.listar({ idEmpresa: empresa!.id, anio, mes }),
+  enabled: empresa !== null,
+});
+```
+
+Y **los filtros se encadenan**: elegida una institución, el combo de profesor
+ofrece sólo a quienes dieron clase ahí.
+
+Dos cosas que hay que resolver al hacerlo:
+
+- **Un filtro elegido puede dejar de existir.** Al cambiar de mes —o de
+  institución— lo que estaba seleccionado puede no tener marcaciones en el nuevo
+  recorte: queda filtrando por algo que ya no está en la lista y la pantalla se
+  ve vacía sin decir por qué. Se vuelve a "Todos" en cuanto deja de ser una
+  opción, corrigiendo el estado durante el render (no hace falta un `useEffect`:
+  es estado derivado, no un efecto sobre datos externos).
+- **La guarda `!isPending` no es opcional.** Mientras la consulta del período
+  está en vuelo la lista está vacía, y sin ella el filtro **se resetearía solo
+  en cada cambio de mes**, justo antes de que lleguen los datos.
+
+Los estados de carga y error siguen colgando de la consulta principal, no de
+esta: los combos no deben bloquear la pantalla.
+
+### Un documento que se firma sale uno por persona, no uno mezclado
+
+La planilla de asistencias se imprime y **se firma**: su encabezado dice
+"Profesor/a: …", así que un solo documento con las marcas de varios sería un
+papel que nadie puede firmar.
+
+La primera versión resolvió eso **bloqueando** la exportación mientras el filtro
+de profesor estuviera en "Todos". Funcionaba, pero dejaba afuera el caso real:
+liquidar **una institución completa**, donde justamente participan varios.
+
+Hoy `asistencias` arma **una planilla por profesor** y las manda todas juntas:
+
+```tsx
+// Una lista, no un objeto: con el filtro de institución salen todos los que
+// dieron clase ahí, y cada uno necesita la suya. Con un profesor elegido la
+// lista tiene un solo elemento, que es el caso de siempre.
+const planillas: DatosPlanilla[] = useMemo(() => {
+  const porProfesor = new Map<number, AsistenciaProfesor[]>();
+  for (const a of items) { /* agrupar */ }
+  return [...porProfesor.values()].map((marcas) => ({ /* … */ }));
+}, [items, catedra, precio, periodo, diasDelMes, nombreProfesor]);
+```
+
+Tres cosas que hay que respetar al hacer esto:
+
+- **Los totales se recalculan por persona.** Los de la pantalla son del período
+  entero; reusarlos pondría el total de todos en la planilla de cada uno.
+- **`columnasMarca` también es por persona.** Es el máximo de marcas en un día
+  **de ese profesor**: usar el máximo global le agrega columnas vacías a quien
+  marcó menos veces.
+- **Un archivo, no N descargas.** En PDF cada profesor abre en su propia página
+  (`doc.addPage()`); en Excel, en su propia hoja. Disparar una descarga por
+  profesor hace que el navegador frene todas menos la primera.
+
+> **Los nombres de hoja de Excel tienen reglas propias.** No admiten `: \ / ? * [ ]`,
+> se cortan en 31 caracteres y **no puede haber dos iguales** — con dos
+> homónimos, o con dos nombres largos que al truncarse coinciden, el `.xlsx` sale
+> corrupto. `nombreHoja()` en [exportar.ts](../src/lib/exportar.ts) limpia,
+> trunca y desduplica con un sufijo.
+
+Y el aviso de la pantalla cambió de sentido: antes explicaba por qué el botón
+estaba gris, ahora avisa que **lo que se ve y lo que se baja no coinciden** — la
+grilla en pantalla muestra el período mezclado, el archivo sale separado por
+persona.
+
 ### El input de búsqueda
 
 Mismo lugar en todas las pantallas: al lado del botón "Nuevo", con el ícono

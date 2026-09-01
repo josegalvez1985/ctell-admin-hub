@@ -28,6 +28,7 @@ import {
   Coins,
   Component,
   Contact,
+  Copyright,
   CreditCard,
   Database,
   FileBarChart,
@@ -242,6 +243,11 @@ const ICONOS_PAGINA: Record<string, LucideIcon> = {
   categorias: Tags,
   categoria: Tags,
   rubros: Tags,
+  // Copyright (la marca registrada) y no Tag: una marca es el FABRICANTE del
+  // artículo (Sony, Nike), no la etiqueta que lo clasifica — eso ya es
+  // "categorías".
+  marcas: Copyright,
+  marca: Copyright,
   // El depósito es el edificio; "ubicaciones" (abajo) es la posición DENTRO de
   // él, y por eso lleva otro ícono.
   deposito: Warehouse,

@@ -124,6 +124,23 @@ export type ListaPaises = {
   total: number;
 };
 
+/**
+ * Marca de un artículo (Sony, LG, Nike).
+ *
+ * **No tiene `activo`**: es la única tabla del proyecto sin columna de estado,
+ * así que no hay baja lógica — se elimina o no existe. Tampoco tiene
+ * `idEmpresa`: es un catálogo global, la misma marca sirve a todas las empresas.
+ */
+export type Marca = {
+  id: number;
+  descripcion: string;
+};
+
+export type ListaMarcas = {
+  items: Marca[];
+  total: number;
+};
+
 export type CanalPago = {
   id: number;
   nombreCanal: string;
@@ -2064,6 +2081,36 @@ export const api = {
       request<{ ok: boolean }>(`/paises/eliminar/${id}`, { method: "DELETE" }),
   },
 
+  /**
+   * Catálogo global de marcas. Sin `idEmpresa` en ninguna operación: la misma
+   * marca sirve a todas las empresas.
+   */
+  marcas: {
+    /** Sin `busqueda` devuelve el catálogo entero, que es acotado. */
+    listar: (params: { busqueda?: string | undefined } = {}) => {
+      const q = new URLSearchParams();
+      if (params.busqueda) q.set("busqueda", params.busqueda);
+      const cadena = q.toString();
+      return request<ListaMarcas>(`/marcas/listar${cadena ? `?${cadena}` : ""}`);
+    },
+
+    crear: (datos: { descripcion: string }) =>
+      request<{ id: number; ok: boolean }>("/marcas/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    actualizar: (id: number, datos: { descripcion: string }) =>
+      request<{ ok: boolean }>(`/marcas/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Baja física: la tabla no tiene estado. Da 409 si algún artículo la usa. */
+    eliminar: (id: number) =>
+      request<{ ok: boolean }>(`/marcas/eliminar/${id}`, { method: "DELETE" }),
+  },
+
   canalesPagos: {
     listar: () => request<ListaCanalesPagos>("/canales-pagos/listar"),
 
@@ -2368,6 +2415,56 @@ export const api = {
       if (params.idInstitucion) q.set("idInstitucion", String(params.idInstitucion));
       return request<ListaAsistenciasProfesores>(`/asistencias-profesores/listar?${q}`);
     },
+
+    /**
+     * Carga manual de una marcación, para corregir lo que la app no registró.
+     *
+     * Las horas van como `HH:MM` y no como timestamp: el backend las compone
+     * con la fecha del día. Mandar un ISO completo desde acá haría que una
+     * diferencia de zona horaria corriera el día.
+     *
+     * `horaSalida` puede omitirse: una entrada sin salida es un estado válido.
+     */
+    crear: (datos: {
+      idEmpresa: number;
+      idProfesor: number;
+      idInstitucion: number;
+      /** ISO `YYYY-MM-DD`. */
+      fecha: string;
+      /** `HH:MM` en 24 horas. */
+      horaEntrada?: string | undefined;
+      horaSalida?: string | undefined;
+    }) =>
+      request<{ id: number; ok: boolean }>("/asistencias-profesores/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /**
+     * `idEmpresa` es **obligatorio**: no es un dato más a guardar, acota a cuál
+     * fila se aplica el cambio. Sin él la respuesta es 400.
+     */
+    actualizar: (
+      id: number,
+      datos: {
+        idEmpresa: number;
+        idProfesor: number;
+        idInstitucion: number;
+        fecha: string;
+        horaEntrada?: string | undefined;
+        horaSalida?: string | undefined;
+      },
+    ) =>
+      request<{ ok: boolean }>(`/asistencias-profesores/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Baja física: la tabla no tiene estado — o la marcación pasó o no pasó. */
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/asistencias-profesores/eliminar/${id}/${idEmpresa}`, {
+        method: "DELETE",
+      }),
   },
 
   empresas: {

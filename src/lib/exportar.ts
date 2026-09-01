@@ -296,9 +296,64 @@ const GRIS = "#EFEFEF";
  * modo `columns`/`schema`: ese último produce una tabla uniforme, y acá cada
  * zona tiene su propio ancho, color y combinación de celdas.
  */
-export async function descargarPlanillaExcel(datos: DatosPlanilla): Promise<void> {
+export async function descargarPlanillaExcel(
+  planillas: DatosPlanilla | DatosPlanilla[],
+): Promise<void> {
+  // Acepta una sola o varias, igual que abrirPlanillaPdf.
+  const lista = Array.isArray(planillas) ? planillas : [planillas];
+  if (lista.length === 0) throw new Error("No hay planillas para exportar");
+
   const { default: writeXlsxFile } = await import("write-excel-file/browser");
 
+  const armadas = lista.map(armarPlanillaExcel);
+  const periodo = lista[0]?.periodo ?? "";
+  const archivo = `planilla-${periodo.replace(/\s+/g, "-").toLowerCase()}-${marcaDeTiempo().archivo}.xlsx`;
+
+  // Una hoja por profesor. Con varias hojas write-excel-file espera arreglos
+  // paralelos: datos[], y `columns`/`sheets` con un elemento por hoja.
+  if (armadas.length === 1) {
+    const unica = armadas[0]!;
+    await writeXlsxFile(unica.filas as never, {
+      columns: unica.columnas,
+      sheet: "Planilla",
+    }).toFile(archivo);
+    return;
+  }
+
+  await writeXlsxFile(
+    armadas.map((p) => p.filas) as never,
+    {
+      columns: armadas.map((p) => p.columnas),
+      sheets: armadas.map((p, i) => nombreHoja(p.profesor, i, armadas)),
+    } as never,
+  ).toFile(archivo);
+}
+
+/**
+ * Nombre de hoja válido para Excel a partir del nombre del profesor.
+ *
+ * Excel rechaza `: \ / ? * [ ]`, corta en 31 caracteres y no admite dos hojas
+ * con el mismo nombre — con dos profesores homónimos, o con nombres largos que
+ * al truncarse coinciden, el archivo saldría corrupto. Por eso se desduplica
+ * con un sufijo.
+ */
+function nombreHoja(profesor: string, indice: number, todas: { profesor: string }[]): string {
+  const limpio = profesor.replace(/[:\\/?*[\]]/g, " ").trim() || `Profesor ${indice + 1}`;
+  const base = limpio.slice(0, 31);
+  const previos = todas
+    .slice(0, indice)
+    .filter((p) => (p.profesor.replace(/[:\\/?*[\]]/g, " ").trim() || "").slice(0, 31) === base);
+  if (previos.length === 0) return base;
+  const sufijo = ` (${previos.length + 1})`;
+  return base.slice(0, 31 - sufijo.length) + sufijo;
+}
+
+/** Las filas y los anchos de UNA planilla. Extraído para poder repetirlo. */
+function armarPlanillaExcel(datos: DatosPlanilla): {
+  filas: unknown[][];
+  columnas: { width: number }[];
+  profesor: string;
+} {
   const n = datos.columnasMarca;
   // Día, Fecha, (Ent./Sal.) × n, Total horas
   const anchoTotal = 2 + n * 2 + 1;
@@ -475,18 +530,14 @@ export async function descargarPlanillaExcel(datos: DatosPlanilla): Promise<void
     }
   }
 
-  const columns = [
+  const columnas = [
     { width: 8 },
     { width: 8 },
     ...Array.from({ length: n * 2 }, () => ({ width: 7 })),
     { width: 14 },
   ];
 
-  // La v4 devuelve `{ toBlob, toFile }` en vez de aceptar un `fileName` entre
-  // las opciones. Los ejemplos que andan dando vueltas siguen siendo los de v1.
-  await writeXlsxFile(filas as never, { columns, sheet: "Planilla" }).toFile(
-    `planilla-${datos.periodo.replace(/\s+/g, "-").toLowerCase()}-${marcaDeTiempo().archivo}.xlsx`,
-  );
+  return { filas, columnas, profesor: datos.profesor };
 }
 
 /** Separador de miles es-PY, sin símbolo: para los totales del PDF. */
@@ -500,7 +551,12 @@ function formatearNumero(valor: number): string {
  * La pestaña se abre en la primera línea, antes de cualquier `await`: los
  * bloqueadores sólo dejan pasar el `window.open` que ocurre dentro del click.
  */
-export async function abrirPlanillaPdf(datos: DatosPlanilla): Promise<void> {
+export async function abrirPlanillaPdf(planillas: DatosPlanilla | DatosPlanilla[]): Promise<void> {
+  // Acepta una sola o varias: la pantalla siempre manda un arreglo, pero
+  // normalizar acá evita que cada llamador tenga que envolverla.
+  const lista = Array.isArray(planillas) ? planillas : [planillas];
+  if (lista.length === 0) throw new Error("No hay planillas para exportar");
+
   const pestania = window.open("", "_blank");
   if (pestania) {
     pestania.document.write(
@@ -520,6 +576,46 @@ export async function abrirPlanillaPdf(datos: DatosPlanilla): Promise<void> {
     // escrito así resolvería contra `window.orientation`, que es un número.
     const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
     const anchoPagina = doc.internal.pageSize.getWidth();
+
+    // Cada profesor arranca en su propia hoja: la planilla se firma de a una
+    // persona, así que no pueden compartir página.
+    lista.forEach((datos, indice) => {
+      if (indice > 0) doc.addPage();
+      dibujarPlanilla(doc, autoTable, datos, anchoPagina, tiempo);
+    });
+
+    const url = URL.createObjectURL(doc.output("blob"));
+    if (pestania) {
+      pestania.location.href = url;
+    } else {
+      // Bloqueada: que al menos se lleve el archivo.
+      const enlace = document.createElement("a");
+      enlace.href = url;
+      enlace.download = `planilla-${tiempo.archivo}.pdf`;
+      enlace.click();
+    }
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  } catch (error) {
+    if (pestania) pestania.close();
+    throw error;
+  }
+}
+
+/**
+ * Dibuja UNA planilla en la página actual del documento.
+ *
+ * Extraído de `abrirPlanillaPdf` para poder repetirlo por profesor. Recibe
+ * `autoTable` en vez de importarlo: el import dinámico se hace una sola vez en
+ * el llamador, no una por planilla.
+ */
+function dibujarPlanilla(
+  doc: import("jspdf").jsPDF,
+  autoTable: typeof import("jspdf-autotable").default,
+  datos: DatosPlanilla,
+  anchoPagina: number,
+  tiempo: { legible: string; archivo: string },
+): void {
+  {
     const n = datos.columnasMarca;
 
     doc.setFont("helvetica", "bold");
@@ -626,20 +722,5 @@ export async function abrirPlanillaPdf(datos: DatosPlanilla): Promise<void> {
       doc.setTextColor(60);
       doc.text("ACTIVIDAD EXTRA", 40, finTotales + 8);
     }
-
-    const url = URL.createObjectURL(doc.output("blob"));
-    if (pestania) {
-      pestania.location.href = url;
-    } else {
-      // Bloqueada: que al menos se lleve el archivo.
-      const enlace = document.createElement("a");
-      enlace.href = url;
-      enlace.download = `planilla-${tiempo.archivo}.pdf`;
-      enlace.click();
-    }
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
-  } catch (error) {
-    if (pestania) pestania.close();
-    throw error;
   }
 }

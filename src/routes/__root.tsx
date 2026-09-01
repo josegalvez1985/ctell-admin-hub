@@ -14,6 +14,7 @@ import { reportError } from "../lib/error-reporting";
 import { EmpresaProvider } from "../components/ctell/empresa-provider";
 import { SucursalProvider } from "../components/ctell/sucursal-provider";
 import { ThemeProvider, themeInitScript } from "../components/ctell/theme-provider";
+import { TooltipProvider } from "../components/ui/tooltip";
 import { Toaster } from "../components/ui/sonner";
 import { NOMBRE_SISTEMA } from "../lib/marca";
 
@@ -200,10 +201,17 @@ function RootComponent() {
           {/* Adentro de EmpresaProvider, no al lado: la sucursal se lista por
               empresa, así que necesita leer la empresa activa. */}
           <SucursalProvider>
-            {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
-            <Outlet />
-            {/* Sin esto los toast() de las mutaciones no se renderizan en ningún lado. */}
-            <Toaster richColors position="top-right" />
+            {/* Radix exige un Provider por encima de CADA <Tooltip>, y va acá y
+                no en AppLayout: AppLayout no usa el <Sidebar> de shadcn —que
+                trae el suyo adentro—, así que las páginas quedaban sin ninguno
+                y el primer tooltip reventaba con "must be used within
+                TooltipProvider". Global, cualquier página futura ya lo tiene. */}
+            <TooltipProvider delayDuration={200}>
+              {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
+              <Outlet />
+              {/* Sin esto los toast() de las mutaciones no se renderizan en ningún lado. */}
+              <Toaster richColors position="top-right" />
+            </TooltipProvider>
           </SucursalProvider>
         </EmpresaProvider>
       </ThemeProvider>
