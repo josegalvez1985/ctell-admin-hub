@@ -1302,7 +1302,6 @@ export type ListaPaginas = {
  */
 export type UsuarioPagina = {
   idUsuario: number;
-  usuario: string;
   idPagina: number;
   /** Nombre de la página: viene del JOIN, no de USUARIO_PAGINAS. */
   pagina: string;
@@ -1322,13 +1321,16 @@ export type UsuarioPagina = {
    * permiso vale con cualquier empresa que el usuario elija al entrar, y el
    * menú no filtra por este campo.
    *
-   * Es null en los permisos cargados antes de que existiera la columna. No se
-   * puede usar para dar accesos distintos por empresa: la PK de la tabla sigue
-   * siendo (ID_USUARIO, ID_PAGINA), así que una misma página no admite dos
-   * filas para el mismo usuario. Ver el encabezado de db/usuario-paginas.sql.
+   * **Es el alcance del permiso, no auditoría.** La PK de la tabla es
+   * `(ID_EMPRESA, ID_USUARIO, ID_PAGINA)`, así que el mismo usuario puede tener
+   * accesos distintos según con qué empresa entre: vendedor en una y sólo
+   * consulta en otra. El menú muestra únicamente las páginas cuya empresa
+   * coincide con la de la sesión.
+   *
+   * `null` en los permisos cargados antes de que existiera la columna: esos no
+   * aparecen en ninguna empresa. Ver el encabezado de db/usuario-paginas.sql.
    */
   idEmpresa: number | null;
-  fechaAlta: string;
 };
 
 export type ListaUsuarioPaginas = {
@@ -1988,10 +1990,44 @@ export const api = {
   },
 
   usuarioPaginas: {
-    /** Sin `idUsuario` devuelve los permisos de todos los usuarios. */
-    listar: (params: { idUsuario?: number } = {}) => {
-      const q = params.idUsuario ? `?idUsuario=${params.idUsuario}` : "";
-      return request<ListaUsuarioPaginas>(`/usuario-paginas/listar${q}`);
+    /**
+     * Sin `idUsuario` devuelve los permisos de todos los usuarios.
+     *
+     * **JUNTA TODAS LAS PÁGINAS** y devuelve la lista completa, que es lo que
+     * necesitan sus dos consumidores: el menú —que dibuja mal si le falta una
+     * entrada— y el ABM de Permisos, que cuenta cuántas tiene cada usuario.
+     *
+     * El endpoint pagina de a 15 y no acepta más: cada fila lleva el nombre de
+     * la página, el del módulo, la ruta y el ícono, y ORDS devuelve el JSON por
+     * un bind con techo de 4000 bytes. Pedir todo de una vez lo pasaba y salía
+     * un **500 mudo** —el `WHEN OTHERS` no lo registra, porque el PL/SQL ya
+     * terminó bien—, que es exactamente lo que rompió esta pantalla.
+     *
+     * El tope de vueltas es la red contra un `total` mal calculado: sin él, una
+     * página vacía repetida daría vueltas para siempre.
+     */
+    listar: async (params: { idUsuario?: number } = {}): Promise<ListaUsuarioPaginas> => {
+      const POR_PAGINA = 15;
+      const MAX_PAGINAS = 60;
+      const items: UsuarioPagina[] = [];
+      let total = 0;
+
+      for (let pagina = 1; pagina <= MAX_PAGINAS; pagina++) {
+        const partes = [`pagina=${pagina}`, `tamanio=${POR_PAGINA}`];
+        if (params.idUsuario) partes.unshift(`idUsuario=${params.idUsuario}`);
+
+        const respuesta = await request<ListaUsuarioPaginas>(
+          `/usuario-paginas/listar?${partes.join("&")}`,
+        );
+        items.push(...respuesta.items);
+        total = respuesta.total;
+
+        // Dos cortes: el total declarado por el backend y una página incompleta.
+        // El segundo cubre que `total` venga mal.
+        if (items.length >= total || respuesta.items.length < POR_PAGINA) break;
+      }
+
+      return { items, total };
     },
 
     /**

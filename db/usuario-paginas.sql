@@ -85,9 +85,20 @@ SET SERVEROUTPUT ON
 CREATE OR REPLACE PACKAGE PKG_USUARIO_PAGINAS AS
 
   -- p_id_usuario filtra los permisos de un usuario. NULL o vacío = todos.
+  --
+  -- PAGINADO, Y NO ES OPCIONAL: cada fila trae el nombre de la página, el del
+  -- módulo, la ruta y el ícono —unos 200 bytes—, y ORDS devuelve el JSON por un
+  -- bind tipado STRING con techo de 4000. Sin paginar, a partir de ~20 permisos
+  -- la respuesta se corta y sale un 500 que ni el WHEN OTHERS registra, porque
+  -- el PL/SQL ya termino bien.
+  --
+  -- El cliente junta las paginas: tanto el menu como el ABM necesitan la lista
+  -- completa. Ver api.usuarioPaginas.listar.
   PROCEDURE LISTAR (
     p_authorization IN  VARCHAR2,
     p_id_usuario    IN  VARCHAR2,
+    p_pagina        IN  VARCHAR2,
+    p_tamanio       IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   );
@@ -127,6 +138,22 @@ END PKG_USUARIO_PAGINAS;
 /
 
 CREATE OR REPLACE PACKAGE BODY PKG_USUARIO_PAGINAS AS
+
+  -- 15 por pagina, y 15 de techo.
+  --
+  -- El numero sale de una cuenta, no de una costumbre: una fila de este listado
+  -- pesa unos 190 bytes con nombres normales de pagina y modulo, y el bind
+  -- STRING de ORDS corta a los 4000. 15 x 190 = 2850, con margen para un modulo
+  -- de nombre largo. Subirlo a 25 vuelve a poner el 500 a un nombre de
+  -- distancia.
+  --
+  -- VAN ACA ARRIBA, ANTES DE TODO PROCEDIMIENTO: en el cuerpo de un paquete las
+  -- declaraciones tienen que preceder a la primera definicion. Puestas mas
+  -- abajo —entre dos procedimientos, que es donde parecen quedar mejor— el
+  -- compilador corta con PLS-00103 sobre el nombre de la constante, y arrastra
+  -- un segundo error de sintaxis inventado decenas de lineas despues.
+  C_TAMANIO_DEFECTO CONSTANT PLS_INTEGER := 15;
+  C_TAMANIO_MAXIMO  CONSTANT PLS_INTEGER := 15;
 
   ------------------------------------------------------------------------------
   -- Privado: borra el módulo ORDS si existe, reintentando ante un interbloqueo.
@@ -173,11 +200,16 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIO_PAGINAS AS
   PROCEDURE LISTAR (
     p_authorization IN  VARCHAR2,
     p_id_usuario    IN  VARCHAR2,
+    p_pagina        IN  VARCHAR2,
+    p_tamanio       IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
     l_sesion     NUMBER;
     l_id_usuario NUMBER;
+    l_pagina     PLS_INTEGER;
+    l_tamanio    PLS_INTEGER;
+    l_desplaza   PLS_INTEGER;
     l_total      NUMBER;
     l_items      CLOB;
   BEGIN
@@ -214,50 +246,82 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIO_PAGINAS AS
       RETURN;
     END IF;
 
+    l_pagina   := GREATEST(NVL(TO_NUMBER(NULLIF(p_pagina, '')), 1), 1);
+    l_tamanio  := LEAST(NVL(TO_NUMBER(NULLIF(p_tamanio, '')), C_TAMANIO_DEFECTO),
+                        C_TAMANIO_MAXIMO);
+    l_desplaza := (l_pagina - 1) * l_tamanio;
+
+    -- EL COUNT REPITE EL MISMO FILTRO que la consulta de abajo: si cuentan
+    -- distinto, el cliente pide paginas que no existen o se detiene antes de
+    -- traerlas todas.
     SELECT COUNT(*)
       INTO l_total
-      FROM USUARIO_PAGINAS
-     WHERE l_id_usuario IS NULL OR ID_USUARIO = l_id_usuario;
-
-    -- Los JOIN traen los nombres: el frontend muestra "Compras › Órdenes", no
-    -- dos números sueltos. Van como INNER JOIN a propósito — una fila que
-    -- apunte a una página inexistente no debería aparecer como si fuera un
-    -- permiso válido.
-    -- RUTA y ENTRADA salen de PAGINAS porque el menú dinámico las necesita:
-    -- sin RUTA el item no sabe adónde navegar, y sin ENTRADA no puede
-    -- agruparse bajo Definiciones / Operaciones / Reportes.
-    SELECT JSON_ARRAYAGG(
-             JSON_OBJECT(
-               'idUsuario'  VALUE up.ID_USUARIO,
-               'usuario'    VALUE u.USUARIO,
-               'idPagina'   VALUE up.ID_PAGINA,
-               'pagina'     VALUE p.NOMBRE,
-               'ruta'       VALUE p.RUTA,
-               -- UPPER(TRIM(...)): el frontend agrupa el menu con esta letra
-               -- como clave de un objeto ('D'/'O'/'R'). Una 'o' minuscula o con
-               -- un espacio no matchea, y el grupo entero —"Operaciones"— no se
-               -- dibuja aunque el permiso exista. Mismo criterio que ACTIVO.
-               'entrada'    VALUE UPPER(TRIM(p.ENTRADA)),
-               'orden'      VALUE p.ORDEN,
-               'idModulo'   VALUE m.ID_MODULO,
-               'modulo'     VALUE m.NOMBRE,
-               'moduloIcono' VALUE m.ICONO,
-               -- Empresa en la que vale el permiso. El frontend filtra por
-               -- esto: solo muestra en el menú las páginas cuya empresa
-               -- coincide con la de la sesión. Null = no aparece en ninguna.
-               'idEmpresa'  VALUE up.ID_EMPRESA,
-               'fechaAlta'  VALUE TO_CHAR(up.FECHA_ALTA, 'YYYY-MM-DD"T"HH24:MI:SS')
-               RETURNING CLOB
-             )
-             ORDER BY u.USUARIO, m.ORDEN, m.NOMBRE, p.ORDEN, p.NOMBRE
-             RETURNING CLOB
-           )
-      INTO l_items
       FROM USUARIO_PAGINAS up
       JOIN USUARIOS u ON u.ID_USUARIO = up.ID_USUARIO
       JOIN PAGINAS  p ON p.ID_PAGINA  = up.ID_PAGINA
       JOIN MODULOS  m ON m.ID_MODULO  = p.ID_MODULO
      WHERE l_id_usuario IS NULL OR up.ID_USUARIO = l_id_usuario;
+
+    -- Los JOIN traen los nombres: el frontend muestra "Compras › Órdenes", no
+    -- dos números sueltos. Van como INNER JOIN a propósito — una fila que
+    -- apunte a una página inexistente no debería aparecer como si fuera un
+    -- permiso válido. Por eso el COUNT de arriba los repite: contando sobre la
+    -- tabla sola, una fila huérfana inflaba el total y el cliente pedía una
+    -- página que nunca llegaba.
+    --
+    -- RUTA y ENTRADA salen de PAGINAS porque el menú dinámico las necesita:
+    -- sin RUTA el item no sabe adónde navegar, y sin ENTRADA no puede
+    -- agruparse bajo Definiciones / Operaciones / Reportes.
+    --
+    -- SIN 'usuario' NI 'fechaAlta', que estaban y nadie leía: el nombre del
+    -- usuario se repetía en CADA fila —el cliente ya tiene la lista de
+    -- usuarios— y la fecha de alta no se muestra en ninguna pantalla. Juntos
+    -- eran unos 60 bytes por fila contra un techo de 4000.
+    --
+    -- El JSON_OBJECT se arma en una subconsulta y el JSON_ARRAYAGG agrega esa
+    -- columna, que ya viene tipada como CLOB. Anidado, el resultado intermedio
+    -- del agregado se materializa como VARCHAR2 y revienta a los 4000 bytes.
+    SELECT JSON_ARRAYAGG(fila ORDER BY orden_usuario, orden_modulo, orden_pagina
+                         RETURNING CLOB)
+      INTO l_items
+      FROM (
+        SELECT JSON_OBJECT(
+                 'idUsuario'  VALUE up.ID_USUARIO,
+                 'idPagina'   VALUE up.ID_PAGINA,
+                 'pagina'     VALUE p.NOMBRE,
+                 'ruta'       VALUE p.RUTA,
+                 -- UPPER(TRIM(...)): el frontend agrupa el menu con esta letra
+                 -- como clave de un objeto ('D'/'O'/'R'). Una 'o' minuscula o
+                 -- con un espacio no matchea, y el grupo entero —"Operaciones"—
+                 -- no se dibuja aunque el permiso exista. Mismo criterio que
+                 -- ACTIVO.
+                 'entrada'    VALUE UPPER(TRIM(p.ENTRADA)),
+                 'orden'      VALUE p.ORDEN,
+                 'idModulo'   VALUE m.ID_MODULO,
+                 'modulo'     VALUE m.NOMBRE,
+                 'moduloIcono' VALUE m.ICONO,
+                 -- Empresa en la que vale el permiso. El frontend filtra por
+                 -- esto: solo muestra en el menú las páginas cuya empresa
+                 -- coincide con la de la sesión. Null = no aparece en ninguna.
+                 'idEmpresa'  VALUE up.ID_EMPRESA
+                 RETURNING CLOB
+               ) AS fila,
+               u.USUARIO AS orden_usuario,
+               m.ORDEN   AS orden_modulo,
+               p.ORDEN   AS orden_pagina
+          FROM USUARIO_PAGINAS up
+          JOIN USUARIOS u ON u.ID_USUARIO = up.ID_USUARIO
+          JOIN PAGINAS  p ON p.ID_PAGINA  = up.ID_PAGINA
+          JOIN MODULOS  m ON m.ID_MODULO  = p.ID_MODULO
+         WHERE l_id_usuario IS NULL OR up.ID_USUARIO = l_id_usuario
+         -- EL ORDER BY VA ACA ADEMAS DE EN EL AGREGADO: es el que decide QUE
+         -- filas entran en la pagina. Sin el, OFFSET/FETCH recorta en un orden
+         -- que Oracle no garantiza y la misma fila puede venir en dos paginas
+         -- —o no venir en ninguna, que en un menu significa una entrada que
+         -- desaparece sin motivo—.
+         ORDER BY u.USUARIO, m.ORDEN, m.NOMBRE, p.ORDEN, p.NOMBRE
+         OFFSET l_desplaza ROWS FETCH NEXT l_tamanio ROWS ONLY
+      );
 
     p_status_code := 200;
     -- JSON_OBJECT(... RETURNING CLOB) como asignación PL/SQL directa (sin
@@ -266,8 +330,10 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIO_PAGINAS AS
     -- JSON_ARRAYAGG devuelve NULL cuando no hay filas, no un array vacio: sin
     -- el NVL el frontend recibiria "items":null y reventaria al iterarlo.
     SELECT JSON_OBJECT(
-             'items' VALUE NVL(l_items, TO_CLOB('[]')) FORMAT JSON,
-             'total' VALUE l_total
+             'items'   VALUE NVL(l_items, TO_CLOB('[]')) FORMAT JSON,
+             'total'   VALUE l_total,
+             'pagina'  VALUE l_pagina,
+             'tamanio' VALUE l_tamanio
              RETURNING CLOB
            )
       INTO p_resultado
@@ -471,7 +537,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIO_PAGINAS AS
       p_pattern     => 'listar',
       p_method      => 'GET',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_USUARIO_PAGINAS.LISTAR(:authorization, :idUsuario, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_USUARIO_PAGINAS.LISTAR(:authorization, :idUsuario, :pagina, :tamanio, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
