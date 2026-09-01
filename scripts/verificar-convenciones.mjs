@@ -26,7 +26,7 @@
  * funcionan hace meses. Un chequeo que falla siempre no lo corre nadie. Está
  * explicado en docs/GUIA-IMPLEMENTACION.md, sección 3.7.
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -42,9 +42,16 @@ const raiz = join(dirname(fileURLToPath(import.meta.url)), "..");
  * exigirArchivos() aborta cuando un patrón no matchea.
  */
 function archivos(patron) {
-  return execSync(`git ls-files ${patron}`, { cwd: raiz, encoding: "utf8" })
-    .split("\n")
-    .filter(Boolean);
+  return (
+    execSync(`git ls-files ${patron}`, { cwd: raiz, encoding: "utf8" })
+      .split("\n")
+      .filter(Boolean)
+      // git ls-files sigue listando lo que se borró y todavía no se commiteó, y
+      // leer un archivo que ya no está aborta el chequeo entero con ENOENT. Pasa
+      // justo cuando se retira un módulo — que es cuando más conviene que el
+      // resto de las verificaciones igual corra.
+      .filter((archivo) => existsSync(join(raiz, archivo)))
+  );
 }
 
 /**

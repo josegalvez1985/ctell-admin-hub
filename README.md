@@ -82,13 +82,16 @@ db/                      Backend: un archivo SQL por tabla
 ├── unidades-medida.sql   │ Definiciones POR EMPRESA
 ├── categorias.sql       ─┘
 ├── ubicaciones.sql      Zona/estante/nivel del depósito, POR EMPRESA Y SUCURSAL
-├── lotes.sql            Partidas: cantidad, costo y vencimiento  ← ANTES que articulos
-├── articulos.sql        Artículos + imagen (BLOB). Su stock SUMA los lotes
+├── existencias.sql      Stock por artículo y sucursal. SÓLO LECTURA: nadie la
+│                        escribe hasta que exista PKG_STOCK
+├── articulos.sql        Artículos + imagen (BLOB). Búsqueda por nombre, código
+│                        OEM, descripción, MARCA y códigos EQUIVALENTES
+│                        cantidadStock sale de EXISTENCIAS
 ├── articulos-ubicaciones.sql  Cruce: en qué ubicaciones está cada artículo
-├── inventarios-triggers-ddl.sql  ⚠️ DOCUMENTADO PERO AUSENTE — ver nota abajo
-├── inventarios.sql      Conteos físicos con máquina de estados
+├── retirar-lotes-inventarios.sql  Limpieza tras el DROP de LOTES. Se corre UNA
+│                        vez y se borra: módulos ORDS, paquetes, triggers, menú
 ├── facturas-compras.sql Cabecera + detalle. La primera TRANSACCIÓN del proyecto
-│                        Cada línea CREA UN LOTE: comprar hace entrar el stock
+│                        Ya NO crea lotes: comprar no mueve stock (por ahora)
 ├── facturas-compras-pagos.sql  Pagos a proveedores. Espejo de ventas-cobros
 └── dashboard.sql        PKG_DASHBOARD: los indicadores de la home, en 1 consulta
 
@@ -183,7 +186,7 @@ casos porque la tabla no se comporta como una ficha:
 | Endpoint                                       | Por qué existe                                                                                                                                       |
 | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /facturas-compras/obtener/:id/:idEmpresa` | La factura **con su detalle**. El listado no lo trae: cien facturas con todas sus líneas serían un CLOB enorme para dibujar una tabla de encabezados |
-| `POST /inventarios/procesar/:id/:idEmpresa`    | `ABIERTO → PROCESADO`. Dispara una acción con efectos sobre `LOTES`, no reemplaza un recurso — por eso `POST` y no `PUT`                             |
+| `POST /inventarios/procesar/:id/:idEmpresa`    | `ABIERTO → PROCESADO`. Dispara una acción con efectos, no reemplaza un recurso — por eso `POST` y no `PUT`                                            |
 | `POST /inventarios/anular/:id/:idEmpresa`      | `ABIERTO → ANULADO`. **Ocupa el lugar del `/eliminar`**: un trigger prohíbe el `DELETE`                                                              |
 | `GET /empresas/publicas`                       | El único endpoint **sin token**: alimenta el selector de empresa del login, donde todavía no hay sesión                                              |
 | `GET /<tabla>/<imagen>/:id`                    | Los BLOB, también públicos: los consume un `<img>`, que no manda el header `Authorization`                                                           |
@@ -242,9 +245,10 @@ la izquierda y carrito sticky a la derecha. El precio se carga manualmente por
 línea. La lista de descuentos seleccionada aplica su porcentaje en el servidor.
 
 `VENTAS_CABECERAS` y `VENTAS_DETALLES` se guardan en una sola transacción. Al
-confirmar, el backend consume el stock disponible de `LOTES` por vencimiento
-más próximo. `VENTAS_CUOTAS` se genera usando vencimientos acumulados: una
-condición de 30 días y 3 cuotas produce días 30, 60 y 90.
+confirmar, el backend **no toca ninguna existencia**: el descuento por lote se
+retiró con `VENTAS_DETALLES.ID_LOTE` (ver "El stock, en migración").
+`VENTAS_CUOTAS` se genera usando vencimientos acumulados: una condición de 30
+días y 3 cuotas produce días 30, 60 y 90.
 
 El POS exige un talonario activo de la sucursal. `PKG_VENTAS` lo bloquea, toma
 de allí el tipo de comprobante, timbrado, establecimiento, punto de expedición
@@ -288,20 +292,22 @@ deliberado.
 olvido más silencioso de todos: no da error, da **un número mal**.
 
 ```sql
--- ❌ Suma los lotes de TODAS las empresas
-'cantidadStock' VALUE NVL((SELECT SUM(NVL(l.CANTIDAD_DISPON, l.CANTIDAD))
-                             FROM LOTES l
-                            WHERE l.ID_ARTICULO = a.ID_ARTICULO), 0),
+-- ❌ Suma las existencias de TODAS las empresas
+'cantidadStock' VALUE NVL((SELECT SUM(x.CANTIDAD)
+                             FROM EXISTENCIAS x
+                            WHERE x.ID_ARTICULO = a.ID_ARTICULO), 0),
 
 -- ✅ Acotado a la empresa del artículo
-                            WHERE l.ID_ARTICULO = a.ID_ARTICULO
-                              AND l.ID_EMPRESA  = a.ID_EMPRESA), 0),
+                            WHERE x.ID_ARTICULO = a.ID_ARTICULO
+                              AND x.ID_EMPRESA  = a.ID_EMPRESA), 0),
 ```
 
-Un artículo cargado en dos empresas mostraba —y **exportaba a Excel**— la suma
-de las dos. Se correlaciona contra `a.ID_EMPRESA` y no contra la variable del
-parámetro, para que el filtro siga aplicando cuando el listado se pide sin
-`idEmpresa`.
+Pasó de verdad, contra `LOTES`: un artículo cargado en dos empresas mostraba —y
+**exportaba a Excel**— la suma de las dos. Se correlaciona contra `a.ID_EMPRESA`
+y no contra la variable del parámetro, para que el filtro siga aplicando cuando
+el listado se pide sin `idEmpresa`. El ejemplo está escrito contra
+`EXISTENCIAS`, que es de donde va a salir el stock: hoy ese campo devuelve 0
+porque `LOTES` se eliminó, y la trampa hay que recordarla para cuando vuelva.
 
 Tres detalles que hacen que el control no tenga puerta trasera:
 
@@ -441,8 +447,13 @@ y mencionarla en un `INSERT` da `ORA-54013`. Está bien que sea así — no hay 
 de que quede desincronizada de sus factores.
 
 Los totales **no se guardan**: se suman del detalle en cada consulta. Es el mismo
-criterio que el stock de un artículo (`SUM` sobre lotes) y que el vencimiento de
-una factura (`FECHA_FACTURA + DIAS_PAGO`). Si se puede derivar, se deriva.
+criterio que el vencimiento de una factura (`FECHA_FACTURA + DIAS_PAGO`) y que la
+diferencia de un inventario. Si se puede derivar, se deriva.
+
+> El stock de un artículo **era** el otro ejemplo de esta regla (`SUM` sobre sus
+> lotes) y deja de serlo: pasa a ser una columna real con su libro de
+> movimientos al lado. Es la excepción que confirma el criterio — se derivaba
+> mientras la partida era la unidad de stock, y ya no lo es.
 
 ### IVA: los precios lo incluyen, así que se divide
 
@@ -484,12 +495,17 @@ por resta— para que las facturas viejas sigan mostrando lo mismo. La elección
 >
 > Toda división va protegida con `NULLIF(..., 0)`.
 
-### Máquina de estados: `INVENTARIOS`
+### Máquina de estados: `INVENTARIOS` (retirado)
+
+> **El módulo se eliminó** junto con `LOTES`: un conteo colgaba de una partida, y
+> contar por partida es imposible —en el estante las unidades son idénticas—.
+> Vuelve como conteo **por artículo y sucursal** cuando exista `EXISTENCIAS`. Lo
+> que sigue vale como registro de lo que había y de lo que conviene repetir.
 
 Los conteos físicos son la única tabla con estados y transiciones:
 
 ```
-ABIERTO ──> PROCESADO   (aplica el conteo al lote)
+ABIERTO ──> PROCESADO   (aplica el conteo)
         └─> ANULADO     (lo descarta sin tocar nada)
 ```
 
@@ -591,8 +607,18 @@ archivo se ejecute después.
 1. **`auth.sql` primero, sin excepción.** Todos los demás llaman a
    `PKG_AUTH` —`VALIDAR_TOKEN`, `VALIDAR_TOKEN_ADMIN`, el hasheo de
    contraseñas—, así que sin él ninguno compila. Si sale `INVALID`, frená ahí.
-2. **`lotes.sql` antes que `articulos.sql`.** El listado de artículos hace un
-   `SUM()` sobre `LOTES` para calcular el stock.
+2. **`codigos-equivalentes.sql` antes que `articulos.sql`.** El listado de
+   artículos consulta esa tabla en SQL estático para buscar por código
+   equivalente; si falta, el paquete queda `INVALID` — o sea que deja de andar el
+   módulo entero, no sólo la búsqueda.
+
+   Lo mismo con la tabla **`EXISTENCIAS`**, de donde sale `cantidadStock`: tiene
+   que existir antes de ejecutar `articulos.sql` y `dashboard.sql`. El paquete
+   `db/existencias.sql` puede ir después — publica su propio endpoint y nadie
+   más lo llama.
+
+   > `lotes.sql` estaba acá, antes que `articulos.sql`, porque el stock se
+   > sumaba de sus partidas. Ya no existe: ver "El stock, en migración".
 3. **`inventarios-triggers-ddl.sql` antes que `inventarios.sql`.**
 
    > ⚠️ **Este archivo no está en el repo.** Se lo documenta acá y en la guía,
@@ -622,13 +648,13 @@ archivo se ejecute después.
 3.  db/modulos.sql               15. db/categorias.sql
 4.  db/paginas.sql               16. db/unidades-medida.sql
 5.  db/usuario-paginas.sql       17. db/ubicaciones.sql
-6.  db/paises.sql                18. db/lotes.sql
+6.  db/paises.sql                18. db/codigos-equivalentes.sql
 7.  db/departamentos.sql         19. db/articulos.sql
 8.  db/ciudades.sql              20. db/articulos-ubicaciones.sql
-9.  db/empresas.sql              21. db/inventarios-triggers-ddl.sql
-10. db/sucursales.sql            22. db/inventarios.sql
-11. db/bancos.sql                23. db/personas.sql
-12. db/cuentas-bancarias.sql     24. db/iva.sql
+9.  db/empresas.sql              21. db/marcas.sql
+10. db/sucursales.sql            22. db/personas.sql
+11. db/bancos.sql                23. db/iva.sql
+12. db/cuentas-bancarias.sql     24. db/condiciones-pago.sql
                                  25. db/condiciones-pago.sql
                                  26. db/talonarios.sql       después del DDL de TALONARIOS
                                  27. db/ventas.sql
@@ -1135,8 +1161,9 @@ medio llenar.
 Ver [Crear la opción que falta](docs/GUIA-FRONTEND.md#crear-la-opción-que-falta-sin-salir-del-formulario).
 
 **Lo que una operación movió, su baja lo revierte — o se rechaza con 409.**
-Comprar crea lotes, vender los descuenta, borrar repone. Una venta con cobros o
-una compra ya vendida no se borran.
+La regla sigue en pie para la plata: una venta con cobros y una compra con pagos
+no se borran. Para el stock está **suspendida**, porque hoy ninguna transacción
+lo mueve.
 Ver [Transacciones que mueven stock o plata](docs/GUIA-IMPLEMENTACION.md#36-transacciones-que-mueven-stock-o-plata).
 
 ### Cuatro errores de PL/SQL que ya se cometieron

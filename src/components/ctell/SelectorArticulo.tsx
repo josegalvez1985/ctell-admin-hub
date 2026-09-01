@@ -213,7 +213,8 @@ function DialogoArticulos({
         <DialogHeader>
           <DialogTitle>Elegí un artículo</DialogTitle>
           <DialogDescription>
-            La búsqueda recorre todo el catálogo, no sólo lo que se ve.
+            La búsqueda recorre todo el catálogo y mira también la marca y los códigos equivalentes
+            del artículo, no sólo su nombre.
           </DialogDescription>
         </DialogHeader>
 
@@ -223,7 +224,7 @@ function DialogoArticulos({
             autoFocus
             value={busqueda}
             onChange={(e) => setBusqueda(e.target.value)}
-            placeholder="Buscar por nombre, código o descripción…"
+            placeholder="Nombre, código OEM, marca o equivalencia…"
             className="pl-9"
           />
         </div>
@@ -266,9 +267,30 @@ function DialogoArticulos({
                 <Check className={cn("size-4 shrink-0", elegido ? "opacity-100" : "opacity-0")} />
                 <span className="flex min-w-0 flex-1 flex-col">
                   <span className="break-words">{articulo.nombreArticulo}</span>
-                  {articulo.codigoArticulo && (
+                  {/* SE MUESTRA TODO LO QUE LA BÚSQUEDA MIRA: código OEM, marca
+                      y equivalencias. La lista contesta a un término que puede
+                      no estar en el nombre, y sin ver por dónde coincidió el
+                      resultado parece un error del sistema.
+
+                      Segunda línea: OEM y marca, los dos datos cortos con los
+                      que se identifica la pieza en la mano. */}
+                  {(articulo.codigoArticulo || articulo.marca) && (
                     <span className="truncate text-xs text-muted-foreground">
-                      {articulo.codigoArticulo}
+                      {[articulo.codigoArticulo, articulo.marca].filter(Boolean).join(" · ")}
+                    </span>
+                  )}
+                  {/* Tercera línea: las equivalencias, que son varias y largas.
+                      Van aparte y con su rótulo —un código suelto al lado del
+                      OEM no se distinguiría de él, y son cosas distintas: el
+                      OEM es el del fabricante del vehículo, la equivalencia es
+                      cómo llama a la misma pieza otra marca.
+
+                      `line-clamp-2` y no `truncate`: entran dos renglones de
+                      códigos, que es lo que hace falta para reconocer el que se
+                      tecleó; el resto lo recorta el backend a 200 caracteres. */}
+                  {articulo.codigosEquivalentes && (
+                    <span className="line-clamp-2 break-words text-xs text-muted-foreground/80">
+                      Equiv.: {articulo.codigosEquivalentes}
                     </span>
                   )}
                 </span>

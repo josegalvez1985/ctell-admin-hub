@@ -26,7 +26,7 @@ ctell-admin-hub/
 │   ├── usuarios.sql          PKG_USUARIOS: ABM de usuarios
 │   ├── ventas.sql            PKG_VENTAS: punto de venta (cabecera+detalle+cuotas)
 │   ├── ventas-cobros.sql     PKG_VENTAS_COBROS: cobros contra ventas
-│   ├── facturas-compras.sql  PKG_FACTURAS_COMPRAS: compras (crea lotes)
+│   ├── facturas-compras.sql  PKG_FACTURAS_COMPRAS: compras (hoy no mueven stock)
 │   ├── facturas-compras-pagos.sql  PKG_FACTURAS_COMPRAS_PAGOS: pagos a proveedores
 │   ├── dashboard.sql         PKG_DASHBOARD: los indicadores de la home
 │   └── [table].sql           Cada tabla nueva va aquí
@@ -143,7 +143,7 @@ El alta de usuarios y `/auth/recuperar` mandan la contraseña por mail vía
 | Método   | Ruta                                     | Qué hace                                                                                                   |
 | -------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `GET`    | `/ventas/listar`                         | Listado con totales y saldo derivados                                                                      |
-| `GET`    | `/ventas/obtener/:id/:idEmpresa`         | Cabecera, detalle con lote, cuotas                                                                         |
+| `GET`    | `/ventas/obtener/:id/:idEmpresa`         | Cabecera, detalle, cuotas                                                                                  |
 | `POST`   | `/ventas/crear`                          | Venta completa en una transacción. `idListaDescuentos` es **opcional**: sin lista, precio de etiqueta y 0% |
 | `DELETE` | `/ventas/eliminar/:id/:idEmpresa`        | Borra y **repone el stock**                                                                                |
 | `GET`    | `/ventas-cobros/listar/:idVenta/:idEmp`  | Historial de cobros                                                                                        |
@@ -156,7 +156,9 @@ Misma forma que ventas, en espejo. `/compras-pagos` es idéntico a `/ventas-cobr
 
 #### Dashboard — `/dashboard/resumen?idEmpresa=&idSucursal=`
 
-Los indicadores de la home en una consulta: montos del mes con su mes anterior, valor de stock, artículos bajo mínimo, últimos movimientos (ventas + compras + inventarios unidos), stock crítico y cuotas de compra por vencer.
+Los indicadores de la home en una consulta: montos del mes con su mes anterior, valor de stock, artículos bajo mínimo, últimos movimientos, stock crítico y cuotas de compra por vencer.
+
+De los indicadores de stock, **sólo el valor sigue en cero**: unidades en depósito, artículos bajo mínimo y stock crítico ya salen de `EXISTENCIAS`, acotados a la sucursal activa. El valor necesita un costo que la tabla todavía no guarda.
 
 Un endpoint propio y no sumar en el frontend porque los listados están paginados: sumarlos en el cliente daría el total de la página, no del mes.
 
@@ -164,7 +166,7 @@ Un endpoint propio y no sumar en el frontend porque los listados están paginado
 
 `VENTAS_CABECERAS` y `FACTURAS_COMPRAS_CAB` **no tienen** columnas de monto. Total, descuento, gravado, IVA, cobrado/pagado y saldo se derivan sumando el detalle en cada consulta.
 
-Guardarlos además permitiría que la cabecera diga 500.000 mientras sus líneas suman 480.000 — una inconsistencia que nadie detecta hasta que alguien cuadra la caja. Es el mismo criterio del stock de un artículo (`SUM` sobre sus lotes) y de la diferencia de un inventario: **si se puede derivar, se deriva.**
+Guardarlos además permitiría que la cabecera diga 500.000 mientras sus líneas suman 480.000 — una inconsistencia que nadie detecta hasta que alguien cuadra la caja. Es el mismo criterio de la diferencia de un inventario: **si se puede derivar, se deriva.**
 
 ### Los precios incluyen IVA: el impuesto se desglosa, no se suma
 
@@ -182,14 +184,27 @@ donde `neto = cantidad * precio - descuento`. Con una línea de 110.000 al 10%: 
 - Toda división va con `NULLIF(..., 0)`: la exenta tiene `IVA_DIVISION = 0`. Ojo que en `GRAVADA_DIVISION` la exenta va en **1**, no en 0 — los dos divisores usan criterios opuestos.
 - **La columna virtual `TOTAL` no debe sumar `MONTO_IVA`.** El DDL original lo hacía y no se notaba porque `MONTO_IVA` se guardaba siempre en 0.
 
-### El stock se mueve con las transacciones
+### El stock está en migración: hoy ninguna transacción lo mueve
 
-- **Comprar hace entrar stock:** cada línea de una factura de compra crea **su propio lote**, con la cantidad y el precio unitario como costo. Uno por línea y no acumulado: cada compra entró a un precio distinto.
-- **Vender lo saca:** cada línea de venta descuenta de **un solo lote**, el que elige el cajero. `VENTAS_DETALLES.ID_LOTE` guarda cuál — sin esa columna, borrar la venta no sabría dónde reponer.
-- **Borrar revierte:** eliminar una venta devuelve las unidades a su lote; eliminar una compra saca del stock lo que trajo.
-- **Se bloquea lo que no se puede revertir** (409): una venta con cobros, una factura con pagos, y una factura cuya mercadería ya se vendió (`CANTIDAD_DISPON < CANTIDAD`).
+**El stock por lotes se discontinuó.** `VENTAS_DETALLES.ID_LOTE` y `FACTURAS_COMPRAS_DET.ID_LOTE` ya no existen en el DDL, y con ellas se fueron el descuento al vender, la reposición al borrar y el ingreso al comprar.
 
-`FACTURAS_COMPRAS_DET.ID_LOTE` es el espejo de `VENTAS_DETALLES.ID_LOTE`, en el otro sentido.
+**Por qué se abandonó.** Los lotes se habían implementado sólo para registrar el costo de cada compra — dato que en realidad vive en `FACTURAS_COMPRAS_DET.PRECIO_UNITARIO`, con su proveedor y su fecha; el lote lo copiaba. A cambio cobraban caro: el cajero tenía que elegir de qué partida salía cada línea (40 unidades en cuatro lotes de 10 no permitían vender 12), y **el conteo físico era imposible**: en el estante las unidades son idénticas, nadie sabe de qué compra vino cada una. Contar un lote *fijaba* su cantidad y dejaba el stock del artículo peor que antes.
+
+**Qué implica hoy, y hay que saberlo:**
+
+- **Se puede vender sin existencia.** La validación colgaba del lote. No se reemplazó por una sobre el stock del artículo porque ese número —suma de lotes que ya nadie mueve— dejó de significar algo.
+- **Borrar una venta no repone nada**, y por eso `/ventas/eliminar` ya no devuelve `unidadesRepuestas`.
+- **Una compra ya no se congela por "mercadería vendida"**: esa regla se detectaba con `CANTIDAD_DISPON < CANTIDAD`. Lo único que sigue bloqueando una factura son sus pagos, y una venta sus cobros (409).
+
+**A dónde va.** Una cantidad única por artículo y sucursal (`EXISTENCIAS`) con **costo promedio ponderado móvil**, más un libro de movimientos (`MOVIMIENTOS_STOCK`) que hace auditable cada cambio. Un solo paquete —`PKG_STOCK`— será el único que escriba esa cantidad, con `FOR UPDATE` sobre la fila: ahí vuelve la carrera entre dos cajas que hoy no existe porque no se toca nada.
+
+**La tabla `LOTES` se eliminó**, y con ella los módulos de Lotes y de Inventarios: sus archivos `db/`, sus pantallas, su lugar en el menú y sus tipos en `api.ts`. `db/retirar-lotes-inventarios.sql` hace la limpieza que el `DROP` no se lleva —los módulos ORDS, los paquetes, los triggers de `INVENTARIOS` y las páginas del menú—; se ejecuta una vez y se puede borrar.
+
+**`EXISTENCIAS` ya existe, en modo lectura.** Una fila por empresa, sucursal y artículo, con `CANTIDAD_DISPONIBLE`: de ahí vuelven a salir `cantidadStock` del listado de artículos, las unidades en depósito, los artículos bajo mínimo y el stock crítico de la home. `db/existencias.sql` publica `GET /existencias/listar` para verlo abierto por sucursal.
+
+**Nadie la escribe todavía**, y es a propósito: el stock se mueve con las transacciones, no editándolo. Comprar y vender siguen sin tocarla hasta que exista `PKG_STOCK`, que va a ser su único escritor —con `SELECT … FOR UPDATE` sobre la fila, porque entre leer una cantidad y grabar la nueva puede entrar otra caja—.
+
+**Lo que falta es el costo.** La tabla guarda la cantidad, no a cuánto entró, así que el **valor** de stock del dashboard sigue en cero: multiplicar unidades por un costo que no existe no se puede, y mostrar unidades como si fueran guaraníes sería peor que un cero. Necesita una columna de costo promedio ponderado móvil, o la tabla de movimientos de la que se derive.
 
 ### El DDL manda, no los comentarios
 
@@ -229,7 +244,7 @@ Las columnas `ACTIVO` son `VARCHAR2(1)` con valores `'A'` o `'I'`. **Este códig
 - **`index.tsx`:** "/" → Login (público).
 - **`_auth.tsx`:** Layout protegido (requiere token). Las rutas bajo `_auth` heredan este layout.
 - **`_auth.home.tsx`:** "/home" → Dashboard. Los KPIs, movimientos y stock crítico salen de `/dashboard/resumen`; arriba va `<AccesosRapidos />`.
-- **`_auth.punto-venta.tsx`:** "/punto-venta" → Caja. Carrito con IVA y lote por línea; al guardar abre el modal de cobro.
+- **`_auth.punto-venta.tsx`:** "/punto-venta" → Caja. Carrito con IVA por línea; al guardar abre el modal de cobro. **Ya no se elige lote** ni hay techo por partida: la venta no descuenta stock (ver arriba).
 - **`_auth.ventas.tsx`:** "/ventas" → Comprobantes emitidos: ver detalle y eliminar. **No** se editan.
 - **`_auth.cobros.tsx`:** "/cobros" → Cobros de ventas, historial y baja.
 - **`_auth.pagos.tsx`:** "/pagos" → Pagos a proveedores. Espejo de cobros.
@@ -441,7 +456,7 @@ Las tres están explicadas con ejemplos en [GUIA-IMPLEMENTACION.md](docs/GUIA-IM
 7. **Reejecutar `db/`:** frena dev primero (evita `ORA-00060`).
 8. **Los totales se derivan**, no se guardan en la cabecera.
 9. **El precio incluye IVA:** se desglosa, nunca se suma.
-10. **Comprar crea lotes, vender los descuenta, borrar revierte** — o se rechaza con 409.
+10. **Ninguna transacción mueve stock hoy** — es un estado intermedio, mientras se migra a existencias por artículo. Lo que sí sigue: una venta con cobros o una compra con pagos no se borran (409).
 11. **Mirá la salida al ejecutar en APEX.** Cada archivo termina con un bloque que consulta `USER_OBJECTS`/`USER_ERRORS`. Un paquete `INVALID` da un 500 mudo: el `WHEN OTHERS` no captura errores de compilación.
 12. **El techo de 4000 bytes pega en tres lugares** (agregado anidado, CLOB final, bind de ORDS). Si desanidaste y paginaste y sigue el 500, bajá el tamaño de página — no busques más en el SQL.
 13. **Filtrar por empresa incluye las subconsultas**, no sólo el `WHERE` principal.

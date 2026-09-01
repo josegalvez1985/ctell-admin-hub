@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, Pencil, Plus, Search, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
@@ -156,6 +156,33 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
     queryFn: () => api.paginas.listar(),
   });
 
+  /**
+   * Los permisos de todos los usuarios, para saber qué páginas están en uso.
+   *
+   * Se pide entero y no por página: son pocas filas, es UNA consulta, y el
+   * listado necesita el dato de todas a la vez para deshabilitar sus botones.
+   * Misma queryKey que el diálogo de Permisos, así se comparte la respuesta.
+   *
+   * SIN FILTRAR POR EMPRESA: la página es una sola para todo el sistema y el
+   * backend rechaza el borrado si está asignada en cualquiera. Filtrar acá
+   * mostraría el botón habilitado para terminar en un 409.
+   */
+  const permisosQuery = useQuery({
+    queryKey: ["usuario-paginas"],
+    queryFn: () => api.usuarioPaginas.listar(),
+  });
+
+  /** Cuántos usuarios distintos tienen cada página. */
+  const usuariosPorPagina = useMemo(() => {
+    const cuenta = new Map<number, Set<number>>();
+    for (const permiso of permisosQuery.data?.items ?? []) {
+      const suyos = cuenta.get(permiso.idPagina) ?? new Set<number>();
+      suyos.add(permiso.idUsuario);
+      cuenta.set(permiso.idPagina, suyos);
+    }
+    return cuenta;
+  }, [permisosQuery.data?.items]);
+
   const eliminar = useMutation({
     mutationFn: (pagina: Pagina) => api.paginas.eliminar(pagina.id),
     onSuccess: () => {
@@ -229,6 +256,8 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
         <ul className="scrollbar-fino max-h-[45vh] divide-y divide-border overflow-y-auto rounded-lg border border-border">
           {paginas.map((pagina) => {
             const activo = esActivo(pagina.activo);
+            // A cuántos usuarios se la habría que quitar antes de poder borrarla.
+            const enUsoPor = usuariosPorPagina.get(pagina.id)?.size ?? 0;
 
             return (
               <li
@@ -256,10 +285,23 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
                   >
                     <Pencil className="size-4" />
                   </Button>
+                  {/* Deshabilitado mientras alguien la tenga asignada: el
+                      backend lo rechaza con 409 igual, pero enterarse recién
+                      después de confirmar un borrado es la peor forma. El
+                      `title` dice a cuántos hay que quitársela primero.
+
+                      Mientras la consulta de permisos está en vuelo el botón
+                      queda habilitado —el 409 sigue cubriendo—, en vez de
+                      bloquear todo el listado por un instante. */}
                   <Button
                     variant="ghost"
                     size="icon"
-                    title="Eliminar"
+                    disabled={enUsoPor > 0}
+                    title={
+                      enUsoPor > 0
+                        ? `Asignada a ${enUsoPor} ${enUsoPor === 1 ? "usuario" : "usuarios"}: quitásela en Permisos antes de borrarla`
+                        : "Eliminar"
+                    }
                     aria-label={`Eliminar ${pagina.nombre}`}
                     onClick={() => setAEliminar(pagina)}
                   >
@@ -284,8 +326,8 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
           <AlertDialogHeader>
             <AlertDialogTitle>¿Eliminar {aEliminar?.nombre}?</AlertDialogTitle>
             <AlertDialogDescription>
-              Se pierden también los permisos que los usuarios tuvieran sobre esta página. Esta
-              acción no se puede deshacer.
+              Sólo se puede borrar una página que <strong>no</strong> tenga ningún usuario asignado.
+              Esta acción no se puede deshacer.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

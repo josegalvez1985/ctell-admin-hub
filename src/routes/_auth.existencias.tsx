@@ -6,6 +6,7 @@ import { toast } from "sonner";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
+import { useSucursal } from "@/components/ctell/sucursal-provider";
 import { SIN_FILTRO, TableHeadFiltrable } from "@/components/ctell/TableHeadFiltrable";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
 import { useTablaListado } from "@/hooks/use-tabla-listado";
@@ -81,11 +82,21 @@ const MAX_PAGINAS = 50;
  * fallar a `/articulos/listar` con 500 por el techo de 4000 bytes del bind de
  * ORDS. Ver la nota de `POR_PAGINA`.
  */
-async function traerCatalogo(idEmpresa: number): Promise<Articulo[]> {
+async function traerCatalogo(idEmpresa: number, idSucursal: number): Promise<Articulo[]> {
   const todos: Articulo[] = [];
 
   for (let pagina = 1; pagina <= MAX_PAGINAS; pagina++) {
-    const respuesta = await api.articulos.listar({ idEmpresa, pagina, tamanio: POR_PAGINA });
+    // idSucursal ACOTA EL STOCK, no el catálogo: la lista de artículos es de la
+    // empresa y no cambia según el depósito. Lo que cambia es `cantidadStock`,
+    // que sin este parámetro suma TODAS las sucursales — y esta pantalla es
+    // justamente la que se mira para saber si hay algo **acá**. Un total de 12
+    // que en realidad son 8 en el otro local es peor que no mostrar nada.
+    const respuesta = await api.articulos.listar({
+      idEmpresa,
+      idSucursal,
+      pagina,
+      tamanio: POR_PAGINA,
+    });
     todos.push(...respuesta.items);
 
     // Dos cortes: el total declarado por el backend y una página incompleta.
@@ -155,6 +166,9 @@ const COLUMNAS: ColumnaExport<Articulo>[] = [
 
 function ExistenciasPage() {
   const { empresa } = useEmpresa();
+  // La existencia es de UN depósito: la sucursal activa es parte de la pregunta
+  // que responde esta pantalla, igual que en el resto del sistema.
+  const { sucursal } = useSucursal();
   const [filtroCategoria, setFiltroCategoria] = useState<string>(SIN_FILTRO);
   const [filtroMarca, setFiltroMarca] = useState<string>(SIN_FILTRO);
   const [filtroSituacion, setFiltroSituacion] = useState<string>(SIN_FILTRO);
@@ -164,10 +178,13 @@ function ExistenciasPage() {
   // queryKey propia y no la de ["articulos"]: aquélla guarda páginas sueltas de
   // 20 filas con búsqueda del servidor, y ésta el catálogo entero. Compartirla
   // haría que una pantalla sirviera la caché de la otra.
+  // LA SUCURSAL VA EN LA queryKey. Sin ella, cambiar de depósito serviría el
+  // catálogo cacheado del anterior —con sus cantidades— y nada avisaría de que
+  // los números son de otro lado.
   const { data, isPending, isError, error } = useQuery({
-    queryKey: ["existencias", empresa?.id ?? null],
-    queryFn: () => traerCatalogo(empresa!.id),
-    enabled: empresa !== null,
+    queryKey: ["existencias", empresa?.id ?? null, sucursal?.id ?? null],
+    queryFn: () => traerCatalogo(empresa!.id, sucursal!.id),
+    enabled: empresa !== null && sucursal !== null,
   });
 
   const { data: categorias } = useQuery({
@@ -303,10 +320,13 @@ function ExistenciasPage() {
             <h1 className="text-2xl font-bold text-foreground sm:text-3xl">
               Existencia de artículos
             </h1>
+            {/* DICE DE QUÉ SUCURSAL SON LOS NÚMEROS. Sin eso, la misma tabla
+                con las mismas columnas muestra cantidades distintas según el
+                depósito activo y no hay nada en pantalla que lo explique. */}
             <p className="mt-1 text-sm text-muted-foreground">
-              {empresa
-                ? `Stock disponible de ${empresa.nombreEmpresa}, sumando los lotes de cada artículo.`
-                : "Stock disponible, sumando los lotes de cada artículo."}
+              {sucursal
+                ? `Stock disponible en ${sucursal.nombreSucursal}.`
+                : "Stock disponible de la sucursal activa."}
             </p>
           </div>
 
@@ -373,7 +393,7 @@ function ExistenciasPage() {
           <Input
             value={busqueda}
             onChange={(e) => setBusqueda(e.target.value)}
-            placeholder="Buscar por nombre, código, categoría…"
+            placeholder="Buscar por nombre, código, categoría o marca…"
             className="pl-9"
           />
         </div>

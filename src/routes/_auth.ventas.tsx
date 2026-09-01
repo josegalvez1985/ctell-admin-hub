@@ -68,20 +68,11 @@ function VentasPage() {
 
   const eliminar = useMutation({
     mutationFn: (venta: Venta) => api.ventas.eliminar(venta.id, empresa!.id),
-    onSuccess: (data) => {
-      toast.success(
-        data.unidadesRepuestas > 0
-          ? `Venta eliminada · ${data.unidadesRepuestas} unidades volvieron al stock`
-          : "Venta eliminada",
-      );
+    onSuccess: () => {
+      toast.success("Venta eliminada");
       setAEliminar(null);
       queryClient.invalidateQueries({ queryKey: ["ventas"] });
       queryClient.invalidateQueries({ queryKey: ["cobros-ventas"] });
-      // El stock volvió a los lotes: las pantallas que lo muestran quedaron viejas.
-      queryClient.invalidateQueries({ queryKey: ["lotes"] });
-      queryClient.invalidateQueries({ queryKey: ["articulos"] });
-      queryClient.invalidateQueries({ queryKey: ["pos-articulos"] });
-      queryClient.invalidateQueries({ queryKey: ["pos-lotes"] });
     },
     onError: (error) => {
       setAEliminar(null);
@@ -258,7 +249,6 @@ function VentasPage() {
                   <TableHeader>
                     <TableRow>
                       <TableHead className="h-8 text-xs">Artículo</TableHead>
-                      <TableHead className="h-8 text-xs">Lote</TableHead>
                       <TableHead className="h-8 text-right text-xs">Cant.</TableHead>
                       <TableHead className="h-8 text-right text-xs">Precio</TableHead>
                       <TableHead className="h-8 text-right text-xs">IVA</TableHead>
@@ -269,16 +259,6 @@ function VentasPage() {
                     {(detalle.data?.detalle ?? []).map((d) => (
                       <TableRow key={d.id} className="text-sm">
                         <TableCell className="py-2">{d.articulo ?? `#${d.idArticulo}`}</TableCell>
-                        <TableCell className="py-2 text-xs text-muted-foreground">
-                          {d.idLote === null ? (
-                            "—"
-                          ) : (
-                            <>
-                              {d.numeroLote === null ? `#${d.idLote}` : `Lote ${d.numeroLote}`}
-                              {d.loteVence && <span className="block">vence {d.loteVence}</span>}
-                            </>
-                          )}
-                        </TableCell>
                         <TableCell className="py-2 text-right">{d.cantidad}</TableCell>
                         <TableCell className="py-2 text-right">
                           {formatearMoneda(d.precioUnitario)}
@@ -366,9 +346,9 @@ function VentasPage() {
                 deshace: el número de comprobante ya se consumió del talonario y
                 no vuelve, así que la secuencia queda con un hueco. */}
             <AlertDialogDescription>
-              Las unidades vendidas vuelven al stock, a los lotes de los que salieron. El número de
-              comprobante <strong>no</strong> se reutiliza: la secuencia del talonario queda con un
-              hueco. Esta acción no se puede deshacer.
+              Las unidades vendidas <strong>no</strong> vuelven al stock: por ahora vender tampoco
+              lo descuenta. El número de comprobante <strong>no</strong> se reutiliza: la secuencia
+              del talonario queda con un hueco. Esta acción no se puede deshacer.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

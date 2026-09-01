@@ -67,29 +67,34 @@
 -- exenta va en 1, NO en 0 — los dos divisores usan criterios opuestos.
 --
 --------------------------------------------------------------------------------
--- CADA LINEA SALE DE UN SOLO LOTE, Y LO ELIGE EL CAJERO
+-- LA VENTA NO DESCUENTA STOCK
 --
--- VENTAS_DETALLES.ID_LOTE es UNA columna y la tabla tiene UNIQUE (ID_VENTA,
--- ID_ARTICULO). Juntas significan que una linea no se reparte entre lotes: si se
--- venden 10 unidades, las 10 salen del mismo lote.
+-- VENTAS_DETALLES.ID_LOTE ya no existe en el DDL: el stock por lotes se
+-- discontinuo. Hasta hace poco el cajero elegia de que lote salia CADA linea,
+-- INSERTAR bloqueaba ese lote con FOR UPDATE, validaba su disponible y lo
+-- descontaba; ELIMINAR devolvia las unidades al lote del que habian salido.
+-- Nada de eso queda.
 --
--- Por eso el lote VIENE EN EL DETALLE en vez de elegirlo el backend por FIFO.
--- Con FIFO automatico, un stock de 10 partido en lotes de 6 y 4 haria fracasar
--- una venta de 10 sin que el cajero entienda por que —la pantalla dice que hay
--- 10—. Eligiendolo el, ve el disponible de cada lote y decide.
+-- HOY VENDER NO CAMBIA NINGUNA EXISTENCIA, y esto se nota:
 --
--- NO SE VENDE SIN EXISTENCIA. Al insertar se valida que el lote exista, sea de
--- esta empresa y sucursal, sea del articulo de la linea, y tenga
--- CANTIDAD_DISPON suficiente. Se lee con FOR UPDATE para que dos cajas
--- vendiendo el mismo lote a la vez no vean ambas existencia de sobra.
+--   * SE PUEDE VENDER SIN STOCK. La validacion "no se vende sin existencia"
+--     colgaba del lote y se fue con el. No se reemplaza por una equivalente
+--     sobre el stock del articulo porque ese stock —hoy suma de lotes que ya no
+--     se mueven— tampoco significa nada mientras dure esta etapa.
+--   * ELIMINAR una venta no repone nada, y por eso ya no devuelve
+--     'unidadesRepuestas'.
 --
--- Los articulos con ES_GASTO distinto de 'N' no llevan lote: un servicio no
--- tiene stock que descontar.
+-- ES UN ESTADO INTERMEDIO, no una decision definitiva. El reemplazo es una
+-- cantidad unica por articulo y sucursal con costo promedio ponderado y su libro
+-- de movimientos. Cuando ese paquete exista, ESTE archivo vuelve a mover stock:
+-- INSERTAR llama a la salida —con el FOR UPDATE ahora sobre la fila de
+-- existencias, que es donde vuelve a estar la carrera entre dos cajas— y
+-- ELIMINAR al movimiento inverso.
 --
--- Al ELIMINAR, cada linea devuelve su cantidad a su ID_LOTE. Es exacto porque el
--- lote quedo guardado; sin esa columna el stock se perdia para siempre, ya que
--- CANTIDAD_DISPON es una columna real y no se deriva de nada.
---
+-- ES_GASTO sigue leyendose al insertar, aunque hoy no decida nada: valida que el
+-- articulo exista, y vuelve a hacer falta apenas se descuente stock —un servicio
+-- no tiene existencia que mover—.
+
 --------------------------------------------------------------------------------
 -- Tablas (no las crea ni las altera; el DDL se administra aparte):
 --   VENTAS_CABECERAS  ID_VENTA, ID_EMPRESA, ID_SUCURSAL, ID_USUARIO, ID_CLIENTE,
@@ -98,10 +103,11 @@
 --                     ID_TALONARIO, NRO_TIMBRADO, ESTABLECIMIENTO,
 --                     PUNTO_EXPEDICION, NRO_COMPROBANTE, FECHA_CREACION,
 --                     FECHA_ACTUALIZACION
---   VENTAS_DETALLES   ID_DETALLE, ID_VENTA, ID_ARTICULO, ID_IVA, ID_LOTE,
+--   VENTAS_DETALLES   ID_DETALLE, ID_VENTA, ID_ARTICULO, ID_IVA,
 --                     CANTIDAD, PRECIO_UNITARIO, SUBTOTAL (VIRTUAL),
 --                     PORCENTAJE_DESCUENTO, MONTO_DESCUENTO, MONTO_GRAVADO,
 --                     MONTO_IVA, TOTAL (VIRTUAL), FECHA_CREACION
+--                     UNIQUE (ID_VENTA, ID_ARTICULO)
 --   VENTAS_CUOTAS     ID_CUOTA, ID_VENTA, NRO_CUOTA, FECHA_VENCIMIENTO,
 --                     MONTO_CUOTA, MONTO_PAGADO, SALDO_PENDIENTE (VIRTUAL),
 --                     ESTADO, FECHA_ACTUALIZACION
@@ -209,20 +215,18 @@ CREATE OR REPLACE PACKAGE BODY PKG_VENTAS AS
                    FROM VENTAS_DETALLES GROUP BY ID_VENTA) t ON t.ID_VENTA = v.ID_VENTA
       LEFT JOIN (SELECT ID_VENTA, SUM(MONTO) cobrado FROM VENTAS_COBROS GROUP BY ID_VENTA) c ON c.ID_VENTA = v.ID_VENTA
      WHERE v.ID_VENTA = l_id AND v.ID_EMPRESA = l_empresa;
-    -- LEFT JOIN en LOTES: ID_LOTE es nullable (los articulos ES_GASTO no llevan),
-    -- y con JOIN interno esas lineas desaparecerian del detalle sin ningun error.
+    -- SIN LOTE: la linea ya no guarda de que partida salio, asi que el detalle
+    -- tampoco lo devuelve. Con eso se pierde la trazabilidad que daba la columna
+    -- —a quien se le vendio cual—; el reemplazo es el libro de movimientos, que
+    -- responde lo mismo a nivel de articulo y fecha.
     SELECT JSON_ARRAYAGG(JSON_OBJECT('id' VALUE d.ID_DETALLE, 'idArticulo' VALUE d.ID_ARTICULO, 'articulo' VALUE a.NOMBRE_ARTICULO,
       'idIva' VALUE d.ID_IVA, 'cantidad' VALUE d.CANTIDAD, 'precioUnitario' VALUE d.PRECIO_UNITARIO, 'subtotal' VALUE d.SUBTOTAL,
       'porcentajeDescuento' VALUE d.PORCENTAJE_DESCUENTO, 'montoDescuento' VALUE d.MONTO_DESCUENTO,
-      'montoGravado' VALUE d.MONTO_GRAVADO, 'montoIva' VALUE d.MONTO_IVA, 'total' VALUE d.TOTAL,
-      -- El lote de la linea: la trazabilidad que da la columna. Ante un
-      -- vencimiento o un recall, esto dice a quien se le vendio cual.
-      'idLote' VALUE d.ID_LOTE, 'numeroLote' VALUE lo.NUMERO_LOTE,
-      'loteVence' VALUE TO_CHAR(lo.FECHA_VENCIMIENTO, 'YYYY-MM-DD') RETURNING CLOB) ORDER BY d.ID_DETALLE RETURNING CLOB)
+      'montoGravado' VALUE d.MONTO_GRAVADO, 'montoIva' VALUE d.MONTO_IVA, 'total' VALUE d.TOTAL
+      RETURNING CLOB) ORDER BY d.ID_DETALLE RETURNING CLOB)
       INTO l_det
       FROM VENTAS_DETALLES d
       LEFT JOIN ARTICULOS a ON a.ID_ARTICULO = d.ID_ARTICULO
-      LEFT JOIN LOTES     lo ON lo.ID_LOTE   = d.ID_LOTE
      WHERE d.ID_VENTA = l_id;
     SELECT JSON_ARRAYAGG(JSON_OBJECT('id' VALUE q.ID_CUOTA, 'nroCuota' VALUE q.NRO_CUOTA, 'fechaVencimiento' VALUE TO_CHAR(q.FECHA_VENCIMIENTO, 'YYYY-MM-DD'),
       'montoCuota' VALUE q.MONTO_CUOTA, 'montoPagado' VALUE q.MONTO_PAGADO, 'saldoPendiente' VALUE q.SALDO_PENDIENTE, 'estado' VALUE q.ESTADO RETURNING CLOB) ORDER BY q.NRO_CUOTA RETURNING CLOB)
@@ -240,7 +244,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_VENTAS AS
     p_status_code OUT NUMBER, p_resultado OUT CLOB
   ) IS
     l_sesion NUMBER; l_empresa NUMBER; l_sucursal NUMBER; l_usuario NUMBER; l_cliente NUMBER; l_lista NUMBER; l_condicion NUMBER; l_moneda NUMBER; l_talonario NUMBER; l_id NUMBER; l_lineas NUMBER := 0;
-    l_fecha TIMESTAMP; l_porcentaje NUMBER := 0; l_dias NUMBER := 0; l_cuotas NUMBER := 1; l_es_gasto VARCHAR2(1); l_disponible NUMBER;
+    l_fecha TIMESTAMP; l_porcentaje NUMBER := 0; l_dias NUMBER := 0; l_cuotas NUMBER := 1; l_es_gasto VARCHAR2(1);
     l_bruto NUMBER; l_desc NUMBER; l_neto NUMBER; l_gravado NUMBER; l_iva_linea NUMBER; l_total NUMBER := 0;
     l_nro NUMBER; l_final_talonario NUMBER; l_tipo VARCHAR2(3); l_timbrado VARCHAR2(20); l_establecimiento VARCHAR2(3); l_punto VARCHAR2(3); l_numero VARCHAR2(50);
   BEGIN
@@ -304,38 +308,28 @@ CREATE OR REPLACE PACKAGE BODY PKG_VENTAS AS
                           FECHA_ACTUALIZACION = SYSTIMESTAMP
      WHERE ID_TALONARIO = l_talonario;
 
-    FOR linea IN (SELECT idArticulo, cantidad, precioUnitario, idIva, idLote
+    -- Sin 'idLote' en las columnas: aunque el cliente lo siguiera mandando, el
+    -- JSON_TABLE ya no lo lee y la linea no tiene donde guardarlo.
+    FOR linea IN (SELECT idArticulo, cantidad, precioUnitario, idIva
                     FROM JSON_TABLE(p_detalle, '$[*]' COLUMNS (
                            idArticulo NUMBER PATH '$.idArticulo', cantidad NUMBER PATH '$.cantidad',
-                           precioUnitario NUMBER PATH '$.precioUnitario', idIva NUMBER PATH '$.idIva',
-                           idLote NUMBER PATH '$.idLote'))) LOOP
+                           precioUnitario NUMBER PATH '$.precioUnitario', idIva NUMBER PATH '$.idIva'))) LOOP
       IF linea.idArticulo IS NULL OR linea.cantidad IS NULL OR linea.cantidad <= 0 OR linea.precioUnitario IS NULL OR linea.precioUnitario < 0 THEN
         ROLLBACK; p_status_code := 400; p_resultado := '{"error":"Los datos de una linea son invalidos"}'; RETURN;
       END IF;
 
+      -- Este SELECT quedo SOLO para validar que el articulo exista: hoy nada se
+      -- decide con ES_GASTO. Vuelve a decidir apenas la venta descuente stock —un
+      -- servicio no tiene existencia que mover—, y por eso se lee igual.
       BEGIN SELECT NVL(ES_GASTO, 'N') INTO l_es_gasto FROM ARTICULOS WHERE ID_ARTICULO = linea.idArticulo;
       EXCEPTION WHEN NO_DATA_FOUND THEN ROLLBACK; p_status_code := 400; p_resultado := '{"error":"Un articulo del detalle no existe"}'; RETURN; END;
 
-      -- NO SE VENDE SIN EXISTENCIA. El lote se bloquea antes de mirarle el
-      -- disponible: sin el FOR UPDATE, dos cajas leen el mismo saldo y las dos
-      -- creen tener stock.
-      IF l_es_gasto = 'N' THEN
-        IF linea.idLote IS NULL THEN
-          ROLLBACK; p_status_code := 400; p_resultado := '{"error":"Falta elegir el lote de un articulo"}'; RETURN;
-        END IF;
-        BEGIN
-          SELECT NVL(CANTIDAD_DISPON, CANTIDAD) INTO l_disponible
-            FROM LOTES
-           WHERE ID_LOTE = linea.idLote AND ID_EMPRESA = l_empresa AND ID_SUCURSAL = l_sucursal AND ID_ARTICULO = linea.idArticulo
-             FOR UPDATE;
-        EXCEPTION WHEN NO_DATA_FOUND THEN
-          ROLLBACK; p_status_code := 400; p_resultado := '{"error":"El lote elegido no corresponde al articulo o a esta sucursal"}'; RETURN;
-        END;
-        IF l_disponible < linea.cantidad THEN
-          ROLLBACK; p_status_code := 409; p_resultado := '{"error":"El lote elegido no tiene existencia suficiente"}'; RETURN;
-        END IF;
-        UPDATE LOTES SET CANTIDAD_DISPON = l_disponible - linea.cantidad, FECHA_ACTUALIZACION = SYSTIMESTAMP WHERE ID_LOTE = linea.idLote;
-      END IF;
+      -- ACA IBA EL DESCUENTO DE STOCK, y no hay nada que lo reemplace todavia:
+      -- se bloqueaba el lote con FOR UPDATE, se comparaba su disponible contra la
+      -- cantidad y se restaba. SE PUEDE VENDER SIN EXISTENCIA hasta que exista el
+      -- paquete de stock, que es donde vuelve —con el FOR UPDATE sobre la fila de
+      -- existencias del articulo, que es donde queda la carrera entre dos cajas
+      -- vendiendo lo mismo a la vez—.
 
       -- El desglose sale del NETO (ya descontado), que es lo que se cobra.
       -- Sin tasa asignada el impuesto es 0 y todo el neto es gravado.
@@ -356,8 +350,10 @@ CREATE OR REPLACE PACKAGE BODY PKG_VENTAS AS
         l_iva_linea := l_neto - l_gravado;
       END IF;
 
-      INSERT INTO VENTAS_DETALLES (ID_VENTA, ID_ARTICULO, ID_IVA, ID_LOTE, CANTIDAD, PRECIO_UNITARIO, PORCENTAJE_DESCUENTO, MONTO_DESCUENTO, MONTO_GRAVADO, MONTO_IVA)
-        VALUES (l_id, linea.idArticulo, linea.idIva, CASE WHEN l_es_gasto = 'N' THEN linea.idLote END, linea.cantidad, linea.precioUnitario, l_porcentaje, l_desc, l_gravado, l_iva_linea);
+      -- SUBTOTAL y TOTAL no se mencionan: son columnas virtuales y mencionarlas
+      -- da ORA-54013.
+      INSERT INTO VENTAS_DETALLES (ID_VENTA, ID_ARTICULO, ID_IVA, CANTIDAD, PRECIO_UNITARIO, PORCENTAJE_DESCUENTO, MONTO_DESCUENTO, MONTO_GRAVADO, MONTO_IVA)
+        VALUES (l_id, linea.idArticulo, linea.idIva, linea.cantidad, linea.precioUnitario, l_porcentaje, l_desc, l_gravado, l_iva_linea);
       l_total  := l_total + l_neto;
       l_lineas := l_lineas + 1;
     END LOOP;
@@ -380,13 +376,14 @@ CREATE OR REPLACE PACKAGE BODY PKG_VENTAS AS
     WHEN OTHERS THEN ROLLBACK; p_status_code := 500; APEX_DEBUG.ERROR('PKG_VENTAS.INSERTAR: ' || SQLERRM); p_resultado := '{"error":"Error al crear la venta"}';
   END INSERTAR;
 
-  -- Borra la venta y DEVUELVE LA EXISTENCIA a los lotes de los que salio.
+  -- Borra la venta con sus cuotas y su detalle. YA NO REPONE NADA al stock:
+  -- vender tampoco lo descuenta (ver la nota de la cabecera).
   --
-  -- Primero confirma que la venta existe y es de esta empresa, DESPUES repone.
+  -- Primero confirma que la venta existe y es de esta empresa, DESPUES borra.
   -- Antes los DELETE salian a ciegas y el 404 se deducia del SQL%ROWCOUNT del
   -- ultimo, que funcionaba solo porque la cabecera se borraba al final.
   PROCEDURE ELIMINAR (p_authorization IN VARCHAR2, p_id IN VARCHAR2, p_id_empresa IN VARCHAR2, p_status_code OUT NUMBER, p_resultado OUT CLOB) IS
-    l_sesion NUMBER; l_id NUMBER; l_empresa NUMBER; l_existe NUMBER; l_repuesto NUMBER := 0; l_cobros NUMBER;
+    l_sesion NUMBER; l_id NUMBER; l_empresa NUMBER; l_existe NUMBER; l_cobros NUMBER;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization)); l_id := TO_NUMBER(NULLIF(p_id, '')); l_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
     IF l_sesion IS NULL THEN p_status_code := 401; p_resultado := '{"error":"Sesion invalida o vencida"}'; RETURN; END IF;
@@ -405,24 +402,18 @@ CREATE OR REPLACE PACKAGE BODY PKG_VENTAS AS
     IF l_cobros > 0 THEN
       ROLLBACK; p_status_code := 409; p_resultado := '{"error":"La venta tiene cobros registrados: anulalos antes de eliminarla"}'; RETURN;
     END IF;
-    -- AGRUPADO por lote: aunque el UNIQUE impide repetir un articulo, dos
-    -- articulos distintos pueden salir del mismo lote. Sumarlo de a una fila
-    -- haria dos UPDATE sobre la misma, leyendo el valor viejo en el segundo.
-    FOR reposicion IN (SELECT ID_LOTE, SUM(CANTIDAD) AS cantidad
-                         FROM VENTAS_DETALLES WHERE ID_VENTA = l_id AND ID_LOTE IS NOT NULL
-                        GROUP BY ID_LOTE) LOOP
-      UPDATE LOTES SET CANTIDAD_DISPON = NVL(CANTIDAD_DISPON, CANTIDAD) + reposicion.cantidad,
-                       FECHA_ACTUALIZACION = SYSTIMESTAMP
-       WHERE ID_LOTE = reposicion.ID_LOTE;
-      l_repuesto := l_repuesto + reposicion.cantidad;
-    END LOOP;
+    -- ACA IBA LA REPOSICION AL LOTE del que habia salido cada linea. Borrar una
+    -- venta ya no devuelve nada al stock, simplemente porque venderla tampoco lo
+    -- descontó. Vuelve junto con el paquete de stock, como movimiento inverso.
     DELETE FROM VENTAS_COBROS   WHERE ID_VENTA = l_id;
     DELETE FROM VENTAS_CUOTAS   WHERE ID_VENTA = l_id;
     DELETE FROM VENTAS_DETALLES WHERE ID_VENTA = l_id;
     DELETE FROM VENTAS_CABECERAS WHERE ID_VENTA = l_id AND ID_EMPRESA = l_empresa;
     COMMIT;
     p_status_code := 200;
-    p_resultado := JSON_OBJECT('ok' VALUE 'true' FORMAT JSON, 'unidadesRepuestas' VALUE l_repuesto);
+    -- SIN 'unidadesRepuestas': siempre seria 0, y un campo que informa algo que
+    -- nunca pasa se lee como que el sistema repuso nada esta vez.
+    p_resultado := '{"ok":true}';
   EXCEPTION WHEN OTHERS THEN ROLLBACK; p_status_code := 500; APEX_DEBUG.ERROR('PKG_VENTAS.ELIMINAR: ' || SQLERRM); p_resultado := '{"error":"Error al eliminar la venta"}';
   END ELIMINAR;
 
@@ -486,7 +477,11 @@ SELECT ID_VENTA, ID_DETALLE, TOTAL, MONTO_GRAVADO, MONTO_IVA
   FROM VENTAS_DETALLES
  WHERE NVL(MONTO_GRAVADO, 0) + NVL(MONTO_IVA, 0) != TOTAL;
 
--- Ninguna venta puede haber dejado un lote en negativo.
-SELECT ID_LOTE, ID_ARTICULO, CANTIDAD, CANTIDAD_DISPON FROM LOTES WHERE CANTIDAD_DISPON < 0;
+-- ID_LOTE NO DEBE EXISTIR MAS en el detalle: el paquete ya no la escribe y el
+-- DDL nuevo no la declara. Cero filas es lo correcto.
+SELECT COLUMN_NAME, NULLABLE
+  FROM USER_TAB_COLUMNS
+ WHERE TABLE_NAME = 'VENTAS_DETALLES'
+   AND COLUMN_NAME = 'ID_LOTE';
 
 SELECT NAME, STATUS, ORIGINS_ALLOWED FROM USER_ORDS_MODULES WHERE NAME = 'ventas';

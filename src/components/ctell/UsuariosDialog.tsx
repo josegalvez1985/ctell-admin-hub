@@ -156,6 +156,10 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
     mutationFn: (usuario: Usuario) => api.usuarios.eliminar(usuario.id),
     onSuccess: () => {
       invalidar();
+      // Sus permisos se fueron con él: sin esto, el diálogo de Permisos sigue
+      // contando páginas de un usuario que ya no existe —y el listado de
+      // Páginas seguiría creyendo que están en uso—.
+      queryClient.invalidateQueries({ queryKey: ["usuario-paginas"] });
       toast.success("Usuario eliminado");
       setAEliminar(null);
     },
@@ -313,8 +317,10 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
           <AlertDialogHeader>
             <AlertDialogTitle>¿Eliminar a {aEliminar?.nombreApellido}?</AlertDialogTitle>
             <AlertDialogDescription>
-              Se borra la cuenta y todas sus sesiones. Esta acción no se puede deshacer. Si solo
-              querés cortarle el acceso, usá <strong>Inactivar</strong>: conserva el historial.
+              Se borra la cuenta con sus sesiones y sus permisos. Esta acción no se puede deshacer.
+              Si el usuario ya cargó ventas, compras o inventarios <strong>no</strong> se va a poder
+              borrar: ahí, y si sólo querés cortarle el acceso, usá <strong>Inactivar</strong>, que
+              conserva el historial.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

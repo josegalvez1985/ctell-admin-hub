@@ -455,7 +455,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_PAGINAS AS
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
-    l_sesion NUMBER;
+    l_sesion   NUMBER;
+    l_id       NUMBER;
+    l_usuarios PLS_INTEGER;
   BEGIN
     -- SOLO ADMINISTRADORES: la estructura del menu se administra desde la
     -- pantalla de Administracion, que ya es exclusiva de admins. El menu que ve
@@ -468,7 +470,39 @@ CREATE OR REPLACE PACKAGE BODY PKG_PAGINAS AS
       RETURN;
     END IF;
 
-    DELETE FROM PAGINAS WHERE ID_PAGINA = TO_NUMBER(NULLIF(p_id, ''));
+    l_id := TO_NUMBER(NULLIF(p_id, ''));
+
+    -- UNA PAGINA ASIGNADA NO SE BORRA. Borrarla se lleva puestos los permisos de
+    -- todos los que la tenian, y eso no se ve: el usuario se entera cuando entra
+    -- y le falta una entrada del menu que antes estaba. Se responde 409 con la
+    -- cuenta de a cuantos afecta, para que la decision se tome con el numero a
+    -- la vista y no a ciegas.
+    --
+    -- SIN FILTRAR POR EMPRESA, a proposito: PAGINAS no tiene ID_EMPRESA —la
+    -- pagina es una sola para todo el sistema— mientras que el permiso si la
+    -- tiene. Mirar solo la empresa activa dejaria borrar una pagina que en OTRA
+    -- empresa esta en uso.
+    --
+    -- DISTINCT ID_USUARIO y no COUNT(*): un mismo usuario puede tener la pagina
+    -- en varias empresas, y "asignada a 6 usuarios" cuando son 2 personas con 3
+    -- empresas cada una exagera el problema.
+    SELECT COUNT(DISTINCT ID_USUARIO)
+      INTO l_usuarios
+      FROM USUARIO_PAGINAS
+     WHERE ID_PAGINA = l_id;
+
+    IF l_usuarios > 0 THEN
+      p_status_code := 409;
+      p_resultado := JSON_OBJECT(
+        'error' VALUE 'La pagina esta asignada a ' || l_usuarios ||
+                      CASE WHEN l_usuarios = 1 THEN ' usuario' ELSE ' usuarios' END ||
+                      ': quitasela en Permisos antes de borrarla',
+        'usuarios' VALUE l_usuarios
+      );
+      RETURN;
+    END IF;
+
+    DELETE FROM PAGINAS WHERE ID_PAGINA = l_id;
 
     IF SQL%ROWCOUNT = 0 THEN
       p_status_code := 404;
@@ -482,10 +516,19 @@ CREATE OR REPLACE PACKAGE BODY PKG_PAGINAS AS
   EXCEPTION
     WHEN OTHERS THEN
       ROLLBACK;
-      p_status_code := 500;
-      APEX_DEBUG.ERROR('PKG_PAGINAS.ELIMINAR: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
-                       DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
-      p_resultado := '{"error":"Error al eliminar la pagina"}';
+      IF SQLCODE = -2292 THEN
+        -- ORA-02292: alguien asigno la pagina entre el chequeo de arriba y el
+        -- DELETE, y USUARIO_PAGINAS_FK_PAGINAS lo frena. El chequeo previo existe
+        -- para dar un mensaje con numeros; esta FK es la que de verdad no se
+        -- puede esquivar, asi que se traduce al mismo 409 en vez de a un 500.
+        p_status_code := 409;
+        p_resultado := '{"error":"La pagina quedo asignada a un usuario: quitasela en Permisos antes de borrarla"}';
+      ELSE
+        p_status_code := 500;
+        APEX_DEBUG.ERROR('PKG_PAGINAS.ELIMINAR: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
+                         DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
+        p_resultado := '{"error":"Error al eliminar la pagina"}';
+      END IF;
   END ELIMINAR;
 
   ------------------------------------------------------------------------------

@@ -17,9 +17,11 @@
 --
 -- Tabla (no la crea ni la altera; el DDL se administra aparte):
 --   USUARIO_PAGINAS  ID_USUARIO, ID_PAGINA, FECHA_ALTA, ID_EMPRESA
---   PK compuesta (ID_EMPRESA, ID_USUARIO, ID_PAGINA): el mismo permiso no se
---   puede duplicar dentro de una empresa — el segundo INSERT da ORA-00001, que
---   se traduce a 409.
+--   PK compuesta USUARIO_PAGINAS_PK (ID_EMPRESA, ID_USUARIO, ID_PAGINA): el
+--   mismo permiso no se puede duplicar dentro de una empresa — el segundo
+--   INSERT da ORA-00001, que se traduce a 409.
+--   FK: USUARIO_PAGINAS_FK_USUARIOS, _FK_PAGINAS, _FK_EMPRESAS.
+--   Indice IDX_UP_PAGINA sobre ID_PAGINA.
 --
 -- LOS PERMISOS SON POR EMPRESA. La empresa integra la PK, asi que un usuario
 -- puede tener accesos DISTINTOS segun con que empresa entre: vendedor en la
@@ -33,19 +35,27 @@
 -- (ID_USUARIO, ID_PAGINA) borraria el permiso en TODAS las empresas, no solo en
 -- la que se esta editando. Por eso ELIMINAR recibe tambien el idEmpresa.
 --
--- ID_EMPRESA SIGUE SIENDO NULLABLE en el DDL aunque integre la PK — Oracle no
--- lo permite: una columna de la PK es NOT NULL de hecho. Las filas viejas con
--- NULL ya no pueden existir; si el ALTER TABLE fallo por ellas, hay que
--- asignarles empresa o borrarlas antes.
+-- ID_EMPRESA FIGURA COMO NULLABLE en el DDL aunque integre la PK, y no hace
+-- falta corregirlo: Oracle no permite un NULL en una columna de la clave
+-- primaria, asi que USUARIO_PAGINAS_PK ya la fuerza a NOT NULL. La declaracion
+-- de la columna miente; la restriccion manda.
 --
--- La FK contra EMPRESAS sí se respeta: mandar un idEmpresa inexistente da
--- ORA-02291, que se traduce a 400 en vez de 500.
+-- LAS TRES FK EXISTEN: contra USUARIOS, contra PAGINAS y contra EMPRESAS. Un id
+-- inexistente en cualquiera de las tres da ORA-02291, que ASIGNAR traduce a un
+-- 400 nombrando CUAL de las tres fallo —el texto del error trae el nombre de la
+-- constraint— en vez de a un 500 mudo.
 --
--- OJO CON LAS FK: la tabla tiene FK contra USUARIOS pero NO contra PAGINAS
--- (el DDL solo crea un índice sobre ID_PAGINA). Por eso ASIGNAR verifica a
--- mano que la página exista: sin eso se podrían guardar permisos sobre
--- páginas fantasma y el listado los ocultaría al hacer JOIN, dejando filas
--- basura invisibles.
+-- ASIGNAR IGUAL VERIFICA A MANO QUE LA PAGINA EXISTA, aunque ahora la FK lo
+-- cubra. No es redundante: el chequeo previo devuelve "La pagina indicada no
+-- existe" antes de intentar el INSERT, y la FK queda como la red que no se puede
+-- esquivar. Es el mismo criterio de todo el proyecto — el paquete valida para
+-- que se entienda, la base para que no pase.
+--
+-- EL INDICE IDX_UP_PAGINA NO ES DECORATIVO. La PK indexa por
+-- (ID_EMPRESA, ID_USUARIO, ID_PAGINA) y ID_PAGINA es la ULTIMA columna, asi que
+-- no sirve para buscar por pagina sola. Sin ese indice, cada borrado de pagina
+-- —que cuenta cuantos usuarios la tienen, ver PKG_PAGINAS.ELIMINAR— y cada
+-- verificacion de la FK recorrerian la tabla entera.
 --
 -- El listado hace JOIN con PAGINAS y MODULOS para devolver los nombres: el
 -- frontend necesita mostrar "Compras › Órdenes", no dos números sueltos.
@@ -308,9 +318,11 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIO_PAGINAS AS
       RETURN;
     END IF;
 
-    -- La tabla NO tiene FK contra PAGINAS (ver la nota del encabezado): sin
-    -- este chequeo se guardaría un permiso sobre una página que no existe, y
-    -- el JOIN del listado lo escondería para siempre.
+    -- LA PAGINA TIENE QUE EXISTIR. La FK (USUARIO_PAGINAS_FK_PAGINAS) ya lo
+    -- garantiza, pero este chequeo va igual: da un 400 que dice QUE falta, en
+    -- vez del ORA-02291 generico que habria que desarmar mirando el nombre de la
+    -- constraint. La FK queda de red — entre este SELECT y el INSERT alguien
+    -- puede borrar la pagina.
     SELECT COUNT(*)
       INTO l_existe
       FROM PAGINAS
@@ -338,14 +350,19 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIO_PAGINAS AS
       p_resultado := '{"error":"El usuario ya tiene acceso a esa pagina en esta empresa"}';
     WHEN OTHERS THEN
       ROLLBACK;
-      -- ORA-02291: alguna FK no encontró el padre. Ahora hay DOS (USUARIOS y
-      -- EMPRESAS), así que el mensaje mira el texto del error para nombrar la
-      -- correcta: decir "el usuario no existe" cuando lo que falla es la
-      -- empresa manda a revisar el dato equivocado.
+      -- ORA-02291: alguna FK no encontró el padre. Son TRES (USUARIOS, PAGINAS y
+      -- EMPRESAS), así que el mensaje mira el nombre de la constraint dentro del
+      -- texto del error para nombrar la correcta: decir "el usuario no existe"
+      -- cuando lo que falla es la empresa manda a revisar el dato equivocado.
       IF SQLCODE = -2291 THEN
         p_status_code := 400;
         IF INSTR(UPPER(SQLERRM), 'FK_EMPRESAS') > 0 THEN
           p_resultado := '{"error":"La empresa indicada no existe"}';
+        ELSIF INSTR(UPPER(SQLERRM), 'FK_PAGINAS') > 0 THEN
+          -- Llega acá sólo si la página se borró entre el chequeo de arriba y
+          -- este INSERT: el mensaje lo dice tal cual, porque "no existe" a secas
+          -- contradiría lo que la pantalla acaba de mostrar.
+          p_resultado := '{"error":"La pagina se borro mientras se asignaba el permiso"}';
         ELSE
           p_resultado := '{"error":"El usuario indicado no existe"}';
         END IF;
@@ -563,6 +580,23 @@ SELECT OBJECT_NAME, OBJECT_TYPE, STATUS
   FROM USER_OBJECTS
  WHERE OBJECT_NAME = 'PKG_USUARIO_PAGINAS'
  ORDER BY OBJECT_TYPE;
+
+-- LA ESTRUCTURA QUE EL PAQUETE DA POR SENTADA. Tienen que aparecer la PK y las
+-- TRES FK: sin USUARIO_PAGINAS_FK_PAGINAS, el borrado de una pagina asignada
+-- solo lo frena el chequeo de PKG_PAGINAS.ELIMINAR y una carrera lo esquiva.
+SELECT CONSTRAINT_NAME, CONSTRAINT_TYPE, R_CONSTRAINT_NAME, STATUS
+  FROM USER_CONSTRAINTS
+ WHERE TABLE_NAME = 'USUARIO_PAGINAS'
+   AND CONSTRAINT_TYPE IN ('P', 'R')
+ ORDER BY CONSTRAINT_TYPE, CONSTRAINT_NAME;
+
+-- Y el indice por pagina. ID_PAGINA es la ULTIMA columna de la PK, asi que sin
+-- IDX_UP_PAGINA toda busqueda por pagina —el conteo de PKG_PAGINAS.ELIMINAR, la
+-- validacion de la FK— recorre la tabla entera.
+SELECT INDEX_NAME, COLUMN_NAME, COLUMN_POSITION
+  FROM USER_IND_COLUMNS
+ WHERE TABLE_NAME = 'USUARIO_PAGINAS'
+ ORDER BY INDEX_NAME, COLUMN_POSITION;
 
 -- Si algo salió INVALID arriba, acá está el motivo.
 SELECT NAME, LINE, POSITION, TEXT

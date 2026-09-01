@@ -941,10 +941,10 @@ la misma transacción. El cliente no debe enviar `NUMERO_VENTA` ni los datos
 fiscales: son datos derivados del talonario y permitirlos abriría una puerta a
 duplicados o numeración fuera de rango.
 
-Al confirmar la venta se descuenta `LOTES.CANTIDAD_DISPON` usando primero los
-lotes con vencimiento más cercano. Si no hay stock suficiente, se revierte la
-operación completa. `PKG_VENTAS_COBROS` registra luego los cobros y actualiza
-`VENTAS_CUOTAS.MONTO_PAGADO`.
+Al confirmar la venta **no se toca ninguna existencia**: el descuento por lote
+se retiró junto con `VENTAS_DETALLES.ID_LOTE` (ver
+[3.6](#36-transacciones-que-mueven-stock-o-plata)). `PKG_VENTAS_COBROS` registra
+luego los cobros y actualiza `VENTAS_CUOTAS.MONTO_PAGADO`.
 
 El DDL original de `VENTAS_COBROS` no trae cuenta bancaria. Ejecutá
 `db/ventas-cobros.sql` después de crear la tabla: agrega idempotentemente
@@ -1322,7 +1322,7 @@ artículo y que las tablas nuevas repiten:
 
 | Dato                        | Cómo se obtiene                      | Por qué no se guarda                                                |
 | --------------------------- | ------------------------------------ | ------------------------------------------------------------------- |
-| Stock de un artículo        | `SUM(CANTIDAD_DISPON)` de sus lotes  | Una columna quedaría desfasada de las partidas                      |
+| Stock de un artículo        | Hoy nada lo mueve — ver [3.6](#36-transacciones-que-mueven-stock-o-plata) | Va a ser una columna real (`EXISTENCIAS.CANTIDAD`) con su kardex al lado |
 | Total de una factura        | `SUM(SUBTOTAL)` de su detalle        | La cabecera podría decir 500.000 y las líneas sumar 480.000         |
 | Diferencia de un inventario | `CANTIDAD_FISICA - CANTIDAD_SISTEMA` | Tres columnas derivables entre sí son tres que pueden contradecirse |
 | Vencimiento de una factura  | `FECHA_FACTURA + DIAS_PAGO`          | Se desfasa si se corrige la fecha o la condición                    |
@@ -1525,10 +1525,15 @@ SELECT COLUMN_NAME, NULLABLE, DATA_TYPE, DATA_LENGTH
 Un `COMMENT` no es una restricción: describe la intención de quien lo escribió,
 y puede contradecir a la columna. **La columna manda.**
 
-Cuando un cambio necesite un `ALTER`, documentalo en la cabecera del archivo
-—con la sentencia y la consulta que verifica si hace falta— como hace
-`db/facturas-compras.sql` con `ID_LOTE`. Pero **verificá primero**: el `ALTER`
-puede ser innecesario.
+Cuando un cambio necesite un `ALTER`, documentalo en la cabecera del archivo,
+con la sentencia y la consulta que verifica si hace falta. Pero **verificá
+primero**: el `ALTER` puede ser innecesario.
+
+Y cuando una columna **desaparece** del DDL, la consulta de verificación se
+invierte: tiene que devolver **cero filas**. Es lo que hacen hoy
+`db/ventas.sql` y `db/facturas-compras.sql` con `ID_LOTE` — una columna que el
+paquete ya no escribe pero que, si quedó en la tabla de una versión anterior,
+sigue aceptando `INSERT` y guarda un NULL que no significa nada.
 
 ### Una FK no impide guardar NULL
 

@@ -30,6 +30,27 @@
 --              FECHA_CREACION, FECHA_ACTUALIZACION, IMAGEN,
 --              IMAGEN_MIME, FEC_ULTIMO_INVENTARIO, ES_GASTO
 --
+-- LA BUSQUEDA (?busqueda=) MIRA CINCO COSAS: nombre, codigo propio (el OEM),
+-- descripcion, MARCA y CODIGOS EQUIVALENTES. Un repuesto casi nunca se pide por
+-- el codigo interno —se pide por el del fabricante o por la marca— asi que
+-- buscar solo en las tres primeras dejaba afuera justo lo que el cliente dice
+-- por telefono.
+--
+-- Las dos ultimas van con EXISTS y no ampliando el JOIN: el COUNT del total no
+-- tiene esos JOIN, y los dos WHERE tienen que filtrar identico o el total no
+-- coincide con las filas.
+--
+-- Y EL LISTADO LAS DEVUELVE ('codigosEquivalentes', un texto separado por
+-- comas). Buscar por un dato que despues no se ve es peor que no buscar por el:
+-- la lista de valores contesta con un articulo cuyo nombre no se parece en nada
+-- a lo escrito y nadie entiende por que aparecio. Se muestran junto a la marca
+-- y al codigo OEM, que son los otros dos campos por los que se busca.
+--
+-- REQUIERE LA TABLA CODIGOS_EQUIVALENTES. Es SQL estatico: si no existe, este
+-- paquete no compila y queda INVALID —o sea que deja de andar TODO el modulo de
+-- articulos, no solo la busqueda—. Ejecutar db/codigos-equivalentes.sql antes
+-- que este archivo.
+--
 -- ID_MARCA es NULLABLE, con FK a MARCAS (ARTICULOS_FK_MARCA). MARCAS TAMBIEN
 -- cuelga de EMPRESAS, asi que se valida la coherencia como con las demas FK:
 -- MARCA_VALIDA rechaza con 400 una marca de otra empresa. La FK sola no
@@ -205,12 +226,16 @@ CREATE OR REPLACE PACKAGE PKG_ARTICULOS AS
   -- p_busqueda y p_id_categoria filtran EN SQL, antes de paginar. Tienen que
   -- estar acá y no en el cliente: filtrando en la pantalla, la búsqueda sólo
   -- miraría las páginas ya traídas y un artículo de la página 5 no aparecería.
+  -- p_id_sucursal ACOTA EL STOCK, no la lista de articulos: el catalogo es de
+  -- la empresa y no cambia segun el deposito. Sin el, 'cantidadStock' SUMA todas
+  -- las sucursales de la empresa; con el, devuelve el de esa sola.
   PROCEDURE LISTAR (
     p_authorization IN  VARCHAR2,
     p_id_empresa    IN  VARCHAR2,
     p_busqueda      IN  VARCHAR2,
     p_id_categoria  IN  VARCHAR2,
     p_id_marca      IN  VARCHAR2,
+    p_id_sucursal   IN  VARCHAR2,
     p_pagina        IN  VARCHAR2,
     p_tamanio       IN  VARCHAR2,
     p_status_code   OUT NUMBER,
@@ -390,6 +415,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     p_busqueda      IN  VARCHAR2,
     p_id_categoria  IN  VARCHAR2,
     p_id_marca      IN  VARCHAR2,
+    p_id_sucursal   IN  VARCHAR2,
     p_pagina        IN  VARCHAR2,
     p_tamanio       IN  VARCHAR2,
     p_status_code   OUT NUMBER,
@@ -399,6 +425,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     l_id_empresa   NUMBER;
     l_id_categoria NUMBER;
     l_id_marca     NUMBER;
+    l_id_sucursal  NUMBER;
     l_busqueda     VARCHAR2(4000);
     l_pagina       NUMBER;
     l_tamanio      NUMBER;
@@ -420,6 +447,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     l_id_empresa   := TO_NUMBER(NULLIF(p_id_empresa, ''));
     l_id_categoria := TO_NUMBER(NULLIF(p_id_categoria, ''));
     l_id_marca     := TO_NUMBER(NULLIF(p_id_marca, ''));
+    -- La sucursal NO filtra el catalogo: solo acota de que deposito se cuenta
+    -- el stock. En NULL, 'cantidadStock' suma todas las de la empresa.
+    l_id_sucursal  := TO_NUMBER(NULLIF(p_id_sucursal, ''));
 
     -- En minúsculas una sola vez acá, no por fila: el WHERE compara contra
     -- LOWER() de cada columna, así que subir el término también dentro del SQL
@@ -453,7 +483,14 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
        AND (l_busqueda IS NULL
             OR LOWER(a.NOMBRE_ARTICULO) LIKE '%' || l_busqueda || '%'
             OR LOWER(a.CODIGO_ARTICULO) LIKE '%' || l_busqueda || '%'
-            OR LOWER(a.DESCRIPCION)     LIKE '%' || l_busqueda || '%');
+            OR LOWER(a.DESCRIPCION)     LIKE '%' || l_busqueda || '%'
+            OR EXISTS (SELECT 1 FROM MARCAS mb
+                        WHERE mb.ID_MARCA = a.ID_MARCA
+                          AND LOWER(mb.DESCRIPCION) LIKE '%' || l_busqueda || '%')
+            OR EXISTS (SELECT 1 FROM CODIGOS_EQUIVALENTES cb
+                        WHERE cb.ID_ARTICULO = a.ID_ARTICULO
+                          AND cb.ID_EMPRESA  = a.ID_EMPRESA
+                          AND LOWER(cb.CODIGO_EQUIVALENTE) LIKE '%' || l_busqueda || '%'));
 
     -- LEFT JOIN en las CUATRO, no JOIN: las FK son nullables. Con el interno,
     -- un artículo sin categoría (o sin moneda, sin unidad o sin marca)
@@ -499,6 +536,34 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
                  'codigoArticulo'       VALUE a.CODIGO_ARTICULO,
                  'nombreArticulo'       VALUE a.NOMBRE_ARTICULO,
                  'descripcion'          VALUE a.DESCRIPCION,
+                 -- LOS CODIGOS EQUIVALENTES, EN UN SOLO TEXTO SEPARADO POR
+                 -- COMAS. La busqueda ya los mira (ver el EXISTS del WHERE),
+                 -- asi que sin mostrarlos la lista de valores devuelve un
+                 -- articulo cuyo nombre no se parece en nada a lo que se
+                 -- escribio y no hay forma de entender por que aparecio.
+                 --
+                 -- UN STRING Y NO UN ARRAY ANIDADO: un JSON_ARRAYAGG dentro de
+                 -- este JSON_OBJECT materializa el agregado intermedio como
+                 -- VARCHAR2 y revienta al pasar los 4000 bytes (la misma trampa
+                 -- que documenta db/lotes.sql). El frontend solo los muestra
+                 -- como texto, asi que la lista armada no le quita nada.
+                 --
+                 -- ON OVERFLOW TRUNCATE y ademas SUBSTR a 200: sin lo primero,
+                 -- un articulo con muchas equivalencias tira ORA-01489 y voltea
+                 -- el listado entero; lo segundo acota cuanto crece el JSON por
+                 -- fila, que es lo que termina desbordando el CLOB de la pagina.
+                 -- En la lista de valores no entran 200 caracteres igual.
+                 --
+                 -- Correlacionado TAMBIEN por empresa: el UNIQUE de esa tabla
+                 -- incluye ID_EMPRESA, asi que el mismo codigo puede existir en
+                 -- dos empresas sobre articulos distintos.
+                 'codigosEquivalentes'  VALUE (
+                   SELECT SUBSTR(LISTAGG(ce.CODIGO_EQUIVALENTE, ', '
+                                         ON OVERFLOW TRUNCATE '...' WITHOUT COUNT)
+                                   WITHIN GROUP (ORDER BY ce.CODIGO_EQUIVALENTE), 1, 200)
+                     FROM CODIGOS_EQUIVALENTES ce
+                    WHERE ce.ID_ARTICULO = a.ID_ARTICULO
+                      AND ce.ID_EMPRESA  = a.ID_EMPRESA),
                  -- STOCK CALCULADO, no una columna: la suma de las cantidades
                  -- de sus lotes. PRECIO_VENTA, PRECIO_ULTIMA_COMPRA y
                  -- CANTIDAD_STOCK se eliminaron del DDL (ver la nota de arriba).
@@ -529,15 +594,30 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
                  -- poder apoyarse en el indice por empresa, con ?tamanio=200
                  -- el trabajo se multiplicaba hasta devolver 500.
                  --
-                 -- Se correlaciona con a.ID_EMPRESA y no con l_id_empresa
-                 -- para que el filtro siga aplicando cuando el parametro no
-                 -- viene: sin idEmpresa el listado trae todas las empresas, y
-                 -- ahi lo correcto es que cada articulo sume los lotes de LA
-                 -- SUYA, no que el filtro se apague.
-                 'cantidadStock'        VALUE NVL((SELECT SUM(NVL(l.CANTIDAD_DISPON, l.CANTIDAD))
-                                                     FROM LOTES l
-                                                    WHERE l.ID_ARTICULO = a.ID_ARTICULO
-                                                      AND l.ID_EMPRESA  = a.ID_EMPRESA), 0),
+                 -- EL STOCK, DESDE EXISTENCIAS. Una fila por (empresa,
+                 -- sucursal, articulo); sin p_id_sucursal se suman todas las de
+                 -- la empresa, que es el stock total del articulo.
+                 --
+                 -- NVL AFUERA: un articulo SIN NINGUNA FILA de existencia no
+                 -- tiene nada que sumar y SUM() devuelve NULL, no 0. Sin este
+                 -- NVL, el articulo recien creado —o el que nunca tuvo
+                 -- movimiento en esa sucursal— llegaria con stock null y la
+                 -- pantalla lo mostraria vacio en vez de en cero.
+                 --
+                 -- NVL ADENTRO: CANTIDAD_DISPONIBLE es nullable en el DDL, y un
+                 -- solo NULL entre varias sucursales anula la suma entera.
+                 --
+                 -- Se correlaciona con a.ID_EMPRESA y no con l_id_empresa para
+                 -- que el filtro siga aplicando cuando el parametro no viene:
+                 -- sin idEmpresa el listado trae todas las empresas, y ahi lo
+                 -- correcto es que cada articulo cuente lo SUYO, no que el
+                 -- filtro se apague y sume el stock de otra empresa.
+                 'cantidadStock'        VALUE NVL((SELECT SUM(NVL(e.CANTIDAD_DISPONIBLE, 0))
+                                                     FROM EXISTENCIAS e
+                                                    WHERE e.ID_ARTICULO = a.ID_ARTICULO
+                                                      AND e.ID_EMPRESA  = a.ID_EMPRESA
+                                                      AND (l_id_sucursal IS NULL
+                                                           OR e.ID_SUCURSAL = l_id_sucursal)), 0),
                  'cantidadMinima'       VALUE a.CANTIDAD_MINIMA,
                  -- SÓLO LECTURA: ningún endpoint la escribe. La va a estampar el
                  -- proceso de inventario cuando exista; hasta entonces llega
@@ -602,7 +682,24 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
            AND (l_busqueda IS NULL
                 OR LOWER(a.NOMBRE_ARTICULO) LIKE '%' || l_busqueda || '%'
                 OR LOWER(a.CODIGO_ARTICULO) LIKE '%' || l_busqueda || '%'
-                OR LOWER(a.DESCRIPCION)     LIKE '%' || l_busqueda || '%')
+                OR LOWER(a.DESCRIPCION)     LIKE '%' || l_busqueda || '%'
+                -- MARCA Y CODIGOS EQUIVALENTES, con EXISTS y no con el JOIN de
+                -- arriba: el COUNT no tiene esos JOIN y los dos WHERE tienen que
+                -- filtrar IGUAL, o el total dice una cosa y las filas otra —y el
+                -- "Mostrar mas" seguiria ofreciendo paginas vacias.
+                OR EXISTS (SELECT 1 FROM MARCAS mb
+                            WHERE mb.ID_MARCA = a.ID_MARCA
+                              AND LOWER(mb.DESCRIPCION) LIKE '%' || l_busqueda || '%')
+                -- El codigo equivalente se guarda en MAYUSCULAS; l_busqueda ya
+                -- viene en minusculas, de ahi el LOWER de la columna.
+                --
+                -- Se acota TAMBIEN por empresa: el UNIQUE de esa tabla incluye
+                -- ID_EMPRESA, asi que dos empresas pueden tener el mismo codigo
+                -- sobre articulos distintos.
+                OR EXISTS (SELECT 1 FROM CODIGOS_EQUIVALENTES cb
+                            WHERE cb.ID_ARTICULO = a.ID_ARTICULO
+                              AND cb.ID_EMPRESA  = a.ID_EMPRESA
+                              AND LOWER(cb.CODIGO_EQUIVALENTE) LIKE '%' || l_busqueda || '%'))
          -- EL ORDER BY VA ACA, EN LA SUBCONSULTA, y no sólo en el
          -- JSON_ARRAYAGG: es el que decide QUE filas entran en la página. Sin
          -- él, OFFSET/FETCH recortaría en un orden que Oracle no garantiza y la
@@ -1088,7 +1185,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
       p_pattern     => 'listar',
       p_method      => 'GET',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_ARTICULOS.LISTAR(:authorization, :idEmpresa, :busqueda, :idCategoria, :idMarca, :pagina, :tamanio, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_ARTICULOS.LISTAR(:authorization, :idEmpresa, :busqueda, :idCategoria, :idMarca, :idSucursal, :pagina, :tamanio, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
@@ -1304,6 +1401,33 @@ SELECT COLUMN_NAME, NULLABLE, DATA_TYPE
  WHERE TABLE_NAME = 'ARTICULOS'
    AND COLUMN_NAME = 'ID_MARCA';
 
+-- CODIGOS_EQUIVALENTES tiene que existir: la busqueda la consulta en SQL
+-- estatico. Si falta, ORA-00942 y el paquete entero queda INVALID —deja de
+-- andar TODO el modulo de articulos, no solo la busqueda—. Tiene que devolver
+-- una fila con 'CODIGOS_EQUIVALENTES'.
+SELECT TABLE_NAME
+  FROM USER_TABLES
+ WHERE TABLE_NAME = 'CODIGOS_EQUIVALENTES';
+
+-- La busqueda ampliada, probada de punta a punta. Reemplazar <empresa> y el
+-- termino: tiene que traer el articulo tanto por su nombre como por su marca o
+-- por cualquiera de sus codigos equivalentes.
+--
+-- SELECT a.ID_ARTICULO, a.NOMBRE_ARTICULO, a.CODIGO_ARTICULO, m.DESCRIPCION AS MARCA
+--   FROM ARTICULOS a
+--   LEFT JOIN MARCAS m ON m.ID_MARCA = a.ID_MARCA
+--  WHERE a.ID_EMPRESA = <empresa>
+--    AND (LOWER(a.NOMBRE_ARTICULO) LIKE '%filtro%'
+--         OR LOWER(a.CODIGO_ARTICULO) LIKE '%filtro%'
+--         OR LOWER(a.DESCRIPCION) LIKE '%filtro%'
+--         OR EXISTS (SELECT 1 FROM MARCAS mb
+--                     WHERE mb.ID_MARCA = a.ID_MARCA
+--                       AND LOWER(mb.DESCRIPCION) LIKE '%filtro%')
+--         OR EXISTS (SELECT 1 FROM CODIGOS_EQUIVALENTES cb
+--                     WHERE cb.ID_ARTICULO = a.ID_ARTICULO
+--                       AND cb.ID_EMPRESA = a.ID_EMPRESA
+--                       AND LOWER(cb.CODIGO_EQUIVALENTE) LIKE '%filtro%'));
+
 -- Cuantos articulos tienen marca cargada. Los previos a la columna la tienen en
 -- NULL y el listado los devuelve con marca null, que la pantalla muestra como
 -- "Sin marca".
@@ -1359,38 +1483,20 @@ SELECT ID_ARTICULO,
   FROM ARTICULOS
  ORDER BY NOMBRE_ARTICULO;
 
--- Stock por articulo: la SUMA de sus lotes, ya no una columna.
+-- SIN CONSULTAS DE STOCK. Las dos que habia aca —el stock por articulo y los
+-- que estan bajo su minimo— sumaban LOTES, tabla que ya no existe. No se
+-- reemplazan por nada todavia: sin EXISTENCIAS no hay de donde sacar el numero,
+-- y una consulta que devuelve 0 para todo el catalogo no informa nada.
 --
--- NVL a 0 en las dos: un articulo sin ningun lote no tiene filas que sumar y
--- SUM() devuelve NULL. Sin el NVL, la comparacion contra CANTIDAD_MINIMA seria
--- NULL —ni verdadera ni falsa— y el articulo que no tiene NADA en deposito
--- quedaria justamente afuera del listado de faltantes.
-SELECT a.ID_ARTICULO,
-       a.NOMBRE_ARTICULO,
-       NVL(SUM(NVL(l.CANTIDAD_DISPON, l.CANTIDAD)), 0) AS STOCK,
-       NVL(a.CANTIDAD_MINIMA, 0) AS MINIMA
+-- Vuelven, contra EXISTENCIAS, junto con el paquete de stock. La de faltantes
+-- necesita ademas el NVL a 0 que tenia: un articulo SIN fila de existencias no
+-- suma nada, y sin el NVL la comparacion contra CANTIDAD_MINIMA da NULL —ni
+-- verdadera ni falsa— y el articulo que no tiene NADA queda justamente afuera de
+-- la lista de lo que hay que reponer.
+--
+-- Los articulos con minimo cargado, que es lo unico util que se puede mirar hoy:
+SELECT a.ID_ARTICULO, a.NOMBRE_ARTICULO, a.CANTIDAD_MINIMA
   FROM ARTICULOS a
-  LEFT JOIN LOTES l ON l.ID_ARTICULO = a.ID_ARTICULO
  WHERE UPPER(TRIM(a.ACTIVO)) != 'I'
- GROUP BY a.ID_ARTICULO, a.NOMBRE_ARTICULO, a.CANTIDAD_MINIMA
- ORDER BY a.NOMBRE_ARTICULO;
-
--- Solo los que estan por debajo del minimo: lo que hay que reponer.
---
--- Excluye los gastos, que es lo unico que ES_GASTO cambia en este archivo: un
--- servicio o un alquiler no se repone ni tiene deposito, asi que apareceria
--- siempre en cero y ensuciaria la lista de lo que falta comprar.
---
--- Es solo esta consulta de diagnostico: el endpoint /articulos/listar SI
--- devuelve los gastos, con su marca, y la pantalla decide como mostrarlos.
-SELECT a.ID_ARTICULO,
-       a.NOMBRE_ARTICULO,
-       NVL(SUM(NVL(l.CANTIDAD_DISPON, l.CANTIDAD)), 0) AS STOCK,
-       NVL(a.CANTIDAD_MINIMA, 0) AS MINIMA
-  FROM ARTICULOS a
-  LEFT JOIN LOTES l ON l.ID_ARTICULO = a.ID_ARTICULO
- WHERE UPPER(TRIM(a.ACTIVO)) != 'I'
-   AND NVL(UPPER(TRIM(a.ES_GASTO)), 'N') != 'S'
- GROUP BY a.ID_ARTICULO, a.NOMBRE_ARTICULO, a.CANTIDAD_MINIMA
-HAVING NVL(SUM(NVL(l.CANTIDAD_DISPON, l.CANTIDAD)), 0) < NVL(a.CANTIDAD_MINIMA, 0)
+   AND NVL(a.CANTIDAD_MINIMA, 0) > 0
  ORDER BY a.NOMBRE_ARTICULO;

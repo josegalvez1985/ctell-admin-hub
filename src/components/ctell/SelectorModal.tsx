@@ -26,6 +26,18 @@ export type OpcionSelector = {
    * `x.campo ?? undefined` desde un campo nullable de la API.
    */
   descripcion?: string | undefined;
+  /**
+   * Tercera línea, para lo que no entra en `descripcion`: la marca y los
+   * códigos equivalentes de un artículo, por ejemplo.
+   *
+   * Existe porque `descripcion` va en UNA línea truncada —es corta y de apoyo—
+   * y hay datos que hay que poder leer enteros para reconocer la opción. Ésta
+   * se parte en hasta dos renglones.
+   *
+   * La búsqueda del selector la mira igual que a las otras dos: lo que se
+   * muestra se puede tipear.
+   */
+  detalle?: string | undefined;
 };
 
 /**
@@ -392,8 +404,11 @@ export function ListaEnModal({
   const termino = busqueda.trim().toLowerCase();
   const filtradas = useMemo(() => {
     if (termino === "") return opciones;
+    // Las TRES líneas, no sólo la etiqueta: la regla es que todo lo que la
+    // opción muestra se pueda tipear. Un dato visible que no filtra se lee como
+    // que el selector no lo encuentra.
     return opciones.filter((o) =>
-      `${o.etiqueta} ${o.descripcion ?? ""}`.toLowerCase().includes(termino),
+      `${o.etiqueta} ${o.descripcion ?? ""} ${o.detalle ?? ""}`.toLowerCase().includes(termino),
     );
   }, [opciones, termino]);
 
@@ -465,6 +480,15 @@ export function ListaEnModal({
                     {opcion.descripcion && (
                       <span className="truncate text-xs text-muted-foreground">
                         {opcion.descripcion}
+                      </span>
+                    )}
+                    {/* El detalle SÍ se parte, hasta dos renglones: lleva los
+                        datos largos —marca, códigos equivalentes— que hay que
+                        leer enteros para reconocer la opción. Va más apagado
+                        que la descripción para que la jerarquía se mantenga. */}
+                    {opcion.detalle && (
+                      <span className="line-clamp-2 break-words text-xs text-muted-foreground/80">
+                        {opcion.detalle}
                       </span>
                     )}
                   </span>

@@ -474,9 +474,19 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
       RETURN;
     END IF;
 
-    -- TOKENS tiene una FK contra USUARIOS: sin borrar los hijos primero, el
-    -- DELETE aborta con ORA-02292.
-    DELETE FROM TOKENS WHERE ID_USUARIO = l_id;
+    -- TOKENS y USUARIO_PAGINAS tienen FK contra USUARIOS: sin borrar los hijos
+    -- primero, el DELETE aborta con ORA-02292.
+    --
+    -- LOS DOS SE BORRAN EN CASCADA, y es lo correcto: una sesion y un permiso no
+    -- significan nada sin la persona a la que pertenecen. Es la asimetria con
+    -- PKG_PAGINAS.ELIMINAR, que en cambio SE NIEGA a borrar una pagina asignada:
+    -- la pagina es compartida y quitarla le saca el acceso a terceros, mientras
+    -- que estos permisos son del usuario que se esta borrando.
+    --
+    -- Bloquear el borrado por tener permisos, ademas, no dejaria borrar a nadie:
+    -- todo usuario en uso tiene alguno.
+    DELETE FROM USUARIO_PAGINAS WHERE ID_USUARIO = l_id;
+    DELETE FROM TOKENS          WHERE ID_USUARIO = l_id;
 
     DELETE FROM USUARIOS WHERE ID_USUARIO = l_id;
 
@@ -493,10 +503,23 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
   EXCEPTION
     WHEN OTHERS THEN
       ROLLBACK;
-      p_status_code := 500;
-      APEX_DEBUG.ERROR('PKG_USUARIOS.ELIMINAR: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
-                       DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
-      p_resultado := '{"error":"Error al eliminar el usuario"}';
+      -- ORA-02292: quedan hijos que NO se borran en cascada — el usuario proceso
+      -- inventarios, cargo ventas o compras, y esas filas lo referencian. Es un
+      -- 409 y no un 500: el pedido era valido, lo que no se puede es cumplirlo
+      -- sin borrar historial.
+      --
+      -- El mensaje manda a INACTIVAR, que es la salida real: corta el acceso al
+      -- instante (VALIDAR_TOKEN comprueba que la cuenta siga activa) y conserva
+      -- quien hizo cada cosa.
+      IF SQLCODE = -2292 THEN
+        p_status_code := 409;
+        p_resultado := '{"error":"El usuario tiene movimientos registrados y no se puede borrar: inactivalo para cortarle el acceso"}';
+      ELSE
+        p_status_code := 500;
+        APEX_DEBUG.ERROR('PKG_USUARIOS.ELIMINAR: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
+                         DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
+        p_resultado := '{"error":"Error al eliminar el usuario"}';
+      END IF;
   END ELIMINAR;
 
   ------------------------------------------------------------------------------

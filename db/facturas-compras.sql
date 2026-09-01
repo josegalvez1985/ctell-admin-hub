@@ -29,7 +29,8 @@
 --                           FECHA_CREACION, FECHA_ACTUALIZACION
 --   FACTURAS_COMPRAS_DET    ID_DETALLE, ID_FACTURA, ID_ARTICULO, CANTIDAD,
 --                           PRECIO_UNITARIO, SUBTOTAL (VIRTUAL), ID_IVA,
---                           ID_LOTE, FECHA_CREACION
+--                           FECHA_CREACION
+--                           UNIQUE (ID_FACTURA, ID_ARTICULO)
 --   FACTURAS_COMPRAS_CUOTAS ID_CUOTA, ID_FACTURA, NRO_CUOTA, FECHA_VENCIMIENTO,
 --                           MONTO_CUOTA, MONTO_PAGADO, SALDO_PENDIENTE (VIRTUAL),
 --                           ESTADO, FECHA_CREACION, FECHA_ACTUALIZACION
@@ -39,36 +40,26 @@
 --                           FECHA_ACTUALIZACION
 --
 --------------------------------------------------------------------------------
--- LA COMPRA ES LO QUE HACE ENTRAR EL STOCK
+-- LA COMPRA NO MUEVE STOCK
 --
--- Cada linea del detalle crea SU PROPIO lote, con la cantidad comprada y el
--- precio unitario como costo. No se suma a un lote existente: cada compra entro
--- a un precio distinto, y mezclarlas perderia a cuanto entro cada unidad.
+-- Cargar una factura de compra guarda el DOCUMENTO y nada mas: no crea lotes ni
+-- toca ninguna existencia. Hasta hace poco cada linea insertaba su propio lote
+-- con el precio unitario como costo; el stock por lotes se discontinuo —no se
+-- puede hacer un conteo fisico por partida, y el punto de venta obligaba a
+-- elegir de cual salia cada linea— y FACTURAS_COMPRAS_DET.ID_LOTE ya no existe
+-- en el DDL.
 --
--- El lote nace sin NUMERO_LOTE ni FECHA_VENCIMIENTO —las dos columnas son
--- nullable y esos datos no vienen en la factura—. Se completan editando el lote
--- si hacen falta; el FIFO de ventas ordena por vencimiento y los deja al final
--- (NULLS LAST) mientras esten vacios.
+-- EL COSTO DE CADA COMPRA NO SE PIERDE: sigue en PRECIO_UNITARIO, linea por
+-- linea, con su proveedor y su fecha. Nunca vivio en el lote — el lote lo
+-- copiaba.
 --
--- FACTURAS_COMPRAS_DET.ID_LOTE es lo que ata la linea con el lote que creo. Sin
--- esa columna, borrar la factura no sabria que lote sacar del stock. Es la misma
--- solucion que VENTAS_DETALLES.ID_LOTE, en el otro sentido.
---
--- CORRER UNA VEZ EN APEX antes que este archivo:
---
---   ALTER TABLE FACTURAS_COMPRAS_DET ADD (ID_LOTE NUMBER);
---   ALTER TABLE FACTURAS_COMPRAS_DET ADD CONSTRAINT FCD_FK_LOTES
---     FOREIGN KEY (ID_LOTE) REFERENCES LOTES (ID_LOTE);
---
--- SI ALGO YA SALIO, LA FACTURA SE CONGELA. Editar el detalle o borrar la factura
--- rehace o elimina esos lotes, y eso no se puede si la mercaderia ya se vendio:
--- el stock quedaria por debajo del fisico, o habria unidades vendidas sin
--- ninguna compra que respalde su costo. Se detecta con CANTIDAD_DISPON <
--- CANTIDAD y se rechaza con 409. Igual que una factura con pagos registrados.
---
--- Las facturas cargadas ANTES de este cambio no tienen ID_LOTE ni trajeron
--- stock: borrarlas no saca nada, que es lo correcto para ellas.
---
+-- ES UN ESTADO INTERMEDIO. El reemplazo es una cantidad unica por articulo y
+-- sucursal con costo promedio ponderado, mas su libro de movimientos. Cuando
+-- ese paquete exista, ESTE archivo vuelve a mover stock: GUARDAR_DETALLE llama
+-- a la entrada, y ACTUALIZAR y ELIMINAR recuperan una regla equivalente a la
+-- que hoy se saca —una compra con movimientos posteriores no se toca—. Mientras
+-- tanto, comprar no cambia ninguna existencia.
+
 --------------------------------------------------------------------------------
 -- ES LA PRIMERA TRANSACCION DEL PROYECTO, Y ESO CAMBIA VARIAS COSAS
 --
@@ -164,8 +155,8 @@
 -- sus lineas suman 480.000 — una inconsistencia que nadie detecta hasta que
 -- alguien cuadra la caja.
 --
--- Es el mismo criterio que el stock de un articulo (SUM sobre sus lotes) y que
--- la diferencia de un inventario: si se puede derivar, se deriva.
+-- Es el mismo criterio que la diferencia de un inventario: si se puede
+-- derivar, se deriva.
 --
 --------------------------------------------------------------------------------
 -- AISLAMIENTO POR EMPRESA
@@ -216,19 +207,6 @@
 --
 -- Con la condicion en NULL el vencimiento tambien viaja en NULL, no la fecha de
 -- la factura: "no se sabe cuando vence" es distinto de "vence el mismo dia".
---
---------------------------------------------------------------------------------
--- LA FACTURA NO MUEVE STOCK
---
--- Guardar una factura de compra NO crea lotes ni toca CANTIDAD_DISPON. Es
--- deliberado y coincide con lo que el DDL sugiere: no hay FK a LOTES ni columna
--- de estado que distinga "ingresada" de "pendiente".
---
--- La factura es el DOCUMENTO; el ingreso al deposito se carga aparte en Lotes.
--- Si mañana se quiere que una cosa dispare la otra, el lugar es un procedimiento
--- nuevo (INGRESAR_A_STOCK) con su propio estado en la cabecera — no meterlo
--- adentro de INSERTAR, que dejaria sin forma de cargar una factura de servicios
--- o una nota de credito.
 --
 --------------------------------------------------------------------------------
 -- COMO EJECUTAR
@@ -429,37 +407,26 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
   -- NO HACE COMMIT NI ROLLBACK: la transaccion la maneja quien lo llama, que es
   -- justamente el punto de que cabecera y detalle entren juntos.
   ------------------------------------------------------------------------------
-  -- Privado: TRUE si algun lote que trajo esta factura ya tuvo salidas.
+  -- SIN "TIENE_SALIDAS". La compra ya no crea lotes, asi que no hay forma —ni
+  -- necesidad— de saber si "algo de esta factura ya se vendio": editarla o
+  -- borrarla no deshace ningun movimiento de stock, porque no lo hizo.
   --
-  -- Se detecta con CANTIDAD_DISPON < CANTIDAD: el lote nace con las dos iguales,
-  -- y toda venta baja la primera. Es la condicion que bloquea editar y borrar —
-  -- deshacer una compra cuya mercaderia ya se vendio dejaria el stock por debajo
-  -- de lo fisico, o un lote huerfano sin factura que respalde su costo.
-  FUNCTION TIENE_SALIDAS (p_id_factura IN NUMBER) RETURN BOOLEAN IS
-    l_con_salidas PLS_INTEGER;
-  BEGIN
-    SELECT COUNT(*) INTO l_con_salidas
-      FROM FACTURAS_COMPRAS_DET d
-      JOIN LOTES lo ON lo.ID_LOTE = d.ID_LOTE
-     WHERE d.ID_FACTURA = p_id_factura
-       AND NVL(lo.CANTIDAD_DISPON, lo.CANTIDAD) < lo.CANTIDAD;
-    RETURN l_con_salidas > 0;
-  END TIENE_SALIDAS;
+  -- CUANDO EXISTA EL KARDEX HAY QUE VOLVER A PONER UNA REGLA EQUIVALENTE, y no
+  -- es la misma: no se puede saber si "esta unidad" salio. La que corresponde es
+  -- por movimiento —una compra no se edita ni se borra si hay movimientos
+  -- posteriores de ese articulo—, porque el costo promedio ya se recalculo sobre
+  -- ella y no vuelve solo.
 
-  -- Privado: borra los lotes que trajo la factura, junto con sus lineas.
+  -- Privado: borra las lineas de la factura.
   --
-  -- El orden es al reves de la FK: primero las lineas que apuntan al lote, y
-  -- recien despues el lote. Al reves da ORA-02292.
-  PROCEDURE BORRAR_DETALLE_Y_LOTES (p_id_factura IN NUMBER) IS
-    TYPE t_ids IS TABLE OF NUMBER;
-    l_lotes t_ids;
+  -- Antes borraba tambien los lotes que esas lineas habian creado, y de ahi el
+  -- nombre viejo (BORRAR_DETALLE_Y_LOTES). Sigue siendo un procedimiento y no un
+  -- DELETE suelto porque ACTUALIZAR y ELIMINAR lo llaman por igual: el dia que
+  -- borrar tenga que revertir stock, hay UN solo lugar donde agregarlo.
+  PROCEDURE BORRAR_DETALLE (p_id_factura IN NUMBER) IS
   BEGIN
-    SELECT ID_LOTE BULK COLLECT INTO l_lotes
-      FROM FACTURAS_COMPRAS_DET WHERE ID_FACTURA = p_id_factura AND ID_LOTE IS NOT NULL;
     DELETE FROM FACTURAS_COMPRAS_DET WHERE ID_FACTURA = p_id_factura;
-    FORALL i IN 1 .. l_lotes.COUNT
-      DELETE FROM LOTES WHERE ID_LOTE = l_lotes(i);
-  END BORRAR_DETALLE_Y_LOTES;
+  END BORRAR_DETALLE;
 
   -- Privado: rehace las cuotas de la factura segun su condicion de pago.
   --
@@ -487,16 +454,17 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
     END LOOP;
   END REGENERAR_CUOTAS;
 
+  -- p_id_sucursal DEJO DE HACER FALTA: era para el lote que creaba cada linea.
+  -- El detalle es el documento, y el documento no sabe de sucursal — esa esta en
+  -- la cabecera, que es la unica que la necesita.
   PROCEDURE GUARDAR_DETALLE (
     p_id_factura  IN  NUMBER,
     p_id_empresa  IN  NUMBER,
-    p_id_sucursal IN  NUMBER,
     p_detalle     IN  CLOB,
     p_lineas      OUT NUMBER,
     p_error       OUT VARCHAR2
   ) IS
     l_lineas PLS_INTEGER := 0;
-    l_id_lote NUMBER;
   BEGIN
     p_error  := NULL;
     p_lineas := 0;
@@ -568,37 +536,24 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
         END IF;
       END;
 
-      -- LA COMPRA ES LO QUE HACE ENTRAR EL STOCK: cada linea crea SU PROPIO
-      -- lote. No se suma a un lote existente porque cada compra tiene su costo,
-      -- y mezclarlas perderia a que precio entro cada unidad.
+      -- LA LINEA NO CREA NINGUN LOTE NI MUEVE STOCK. Antes cada una insertaba
+      -- su propio lote con el precio como costo; el stock por lotes se
+      -- discontinuo y la columna ID_LOTE ya no existe en el DDL, asi que
+      -- mencionarla aca daria ORA-00904.
       --
-      -- Sin numero de lote ni vencimiento: las dos columnas son nullable y esos
-      -- datos no viajan en la factura. Se completan editando el lote si hace
-      -- falta —el FIFO de ventas los ordena por vencimiento, y sin el quedan al
-      -- final (NULLS LAST)—.
+      -- El costo de esta compra queda igual en PRECIO_UNITARIO: es de donde va a
+      -- salir el promedio ponderado cuando exista el paquete de stock.
       --
-      -- CANTIDAD_DISPON arranca igual a CANTIDAD: nada se consumio todavia. Esa
-      -- igualdad es despues la que dice si el lote tuvo salidas, y por lo tanto
-      -- si la factura se puede editar o borrar.
-      INSERT INTO LOTES (
-        ID_EMPRESA, ID_SUCURSAL, ID_ARTICULO, CANTIDAD, CANTIDAD_DISPON, COSTO,
-        FECHA_ENTRADA, FECHA_CREACION, FECHA_ACTUALIZACION
-      ) VALUES (
-        p_id_empresa, p_id_sucursal, linea.idArticulo, linea.cantidad, linea.cantidad,
-        linea.precioUnitario, SYSDATE, SYSTIMESTAMP, SYSTIMESTAMP
-      ) RETURNING ID_LOTE INTO l_id_lote;
-
       -- SUBTOTAL NO SE MENCIONA: es una columna virtual y mencionarla da
       -- ORA-54013. La calcula la base como CANTIDAD*PRECIO_UNITARIO.
       INSERT INTO FACTURAS_COMPRAS_DET (
-        ID_FACTURA, ID_ARTICULO, CANTIDAD, PRECIO_UNITARIO, ID_IVA, ID_LOTE, FECHA_CREACION
+        ID_FACTURA, ID_ARTICULO, CANTIDAD, PRECIO_UNITARIO, ID_IVA, FECHA_CREACION
       ) VALUES (
         p_id_factura,
         linea.idArticulo,
         linea.cantidad,
         linea.precioUnitario,
         linea.idIva,
-        l_id_lote,
         SYSTIMESTAMP
       );
     END LOOP;
@@ -738,15 +693,10 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
                                               WHERE d.ID_FACTURA = f.ID_FACTURA), 0)
                                       - NVL((SELECT SUM(p.MONTO)
                                                FROM FACTURAS_COMPRAS_PAGOS p
-                                              WHERE p.ID_FACTURA = f.ID_FACTURA), 0),
-                 -- Si algo de esta factura ya se vendio: con eso la pantalla
-                 -- sabe que no puede ofrecer editar ni eliminar.
-                 'tieneSalidas'   VALUE CASE WHEN EXISTS (
-                                          SELECT 1 FROM FACTURAS_COMPRAS_DET d
-                                            JOIN LOTES lo ON lo.ID_LOTE = d.ID_LOTE
-                                           WHERE d.ID_FACTURA = f.ID_FACTURA
-                                             AND NVL(lo.CANTIDAD_DISPON, lo.CANTIDAD) < lo.CANTIDAD
-                                        ) THEN 'S' ELSE 'N' END
+                                              WHERE p.ID_FACTURA = f.ID_FACTURA), 0)
+                 -- SIN 'tieneSalidas': salia de comparar CANTIDAD_DISPON contra
+                 -- CANTIDAD del lote, y ya no hay lotes. La pantalla dejo de
+                 -- congelar facturas por ese motivo; los pagos siguen igual.
                  RETURNING CLOB
                ) AS fila,
                f.FECHA_FACTURA AS fecha,
@@ -947,12 +897,6 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
                                   - NVL((SELECT SUM(p.MONTO)
                                            FROM FACTURAS_COMPRAS_PAGOS p
                                           WHERE p.ID_FACTURA = f.ID_FACTURA), 0),
-             'tieneSalidas'   VALUE CASE WHEN EXISTS (
-                                      SELECT 1 FROM FACTURAS_COMPRAS_DET d
-                                        JOIN LOTES lo ON lo.ID_LOTE = d.ID_LOTE
-                                       WHERE d.ID_FACTURA = f.ID_FACTURA
-                                         AND NVL(lo.CANTIDAD_DISPON, lo.CANTIDAD) < lo.CANTIDAD
-                                    ) THEN 'S' ELSE 'N' END,
              'detalle'        VALUE NVL(l_detalle, TO_CLOB('[]')) FORMAT JSON,
              -- El plan de cuotas que genero la condicion de pago. Vacio en una
              -- factura al contado, que es lo que significa no tener condicion.
@@ -1140,7 +1084,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
 
     -- SIN COMMIT ENTRE MEDIO: si el detalle falla, el ROLLBACK deshace tambien
     -- la cabecera. Es todo el punto de recibir el detalle en el mismo request.
-    GUARDAR_DETALLE(l_id, l_id_empresa, l_id_sucursal, p_detalle, l_lineas, l_error);
+    GUARDAR_DETALLE(l_id, l_id_empresa, p_detalle, l_lineas, l_error);
 
     IF l_error IS NOT NULL THEN
       ROLLBACK;
@@ -1219,7 +1163,6 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
     l_existe       PLS_INTEGER;
     l_lineas       NUMBER;
     l_error        VARCHAR2(500);
-    l_sucursal_lote NUMBER;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -1333,23 +1276,16 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
     -- actualizacion es solo de la cabecera y las lineas quedan como estaban —
     -- que es lo que espera un PUT que cambia unicamente la observacion.
     IF p_detalle IS NOT NULL AND DBMS_LOB.GETLENGTH(p_detalle) > 0 THEN
-      -- Rehacer el detalle implica rehacer los lotes que trajo la factura, y eso
-      -- no se puede si la mercaderia ya salio: borrar un lote a medio vender
-      -- dejaria el stock por debajo del fisico.
-      IF TIENE_SALIDAS(l_id) THEN
-        ROLLBACK;
-        p_status_code := 409;
-        p_resultado := '{"error":"Ya se vendio mercaderia de esta factura: no se puede cambiar el detalle"}';
-        RETURN;
-      END IF;
+      -- SIN CHEQUEO DE SALIDAS: rehacer el detalle ya no rehace ningun lote, asi
+      -- que no hay stock que pueda quedar por debajo del fisico. Cuando exista el
+      -- kardex vuelve la regla equivalente —no se edita una compra con
+      -- movimientos posteriores del articulo— y este es el lugar.
+      --
+      -- Tampoco hace falta ya releer ID_SUCURSAL de la cabecera: era para el
+      -- lote que creaba cada linea.
+      BORRAR_DETALLE(l_id);
 
-      -- La sucursal sale de la cabecera ya actualizada: `l_id_sucursal` puede
-      -- venir NULL en un PUT que no la toca, y el lote la necesita si o si.
-      SELECT ID_SUCURSAL INTO l_sucursal_lote FROM FACTURAS_COMPRAS_CAB WHERE ID_FACTURA = l_id;
-
-      BORRAR_DETALLE_Y_LOTES(l_id);
-
-      GUARDAR_DETALLE(l_id, l_id_empresa, l_sucursal_lote, p_detalle, l_lineas, l_error);
+      GUARDAR_DETALLE(l_id, l_id_empresa, p_detalle, l_lineas, l_error);
 
       IF l_error IS NOT NULL THEN
         -- El ROLLBACK devuelve tambien el DELETE: la factura queda con su
@@ -1432,7 +1368,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
     -- lineas aunque el DELETE de la cabecera despues no hiciera nada.
     -- La factura tiene que existir Y ser de esta empresa ANTES de tocar nada.
     -- Antes los DELETE salian a ciegas y el 404 se deducia del SQL%ROWCOUNT del
-    -- ultimo; ahora hay lotes y pagos de por medio y eso ya no alcanza.
+    -- ultimo; con los pagos de por medio eso ya no alcanza.
     BEGIN
       SELECT ID_FACTURA INTO l_existe
         FROM FACTURAS_COMPRAS_CAB
@@ -1445,16 +1381,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
       RETURN;
     END;
 
-    -- BORRAR LA FACTURA SACA DEL STOCK lo que trajo, asi que no se puede si algo
-    -- ya salio: el lote quedaria por debajo de lo fisico, o —peor— habria
-    -- mercaderia vendida sin ninguna compra que justifique su costo.
-    IF TIENE_SALIDAS(l_id) THEN
-      ROLLBACK;
-      p_status_code := 409;
-      p_resultado := '{"error":"Ya se vendio mercaderia de esta factura: anula esas ventas antes de eliminarla"}';
-      RETURN;
-    END IF;
-
+    -- SIN CHEQUEO DE SALIDAS: borrar la factura ya no saca nada del stock,
+    -- porque cargarla tampoco lo movio. Lo unico que la congela son los pagos.
+    --
     -- Mismo criterio que en ventas con los cobros: el DELETE en cascada se
     -- llevaria plata que salio de la caja sin dejar rastro.
     SELECT COUNT(*) INTO l_existe FROM FACTURAS_COMPRAS_PAGOS WHERE ID_FACTURA = l_id;
@@ -1467,9 +1396,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
 
     DELETE FROM FACTURAS_COMPRAS_CUOTAS WHERE ID_FACTURA = l_id;
 
-    -- Borra el detalle y, detras, los lotes que esas lineas hicieron entrar:
-    -- la existencia que trajo la factura se va con ella.
-    BORRAR_DETALLE_Y_LOTES(l_id);
+    BORRAR_DETALLE(l_id);
 
     DELETE FROM FACTURAS_COMPRAS_CAB
      WHERE ID_FACTURA = l_id
@@ -1765,6 +1692,15 @@ SELECT ID_DETALLE, ID_FACTURA, ID_ARTICULO, CANTIDAD, PRECIO_UNITARIO
   FROM FACTURAS_COMPRAS_DET
  WHERE CANTIDAD <= 0
     OR PRECIO_UNITARIO < 0;
+
+-- 6. ID_LOTE NO DEBE EXISTIR en el detalle. El paquete ya no la escribe y el
+--    DDL nuevo no la declara; si quedo en la tabla de una version anterior, el
+--    INSERT sigue andando (es nullable) pero cada linea guarda un NULL que no
+--    significa nada. Tiene que devolver CERO filas.
+SELECT COLUMN_NAME, NULLABLE
+  FROM USER_TAB_COLUMNS
+ WHERE TABLE_NAME = 'FACTURAS_COMPRAS_DET'
+   AND COLUMN_NAME = 'ID_LOTE';
 
 --------------------------------------------------------------------------------
 -- Consultas utiles

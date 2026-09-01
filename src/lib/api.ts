@@ -566,54 +566,6 @@ export type ListaUbicaciones = {
 };
 
 /**
- * Partida de mercadería que entró al depósito.
- *
- * Cuelga de empresa **y** sucursal (las activas de la sesión) y además de un
- * artículo, que sí se elige en el formulario. El listado trae el nombre y el
- * código del artículo por JOIN: cada lote es de un artículo distinto, así que
- * no son una constante repetida como sí lo serían la empresa y la sucursal.
- *
- * **Sin `activo`:** el DDL no trae la columna, la baja es física.
- */
-export type Lote = {
-  id: number;
-  idEmpresa: number;
-  idSucursal: number;
-  idArticulo: number;
-  /** Del artículo (JOIN). */
-  nombreArticulo: string;
-  codigoArticulo: string | null;
-  /**
-   * Identificador de la partida. **Nullable**: entra mercadería sin lote
-   * identificado, y Oracle no considera que dos NULL choquen entre sí, así que
-   * el UNIQUE no impide varios lotes sin número para el mismo artículo.
-   */
-  numeroLote: number | null;
-  /**
-   * Cuánto **entró** en la partida. Es histórico: no cambia al consumirse la
-   * mercadería, sólo si se corrige un error de carga.
-   */
-  cantidad: number;
-  /**
-   * Cuánto **queda** sin consumir hoy. Arranca igual a `cantidad` y baja con el
-   * uso; la resta entre las dos es lo consumido.
-   *
-   * **El stock de un artículo suma este campo, no `cantidad`.** Nunca llega
-   * null: el backend lo iguala a `cantidad` en las filas viejas.
-   */
-  cantidadDispon: number;
-  costo: number | null;
-  /**
-   * Fechas en ISO **sólo día** ("2026-04-03"), sin hora: un vencimiento es un
-   * día del calendario. `fechaVencimiento` es null cuando la mercadería no
-   * vence.
-   */
-  fechaVencimiento: string | null;
-  fechaEntrada: string | null;
-  observaciones: string | null;
-};
-
-/**
  * Lista de descuentos de una empresa: "Lista Mayorista", "Lista Verano 2024".
  *
  * **No tiene columna `activo`**, y eso cambia cómo se la da de baja: acá la
@@ -660,84 +612,6 @@ export type ListaDescuentos = {
 
 export type ListaListasDescuentos = {
   items: ListaDescuentos[];
-  total: number;
-};
-
-/**
- * Estado de un conteo físico. **No** usa el `'A'`/`'I'` del resto del proyecto:
- * acá no son dos estados sino tres, y la columna guarda la palabra entera.
- *
- * - `ABIERTO` — editable, todavía no aplicado. Todo conteo nace así.
- * - `PROCESADO` — aplicado al lote. Terminal.
- * - `ANULADO` — descartado sin aplicar. Terminal.
- *
- * Las únicas transiciones posibles son `ABIERTO → PROCESADO` y
- * `ABIERTO → ANULADO`, y las impone un trigger de la base: desde un estado
- * terminal no se sale.
- */
-export type EstadoInventario = "ABIERTO" | "PROCESADO" | "ANULADO";
-
-/** `true` si el conteo todavía se puede editar, procesar o anular. */
-export function inventarioAbierto(estado: EstadoInventario | undefined): boolean {
-  return estado === "ABIERTO";
-}
-
-/**
- * Conteo físico de un lote: cuánto decía el sistema y cuánto se contó de verdad.
- *
- * **Una fila por lote contado**, no una cabecera con líneas. Por eso la relación
- * con `LOTES` es obligatoria y de ahí salen la sucursal y el artículo.
- */
-export type Inventario = {
-  id: number;
-  idEmpresa: number;
-  idSucursal: number;
-  idLote: number;
-  idArticulo: number;
-  /** Del JOIN contra ARTICULOS, LOTES y SUCURSALES. */
-  nombreArticulo: string;
-  codigoArticulo: string | null;
-  numeroLote: number | null;
-  nombreSucursal: string;
-  /**
-   * Lo que el sistema creía que había **al momento de contar**. Es una foto: se
-   * copia del lote al crear el conteo y no se recalcula, para que la diferencia
-   * no se mueva sola entre que se cuenta y se procesa.
-   */
-  cantidadSistema: number | null;
-  /** Lo que se contó con las manos. El único dato que aporta la persona. */
-  cantidadFisica: number | null;
-  /**
-   * `cantidadFisica - cantidadSistema`. La calcula el backend en cada listado y
-   * **no se guarda**: tres columnas derivables entre sí son tres columnas que
-   * pueden contradecirse.
-   */
-  diferencia: number;
-  /**
-   * Lo que queda en el lote **hoy**. Si difiere de `cantidadSistema`, el lote se
-   * movió después del conteo y la diferencia ya no es sólo el ajuste.
-   */
-  cantidadLoteHoy: number;
-  estado: EstadoInventario;
-  /**
-   * Quién **procesó** el conteo. Los tres son null mientras esté abierto y
-   * también en los anulados: ahí nadie aplicó nada.
-   *
-   * El nombre y el login vienen del JOIN contra `USUARIOS`, no de una copia
-   * guardada en la fila: si alguien corrige su nombre, el histórico lo refleja.
-   */
-  idUsuario: number | null;
-  /** Login (`USUARIOS.USUARIO`), corto y estable. */
-  usuarioProcesa: string | null;
-  /** Nombre completo, para mostrar. */
-  nombreProcesa: string | null;
-  /** ISO ("2026-08-18T14:30:00"). Cuándo se hizo el conteo físico. */
-  fechaInventario: string | null;
-  observaciones: string | null;
-};
-
-export type ListaInventarios = {
-  items: Inventario[];
   total: number;
 };
 
@@ -955,13 +829,10 @@ export type FacturaCompra = {
   /** `total - montoPagado`. En 0 la factura está saldada. */
   saldoPendiente: number;
   /**
-   * `'S'` si algo de esta factura **ya se vendió**.
-   *
-   * La compra creó un lote por línea; editar o borrar la factura rehace o
-   * elimina esos lotes, y eso no se puede una vez que salió mercadería. El
-   * backend lo rechaza con 409 — esto permite avisarlo antes.
+   * **Sin `tieneSalidas`**: salía de comparar el disponible de los lotes que
+   * creaba la compra, y la compra ya no crea lotes ni mueve stock. Lo único que
+   * congela una factura son sus pagos.
    */
-  tieneSalidas: "S" | "N";
 };
 
 /** Una cuota del plan de pago de una factura de compra. */
@@ -1078,15 +949,9 @@ export type VentaDetalle = {
   total: number;
   articulo: string | null;
   /**
-   * El lote del que salió la línea. **Uno solo**: `VENTAS_DETALLES` tiene una
-   * columna `ID_LOTE` y un `UNIQUE (ID_VENTA, ID_ARTICULO)`, así que una línea
-   * no se reparte entre lotes — las 10 unidades salen todas del mismo.
-   *
-   * `null` en los artículos `ES_GASTO`: un servicio no tiene stock.
+   * **Sin lote.** La línea ya no guarda de qué partida salió: el stock por lotes
+   * se discontinuó y `VENTAS_DETALLES.ID_LOTE` no existe más en el DDL.
    */
-  idLote: number | null;
-  numeroLote: number | null;
-  loteVence: string | null;
 };
 
 export type Venta = {
@@ -1175,30 +1040,45 @@ export type VentaCobro = {
 
 export type ListaVentasCobros = { items: VentaCobro[] };
 
-export type ListaLotes = {
-  items: Lote[];
+/**
+ * Cuánto hay de un artículo en una sucursal.
+ *
+ * **Una fila por (empresa, sucursal, artículo)** — es el `UNIQUE` de la tabla, y
+ * lo que reemplazó al stock repartido en lotes: en el estante las unidades son
+ * idénticas y nadie sabe de qué compra vino cada una.
+ *
+ * La fila **puede no existir**: un artículo que nunca tuvo movimiento en esa
+ * sucursal no tiene ninguna, que no es lo mismo que tener 0 aunque se muestre
+ * igual. Por eso el listado de artículos usa `cantidadStock` con `NVL` en vez de
+ * cruzar contra esto.
+ */
+export type Existencia = {
+  id: number;
+  idEmpresa: number;
+  idSucursal: number;
+  /** Del JOIN. `null` sólo si la sucursal se borró. */
+  sucursal: string | null;
+  idArticulo: number;
+  nombreArticulo: string;
+  codigoArticulo: string | null;
+  /** Nunca `null`: el backend ya aplica `NVL(..., 0)`. */
+  cantidadDisponible: number;
+  /** Del artículo, para poder marcar lo que está por debajo. */
+  cantidadMinima: number | null;
+  /**
+   * ISO con hora. Lo único que distingue una existencia viva de una que quedó
+   * quieta hace meses. `null` mientras nada la haya movido.
+   */
+  fechaUltimoMovimiento: string | null;
+};
+
+export type ListaExistencias = {
+  items: Existencia[];
   /** Las filas que pasan el filtro, **no** las de esta página. */
   total: number;
   pagina: number;
-  /** El que el backend aplicó, que pudo recortarse al techo de 200. */
+  /** El que el backend aplicó, que pudo recortarse al techo de 50. */
   tamanio: number;
-};
-
-/**
- * Un artículo que tiene al menos un lote, para el desplegable del filtro de la
- * columna Artículo.
- *
- * Sólo id y nombre: es lo único que el filtro necesita. Viene de
- * `/lotes/articulos` y no de `/articulos/listar` porque ese ofrecería artículos
- * sin ningún lote —elegirlos daría una lista vacía— y además viene paginado.
- */
-export type ArticuloConLotes = {
-  id: number;
-  nombreArticulo: string;
-};
-
-export type ListaArticulosConLotes = {
-  items: ArticuloConLotes[];
 };
 
 /**
@@ -1306,12 +1186,32 @@ export type Articulo = {
   idUnidadMedida: number | null;
   unidadMedida: string | null;
   abreviaturaUnidad: string | null;
+  /**
+   * El código propio del artículo, que en repuestos es el **OEM**: el del
+   * fabricante del vehículo. Es por el que se pide una pieza.
+   */
   codigoArticulo: string | null;
   nombreArticulo: string;
   descripcion: string | null;
   /**
-   * Stock actual: la **suma de las cantidades de sus lotes**, calculada por el
-   * backend en cada listado. Ya no es una columna de ARTICULOS.
+   * Los códigos con los que otros fabricantes llaman a la misma pieza, ya
+   * concatenados y separados por comas: el backend los arma con `LISTAGG`, no
+   * llega un array. Para gestionarlos uno por uno está `api.codigosEquivalentes`.
+   *
+   * La búsqueda del listado **sí** los mira, así que mostrarlos es lo que
+   * explica por qué apareció un artículo cuyo nombre no se parece a lo escrito.
+   */
+  codigosEquivalentes: string | null;
+  /**
+   * Stock actual, sumado de `EXISTENCIAS` — una fila por artículo y sucursal.
+   *
+   * **Es el total de la empresa** salvo que se pida `idSucursal`, y ahí es el de
+   * ese depósito. Un artículo sin ninguna fila de existencia llega en 0, no en
+   * null: nunca tuvo movimiento, que para quien mira es lo mismo que no tener.
+   *
+   * Ojo: **nada lo mueve todavía**. Comprar y vender no tocan existencias
+   * mientras no exista `PKG_STOCK`, así que el número es el que se haya cargado
+   * en la tabla.
    *
    * Es de sólo lectura y no aparece en `crear` ni en `actualizar`: se mueve
    * cargando o consumiendo lotes, no editando la ficha del artículo.
@@ -2075,6 +1975,14 @@ export const api = {
         body: JSON.stringify(datos),
       }),
 
+    /**
+     * Borra la página. **409 si algún usuario la tiene asignada** — en
+     * cualquier empresa, no sólo en la activa: la página es una sola para todo
+     * el sistema y el permiso es por empresa.
+     *
+     * El error trae `usuarios`, la cantidad de personas a las que habría que
+     * quitársela primero desde Permisos.
+     */
     eliminar: (id: number) =>
       request<{ ok: boolean }>(`/paginas/eliminar/${id}`, { method: "DELETE" }),
   },
@@ -2110,6 +2018,49 @@ export const api = {
       request<{ ok: boolean }>(`/usuario-paginas/quitar/${idUsuario}/${idPagina}/${idEmpresa}`, {
         method: "DELETE",
       }),
+  },
+
+  /**
+   * Existencias: cuánto hay de cada artículo en cada sucursal.
+   *
+   * **Sólo lectura.** No hay crear, actualizar ni eliminar, y es a propósito: el
+   * stock se mueve con las transacciones —comprar suma, vender resta, un conteo
+   * ajusta—, no editándolo a mano. Un endpoint de escritura lo convertiría en un
+   * campo editable y no habría forma de explicar por qué dice lo que dice.
+   *
+   * Para el stock de un artículo suelto suele alcanzar con `cantidadStock` del
+   * listado de artículos; esto sirve cuando hace falta verlo **abierto por
+   * sucursal**.
+   */
+  existencias: {
+    /**
+     * `idEmpresa` es obligatorio; el resto de los filtros se combinan.
+     *
+     * Sin `idSucursal` devuelve **una fila por sucursal**, no la suma: sumarlas
+     * escondería que las 12 unidades están en el otro depósito, que es
+     * justamente lo que hay que ver antes de prometer una venta.
+     *
+     * Paginado en el servidor, 20 por página y **50 como techo**: el JSON viaja
+     * por un bind de ORDS con límite de 4000 bytes.
+     */
+    listar: (params: {
+      idEmpresa: number;
+      idSucursal?: number | undefined;
+      idArticulo?: number | undefined;
+      busqueda?: string | undefined;
+      pagina?: number | undefined;
+      tamanio?: number | undefined;
+    }) => {
+      const partes: string[] = [`idEmpresa=${params.idEmpresa}`];
+      if (params.idSucursal) partes.push(`idSucursal=${params.idSucursal}`);
+      if (params.idArticulo) partes.push(`idArticulo=${params.idArticulo}`);
+      if (params.busqueda?.trim())
+        partes.push(`busqueda=${encodeURIComponent(params.busqueda.trim())}`);
+      if (params.pagina) partes.push(`pagina=${params.pagina}`);
+      if (params.tamanio) partes.push(`tamanio=${params.tamanio}`);
+
+      return request<ListaExistencias>(`/existencias/listar?${partes.join("&")}`);
+    },
   },
 
   paises: {
@@ -2824,112 +2775,6 @@ export const api = {
   },
 
   /**
-   * Lotes de mercadería (partidas con vencimiento y costo).
-   *
-   * Filtran por empresa **y** sucursal —las activas, igual que ubicaciones— y
-   * opcionalmente por artículo, para ver las partidas de uno solo.
-   *
-   * Las fechas van y vuelven como ISO de sólo día ("2026-04-03"). El backend
-   * las convierte con formato explícito: mandar otro formato da 400.
-   */
-  lotes: {
-    /**
-     * Lotes de una empresa y sucursal. Las dos salen de los providers globales
-     * (`useEmpresa()` / `useSucursal()`), no de filtros de la pantalla.
-     *
-     * PAGINADO EN EL SERVIDOR, 20 por página. `busqueda` e `idArticulo` van al
-     * backend y filtran en SQL: filtrando en el cliente sólo se miraría lo ya
-     * traído, y un lote de la página 5 no aparecería al buscarlo.
-     *
-     * `URLSearchParams` escapa los valores solo — hace falta porque un código de
-     * artículo puede llevar barras.
-     */
-    listar: (
-      // `| undefined` explícito y no sólo `?`: con exactOptionalPropertyTypes
-      // pasar `idArticulo: undefined` —que es como la pantalla expresa "sin
-      // filtro"— no compilaría contra una propiedad meramente opcional.
-      params: {
-        idEmpresa?: number | undefined;
-        idSucursal?: number | undefined;
-        idArticulo?: number | undefined;
-        busqueda?: string | undefined;
-        pagina?: number | undefined;
-        tamanio?: number | undefined;
-      } = {},
-    ) => {
-      const q = new URLSearchParams();
-      if (params.idEmpresa) q.set("idEmpresa", String(params.idEmpresa));
-      if (params.idSucursal) q.set("idSucursal", String(params.idSucursal));
-      if (params.idArticulo) q.set("idArticulo", String(params.idArticulo));
-      if (params.busqueda?.trim()) q.set("busqueda", params.busqueda.trim());
-      if (params.pagina) q.set("pagina", String(params.pagina));
-      if (params.tamanio) q.set("tamanio", String(params.tamanio));
-      const query = q.toString();
-      return request<ListaLotes>(`/lotes/listar${query ? `?${query}` : ""}`);
-    },
-
-    /**
-     * Los artículos que tienen al menos un lote, para el desplegable del filtro
-     * de la columna. Sin paginar: son los artículos con stock en UNA sucursal.
-     */
-    articulos: (params: { idEmpresa?: number; idSucursal?: number } = {}) => {
-      const q = new URLSearchParams();
-      if (params.idEmpresa) q.set("idEmpresa", String(params.idEmpresa));
-      if (params.idSucursal) q.set("idSucursal", String(params.idSucursal));
-      const query = q.toString();
-      return request<ListaArticulosConLotes>(`/lotes/articulos${query ? `?${query}` : ""}`);
-    },
-
-    crear: (datos: {
-      idEmpresa: number;
-      idSucursal: number;
-      idArticulo: number;
-      numeroLote?: number;
-      cantidad?: number;
-      cantidadDispon?: number;
-      costo?: number;
-      /** ISO de sólo día: "2026-04-03". */
-      fechaVencimiento?: string;
-      fechaEntrada?: string;
-      observaciones?: string;
-    }) =>
-      request<{ id: number; ok: boolean }>("/lotes/crear", {
-        method: "POST",
-        body: JSON.stringify(datos),
-      }),
-
-    /**
-     * Los campos ausentes no se modifican.
-     *
-     * Ojo: mandar `fechaVencimiento` vacía significa "no cambiar", **no** quitar
-     * el vencimiento. No hay forma de borrarlo desde este endpoint.
-     */
-    actualizar: (
-      id: number,
-      datos: {
-        /** OBLIGATORIO: acota a cuál fila se aplica el cambio, no es un dato a guardar. Sin él, 400. */
-        idEmpresa: number;
-        idSucursal?: number;
-        idArticulo?: number;
-        numeroLote?: number;
-        cantidad?: number;
-        cantidadDispon?: number;
-        costo?: number;
-        fechaVencimiento?: string;
-        fechaEntrada?: string;
-        observaciones?: string;
-      },
-    ) =>
-      request<{ ok: boolean }>(`/lotes/actualizar/${id}`, {
-        method: "PUT",
-        body: JSON.stringify(datos),
-      }),
-
-    eliminar: (id: number, idEmpresa: number) =>
-      request<{ ok: boolean }>(`/lotes/eliminar/${id}/${idEmpresa}`, { method: "DELETE" }),
-  },
-
-  /**
    * En qué ubicaciones está cada artículo.
    *
    * Tabla de cruce: sólo asignar y quitar. **No hay `actualizar`** — la fila no
@@ -3279,6 +3124,13 @@ export const api = {
         busqueda?: string | undefined;
         idCategoria?: number | undefined;
         idMarca?: number | undefined;
+        /**
+         * **Acota el stock, no la lista.** El catálogo es de la empresa y no
+         * cambia según el depósito; lo que cambia es `cantidadStock`, que sin
+         * esto suma todas las sucursales de la empresa y con esto devuelve el de
+         * una sola.
+         */
+        idSucursal?: number | undefined;
         pagina?: number | undefined;
         tamanio?: number | undefined;
       } = {},
@@ -3289,6 +3141,7 @@ export const api = {
         partes.push(`busqueda=${encodeURIComponent(params.busqueda.trim())}`);
       if (params.idCategoria) partes.push(`idCategoria=${params.idCategoria}`);
       if (params.idMarca) partes.push(`idMarca=${params.idMarca}`);
+      if (params.idSucursal) partes.push(`idSucursal=${params.idSucursal}`);
       if (params.pagina) partes.push(`pagina=${params.pagina}`);
       if (params.tamanio) partes.push(`tamanio=${params.tamanio}`);
       const q = partes.length > 0 ? `?${partes.join("&")}` : "";
@@ -3299,8 +3152,9 @@ export const api = {
      * Sólo `idEmpresa` y `nombreArticulo` son obligatorios; el resto no. Las
      * cuatro relaciones (categoría, marca, moneda, unidad) pueden omitirse.
      *
-     * **No hay precios ni stock**: se eliminaron de la tabla. El costo vive en
-     * cada lote (`api.lotes`) y el stock es la suma de sus cantidades.
+     * **No hay precios ni stock**: se eliminaron de la tabla. El costo de cada
+     * compra vive en `FACTURAS_COMPRAS_DET.PRECIO_UNITARIO`, y el stock va a
+     * vivir en `EXISTENCIAS` — hasta entonces el listado devuelve 0.
      */
     crear: (datos: {
       idEmpresa: number;
@@ -3365,98 +3219,6 @@ export const api = {
         headers: { "Content-Type": archivo.type },
         body: archivo,
       }),
-  },
-
-  /**
-   * Conteos físicos de stock.
-   *
-   * Es el único módulo **sin `eliminar`**: un trigger de la base prohíbe el
-   * DELETE, porque un conteo es evidencia de que alguien fue al depósito y
-   * contó. `anular` ocupa su lugar y deja el registro asentado.
-   */
-  inventarios: {
-    /**
-     * Los cuatro filtros se combinan. En la app siempre viajan `idEmpresa` e
-     * `idSucursal`, que salen de los providers de la sesión.
-     */
-    listar: (
-      params: {
-        idEmpresa?: number;
-        idSucursal?: number;
-        idArticulo?: number;
-        estado?: EstadoInventario;
-      } = {},
-    ) => {
-      const q = new URLSearchParams();
-      if (params.idEmpresa) q.set("idEmpresa", String(params.idEmpresa));
-      if (params.idSucursal) q.set("idSucursal", String(params.idSucursal));
-      if (params.idArticulo) q.set("idArticulo", String(params.idArticulo));
-      if (params.estado) q.set("estado", params.estado);
-      const query = q.toString();
-      return request<ListaInventarios>(`/inventarios/listar${query ? `?${query}` : ""}`);
-    },
-
-    /**
-     * Abre un conteo sobre un lote. Nace siempre `ABIERTO`.
-     *
-     * **No recibe `idSucursal`, `idArticulo` ni `cantidadSistema`**: los tres
-     * salen del lote, que ya los tiene resueltos. Pedirlos abriría la puerta a
-     * que lleguen inconsistentes entre sí.
-     *
-     * Devuelve la foto del sistema y la diferencia, para poder mostrarlas sin
-     * volver a pedir el listado. Da 409 si ese lote ya tiene un conteo abierto.
-     */
-    crear: (datos: {
-      idEmpresa: number;
-      idLote: number;
-      /** Obligatoria. Un 0 es un dato válido: el lote se agotó. */
-      cantidadFisica: number;
-      /** ISO, día o día y hora. Ausente = ahora. */
-      fechaInventario?: string;
-      observaciones?: string;
-    }) =>
-      request<{ id: number; cantidadSistema: number; diferencia: number; ok: boolean }>(
-        "/inventarios/crear",
-        { method: "POST", body: JSON.stringify(datos) },
-      ),
-
-    /**
-     * Corrige un conteo **todavía abierto**; los campos ausentes no se
-     * modifican. Da 409 si ya fue procesado o anulado.
-     *
-     * Los ids no se pueden cambiar: mover un conteo a otro lote lo convertiría
-     * en un conteo distinto. Si el lote estaba mal, se anula y se carga otro.
-     */
-    actualizar: (
-      id: number,
-      datos: {
-        idEmpresa: number;
-        cantidadFisica?: number;
-        fechaInventario?: string;
-        observaciones?: string;
-      },
-    ) =>
-      request<{ ok: boolean }>(`/inventarios/actualizar/${id}`, {
-        method: "PUT",
-        body: JSON.stringify(datos),
-      }),
-
-    /**
-     * `ABIERTO → PROCESADO`: aplica lo contado al lote y sella quién lo hizo.
-     *
-     * **Es irreversible** — no hay vuelta a abierto. El ajuste lo hace un
-     * trigger sobre `LOTES.CANTIDAD_DISPON`, que es lo que suma el stock del
-     * artículo.
-     */
-    procesar: (id: number, idEmpresa: number) =>
-      request<{ ok: boolean }>(`/inventarios/procesar/${id}/${idEmpresa}`, { method: "POST" }),
-
-    /**
-     * `ABIERTO → ANULADO`: descarta el conteo **sin tocar el lote**. También
-     * irreversible.
-     */
-    anular: (id: number, idEmpresa: number) =>
-      request<{ ok: boolean }>(`/inventarios/anular/${id}/${idEmpresa}`, { method: "POST" }),
   },
 
   /**
@@ -3800,12 +3562,6 @@ export const api = {
         cantidad: number;
         precioUnitario: number;
         idIva?: number;
-        /**
-         * De qué lote sale la línea. **Obligatorio** salvo en artículos
-         * `ES_GASTO`: el backend rechaza la venta sin él, y valida que el lote
-         * sea de esta sucursal, del artículo, y que tenga existencia suficiente.
-         */
-        idLote?: number;
       }>;
     }) =>
       request<{
@@ -3820,14 +3576,14 @@ export const api = {
         body: JSON.stringify({ ...datos, detalle: JSON.stringify(datos.detalle) }),
       }),
     /**
-     * Borra la venta y **devuelve el stock** a los lotes de los que salió.
+     * Borra la venta con sus cuotas y su detalle.
      *
-     * `unidadesRepuestas` en 0 significa que la venta es anterior a
-     * `VENTAS_DETALLES_LOTES`: no hay reparto guardado, así que no hay dónde
-     * reponer. Se corrige con un inventario, no hay forma de deducirlo.
+     * **No repone stock**, porque vender tampoco lo descuenta mientras dure la
+     * migración a existencias por artículo. Una venta con cobros se rechaza con
+     * 409: hay que anularlos primero.
      */
     eliminar: (id: number, idEmpresa: number) =>
-      request<{ ok: boolean; unidadesRepuestas: number }>(`/ventas/eliminar/${id}/${idEmpresa}`, {
+      request<{ ok: boolean }>(`/ventas/eliminar/${id}/${idEmpresa}`, {
         method: "DELETE",
       }),
   },

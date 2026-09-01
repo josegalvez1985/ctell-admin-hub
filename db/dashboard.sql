@@ -97,22 +97,38 @@ CREATE OR REPLACE PACKAGE BODY PKG_DASHBOARD AS
      WHERE f.ID_EMPRESA = l_empresa AND f.ID_SUCURSAL = l_sucursal
        AND f.FECHA_FACTURA >= l_desde_ant;
 
-    -- VALOR DE STOCK: lo que QUEDA por lo que COSTO, no por lo que entro.
-    -- Un lote sin costo cargado vale 0 aca en vez de romper la suma.
-    SELECT NVL(SUM(NVL(CANTIDAD_DISPON, CANTIDAD) * NVL(COSTO, 0)), 0),
-           NVL(SUM(NVL(CANTIDAD_DISPON, CANTIDAD)), 0)
-      INTO l_stock, l_stock_unidades
-      FROM LOTES
+    -- UNIDADES EN DEPOSITO, desde EXISTENCIAS. Acotado a la sucursal activa:
+    -- el indicador de la home es del deposito que se esta mirando, no de la
+    -- empresa entera.
+    SELECT NVL(SUM(NVL(CANTIDAD_DISPONIBLE, 0)), 0)
+      INTO l_stock_unidades
+      FROM EXISTENCIAS
      WHERE ID_EMPRESA = l_empresa AND ID_SUCURSAL = l_sucursal;
+
+    -- EL VALOR DEL STOCK SIGUE EN CERO, y no es un olvido: EXISTENCIAS guarda la
+    -- CANTIDAD, no a cuanto entro. Multiplicar unidades por un costo que no
+    -- existe no se puede, y devolver las unidades como si fueran guaranies seria
+    -- peor que un cero — la home las muestra formateadas como plata.
+    --
+    -- Vuelve cuando el modelo tenga el costo: una columna de costo promedio
+    -- ponderado movil en EXISTENCIAS, recalculada en cada compra, o una tabla de
+    -- movimientos de la que se derive. Ahi esto pasa a ser
+    -- SUM(CANTIDAD_DISPONIBLE * COSTO_PROMEDIO).
+    l_stock := 0;
 
     -- Cuantos articulos estan por debajo de su minimo. Es el unico indicador que
     -- pide una accion, y por eso viaja aparte de los montos.
+    --
+    -- NVL a 0 en la subconsulta: un articulo SIN FILA de existencia en esta
+    -- sucursal no tiene nada que sumar y SUM() da NULL. Sin el NVL la
+    -- comparacion contra CANTIDAD_MINIMA seria NULL —ni verdadera ni falsa— y el
+    -- articulo que no tiene NADA quedaria justamente afuera del conteo.
     SELECT COUNT(*) INTO l_bajo_minimo
       FROM ARTICULOS a
      WHERE a.ID_EMPRESA = l_empresa
        AND NVL(a.CANTIDAD_MINIMA, 0) > 0
-       AND NVL((SELECT SUM(NVL(lo.CANTIDAD_DISPON, lo.CANTIDAD)) FROM LOTES lo
-                 WHERE lo.ID_ARTICULO = a.ID_ARTICULO AND lo.ID_SUCURSAL = l_sucursal), 0)
+       AND NVL((SELECT SUM(NVL(e.CANTIDAD_DISPONIBLE, 0)) FROM EXISTENCIAS e
+                 WHERE e.ID_ARTICULO = a.ID_ARTICULO AND e.ID_SUCURSAL = l_sucursal), 0)
            < a.CANTIDAD_MINIMA;
 
     -- PAGOS A PROVEEDORES QUE VENCEN ESTA SEMANA. Se cuentan las CUOTAS con
@@ -210,8 +226,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_DASHBOARD AS
                    RETURNING CLOB) AS fila,
                  NVL(s.total, 0) AS disponible
             FROM ARTICULOS a
-            LEFT JOIN (SELECT ID_ARTICULO, SUM(NVL(CANTIDAD_DISPON, CANTIDAD)) AS total
-                         FROM LOTES WHERE ID_EMPRESA = l_empresa AND ID_SUCURSAL = l_sucursal
+            -- LEFT y no JOIN interno: un articulo SIN FILA de existencia en esta
+            -- sucursal tiene 0 y es justamente el mas critico de todos. Con el
+            -- interno desapareceria del aviso, que es lo contrario de lo que
+            -- sirve.
+            LEFT JOIN (SELECT ID_ARTICULO, SUM(NVL(CANTIDAD_DISPONIBLE, 0)) AS total
+                         FROM EXISTENCIAS
+                        WHERE ID_EMPRESA = l_empresa AND ID_SUCURSAL = l_sucursal
                         GROUP BY ID_ARTICULO) s ON s.ID_ARTICULO = a.ID_ARTICULO
            WHERE a.ID_EMPRESA = l_empresa
              AND NVL(a.ES_GASTO, 'N') = 'N'

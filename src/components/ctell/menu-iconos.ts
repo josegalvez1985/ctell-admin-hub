@@ -254,7 +254,6 @@ const ICONOS_PAGINA: Record<string, LucideIcon> = {
   depositos: Warehouse,
   // Boxes (varias cajas) y no Package (una): un lote es una PARTIDA de
   // mercadería, no la unidad — que ya es "artículos".
-  lotes: Boxes,
   lote: Boxes,
   // NI MapPin NI Warehouse: MapPin ya es "ciudades" y haría pensar en una
   // dirección; Warehouse ya es "depósito", el edificio entero. La ubicación es
@@ -279,8 +278,6 @@ const ICONOS_PAGINA: Record<string, LucideIcon> = {
   //
   // ClipboardCheck (la planilla ya verificada) y no ClipboardList: así queda
   // libre para "órdenes", el pedido pendiente. Antes las dos compartían ícono.
-  inventarios: ClipboardCheck,
-  inventario: ClipboardCheck,
   ordenes: ClipboardList,
   "ordenes de compra": ClipboardList,
   // COMPRA Y VENTA NO COMPARTEN ÍCONO: son los dos comprobantes que más se

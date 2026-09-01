@@ -325,7 +325,7 @@ function ArticulosPage() {
           <Input
             value={busqueda}
             onChange={(e) => setBusqueda(e.target.value)}
-            placeholder="Buscar por nombre, código, categoría…"
+            placeholder="Nombre, código OEM, marca o equivalencia…"
             className="pl-9"
           />
         </div>

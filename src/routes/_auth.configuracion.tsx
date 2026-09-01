@@ -55,6 +55,65 @@ const themeOptions: { value: Theme; label: string; description: string; icon: ty
   },
 ];
 
+/**
+ * Las cuatro herramientas de administración, repartidas en los dos oficios que
+ * las usan.
+ *
+ * NO SON DOS PERMISOS SINO DOS TAREAS. Las cuatro siguen exigiendo `esAdmin` —el
+ * backend responde 403 a quien no lo sea— y el bloque entero sigue apareciendo
+ * sólo para administradores. La división es de organización.
+ *
+ * Vale la pena porque son tareas de ritmo distinto. **Usuarios y permisos** se
+ * tocan seguido y con una persona concreta en la cabeza: entra alguien, se va
+ * alguien, hay que darle acceso a una pantalla. **Módulos y páginas** se tocan
+ * cuando el sistema crece, y equivocarse ahí le cambia el menú a todos.
+ *
+ * El orden dentro de cada grupo es el de uso: un permiso necesita el usuario ya
+ * creado, y una página necesita su módulo.
+ */
+const GRUPOS_ADMIN = [
+  {
+    id: "administrador",
+    titulo: "Administrador",
+    descripcion: "Quién entra al sistema y qué puede ver cada uno.",
+    items: [
+      {
+        id: "usuarios",
+        titulo: "Usuarios",
+        descripcion: "Crear, editar, cambiar contraseñas y dar de baja cuentas.",
+        icono: Users,
+      },
+      {
+        id: "permisos",
+        titulo: "Permisos",
+        descripcion: "Qué páginas puede ver cada usuario.",
+        icono: ShieldCheck,
+      },
+    ],
+  },
+  {
+    id: "sistemas",
+    titulo: "Analista de sistemas",
+    descripcion: "La estructura del menú: qué módulos y páginas existen.",
+    items: [
+      {
+        id: "modulos",
+        titulo: "Módulos",
+        descripcion: "Crear, editar y eliminar los módulos del menú.",
+        icono: LayoutGrid,
+      },
+      {
+        id: "paginas",
+        titulo: "Páginas",
+        descripcion: "Las páginas que hay dentro de cada módulo.",
+        icono: FileText,
+      },
+    ],
+  },
+] as const;
+
+type ItemAdminId = (typeof GRUPOS_ADMIN)[number]["items"][number]["id"];
+
 function ConfiguracionPage() {
   const { theme, setTheme, colorTheme, setColorTheme } = useTheme();
   const [usuariosAbierto, setUsuariosAbierto] = useState(false);
@@ -62,6 +121,21 @@ function ConfiguracionPage() {
   const [paginasAbierto, setPaginasAbierto] = useState(false);
   const [permisosAbierto, setPermisosAbierto] = useState(false);
   const [passwordAbierto, setPasswordAbierto] = useState(false);
+
+  /**
+   * Qué diálogo abre cada item de GRUPOS_ADMIN.
+   *
+   * El array es una constante de módulo —no puede referirse a los setters— así
+   * que el vínculo se hace acá, por id. El tipo `Record<ItemAdminId, …>` obliga
+   * a que estén los cuatro: agregar un item al array sin su setter no compila,
+   * en vez de dibujar un botón que no hace nada.
+   */
+  const abrirAdmin: Record<ItemAdminId, (abierto: boolean) => void> = {
+    usuarios: setUsuariosAbierto,
+    permisos: setPermisosAbierto,
+    modulos: setModulosAbierto,
+    paginas: setPaginasAbierto,
+  };
 
   /**
    * Las herramientas de gestión son sólo para administradores.
@@ -135,98 +209,50 @@ function ConfiguracionPage() {
                   Cuentas, estructura del menú y permisos de acceso.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="space-y-3">
-                <button
-                  onClick={() => setUsuariosAbierto(true)}
-                  className="flex w-full items-center gap-4 rounded-xl border border-border p-4 text-left transition-colors hover:border-primary/40 hover:bg-accent/30"
-                >
-                  <span className="gradient-primary flex size-10 shrink-0 items-center justify-center rounded-xl text-primary-foreground">
-                    <Users className="size-5" />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-semibold text-foreground">Usuarios</span>
-                    <span className="mt-0.5 block text-xs text-muted-foreground">
-                      Crear, editar, cambiar contraseñas y dar de baja cuentas.
-                    </span>
-                  </span>
-                  <Button
-                    asChild
-                    variant="outline"
-                    size="sm"
-                    className="pointer-events-none shrink-0"
-                  >
-                    <span>Abrir</span>
-                  </Button>
-                </button>
+              {/* Los cuatro botones salen de GRUPOS_ADMIN en vez de estar
+                  escritos uno por uno: eran el mismo bloque repetido cuatro
+                  veces, y con la división en grupos habría que haberlo repetido
+                  igual dentro de cada uno. */}
+              <CardContent className="space-y-6">
+                {GRUPOS_ADMIN.map((grupo) => (
+                  <div key={grupo.id} className="space-y-3">
+                    <div>
+                      <p className="text-sm font-semibold text-foreground">{grupo.titulo}</p>
+                      <p className="text-xs text-muted-foreground">{grupo.descripcion}</p>
+                    </div>
 
-                <button
-                  onClick={() => setModulosAbierto(true)}
-                  className="flex w-full items-center gap-4 rounded-xl border border-border p-4 text-left transition-colors hover:border-primary/40 hover:bg-accent/30"
-                >
-                  <span className="gradient-primary flex size-10 shrink-0 items-center justify-center rounded-xl text-primary-foreground">
-                    <LayoutGrid className="size-5" />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-semibold text-foreground">Módulos</span>
-                    <span className="mt-0.5 block text-xs text-muted-foreground">
-                      Crear, editar y eliminar los módulos del menú.
-                    </span>
-                  </span>
-                  <Button
-                    asChild
-                    variant="outline"
-                    size="sm"
-                    className="pointer-events-none shrink-0"
-                  >
-                    <span>Abrir</span>
-                  </Button>
-                </button>
-
-                <button
-                  onClick={() => setPaginasAbierto(true)}
-                  className="flex w-full items-center gap-4 rounded-xl border border-border p-4 text-left transition-colors hover:border-primary/40 hover:bg-accent/30"
-                >
-                  <span className="gradient-primary flex size-10 shrink-0 items-center justify-center rounded-xl text-primary-foreground">
-                    <FileText className="size-5" />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-semibold text-foreground">Páginas</span>
-                    <span className="mt-0.5 block text-xs text-muted-foreground">
-                      Las páginas que hay dentro de cada módulo.
-                    </span>
-                  </span>
-                  <Button
-                    asChild
-                    variant="outline"
-                    size="sm"
-                    className="pointer-events-none shrink-0"
-                  >
-                    <span>Abrir</span>
-                  </Button>
-                </button>
-
-                <button
-                  onClick={() => setPermisosAbierto(true)}
-                  className="flex w-full items-center gap-4 rounded-xl border border-border p-4 text-left transition-colors hover:border-primary/40 hover:bg-accent/30"
-                >
-                  <span className="gradient-primary flex size-10 shrink-0 items-center justify-center rounded-xl text-primary-foreground">
-                    <ShieldCheck className="size-5" />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-semibold text-foreground">Permisos</span>
-                    <span className="mt-0.5 block text-xs text-muted-foreground">
-                      Qué páginas puede ver cada usuario.
-                    </span>
-                  </span>
-                  <Button
-                    asChild
-                    variant="outline"
-                    size="sm"
-                    className="pointer-events-none shrink-0"
-                  >
-                    <span>Abrir</span>
-                  </Button>
-                </button>
+                    {grupo.items.map((item) => {
+                      const Icono = item.icono;
+                      return (
+                        <button
+                          key={item.id}
+                          onClick={() => abrirAdmin[item.id](true)}
+                          className="flex w-full items-center gap-4 rounded-xl border border-border p-4 text-left transition-colors hover:border-primary/40 hover:bg-accent/30"
+                        >
+                          <span className="gradient-primary flex size-10 shrink-0 items-center justify-center rounded-xl text-primary-foreground">
+                            <Icono className="size-5" />
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-sm font-semibold text-foreground">
+                              {item.titulo}
+                            </span>
+                            <span className="mt-0.5 block text-xs text-muted-foreground">
+                              {item.descripcion}
+                            </span>
+                          </span>
+                          <Button
+                            asChild
+                            variant="outline"
+                            size="sm"
+                            className="pointer-events-none shrink-0"
+                          >
+                            <span>Abrir</span>
+                          </Button>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ))}
               </CardContent>
             </Card>
 

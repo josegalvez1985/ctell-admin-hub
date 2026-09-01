@@ -44,16 +44,18 @@ import { Textarea } from "@/components/ui/textarea";
 import { tituloPagina } from "@/lib/marca";
 import { formatearMoneda, numeroMoneda } from "@/lib/moneda";
 
+/**
+ * Una línea del carrito.
+ *
+ * **Ya no lleva lote.** El cajero elegía de qué partida salía cada línea, y eso
+ * se fue con el stock por lotes: `VENTAS_DETALLES.ID_LOTE` no existe más.
+ * Mientras dure la migración a existencias por artículo, la venta **no descuenta
+ * stock** y la pantalla no puede avisar si alcanza.
+ */
 type Linea = Articulo & {
   cantidadVenta: number;
   precio: string;
   idIva: string;
-  /**
-   * De qué lote sale la línea. Se elige por línea porque `VENTAS_DETALLES`
-   * guarda **un solo** `ID_LOTE`: las 10 unidades salen todas del mismo lote, no
-   * se reparten. Vacío hasta que carguen los lotes del artículo.
-   */
-  idLote: string;
 };
 const hoy = () => new Date().toISOString().slice(0, 19);
 
@@ -114,6 +116,10 @@ function PuntoVentaPage() {
     queryFn: ({ pageParam }) =>
       api.articulos.listar({
         idEmpresa: empresa!.id,
+        // EL STOCK QUE SE MUESTRA ES EL DE ESTA CAJA. Sin idSucursal, el listado
+        // suma todas las sucursales de la empresa: el cajero vería 12
+        // disponibles cuando en su local hay 4, y se entera al entregar.
+        idSucursal: sucursal!.id,
         busqueda,
         pagina: pageParam,
         tamanio: 50,
@@ -154,36 +160,9 @@ function PuntoVentaPage() {
     queryFn: () => api.cuentasBancarias.listar(empresa!.id),
     enabled: empresa !== null,
   });
-  /**
-   * Los lotes de los artículos que están en el carrito, en una sola consulta.
-   *
-   * Se piden todos juntos y no uno por línea: `useQuery` no se puede llamar
-   * dentro de un `map`, y una consulta por artículo dispararía N peticiones cada
-   * vez que cambia el carrito.
-   */
-  const idsEnCarrito = carrito.map((linea) => linea.id);
-  const lotes = useQuery({
-    queryKey: ["pos-lotes", empresa?.id ?? null, sucursal?.id ?? null, idsEnCarrito.join(",")],
-    queryFn: async () => {
-      const paginas = await Promise.all(
-        idsEnCarrito.map((idArticulo) =>
-          api.lotes.listar({
-            idEmpresa: empresa!.id,
-            idSucursal: sucursal!.id,
-            idArticulo,
-            tamanio: 200,
-          }),
-        ),
-      );
-      return paginas.flatMap((pagina) => pagina.items);
-    },
-    enabled: empresa !== null && sucursal !== null && idsEnCarrito.length > 0,
-  });
-  /** Lotes con existencia de un artículo, el que vence primero adelante. */
-  const lotesDe = (idArticulo: number) =>
-    (lotes.data ?? [])
-      .filter((lote) => lote.idArticulo === idArticulo && lote.cantidadDispon > 0)
-      .sort((a, b) => (a.fechaVencimiento ?? "9999").localeCompare(b.fechaVencimiento ?? "9999"));
+  // ACÁ SE PEDÍAN LOS LOTES de cada artículo del carrito, para elegir de cuál
+  // salía la línea y cuánto era su techo. La consulta entera se fue con el stock
+  // por lotes: hoy no hay nada que consultar por línea.
   const tasasIva = useQuery({ queryKey: ["iva"], queryFn: () => api.iva.listar() });
   const listaTasas = tasasIva.data?.items ?? [];
   const ivaPorId = new Map(listaTasas.map((tasa) => [String(tasa.id), tasa]));
@@ -207,26 +186,6 @@ function PuntoVentaPage() {
    * muestre una tasa y el backend guarde otra.
    */
   const ivaDeLinea = (linea: Linea) => linea.idIva || ivaPorDefecto;
-  /**
-   * El lote de la línea: el elegido, o el que vence primero **con existencia
-   * suficiente para la cantidad cargada**.
-   *
-   * El default mira la cantidad y no sólo la fecha: si el lote más viejo tiene 4
-   * y se venden 10, preseleccionarlo obligaría al cajero a corregir algo que el
-   * sistema podía resolver. Si ninguno alcanza queda vacío y el aviso lo dice.
-   */
-  const loteDeLinea = (linea: Linea) => {
-    if (linea.idLote) return linea.idLote;
-    const alcanza = lotesDe(linea.id).find((lote) => lote.cantidadDispon >= linea.cantidadVenta);
-    return alcanza ? String(alcanza.id) : "";
-  };
-  /**
-   * Cuántas unidades tiene el lote elegido. Es el techo real de la línea: el
-   * stock del artículo puede ser 40 repartido en cuatro lotes de 10, y de esta
-   * línea sólo se pueden vender las del lote que sale.
-   */
-  const dispoDeLinea = (linea: Linea) =>
-    lotesDe(linea.id).find((lote) => String(lote.id) === loteDeLinea(linea))?.cantidadDispon ?? 0;
   const subtotal = carrito.reduce(
     (suma, linea) => suma + linea.cantidadVenta * (numeroMoneda(linea.precio) || 0),
     0,
@@ -250,10 +209,7 @@ function PuntoVentaPage() {
         return actual.map((linea) =>
           linea.id === articulo.id ? { ...linea, cantidadVenta: linea.cantidadVenta + 1 } : linea,
         );
-      return [
-        ...actual,
-        { ...articulo, cantidadVenta: 1, precio: "", idIva: ivaPorDefecto, idLote: "" },
-      ];
+      return [...actual, { ...articulo, cantidadVenta: 1, precio: "", idIva: ivaPorDefecto }];
     });
   const actualizar = (id: number, cambios: Partial<Linea>) =>
     setCarrito((actual) =>
@@ -280,18 +236,15 @@ function PuntoVentaPage() {
           cantidad: linea.cantidadVenta,
           precioUnitario: numeroMoneda(linea.precio),
           idIva: Number(ivaDeLinea(linea)),
-          idLote: Number(loteDeLinea(linea)),
         })),
       }),
     onSuccess: (data) => {
       toast.success(`Venta #${data.id} registrada`);
       setMontoCobro(formatearMoneda(data.total));
+      // La venta no movió stock, pero los listados se refrescan igual: es una
+      // sola consulta y evita que queden viejos el día que vuelva a moverlo.
       queryClient.invalidateQueries({ queryKey: ["pos-articulos"] });
       queryClient.invalidateQueries({ queryKey: ["articulos"] });
-      // La venta descontó de los lotes: sin esto el disponible que se ve en el
-      // selector queda con el valor de antes de vender.
-      queryClient.invalidateQueries({ queryKey: ["pos-lotes"] });
-      queryClient.invalidateQueries({ queryKey: ["lotes"] });
     },
     onError: (error) => toast.error(errorTexto(error)),
   });
@@ -304,15 +257,14 @@ function PuntoVentaPage() {
       const precio = numeroMoneda(linea.precio);
       // Exigir la tasa: sin ella el backend guardaría la venta con IVA 0 y el
       // libro de ventas quedaría mal sin que nadie vea un error.
-      // Exigir lote y que alcance: el backend rechaza igual con el lote
-      // bloqueado, pero fallar recién al confirmar pierde toda la venta cargada.
+      //
+      // YA NO SE EXIGE LOTE NI EXISTENCIA: no hay lote que elegir, y el backend
+      // dejó de validar el stock porque la venta no lo descuenta.
       return (
         linea.precio.trim() !== "" &&
         Number.isFinite(precio) &&
         precio >= 0 &&
-        ivaDeLinea(linea) !== "" &&
-        loteDeLinea(linea) !== "" &&
-        dispoDeLinea(linea) >= linea.cantidadVenta
+        ivaDeLinea(linea) !== ""
       );
     }) &&
     // idLista NO se exige: una venta sin lista es una venta a precio de
@@ -395,7 +347,7 @@ function PuntoVentaPage() {
                   <Input
                     value={busqueda}
                     onChange={(e) => setBusqueda(e.target.value)}
-                    placeholder="Buscar artículo por nombre o código..."
+                    placeholder="Nombre, código OEM, marca o equivalencia…"
                     className="h-11 pl-9"
                   />
                 </div>
@@ -410,12 +362,25 @@ function PuntoVentaPage() {
                       <h2 className="break-words text-xs font-semibold leading-tight text-foreground">
                         {articulo.nombreArticulo}
                       </h2>
+                      {/* Código OEM y marca juntos: el buscador de arriba mira
+                          los dos, así que un resultado que coincidió por la
+                          marca tiene que poder explicarse solo. */}
                       <p className="break-words text-[0.7rem] leading-tight text-muted-foreground">
-                        {articulo.codigoArticulo || "Sin código"}
+                        {[articulo.codigoArticulo || "Sin código", articulo.marca]
+                          .filter(Boolean)
+                          .join(" · ")}
                       </p>
                       {articulo.descripcion && (
                         <p className="mt-1 break-words text-[0.7rem] leading-tight text-muted-foreground/80">
                           {articulo.descripcion}
+                        </p>
+                      )}
+                      {/* Las equivalencias, por lo mismo: es el código que el
+                          cliente dice por teléfono, y el que hace aparecer un
+                          artículo cuyo nombre no se parece a lo escrito. */}
+                      {articulo.codigosEquivalentes && (
+                        <p className="mt-1 break-words text-[0.7rem] leading-tight text-muted-foreground/80">
+                          Equiv.: {articulo.codigosEquivalentes}
                         </p>
                       )}
                     </div>
@@ -512,11 +477,12 @@ function PuntoVentaPage() {
                             className="size-8"
                             onClick={() =>
                               actualizar(linea.id, {
-                                // El techo es el LOTE elegido, no el stock del
-                                // artículo: 40 en cuatro lotes de 10 no permiten
-                                // vender 11 en una línea.
+                                // El techo vuelve a ser el stock del artículo,
+                                // como antes de que existieran los lotes. Es
+                                // orientativo: el backend ya no valida
+                                // existencia, así que no frena la venta.
                                 cantidadVenta: Math.min(
-                                  dispoDeLinea(linea) || linea.cantidadStock,
+                                  linea.cantidadStock,
                                   linea.cantidadVenta + 1,
                                 ),
                               })
@@ -558,45 +524,9 @@ function PuntoVentaPage() {
                           )}
                         </span>
                       </div>
-                      {/* El lote: una línea sale de UNO solo, así que si ninguno
-                          tiene suficiente hay que bajar la cantidad o cargar el
-                          artículo en dos ventas. */}
-                      <div className="mt-2">
-                        <Select
-                          value={loteDeLinea(linea)}
-                          onValueChange={(valor) => actualizar(linea.id, { idLote: valor })}
-                        >
-                          <SelectTrigger className="h-7 w-full text-xs">
-                            <SelectValue placeholder="Elegí el lote *" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {lotesDe(linea.id).map((lote) => (
-                              <SelectItem
-                                key={lote.id}
-                                value={String(lote.id)}
-                                disabled={lote.cantidadDispon < linea.cantidadVenta}
-                              >
-                                {lote.numeroLote === null
-                                  ? "Sin número"
-                                  : `Lote ${lote.numeroLote}`}
-                                {lote.fechaVencimiento ? ` · vence ${lote.fechaVencimiento}` : ""} ·{" "}
-                                {lote.cantidadDispon} disp.
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        {lotesDe(linea.id).length === 0 && !lotes.isPending && (
-                          <p className="mt-1 text-[0.7rem] text-destructive">
-                            Sin lotes con existencia.
-                          </p>
-                        )}
-                        {loteDeLinea(linea) === "" && lotesDe(linea.id).length > 0 && (
-                          <p className="mt-1 text-[0.7rem] text-destructive">
-                            Ningún lote tiene {linea.cantidadVenta} unidades. Bajá la cantidad o
-                            elegí otro.
-                          </p>
-                        )}
-                      </div>
+                      {/* ACÁ IBA EL SELECTOR DE LOTE, con el aviso de cuando
+                          ninguno alcanzaba. La línea ya no sale de una partida:
+                          se elige el artículo y listo. */}
                     </div>
                   ))
                 )}
