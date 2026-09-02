@@ -38,6 +38,7 @@ const SINONIMOS = [
     "reporte de asistencias",
   ],
   ["marcas", "marca"],
+  ["manuales", "manual"],
   ["modulos", "modulo"],
   ["paginas", "pagina"],
   ["permisos", "permiso"],

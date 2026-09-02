@@ -93,7 +93,13 @@ db/                      Backend: un archivo SQL por tabla
 ├── facturas-compras.sql Cabecera + detalle. La primera TRANSACCIÓN del proyecto
 │                        Ya NO crea lotes: comprar no mueve stock (por ahora)
 ├── facturas-compras-pagos.sql  Pagos a proveedores. Espejo de ventas-cobros
+├── manuales.sql         Manuales en PDF (BLOB) por institución y grado. NO tiene
+│                        ID_EMPRESA: se aísla contra INSTITUCIONES con un JOIN
 └── dashboard.sql        PKG_DASHBOARD: los indicadores de la home, en 1 consulta
+
+(La lista no está completa: el módulo educativo —instituciones.sql,
+profesores.sql, asistencias-profesores.sql, notificaciones.sql— y varios
+catálogos más viven en db/ sin figurar acá. Para saber qué existe, `ls db/`.)
 
 src/
 ├── routes/              Rutas (el archivo define la URL)
@@ -110,6 +116,8 @@ src/
 │   ├── _auth.inventarios-reporte.tsx  "/inventarios-reporte" → conteos por
 │   │                                    período y diferencia + Excel/PDF
 │   ├── _auth.asistencias.tsx    "/asistencias"   → planilla por profesor + Excel
+│   ├── _auth.manuales.tsx       "/manuales"      → manuales en PDF por
+│   │                                    institución y grado
 │   ├── _auth.configuracion.tsx  "/configuracion" → preferencias
 │   └── _auth.<tabla>.tsx        una por cada ABM
 ├── components/

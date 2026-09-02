@@ -16,6 +16,7 @@ import {
   Archive,
   BadgeDollarSign,
   Banknote,
+  BookOpen,
   Boxes,
   Building,
   Building2,
@@ -185,6 +186,13 @@ const ICONOS_PAGINA: Record<string, LucideIcon> = {
   profesor: GraduationCap,
   docentes: GraduationCap,
   docente: GraduationCap,
+  // BookOpen y NO FileText/Files: FileText es el fallback de toda página sin
+  // mapear, así que usarlo dejaría a Manuales indistinguible del resto; Files
+  // ya es "documentos". El libro abierto es lo que dice "manual" sin leer el
+  // texto, y hace juego con School y GraduationCap, que son las tablas con las
+  // que se lo lee en el menú.
+  manuales: BookOpen,
+  manual: BookOpen,
   // Users (varias personas) y no UserCog: el padrón son las personas del
   // negocio; UserCog ya es "usuarios", que son las cuentas del sistema.
   personas: Users,

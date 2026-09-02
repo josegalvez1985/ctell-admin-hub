@@ -172,6 +172,25 @@ Misma forma que ventas, en espejo. `/compras-pagos` es idéntico a `/ventas-cobr
 - **El listado devuelve dos números de "sistema", y no son intercambiables:** `existenciaActual` (en vivo, contra el que se compara mientras se cuenta) y `cantidadSistema` (sellado por el trigger al cerrar, contra el que se mide la diferencia de un conteo ya aplicado). Usar el primero en un cerrado daría cero siempre, porque el cierre las igualó.
 - **`observaciones` no viaja entera en el listado** (1000 caracteres × 20 filas pasan el techo de 4000 bytes del bind de ORDS). El formulario de edición **tiene que** usar `/obtener`: guardar el resumen escribiría 150 caracteres encima de los 1000.
 
+#### Manuales — `/manuales`
+
+| Método   | Ruta                                | Qué hace                                              |
+| -------- | ----------------------------------- | ----------------------------------------------------- |
+| `GET`    | `/manuales/listar`                  | `?idEmpresa=` **obligatorio**, `&idInstitucion=&grado=&busqueda=` |
+| `POST`   | `/manuales/crear`                   | Crea la fila **sin el PDF**                           |
+| `PUT`    | `/manuales/actualizar/:id`          | Institución y grado. No toca `FECHA_CARGA`            |
+| `DELETE` | `/manuales/eliminar/:id/:idEmpresa` | Baja física — se lleva el PDF                         |
+| `GET`    | `/manuales/archivo/:id`             | El PDF crudo. **Sin token** (`source_type_media`)     |
+| `PUT`    | `/manuales/archivo/:id`             | Sube o reemplaza el PDF. Con token, sólo `application/pdf`, 20 MB |
+
+- **`MANUALES` no tiene `ID_EMPRESA`:** cuelga de `INSTITUCIONES`, que sí la tiene, y el aislamiento se hace **contra el padre** con un JOIN — es el caso de "tabla sin columna de empresa" de la guía. Por eso `idEmpresa` viaja en todas las llamadas sin ser una columna, y en el `listar` es **obligatorio**: sin él la consulta no se acota sola y devolvería los manuales de todas las empresas, un olvido que nadie nota hasta que una institución ve los de otra.
+- **La institución de destino también se valida.** Comprobar sólo que la fila editada sea de la empresa deja la puerta de atrás abierta: un PUT podría mover un manual propio a la institución de otra empresa.
+- **`GRADO` tiene doce valores y ningún `CHECK`** — sólo un `COMMENT` que los enumera, y un `COMMENT` no es una restricción. Los valida `GRADO_VALIDO` en el paquete, y **la misma lista está en `GRADOS` de `api.ts`**: si se agrega un grado, van los dos. Sin eso, `'1ro'` sin punto entra como un grado distinto que el `UNIQUE (ID_INSTITUCION, GRADO)` deja pasar, y la institución termina con dos manuales de primero.
+- **Se ordena por el grado real, no alfabéticamente**, en el SQL y en la pantalla: con un orden de texto `1ME.` cae entre `1ro.` y `2do.`, y la media queda intercalada con la escolar básica.
+- **`FECHA_CARGA` y `FECHA_ACTUALIZACION` no son lo mismo:** la primera la mueve el alta y cada PUT del archivo —responde "de cuándo es este manual"—; la segunda, cualquier cambio de la fila. Si el `ACTUALIZAR` moviera la de carga, corregir un grado mal tipeado haría figurar el manual como recién cargado.
+- **El alta no lleva el PDF**, porque un binario no entra en un `JSON_OBJECT`: se crea la fila y con el id que devuelve se sube el archivo, igual que la foto de un profesor. La pantalla encadena las dos llamadas para que sea una sola operación, y si la subida falla **el alta no se deshace**: la fila queda con su cartel de "Sin PDF", desde donde se reintenta.
+- **El `GET` del archivo es público**, como los otros dos binarios del proyecto: así el manual se abre con un `<a href>` en el visor del navegador, se imprime y el link se comparte. El `PUT` sí pide token, y acepta **sólo `application/pdf`** — el GET devuelve el archivo con el content-type guardado, así que aceptar `text/html` dejaría servir un documento con script desde el origen de la API.
+
 #### Dashboard — `/dashboard/resumen?idEmpresa=&idSucursal=`
 
 Los indicadores de la home en una consulta: montos del mes con su mes anterior, valor de stock, artículos bajo mínimo, últimos movimientos, stock crítico y cuotas de compra por vencer.
@@ -279,6 +298,13 @@ Las columnas `ACTIVO` son `VARCHAR2(1)` con valores `'A'` o `'I'`. **Este códig
   > **La hora cátedra y el precio son POR PROFESOR**, en el encabezado de cada planilla: no todos dan cátedras de la misma duración —45 minutos en un colegio, 60 en otro— ni cobran lo mismo, y un campo global hacía que el total de alguno saliera mal sin que nada lo avisara. No se guardan: `PROFESORES` no tiene columna para eso.
   >
   > La grilla lleva columnas **Semana** y **Total** con `rowSpan` (el número alineado abajo, donde cierra la cuenta), y al pie **Actividad extra** —en blanco, se completa a mano— y el **Resumen** con el desglose del IVA. Con varios profesores, un cuadro consolidado al final. **Sumar minutos y convertir al final, nunca al revés:** redondear las horas de cada día y después sumarlas hace que el total de la semana no cierre contra su propia columna.
+- **`_auth.manuales.tsx`:** "/manuales" → ABM de los manuales en PDF, por institución y grado. La institución y el grado se filtran desde el header de su columna; el PDF se ve y se reemplaza desde la fila.
+
+  > **La tabla no tiene `ID_EMPRESA` ni `ACTIVO`.** Lo primero significa que el recorte por empresa lo hace el backend contra `INSTITUCIONES` (ver arriba), pero la pantalla se escribe igual que cualquier otra por empresa: `empresa.id` en la `queryKey` y en el `enabled`. Lo segundo, que **no hay baja lógica**: no va el toggle de activo, y el diálogo de borrado avisa que se lleva el PDF.
+  >
+  > **Un manual sin archivo es un estado normal**, no un error: el alta crea la fila y el PDF se sube después. La fila lo muestra con su cartel, y un aviso arriba cuenta cuántos hay — en la fila se ve de a uno, y lo que importa es que no queden olvidados.
+  >
+  > **El link al PDF sólo se ofrece si `tieneArchivo`:** el endpoint devuelve 404 mientras no se subió, y mandar a alguien a una pestaña con un error es peor que no ofrecerlo. Es un `<a>` a la URL pública y no un `fetch`: el navegador lo abre en su visor, desde donde se imprime.
 - **`_auth.marcas.tsx`:** "/marcas" → ABM de marcas de artículos, **por empresa** (`useEmpresa()`, como el resto). Las filas con `ID_EMPRESA` en NULL son anteriores a esa columna y las ve toda empresa ("heredadas"): los filtros van como `(ID_EMPRESA = l_empresa OR ID_EMPRESA IS NULL)`.
 - **`_auth.articulos.tsx`:** "/articulos" → ABM del catálogo. Categoría y marca se filtran desde el header de su columna; **la ubicación no puede** —un artículo está en varios estantes a la vez, así que no hay columna que la muestre— y va en un `SelectorModal` al lado del buscador. Ese selector ofrece **sólo estantes con artículos** (`conArticulos`) y de la sucursal activa: en un depósito con la grilla entera cargada, la mayoría están vacíos y ofrecerlos es ofrecer búsquedas que ya se sabe que no devuelven nada.
 - **`_auth.existencias.tsx`:** "/existencias" → Consulta de existencia de artículos, con exportación a Excel y PDF. Es una CONSULTA: no da de alta ni edita nada.

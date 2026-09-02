@@ -1086,6 +1086,84 @@ ORDER BY TO_NUMBER(
 
 ---
 
+## 3.1.2 Tablas por empresa que NO tienen `ID_EMPRESA`
+
+`MANUALES` cuelga de `INSTITUCIONES`, que sí es por empresa, pero **no tiene la
+columna**: su DDL es `ID_MANUAL`, `ID_INSTITUCION`, `GRADO`, `ARCHIVO_PDF` y las
+dos fechas.
+
+**No se la agregues.** Sería el mismo dato en dos lugares, con la puerta abierta
+a que un manual quede en una empresa y su institución en otra — y el DDL lo
+administra otro. El aislamiento se hace **contra el padre**, con un JOIN.
+
+### El filtro por empresa pasa a ser el JOIN
+
+```sql
+SELECT ...
+  FROM MANUALES m
+  JOIN INSTITUCIONES i ON i.ID_INSTITUCION = m.ID_INSTITUCION
+ WHERE i.ID_EMPRESA = l_id_empresa
+```
+
+**El JOIN es interno a propósito.** `ID_INSTITUCION` es `NOT NULL` con FK, así
+que no hay ninguna fila que un `INNER` pueda esconder — y con un `LEFT`, un
+manual cuya institución no matchea el `WHERE` se colaría en el listado de otra
+empresa. Es la excepción a la regla de "`LEFT JOIN` si la FK es nullable":
+justamente porque acá no lo es.
+
+Para el `UPDATE` y el `DELETE`, donde no hay un `FROM` al que sumarle el JOIN, va
+un `EXISTS`:
+
+```sql
+DELETE FROM MANUALES m
+ WHERE m.ID_MANUAL = l_id
+   AND EXISTS (SELECT 1 FROM INSTITUCIONES i
+                WHERE i.ID_INSTITUCION = m.ID_INSTITUCION
+                  AND i.ID_EMPRESA     = l_id_empresa);
+```
+
+### Acá `idEmpresa` en el `LISTAR` es OBLIGATORIO
+
+En el resto del proyecto un `idEmpresa` vacío significa "todas las empresas", y
+está bien: la pantalla siempre lo manda. Con esta forma, **no**.
+
+La diferencia es que en una tabla con columna propia el olvido se nota —el
+listado trae de más y salta a la vista—, mientras que acá la consulta *no se
+acota sola*: sin la empresa el `WHERE` desaparece y devuelve los manuales de todo
+el sistema, que se ven exactamente igual a los propios hasta que una institución
+reconoce los de otra. Devolvé 400.
+
+### La FK valida que el padre exista, no de quién es
+
+Antes de insertar hay que comprobar que la institución sea **de esa empresa**:
+
+```sql
+FUNCTION INSTITUCION_ES_DE_EMPRESA (p_id_institucion IN NUMBER, p_id_empresa IN NUMBER)
+  RETURN BOOLEAN IS ...
+    SELECT COUNT(*) INTO l_existe FROM INSTITUCIONES
+     WHERE ID_INSTITUCION = p_id_institucion AND ID_EMPRESA = p_id_empresa;
+```
+
+Las dos preguntas en una sola función y con un solo mensaje de error: si la
+institución es de otra empresa, para esta sesión es lo mismo que si no
+existiera. Un mensaje distinto para cada caso confirmaría que el id existe.
+
+### Y en el `ACTUALIZAR`, la fila Y el destino
+
+Este es el que se olvida. Comprobar que la fila que se edita sea de la empresa
+**no alcanza**: un PUT podría mover un manual propio *hacia* la institución de
+otra empresa, que es la misma fuga por la puerta de atrás.
+
+```sql
+-- 1. ¿La fila es mía?           -> 404 si no
+-- 2. ¿El destino es mío?        -> 400 si no  ← el que se olvida
+-- 3. ¿Choca con el UNIQUE?      -> 409 si sí
+```
+
+En ese orden: el 404 le gana al 409, o el conflicto confirma que el id existe.
+
+---
+
 ## 3.2 Imágenes y otros binarios
 
 Un BLOB **no entra en un `JSON_OBJECT`**, así que no viaja en el CRUD. Va por

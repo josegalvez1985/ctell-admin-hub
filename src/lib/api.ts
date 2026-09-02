@@ -409,6 +409,80 @@ export type PeriodoAsistencias = {
 };
 
 /**
+ * Los doce grados que admite `MANUALES.GRADO`.
+ *
+ * **La misma lista está en `GRADO_VALIDO` de `db/manuales.sql`**: acá para que
+ * el selector los ofrezca, allá para que el endpoint los acepte. Si se agrega
+ * un grado, van los dos.
+ *
+ * El DDL no tiene `CHECK`, sólo un `COMMENT` que los enumera — y un `COMMENT`
+ * no es una restricción. Sin la validación del backend, `'1ro'` sin punto entra
+ * como un grado distinto que el `UNIQUE (ID_INSTITUCION, GRADO)` deja pasar, y
+ * la institución termina con dos manuales de primero.
+ *
+ * La capitalización es parte del valor y es irregular a propósito (`'1ro.'`
+ * pero `'1ME.'`): no normalizar a mayúsculas ni a minúsculas.
+ */
+export const GRADOS = [
+  "1ro.",
+  "2do.",
+  "3er.",
+  "4to.",
+  "5to.",
+  "6to.",
+  "7mo.",
+  "8vo.",
+  "9no.",
+  "1ME.",
+  "2ME.",
+  "3ME.",
+] as const;
+
+export type Grado = (typeof GRADOS)[number];
+
+/**
+ * Un manual en PDF, de una institución y un grado.
+ *
+ * **La tabla no tiene `ID_EMPRESA`**: cuelga de `INSTITUCIONES`, que sí la
+ * tiene, y el backend aísla por empresa con un JOIN contra el padre. Por eso
+ * `idEmpresa` viaja en todas las llamadas aunque no sea una columna del manual
+ * — incluido el `listar`, donde es **obligatorio**: sin él la consulta no se
+ * acota sola y devolvería los manuales de todas las empresas.
+ *
+ * Tampoco tiene `ACTIVO`: la baja es física. Un manual que ya no corre se
+ * reemplaza por el del mismo grado (el `UNIQUE` lo garantiza) o se borra.
+ */
+export type Manual = {
+  id: number;
+  idInstitucion: number;
+  /** Nombre de la institución, del JOIN. */
+  institucion: string;
+  grado: Grado;
+  /**
+   * `false` mientras no se haya subido el PDF — el alta crea la fila y el
+   * archivo va después, así que es un estado normal y transitorio.
+   *
+   * Se calcula con `GETLENGTH > 0` y no con `IS NOT NULL`: un BLOB vacío no
+   * sirve como archivo y haría fallar la descarga.
+   */
+  tieneArchivo: boolean;
+  /** Peso del PDF. `0` si todavía no se subió. */
+  bytesArchivo: number;
+  /**
+   * Cuándo entró el PDF, no cuándo se tocó la fila: la mueve el alta y cada
+   * subida del archivo, pero **no** una corrección del grado.
+   */
+  fechaCarga: string | null;
+  /** Cualquier cambio de la fila, incluido corregir el grado. */
+  fechaActualizacion: string | null;
+};
+
+export type ListaManuales = {
+  items: Manual[];
+  total: number;
+};
+
+/**
  * Si el profesor leyó la notificación.
  *
  * **`'S'`/`'N'`, no `'A'`/`'I'`**: rompe la convención del proyecto a propósito,
@@ -1678,6 +1752,24 @@ export function urlFotoProfesor(id: number): string {
 }
 
 /**
+ * URL pública del PDF de un manual, para abrirlo en una pestaña nueva o
+ * descargarlo.
+ *
+ * Es pública por el mismo motivo que las imágenes: quien descarga el archivo es
+ * el navegador con su propia petición, y ahí no hay forma de mandar el header
+ * Authorization. Con el endpoint detrás de token habría que bajarlo con `fetch`
+ * y armar un object URL, perdiendo el link compartible y la posibilidad de
+ * imprimir desde el visor del navegador.
+ *
+ * Devuelve **404 si el manual todavía no tiene el PDF cargado** (el alta crea
+ * la fila y el archivo va después), así que conviene mirar `tieneArchivo` antes
+ * de ofrecer el link en vez de mandar a alguien a una pestaña con un error.
+ */
+export function urlArchivoManual(id: number): string {
+  return `${BASE_URL}/manuales/archivo/${id}`;
+}
+
+/**
  * Empresa a la que el usuario eligió conectarse en el login.
  *
  * Vive en localStorage —no en sessionStorage— para que el login la deje
@@ -2864,6 +2956,112 @@ export const api = {
     subirFoto: (id: number, archivo: File) =>
       request<{ ok: boolean }>(`/profesores/foto/${id}`, {
         method: "PUT",
+        headers: { "Content-Type": archivo.type },
+        body: archivo,
+      }),
+  },
+
+  /**
+   * Manuales en PDF, por institución y grado.
+   *
+   * **`MANUALES` no tiene `ID_EMPRESA`**: cuelga de `INSTITUCIONES`. El backend
+   * aísla por empresa con un JOIN contra el padre, así que `idEmpresa` viaja en
+   * todas las llamadas —incluido el `listar`, donde es obligatorio— aunque no
+   * sea una columna del manual.
+   *
+   * El PDF **no viaja en el JSON**: se sube con `subirArchivo()` y se lee por
+   * la URL pública de `urlArchivoManual()`, igual que la foto de un profesor.
+   */
+  manuales: {
+    /**
+     * `idEmpresa` es **obligatorio**, a diferencia del resto de los listados
+     * donde vacío significa "todas las empresas": acá la empresa no es una
+     * columna sino el JOIN con `INSTITUCIONES`, así que sin ella la consulta no
+     * se acota sola y el backend responde 400 en vez de devolver los manuales
+     * de todo el sistema.
+     *
+     * `busqueda` va al backend y filtra en SQL sobre el nombre de la
+     * institución y el grado.
+     *
+     * Vienen ordenados por institución y **por grado real** (1ro. … 3ME.), no
+     * alfabéticamente: con un orden de texto, `1ME.` cae entre `1ro.` y `2do.`
+     * y la media queda intercalada con la escolar básica.
+     */
+    listar: (params: {
+      idEmpresa: number;
+      idInstitucion?: number | undefined;
+      grado?: Grado | undefined;
+      busqueda?: string | undefined;
+    }) => {
+      const q = new URLSearchParams({ idEmpresa: String(params.idEmpresa) });
+      if (params.idInstitucion) q.set("idInstitucion", String(params.idInstitucion));
+      if (params.grado) q.set("grado", params.grado);
+      if (params.busqueda?.trim()) q.set("busqueda", params.busqueda.trim());
+      return request<ListaManuales>(`/manuales/listar?${q}`);
+    },
+
+    /**
+     * Crea la fila **sin el PDF**: el archivo se sube después con
+     * `subirArchivo()`, cuando ya hay un id al que asociarlo. Es el mismo flujo
+     * que la foto de un profesor, y la pantalla lo encadena para que el usuario
+     * vea una sola operación.
+     *
+     * La institución tiene que ser de la empresa: mandar una ajena da 400,
+     * porque la FK sola no lo impide —valida que exista, no de quién es—.
+     *
+     * Una institución no puede tener dos manuales del mismo grado (409).
+     */
+    crear: (datos: { idEmpresa: number; idInstitucion: number; grado: Grado }) =>
+      request<{ id: number; ok: boolean }>("/manuales/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /**
+     * Los campos ausentes no se modifican.
+     *
+     * **No toca `fechaCarga`**: corregir un grado mal tipeado no cambia la fecha
+     * del PDF. Esa la mueve `subirArchivo()`.
+     */
+    actualizar: (
+      id: number,
+      datos: {
+        /** OBLIGATORIO: acota a cuál fila se aplica el cambio. Sin él, 400. */
+        idEmpresa: number;
+        /** La institución de destino también se valida contra la empresa. */
+        idInstitucion?: number | undefined;
+        grado?: Grado | undefined;
+      },
+    ) =>
+      request<{ ok: boolean }>(`/manuales/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Baja física — la tabla no tiene `ACTIVO`. Se lleva el PDF con ella. */
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/manuales/eliminar/${id}/${idEmpresa}`, {
+        method: "DELETE",
+      }),
+
+    /**
+     * Sube o **reemplaza** el PDF del manual. Reemplazar es la operación
+     * normal: como sólo hay un manual por grado, un manual nuevo se carga sobre
+     * la misma fila.
+     *
+     * Sólo `application/pdf`, y hasta 20 MB (413 si se pasa) — el techo es alto
+     * porque un manual escaneado pesa lo que pesa y no hay nada que lo
+     * recomprima del lado del cliente.
+     *
+     * Mueve `fechaCarga`: la fecha de carga es la del archivo, no la de la
+     * fila.
+     */
+    subirArchivo: (id: number, archivo: File) =>
+      request<{ ok: boolean; bytes: number }>(`/manuales/archivo/${id}`, {
+        method: "PUT",
+        // El Content-Type del File, no uno fijo: es de donde el backend saca el
+        // formato que guarda. Un PDF elegido del disco siempre trae
+        // "application/pdf", que es lo único que el endpoint acepta.
         headers: { "Content-Type": archivo.type },
         body: archivo,
       }),

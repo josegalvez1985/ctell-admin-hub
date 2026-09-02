@@ -33,6 +33,7 @@ import { Route as AuthInventariosRouteImport } from './routes/_auth.inventarios'
 import { Route as AuthInventariosReporteRouteImport } from './routes/_auth.inventarios-reporte'
 import { Route as AuthIvaRouteImport } from './routes/_auth.iva'
 import { Route as AuthListasDescuentosRouteImport } from './routes/_auth.listas-descuentos'
+import { Route as AuthManualesRouteImport } from './routes/_auth.manuales'
 import { Route as AuthMarcasRouteImport } from './routes/_auth.marcas'
 import { Route as AuthMenuRouteImport } from './routes/_auth.menu'
 import { Route as AuthMonedasRouteImport } from './routes/_auth.monedas'
@@ -168,6 +169,11 @@ const AuthListasDescuentosRoute = AuthListasDescuentosRouteImport.update({
   path: '/listas-descuentos',
   getParentRoute: () => AuthRoute,
 } as any)
+const AuthManualesRoute = AuthManualesRouteImport.update({
+  id: '/manuales',
+  path: '/manuales',
+  getParentRoute: () => AuthRoute,
+} as any)
 const AuthMarcasRoute = AuthMarcasRouteImport.update({
   id: '/marcas',
   path: '/marcas',
@@ -263,6 +269,7 @@ export interface FileRoutesByFullPath {
   '/inventarios-reporte': typeof AuthInventariosReporteRoute
   '/iva': typeof AuthIvaRoute
   '/listas-descuentos': typeof AuthListasDescuentosRoute
+  '/manuales': typeof AuthManualesRoute
   '/marcas': typeof AuthMarcasRoute
   '/menu': typeof AuthMenuRoute
   '/monedas': typeof AuthMonedasRoute
@@ -302,6 +309,7 @@ export interface FileRoutesByTo {
   '/inventarios-reporte': typeof AuthInventariosReporteRoute
   '/iva': typeof AuthIvaRoute
   '/listas-descuentos': typeof AuthListasDescuentosRoute
+  '/manuales': typeof AuthManualesRoute
   '/marcas': typeof AuthMarcasRoute
   '/menu': typeof AuthMenuRoute
   '/monedas': typeof AuthMonedasRoute
@@ -343,6 +351,7 @@ export interface FileRoutesById {
   '/_auth/inventarios-reporte': typeof AuthInventariosReporteRoute
   '/_auth/iva': typeof AuthIvaRoute
   '/_auth/listas-descuentos': typeof AuthListasDescuentosRoute
+  '/_auth/manuales': typeof AuthManualesRoute
   '/_auth/marcas': typeof AuthMarcasRoute
   '/_auth/menu': typeof AuthMenuRoute
   '/_auth/monedas': typeof AuthMonedasRoute
@@ -384,6 +393,7 @@ export interface FileRouteTypes {
     | '/inventarios-reporte'
     | '/iva'
     | '/listas-descuentos'
+    | '/manuales'
     | '/marcas'
     | '/menu'
     | '/monedas'
@@ -423,6 +433,7 @@ export interface FileRouteTypes {
     | '/inventarios-reporte'
     | '/iva'
     | '/listas-descuentos'
+    | '/manuales'
     | '/marcas'
     | '/menu'
     | '/monedas'
@@ -463,6 +474,7 @@ export interface FileRouteTypes {
     | '/_auth/inventarios-reporte'
     | '/_auth/iva'
     | '/_auth/listas-descuentos'
+    | '/_auth/manuales'
     | '/_auth/marcas'
     | '/_auth/menu'
     | '/_auth/monedas'
@@ -654,6 +666,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthListasDescuentosRouteImport
       parentRoute: typeof AuthRoute
     }
+    '/_auth/manuales': {
+      id: '/_auth/manuales'
+      path: '/manuales'
+      fullPath: '/manuales'
+      preLoaderRoute: typeof AuthManualesRouteImport
+      parentRoute: typeof AuthRoute
+    }
     '/_auth/marcas': {
       id: '/_auth/marcas'
       path: '/marcas'
@@ -778,6 +797,7 @@ interface AuthRouteChildren {
   AuthInventariosReporteRoute: typeof AuthInventariosReporteRoute
   AuthIvaRoute: typeof AuthIvaRoute
   AuthListasDescuentosRoute: typeof AuthListasDescuentosRoute
+  AuthManualesRoute: typeof AuthManualesRoute
   AuthMarcasRoute: typeof AuthMarcasRoute
   AuthMenuRoute: typeof AuthMenuRoute
   AuthMonedasRoute: typeof AuthMonedasRoute
@@ -817,6 +837,7 @@ const AuthRouteChildren: AuthRouteChildren = {
   AuthInventariosReporteRoute: AuthInventariosReporteRoute,
   AuthIvaRoute: AuthIvaRoute,
   AuthListasDescuentosRoute: AuthListasDescuentosRoute,
+  AuthManualesRoute: AuthManualesRoute,
   AuthMarcasRoute: AuthMarcasRoute,
   AuthMenuRoute: AuthMenuRoute,
   AuthMonedasRoute: AuthMonedasRoute,
