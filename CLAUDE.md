@@ -154,6 +154,24 @@ El alta de usuarios y `/auth/recuperar` mandan la contraseña por mail vía
 
 Misma forma que ventas, en espejo. `/compras-pagos` es idéntico a `/ventas-cobros` con la plata saliendo.
 
+#### Conteo físico — `/inventarios`
+
+| Método   | Ruta                                    | Qué hace                                                     |
+| -------- | --------------------------------------- | ------------------------------------------------------------ |
+| `GET`    | `/inventarios/listar`                   | Paginado. `observaciones` viene **recortada** a 150 caracteres |
+| `GET`    | `/inventarios/obtener/:id/:idEmpresa`   | Una fila con `observaciones` entera                          |
+| `POST`   | `/inventarios/crear`                    | Nace `ABIERTO`, firmado con el usuario del token             |
+| `PUT`    | `/inventarios/actualizar/:id`           | Sólo mientras está `ABIERTO`                                 |
+| `POST`   | `/inventarios/cerrar/:id`               | Aplica el conteo → escribe `EXISTENCIAS`                     |
+| `POST`   | `/inventarios/anular/:id`               | Descarta el conteo, no toca el stock                         |
+| `DELETE` | `/inventarios/eliminar/:id/:idEmpresa`  | Sólo mientras está `ABIERTO` (409 si no)                     |
+
+- **`/cerrar` no es un campo del `PUT`.** Contar y aplicar son dos actos distintos: el primero se corrige, el segundo mueve el stock y no se deshace. Un PUT que aceptara `estado` dejaría que el formulario de carga cierre el conteo sin que nadie lo decida.
+- **`/anular` y `/eliminar` no se pisan:** eliminar es para el borrador cargado por error; anular, para el conteo que se hizo y se decide no aplicar — deja la constancia de que alguien fue al depósito.
+- **`ACTUALIZAR` rompe el criterio del resto del proyecto a propósito:** un campo vacío **borra**, no conserva. La cantidad puede volver a quedar sin cargar, y con el `NVL` habitual quien escribió 12 por error se quedaría con ese 12 para siempre — y cerrar lo aplicaría al stock. El cliente manda siempre los tres campos.
+- **El listado devuelve dos números de "sistema", y no son intercambiables:** `existenciaActual` (en vivo, contra el que se compara mientras se cuenta) y `cantidadSistema` (sellado por el trigger al cerrar, contra el que se mide la diferencia de un conteo ya aplicado). Usar el primero en un cerrado daría cero siempre, porque el cierre las igualó.
+- **`observaciones` no viaja entera en el listado** (1000 caracteres × 20 filas pasan el techo de 4000 bytes del bind de ORDS). El formulario de edición **tiene que** usar `/obtener`: guardar el resumen escribiría 150 caracteres encima de los 1000.
+
 #### Dashboard — `/dashboard/resumen?idEmpresa=&idSucursal=`
 
 Los indicadores de la home en una consulta: montos del mes con su mes anterior, valor de stock, artículos bajo mínimo, últimos movimientos, stock crítico y cuotas de compra por vencer.
@@ -202,7 +220,11 @@ donde `neto = cantidad * precio - descuento`. Con una línea de 110.000 al 10%: 
 
 **`EXISTENCIAS` ya existe, en modo lectura.** Una fila por empresa, sucursal y artículo, con `CANTIDAD_DISPONIBLE`: de ahí vuelven a salir `cantidadStock` del listado de artículos, las unidades en depósito, los artículos bajo mínimo y el stock crítico de la home. `db/existencias.sql` publica `GET /existencias/listar` para verlo abierto por sucursal.
 
-**Nadie la escribe todavía**, y es a propósito: el stock se mueve con las transacciones, no editándolo. Comprar y vender siguen sin tocarla hasta que exista `PKG_STOCK`, que va a ser su único escritor —con `SELECT … FOR UPDATE` sobre la fila, porque entre leer una cantidad y grabar la nueva puede entrar otra caja—.
+**La escribe una sola cosa: el cierre de un conteo físico.** `db/inventarios-triggers-ddl.sql` pone dos triggers sobre `INVENTARIOS` — uno congela el conteo fuera de `ABIERTO`, otro fija `CANTIDAD_DISPONIBLE = CANTIDAD_FISICA` al pasar a `CERRADO`. Un conteo no es una transacción, es la corrección de las transacciones.
+
+**El conteo se carga desde la app:** `db/inventarios.sql` publica `/inventarios/` y `/inventarios` es su pantalla. El paquete **no repite las reglas de los triggers**: las chequea antes para devolver 404/409/400 con el mismo texto, porque un `ORA-20102` sin traducir sale como un 500 mudo. Los códigos y su traducción viven en `ERROR_DE_NEGOCIO`; si se agrega una regla al trigger, su código va también ahí.
+
+**Comprar y vender siguen sin tocarla** hasta que exista `PKG_STOCK`. Cuando exista van a ser dos escritores, y hay que decidir ahí si el cierre pasa a llamarlo —con `SELECT … FOR UPDATE` sobre la fila y su asiento en el libro de movimientos— en vez de escribir la tabla de frente. También ahí el ajuste del conteo debe pasar a ser **por diferencia** contra `CANTIDAD_SISTEMA`: fijando la cantidad, un cierre tardío borra las ventas ocurridas después del conteo.
 
 **Lo que falta es el costo.** La tabla guarda la cantidad, no a cuánto entró, así que el **valor** de stock del dashboard sigue en cero: multiplicar unidades por un costo que no existe no se puede, y mostrar unidades como si fueran guaraníes sería peor que un cero. Necesita una columna de costo promedio ponderado móvil, o la tabla de movimientos de la que se derive.
 
@@ -250,7 +272,9 @@ Las columnas `ACTIVO` son `VARCHAR2(1)` con valores `'A'` o `'I'`. **Este códig
 - **`_auth.pagos.tsx`:** "/pagos" → Pagos a proveedores. Espejo de cobros.
 - **`_auth.asistencias.tsx`:** "/asistencias" → Reporte de marcaciones de profesores. Dos vistas: **Planilla** (grilla del mes, agrupada por semana con `rowSpan`, se imprime y se firma) y **Detalle**. Tocar un día abre el modal con sus marcaciones, para editarlas, borrarlas o agregar una. Los combos de año y mes ofrecen **sólo períodos con datos**, que salen de `/asistencias-profesores/periodos`.
 - **`_auth.marcas.tsx`:** "/marcas" → ABM de marcas de artículos, **por empresa** (`useEmpresa()`, como el resto). Las filas con `ID_EMPRESA` en NULL son anteriores a esa columna y las ve toda empresa ("heredadas"): los filtros van como `(ID_EMPRESA = l_empresa OR ID_EMPRESA IS NULL)`.
+- **`_auth.articulos.tsx`:** "/articulos" → ABM del catálogo. Categoría y marca se filtran desde el header de su columna; **la ubicación no puede** —un artículo está en varios estantes a la vez, así que no hay columna que la muestre— y va en un `SelectorModal` al lado del buscador. Ese selector ofrece **sólo estantes con artículos** (`conArticulos`) y de la sucursal activa: en un depósito con la grilla entera cargada, la mayoría están vacíos y ofrecerlos es ofrecer búsquedas que ya se sabe que no devuelven nada.
 - **`_auth.existencias.tsx`:** "/existencias" → Consulta de existencia de artículos, con exportación a Excel y PDF. Es una CONSULTA: no da de alta ni edita nada.
+- **`_auth.inventarios.tsx`:** "/inventarios" → Conteo físico **de la sucursal activa**. Cargar el conteo y **cerrarlo son dos actos distintos**: el primero se corrige cuantas veces haga falta, el segundo escribe `EXISTENCIAS` y no se deshace, así que va por un `AlertDialog` que dice de qué número a qué número pasa. Un conteo cerrado o anulado sólo se mira. Al cerrar se invalidan también `["existencias"]`, `["articulos"]` y `["dashboard"]`: los tres muestran el número que acaba de cambiar.
 - **`_auth.sucursales.tsx`:** "/sucursales" → Sucursales **de la empresa activa**. El recorte lo hace el backend (`?idEmpresa=`), con la misma queryKey que `sucursal-provider` para compartir caché. No hay selector de empresa: el alta va a la activa.
 - **`_auth.configuracion.tsx`:** "/configuracion" → Preferencias (tema, acento).
 

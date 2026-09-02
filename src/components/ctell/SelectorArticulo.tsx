@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { api } from "@/lib/api";
+import { api, type Articulo } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { DialogoAltaRapida, type AltaRapida } from "./SelectorModal";
 
@@ -62,7 +62,20 @@ export function SelectorArticulo({
    * vacío como si no hubiera nada seleccionado.
    */
   etiquetaSeleccionada?: string | undefined;
-  onChange: (valor: string, etiqueta: string) => void;
+  /**
+   * El tercer argumento es **el artículo entero**, y sólo llega cuando se lo
+   * eligió de la lista: un alta rápida devuelve nada más el id y el nombre de lo
+   * recién creado.
+   *
+   * Existe porque hay pantallas que necesitan algo más que el nombre —el conteo
+   * de inventario mira `marca` para ofrecer cargarla si falta— y sin esto habría
+   * que volver a pedir el artículo por id, que además es una consulta que
+   * `/articulos/listar` no ofrece.
+   *
+   * Es opcional en la firma a propósito: los formularios que sólo guardan el id
+   * siguen escribiendo `(valor, etiqueta) => …` sin enterarse.
+   */
+  onChange: (valor: string, etiqueta: string, articulo?: Articulo) => void;
   placeholder?: string;
   disabled?: boolean;
   className?: string;
@@ -134,8 +147,8 @@ export function SelectorArticulo({
           idEmpresa={idEmpresa}
           value={value}
           onCerrar={() => setAbierto(false)}
-          onElegir={(valor, etiqueta) => {
-            onChange(valor, etiqueta);
+          onElegir={(valor, etiqueta, articulo) => {
+            onChange(valor, etiqueta, articulo);
             setAbierto(false);
           }}
           {...(alta ? { onCrear: (termino: string) => setCreandoCon(termino) } : {})}
@@ -159,6 +172,29 @@ export function SelectorArticulo({
   );
 }
 
+/**
+ * Cómo se lee el artículo YA ELEGIDO, en el botón del selector.
+ *
+ * Lleva la marca: dos artículos con el mismo nombre —"Filtro de aceite"— son
+ * piezas distintas según de quién sean, y con sólo el nombre el campo cerrado
+ * no deja distinguir cuál de los dos quedó. Es el dato que la lista muestra al
+ * lado del código, así que no verlo después de elegir se lee como si se hubiera
+ * perdido.
+ *
+ * **Es SÓLO presentación.** Ninguno de los formularios que usan este selector
+ * manda esta etiqueta al backend —viajan `idArticulo` y nada más—, así que el
+ * " · marca" no ensucia ningún dato guardado. Si alguna pantalla nueva llegara
+ * a persistirla, tiene que guardar el nombre por su cuenta, no esto.
+ *
+ * Un artículo sin marca cargada devuelve el nombre pelado, sin el separador
+ * colgando.
+ */
+function etiquetaDe(articulo: Articulo): string {
+  return articulo.marca
+    ? `${articulo.nombreArticulo} · ${articulo.marca}`
+    : articulo.nombreArticulo;
+}
+
 function DialogoArticulos({
   idEmpresa,
   value,
@@ -170,7 +206,7 @@ function DialogoArticulos({
   idEmpresa: number;
   value: string;
   onCerrar: () => void;
-  onElegir: (valor: string, etiqueta: string) => void;
+  onElegir: (valor: string, etiqueta: string, articulo: Articulo) => void;
   /** Recibe lo que se estaba buscando, para arrancar el alta con ese texto. */
   onCrear?: ((termino: string) => void) | undefined;
   textoCrear?: string;
@@ -258,7 +294,7 @@ function DialogoArticulos({
               <button
                 key={articulo.id}
                 type="button"
-                onClick={() => onElegir(String(articulo.id), articulo.nombreArticulo)}
+                onClick={() => onElegir(String(articulo.id), etiquetaDe(articulo), articulo)}
                 className={cn(
                   "flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm transition-colors hover:bg-accent",
                   elegido && "bg-accent",

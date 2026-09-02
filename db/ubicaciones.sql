@@ -6,7 +6,7 @@
 -- dentro del paquete: no hay procedimientos sueltos ni PL/SQL embebido como
 -- texto dentro de los handlers.
 --
---   1. LISTAR      GET    /ubicaciones/listar        (?idEmpresa= &idSucursal=)
+--   1. LISTAR      GET    /ubicaciones/listar        (?idEmpresa= &idSucursal= &conArticulos=)
 --   2. INSERTAR    POST   /ubicaciones/crear
 --   3. ACTUALIZAR  PUT    /ubicaciones/actualizar/:id
 --   4. ELIMINAR    DELETE /ubicaciones/eliminar/:id/:idEmpresa
@@ -72,7 +72,7 @@ SET SERVEROUTPUT ON
 --     l_status NUMBER;
 --     l_result CLOB;
 --   BEGIN
---     PKG_UBICACIONES.LISTAR('Bearer TU_TOKEN', NULL, NULL, l_status, l_result);
+--     PKG_UBICACIONES.LISTAR('Bearer TU_TOKEN', NULL, NULL, NULL, l_status, l_result);
 --     DBMS_OUTPUT.PUT_LINE('status: ' || l_status);
 --     DBMS_OUTPUT.PUT_LINE('resultado: ' || l_result);
 --   END;
@@ -83,10 +83,23 @@ CREATE OR REPLACE PACKAGE PKG_UBICACIONES AS
 
   -- Los filtros NULL o vacios no filtran. En la app siempre viajan los dos, con
   -- la empresa y la sucursal activas.
+  --
+  -- Devuelve ademas 'cantidadArticulos' por fila: cuantos articulos hay
+  -- asignados a ese estante. Cero es un dato util —dice que se puede borrar sin
+  -- romper nada— asi que va siempre, se filtre o no.
+  --
+  -- p_con_articulos = 'S' deja SOLO las ubicaciones que tienen algun articulo
+  -- asignado. Sirve para el filtro "que hay en este estante": ofrecer los
+  -- estantes vacios ahi es ofrecer busquedas que ya se sabe que no devuelven
+  -- nada, y en un deposito con la grilla entera cargada son la mayoria.
+  --
+  -- El ABM de ubicaciones NO lo usa: ahi hay que ver los vacios, que son
+  -- justamente los que se pueden editar o borrar sin romper nada.
   PROCEDURE LISTAR (
     p_authorization IN  VARCHAR2,
     p_id_empresa    IN  VARCHAR2,
     p_id_sucursal   IN  VARCHAR2,
+    p_con_articulos IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   );
@@ -202,14 +215,21 @@ CREATE OR REPLACE PACKAGE BODY PKG_UBICACIONES AS
     p_authorization IN  VARCHAR2,
     p_id_empresa    IN  VARCHAR2,
     p_id_sucursal   IN  VARCHAR2,
+    p_con_articulos IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
-    l_sesion      NUMBER;
-    l_id_empresa  NUMBER;
-    l_id_sucursal NUMBER;
-    l_total       NUMBER;
-    l_items       CLOB;
+    l_sesion        NUMBER;
+    l_id_empresa    NUMBER;
+    l_id_sucursal   NUMBER;
+    -- 'S' deja fuera los estantes vacios. Ver la nota de la spec.
+    --
+    -- VARCHAR2 Y NO BOOLEAN: un BOOLEAN de PL/SQL NO SE PUEDE USAR DENTRO DE UNA
+    -- SENTENCIA SQL —el WHERE de abajo lo necesita— y el paquete no compilaria.
+    -- Es la misma familia de trampas que los helpers privados en SQL.
+    l_solo_con      VARCHAR2(1);
+    l_total         NUMBER;
+    l_items         CLOB;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -225,11 +245,21 @@ CREATE OR REPLACE PACKAGE BODY PKG_UBICACIONES AS
     l_id_empresa  := TO_NUMBER(NULLIF(p_id_empresa, ''));
     l_id_sucursal := TO_NUMBER(NULLIF(p_id_sucursal, ''));
 
+    -- Solo 'S' activa el recorte. Cualquier otra cosa —vacio, 'N', basura— deja
+    -- el listado completo, que es el comportamiento que ya tenia y el que usa el
+    -- ABM de ubicaciones.
+    l_solo_con := CASE WHEN UPPER(TRIM(p_con_articulos)) = 'S' THEN 'S' ELSE 'N' END;
+
+    -- EL COUNT REPITE EL MISMO WHERE que la consulta de abajo, EXISTS incluido.
+    -- Si filtran distinto, el total dice una cosa y las filas otra.
     SELECT COUNT(*)
       INTO l_total
-      FROM UBICACIONES
-     WHERE (l_id_empresa IS NULL OR ID_EMPRESA = l_id_empresa)
-       AND (l_id_sucursal IS NULL OR ID_SUCURSAL = l_id_sucursal);
+      FROM UBICACIONES u
+     WHERE (l_id_empresa IS NULL OR u.ID_EMPRESA = l_id_empresa)
+       AND (l_id_sucursal IS NULL OR u.ID_SUCURSAL = l_id_sucursal)
+       AND (l_solo_con = 'N'
+            OR EXISTS (SELECT 1 FROM ARTICULOS_UBICACIONES au
+                        WHERE au.ID_UBICACION = u.ID_UBICACION));
 
     -- Sin JOIN: la consulta sale de UBICACIONES y nada mas. Los nombres de la
     -- empresa y la sucursal no se devuelven porque el listado ya viene filtrado
@@ -253,7 +283,19 @@ CREATE OR REPLACE PACKAGE BODY PKG_UBICACIONES AS
                  'zona'        VALUE u.ZONA,
                  'estante'     VALUE u.ESTANTE,
                  'nivel'       VALUE u.NIVEL,
-                 'descripcion' VALUE u.DESCRIPCION
+                 'descripcion' VALUE u.DESCRIPCION,
+                 -- CUANTOS ARTICULOS TIENE ASIGNADOS. Va siempre, tambien sin
+                 -- el recorte: es lo que deja mostrar "A · Estante 3 — 12
+                 -- articulos" en la lista de valores, y en el ABM avisa cual
+                 -- esta vacio y se puede borrar sin romper nada.
+                 --
+                 -- Es una subconsulta y no un JOIN con GROUP BY: agrupar por las
+                 -- siete columnas del SELECT para contar una sola seria mas
+                 -- fragil de leer, y ademas dejaria fuera las ubicaciones sin
+                 -- articulos en vez de darles 0.
+                 'cantidadArticulos' VALUE (SELECT COUNT(*)
+                                              FROM ARTICULOS_UBICACIONES au
+                                             WHERE au.ID_UBICACION = u.ID_UBICACION)
                  RETURNING CLOB
                ) AS fila,
                u.ZONA    AS zona,
@@ -262,6 +304,10 @@ CREATE OR REPLACE PACKAGE BODY PKG_UBICACIONES AS
           FROM UBICACIONES u
          WHERE (l_id_empresa IS NULL OR u.ID_EMPRESA = l_id_empresa)
            AND (l_id_sucursal IS NULL OR u.ID_SUCURSAL = l_id_sucursal)
+           -- IDENTICO AL DEL COUNT DE ARRIBA.
+           AND (l_solo_con = 'N'
+                OR EXISTS (SELECT 1 FROM ARTICULOS_UBICACIONES au
+                            WHERE au.ID_UBICACION = u.ID_UBICACION))
       );
 
     p_status_code := 200;
@@ -604,7 +650,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_UBICACIONES AS
       p_pattern     => 'listar',
       p_method      => 'GET',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_UBICACIONES.LISTAR(:authorization, :idEmpresa, :idSucursal, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_UBICACIONES.LISTAR(:authorization, :idEmpresa, :idSucursal, :conArticulos, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(

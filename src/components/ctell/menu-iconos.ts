@@ -278,6 +278,16 @@ const ICONOS_PAGINA: Record<string, LucideIcon> = {
   //
   // ClipboardCheck (la planilla ya verificada) y no ClipboardList: así queda
   // libre para "órdenes", el pedido pendiente. Antes las dos compartían ícono.
+  //
+  // NO comparte con "existencias" (PackageSearch): aquélla es la CONSULTA de lo
+  // que el sistema cree que hay, ésta la CORRECCIÓN de ese número contra lo que
+  // hay en el estante. Son las dos páginas del menú de Stock que más se
+  // confunden, y con el mismo ícono sólo las distinguiría el texto.
+  inventarios: ClipboardCheck,
+  inventario: ClipboardCheck,
+  "conteo fisico": ClipboardCheck,
+  "conteos fisicos": ClipboardCheck,
+  "carga de inventarios": ClipboardCheck,
   ordenes: ClipboardList,
   "ordenes de compra": ClipboardList,
   // COMPRA Y VENTA NO COMPARTEN ÍCONO: son los dos comprobantes que más se

@@ -1430,6 +1430,89 @@ Tres cosas que ese componente resuelve y que hay que copiar:
 3. **El contenido se monta sólo con el modal abierto.** Con varios selectores en
    un formulario, montarlos siempre dispara una consulta por cada uno al abrir
    la pantalla.
+4. **La fila muestra TODO lo que la búsqueda mira**, y la etiqueta elegida lleva
+   lo que identifica al registro. En artículos son tres líneas —nombre; código
+   OEM · marca; equivalencias— porque el término tecleado puede no estar en el
+   nombre, y sin ver por dónde coincidió el resultado parece un error. Por lo
+   mismo `etiquetaDe()` devuelve `"Filtro de aceite · Toyota"`: dos artículos
+   con el mismo nombre son piezas distintas según de quién sean, y con el
+   nombre pelado el campo ya cerrado no deja saber cuál quedó.
+
+> **Esa etiqueta es SÓLO presentación.** Ningún formulario la manda al backend
+> —viaja `idArticulo` y nada más—, y por eso se le puede agregar la marca sin
+> ensuciar ningún dato guardado. Una pantalla que necesite persistir el nombre
+> tiene que guardarlo por su cuenta, no reusar la etiqueta.
+>
+> El contrapeso: la etiqueta la arma el selector **sólo al elegir**. Al reabrir
+> un registro guardado, el formulario la reconstruye con lo que le devuelva su
+> propio endpoint — así que ese endpoint tiene que devolver los mismos campos
+> (`/inventarios/obtener` devuelve `marca` justamente por esto). Si no, el mismo
+> campo se lee distinto según se acabe de elegir el artículo o se esté editando.
+
+**El `onChange` de `SelectorArticulo` recibe un tercer argumento opcional: el
+artículo entero.** Los formularios que sólo guardan el id siguen escribiendo
+`(valor, etiqueta) => …` sin enterarse; el que necesita más lo pide ahí. Existe
+porque `/articulos/listar` **no busca por id**, así que volver a pedir el
+artículo elegido no es una opción. Llega `undefined` cuando el valor vino de un
+alta rápida, que sólo conoce lo que acaba de crear.
+
+### Completar el dato que falta en el momento en que se lo tiene
+
+El conteo de inventario lo usa así: si el artículo elegido no tiene marca —o no
+tiene categoría—, el diálogo ofrece elegirla o crearla ahí mismo (`SelectorModal`
++ `AltaRapida`) y la asigna con `api.articulos.actualizar(id, { idEmpresa, idMarca })`
+o `{ idEmpresa, idCategoria }`. Son dos avisos independientes: un artículo puede
+tener marca y no categoría, o al revés, y cada uno se resuelve por separado.
+
+**El criterio, que vale para cualquier pantalla operativa:** quien cuenta tiene
+la pieza en la mano y ve de quién es; el que después abra la ficha del artículo,
+no. Mandarlo a `/articulos` a completarla significa perder lo que estaba
+cargando, así que en la práctica no lo hace nadie y el catálogo se queda
+incompleto para siempre.
+
+Tres cosas que hay que respetar al hacerlo:
+
+1. **Es un botón aparte, no un campo del formulario.** Modifica OTRA entidad
+   —el artículo, no el conteo— y se aplica al tocarlo, sin esperar al guardado.
+   Mezclarlo con los campos hace pensar que se descarta al cancelar.
+2. **`type="button"`.** Dentro de un `<form>`, un botón sin `type` dispara el
+   submit: guardaría el registro a medio cargar en vez de asignar el dato.
+3. **No se ofrece en modo sólo lectura**, aunque técnicamente se podría: en un
+   diálogo que no edita nada, un botón que sí escribe hace dudar de todo lo
+   demás.
+
+Y el aviso se cierra con **el 200 del backend**, no con haber podido resolver el
+nombre de lo asignado buscándolo en el catálogo cargado: si esa búsqueda falla
+—una marca recién creada cuyo refetch no llegó— el aviso quedaría en pantalla
+sobre un artículo que ya tiene marca.
+
+#### Cuando el dato es una tabla de cruce, no una columna
+
+El conteo lo hace con tres datos —marca, categoría y **ubicación**— y el tercero
+no se implementa igual, aunque en pantalla se vea idéntico:
+
+|                   | Marca / Categoría         | Ubicación                        |
+| ----------------- | ------------------------- | -------------------------------- |
+| Relación          | FK en `ARTICULOS`         | **cruce N:M**                    |
+| "No tiene"        | la columna en `NULL`      | **sin filas** en el cruce        |
+| Se asigna con     | `articulos.actualizar`    | `articulosUbicaciones.asignar`   |
+| Asignar…          | reemplaza                 | **suma**: el artículo queda en los dos estantes |
+| Alcance           | la empresa                | **una sucursal**                 |
+
+Tres consecuencias que hay que tener presentes:
+
+1. **El dato hay que consultarlo**, no viene en el artículo. Y el aviso tiene que
+   esperar a que esa consulta responda: una lista vacía y una que todavía no
+   llegó se ven igual, así que sin el `isPending` el cartel parpadea sobre
+   artículos que sí tienen ubicación.
+2. **No hace falta el flag "ya asigné"**. El aviso sale de una consulta que se
+   invalida al terminar, así que se apaga solo — es la ventaja de que el dato no
+   viva en una columna del artículo.
+3. **Filtrar por la sucursal es responsabilidad de la pantalla.** El catálogo de
+   ubicaciones es de toda la empresa y el backend sólo rechaza el cruce entre
+   empresas, no entre sucursales. Sin ese recorte se puede asignar el artículo a
+   un estante de otro depósito, y un artículo ubicado sólo allá se leería como
+   "ya tiene ubicación" — justo cuando lo que falta es la de acá.
 
 ```tsx
 // El nombre va en estado propio: no se puede derivar del id contra una lista

@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { createFileRoute } from "@tanstack/react-router";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Barcode, ImageUp, Loader2, MapPin, Pencil, Plus, Search, Trash2 } from "lucide-react";
+import { Barcode, ImageUp, Loader2, MapPin, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
@@ -10,6 +10,7 @@ import { z } from "zod";
 import { AppLayout } from "@/components/ctell/AppLayout";
 import { SelectorModal, type AltaRapida } from "@/components/ctell/SelectorModal";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
+import { useSucursal } from "@/components/ctell/sucursal-provider";
 import { ArticuloUbicacionesDialog } from "@/components/ctell/ArticuloUbicacionesDialog";
 import { CodigosEquivalentesDialog } from "@/components/ctell/CodigosEquivalentesDialog";
 import { ImagenArticulo } from "@/components/ctell/ImagenArticulo";
@@ -132,6 +133,17 @@ const POR_PAGINA = 20;
 const ESPERA_BUSQUEDA_MS = 350;
 
 /**
+ * Cómo se nombra un estante: "A · Estante 3 · Nivel 2".
+ *
+ * Mismo formato que `/articulos-ubicaciones` y que el conteo físico: es el mismo
+ * lugar visto desde otra pantalla, y dos formatos distintos harían dudar de si
+ * son el mismo.
+ */
+function etiquetaUbicacion(zona: string, estante: number, nivel: number): string {
+  return `${zona} · Estante ${estante} · Nivel ${nivel}`;
+}
+
+/**
  * Fecha del último inventario, sólo el día: la hora exacta de un conteo físico
  * no aporta nada al leer la lista.
  *
@@ -163,9 +175,19 @@ function ArticulosPage() {
   const [verCodigos, setVerCodigos] = useState<Articulo | null>(null);
   const [filtroCategoria, setFiltroCategoria] = useState<string>(SIN_FILTRO);
   const [filtroMarca, setFiltroMarca] = useState<string>(SIN_FILTRO);
+  /**
+   * Estante elegido. `""` es "todas", no `SIN_FILTRO`: este filtro no vive en el
+   * header de una columna sino en un `SelectorModal`, que usa la cadena vacía
+   * para "sin elegir".
+   */
+  const [filtroUbicacion, setFiltroUbicacion] = useState("");
 
   // Los artículos son POR EMPRESA: la que se eligió al iniciar sesión.
   const { empresa } = useEmpresa();
+  // Sólo para el filtro por ubicación: los estantes son de UN depósito. El
+  // catálogo de artículos sigue siendo de la empresa y no cambia con la
+  // sucursal — por eso `idSucursal` no entra en la consulta del listado.
+  const { sucursal } = useSucursal();
 
   // La búsqueda se escribe acá y viaja al backend con un retraso: `busqueda` es
   // lo que se ve en el input (inmediato, sin lag al tipear) y `busquedaEnvio` lo
@@ -195,6 +217,7 @@ function ArticulosPage() {
         busquedaEnvio.trim(),
         filtroCategoria,
         filtroMarca,
+        filtroUbicacion,
       ],
       queryFn: ({ pageParam }) =>
         api.articulos.listar({
@@ -202,6 +225,7 @@ function ArticulosPage() {
           busqueda: busquedaEnvio,
           idCategoria: filtroCategoria === SIN_FILTRO ? undefined : Number(filtroCategoria),
           idMarca: filtroMarca === SIN_FILTRO ? undefined : Number(filtroMarca),
+          idUbicacion: filtroUbicacion === "" ? undefined : Number(filtroUbicacion),
           pagina: pageParam,
           tamanio: POR_PAGINA,
         }),
@@ -232,6 +256,38 @@ function ArticulosPage() {
     queryFn: () => api.marcas.listar({ idEmpresa: empresa!.id }),
     enabled: empresa !== null,
   });
+
+  /**
+   * SÓLO LOS ESTANTES QUE TIENEN ALGO, y de la sucursal activa.
+   *
+   * `conArticulos` no es una comodidad: en un depósito con la grilla entera
+   * cargada la mayoría de las ubicaciones están vacías, y ofrecerlas es ofrecer
+   * búsquedas que ya se sabe que no devuelven nada. El que quiera ver las vacías
+   * las tiene en `/ubicaciones`, que es donde importan.
+   *
+   * queryKey propia —con `con-articulos`— para no pisar la del ABM de
+   * ubicaciones ni la del selector del conteo: son la misma tabla con recortes
+   * distintos, y compartir la clave haría que una pantalla sirva la caché de la
+   * otra.
+   */
+  const { data: ubicaciones, isPending: cargandoUbicaciones } = useQuery({
+    queryKey: ["ubicaciones", "con-articulos", empresa?.id ?? null, sucursal?.id ?? null],
+    queryFn: () =>
+      api.ubicaciones.listar({
+        idEmpresa: empresa!.id,
+        idSucursal: sucursal!.id,
+        conArticulos: true,
+      }),
+    enabled: empresa !== null && sucursal !== null,
+  });
+
+  const ubicacionesOpciones = (ubicaciones?.items ?? []).map((u) => ({
+    valor: String(u.id),
+    etiqueta: etiquetaUbicacion(u.zona, u.estante, u.nivel),
+    // Cuántos hay: da idea de si el estante está lleno o tiene dos cosas, y es
+    // lo que distingue dos ubicaciones parecidas al elegir.
+    descripcion: `${u.cantidadArticulos} artículo${u.cantidadArticulos === 1 ? "" : "s"}`,
+  }));
 
   const eliminar = useMutation({
     mutationFn: (articulo: Articulo) => api.articulos.eliminar(articulo.id, articulo.idEmpresa),
@@ -301,6 +357,10 @@ function ArticulosPage() {
   // verdad, no un texto a medio escribir cuyo request todavía no salió.
   const termino = busquedaEnvio.trim();
 
+  /** Si hay algún filtro puesto, para distinguir "sin datos" de "sin resultados". */
+  const hayFiltros =
+    filtroCategoria !== SIN_FILTRO || filtroMarca !== SIN_FILTRO || filtroUbicacion !== "";
+
   return (
     <AppLayout active="/articulos" title="Artículos">
       <main className="space-y-6 px-4 pb-28 pt-6 sm:px-6 lg:pb-10">
@@ -319,15 +379,50 @@ function ArticulosPage() {
           </Button>
         </div>
 
-        {/* El filtro por categoría vive en el header de su columna. */}
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={busqueda}
-            onChange={(e) => setBusqueda(e.target.value)}
-            placeholder="Nombre, código OEM, marca o equivalencia…"
-            className="pl-9"
-          />
+        {/* Categoría y marca viven en el header de SU columna. La ubicación no
+            puede: un artículo está en varios estantes a la vez, así que no hay
+            una columna que la muestre — es una tabla de cruce, no un dato del
+            artículo. Por eso va acá arriba, al lado del buscador. */}
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative min-w-0 flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={busqueda}
+              onChange={(e) => setBusqueda(e.target.value)}
+              placeholder="Nombre, código OEM, marca o equivalencia…"
+              className="pl-9"
+            />
+          </div>
+
+          <div className="flex w-full items-center gap-2 sm:w-auto">
+            <SelectorModal
+              opciones={ubicacionesOpciones}
+              value={filtroUbicacion}
+              onChange={setFiltroUbicacion}
+              placeholder="Toda la sucursal"
+              titulo={sucursal ? `Ubicaciones de ${sucursal.nombreSucursal}` : "Ubicaciones"}
+              descripcion="Sólo los estantes que tienen algo guardado."
+              buscarPlaceholder="Buscar zona, estante o nivel…"
+              vacioTexto="Ningún estante de esta sucursal tiene artículos asignados."
+              cargando={cargandoUbicaciones}
+              disabled={sucursal === null}
+              className="w-full sm:w-64"
+            />
+            {/* Limpiar es su propio botón: el SelectorModal no ofrece "ninguna",
+                y sin esto habría que recargar para volver al catálogo completo. */}
+            {filtroUbicacion !== "" && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={() => setFiltroUbicacion("")}
+                title="Quitar el filtro por ubicación"
+                aria-label="Quitar el filtro por ubicación"
+              >
+                <X className="size-4" />
+              </Button>
+            )}
+          </div>
         </div>
 
         {/* Sin empresa no hay nada que listar. Pasa si se entró con una sesión
@@ -357,9 +452,16 @@ function ArticulosPage() {
             <p className="text-sm text-muted-foreground">
               {termino
                 ? `Sin resultados para "${busqueda.trim()}".`
-                : filtroCategoria === SIN_FILTRO && filtroMarca === SIN_FILTRO
+                : !hayFiltros
                   ? "Esta empresa todavía no tiene artículos cargados."
-                  : "Ningún artículo cumple con los filtros aplicados."}
+                  : filtroUbicacion !== "" &&
+                      filtroCategoria === SIN_FILTRO &&
+                      filtroMarca === SIN_FILTRO
+                    ? // El caso propio de este filtro: el estante figura con
+                      // artículos en la lista de valores, pero ninguno pasó el
+                      // resto de la consulta. Decirlo evita que parezca un error.
+                      "Ese estante no tiene artículos que coincidan."
+                    : "Ningún artículo cumple con los filtros aplicados."}
             </p>
             {!termino && (
               <Button className="mt-4" onClick={() => setCreando(true)}>
@@ -637,7 +739,7 @@ function ArticulosPage() {
         {cargados.length > 0 && (
           <p className="text-center text-xs text-muted-foreground">
             Mostrando {cargados.length} de {total} artículo{total === 1 ? "" : "s"}
-            {termino || filtroCategoria !== SIN_FILTRO ? " que coinciden" : ""}
+            {termino || hayFiltros ? " que coinciden" : ""}
           </p>
         )}
 

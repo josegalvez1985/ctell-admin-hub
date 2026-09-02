@@ -68,7 +68,9 @@ const SINONIMOS = [
     "existencias de articulos",
     "consulta de existencias",
   ],
-  ["inventarios", "inventario"],
+  // El conteo físico es la misma página escrita de las cuatro formas en que una
+  // persona la carga en el ABM de páginas.
+  ["inventarios", "inventario", "conteo fisico", "conteos fisicos", "carga de inventarios"],
   ["ordenes", "ordenes de compra"],
   ["facturas de compra", "facturas compras"],
   ["iva", "tasas de iva"],

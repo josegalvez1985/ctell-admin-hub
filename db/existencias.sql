@@ -8,21 +8,25 @@
 --              (?idEmpresa= &idSucursal= &idArticulo= &busqueda= &pagina= &tamanio=)
 --
 --------------------------------------------------------------------------------
--- SOLO LECTURA, Y ES A PROPOSITO
+-- ESTE PAQUETE ES SOLO LECTURA, Y ES A PROPOSITO
 --
--- No hay crear, actualizar ni eliminar. NADIE escribe esta tabla todavia — ni
--- este paquete ni ningun otro—, asi que las cantidades son las que se hayan
--- cargado a mano.
+-- No hay crear, actualizar ni eliminar. El stock se mueve con las
+-- TRANSACCIONES, no editandolo: comprar suma, vender resta, un conteo lo
+-- ajusta. Un endpoint que permita escribir la cantidad directamente convierte
+-- el stock en un campo editable y deja de haber forma de explicar por que dice
+-- lo que dice — que es exactamente el problema que el modelo nuevo resuelve.
 --
--- El motivo: el stock se mueve con las TRANSACCIONES, no editandolo. Comprar
--- suma, vender resta, un conteo lo ajusta. Un endpoint que permita escribir la
--- cantidad directamente convierte el stock en un campo editable y deja de haber
--- forma de explicar por que dice lo que dice — que es exactamente el problema
--- que el modelo nuevo viene a resolver.
+-- QUIEN SI ESCRIBE LA TABLA. Una sola cosa, por ahora: el cierre de un conteo
+-- fisico. TRG_INVENTARIOS_AU_EXISTENCIAS (db/inventarios-triggers-ddl.sql) fija
+-- CANTIDAD_DISPONIBLE = INVENTARIOS.CANTIDAD_FISICA cuando el conteo pasa a
+-- CERRADO. Un conteo no es una transaccion, es la correccion de las
+-- transacciones, y por eso puede fijar la cantidad de frente.
 --
--- Cuando se implemente PKG_STOCK, va a ser el UNICO que escriba aca: con
+-- Comprar y vender siguen sin tocarla. Cuando se implemente PKG_STOCK —con
 -- SELECT ... FOR UPDATE sobre la fila antes de moverla, porque entre leer una
--- cantidad y grabar la nueva puede entrar otra caja vendiendo lo mismo.
+-- cantidad y grabar la nueva puede entrar otra caja vendiendo lo mismo— van a
+-- ser DOS escritores, y hay que decidir si el cierre del conteo pasa a llamarlo
+-- en vez de escribir la tabla directamente.
 --
 --------------------------------------------------------------------------------
 -- UNA FILA POR (EMPRESA, SUCURSAL, ARTICULO)
@@ -459,7 +463,8 @@ SELECT e.ID_EXISTENCIA,
  WHERE e.ID_EMPRESA != s.ID_EMPRESA
     OR e.ID_EMPRESA != a.ID_EMPRESA;
 
--- Cantidades negativas. Hoy nada las escribe, asi que una fila aca entro a mano.
+-- Cantidades negativas. El cierre de un conteo las rechaza (CANTIDAD_FISICA no
+-- puede ser negativa), asi que una fila aca entro a mano.
 SELECT ID_EXISTENCIA, ID_SUCURSAL, ID_ARTICULO, CANTIDAD_DISPONIBLE
   FROM EXISTENCIAS
  WHERE CANTIDAD_DISPONIBLE < 0;

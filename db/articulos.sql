@@ -229,12 +229,20 @@ CREATE OR REPLACE PACKAGE PKG_ARTICULOS AS
   -- p_id_sucursal ACOTA EL STOCK, no la lista de articulos: el catalogo es de
   -- la empresa y no cambia segun el deposito. Sin el, 'cantidadStock' SUMA todas
   -- las sucursales de la empresa; con el, devuelve el de esa sola.
+  --
+  -- p_id_ubicacion SI ACOTA LA LISTA, y es el unico filtro que no es una columna
+  -- de ARTICULOS: sale de la tabla de cruce ARTICULOS_UBICACIONES. Responde "que
+  -- hay en este estante", que es la pregunta con la que alguien se para delante
+  -- de el. Va con EXISTS y no con un JOIN: un articulo asignado a tres
+  -- ubicaciones aparecería tres veces, y el total del paginador diria cualquier
+  -- cosa.
   PROCEDURE LISTAR (
     p_authorization IN  VARCHAR2,
     p_id_empresa    IN  VARCHAR2,
     p_busqueda      IN  VARCHAR2,
     p_id_categoria  IN  VARCHAR2,
     p_id_marca      IN  VARCHAR2,
+    p_id_ubicacion  IN  VARCHAR2,
     p_id_sucursal   IN  VARCHAR2,
     p_pagina        IN  VARCHAR2,
     p_tamanio       IN  VARCHAR2,
@@ -415,6 +423,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     p_busqueda      IN  VARCHAR2,
     p_id_categoria  IN  VARCHAR2,
     p_id_marca      IN  VARCHAR2,
+    p_id_ubicacion  IN  VARCHAR2,
     p_id_sucursal   IN  VARCHAR2,
     p_pagina        IN  VARCHAR2,
     p_tamanio       IN  VARCHAR2,
@@ -425,6 +434,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     l_id_empresa   NUMBER;
     l_id_categoria NUMBER;
     l_id_marca     NUMBER;
+    l_id_ubicacion NUMBER;
     l_id_sucursal  NUMBER;
     l_busqueda     VARCHAR2(4000);
     l_pagina       NUMBER;
@@ -447,6 +457,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     l_id_empresa   := TO_NUMBER(NULLIF(p_id_empresa, ''));
     l_id_categoria := TO_NUMBER(NULLIF(p_id_categoria, ''));
     l_id_marca     := TO_NUMBER(NULLIF(p_id_marca, ''));
+    -- La ubicacion SI filtra el catalogo, al reves que la sucursal de abajo.
+    l_id_ubicacion := TO_NUMBER(NULLIF(p_id_ubicacion, ''));
     -- La sucursal NO filtra el catalogo: solo acota de que deposito se cuenta
     -- el stock. En NULL, 'cantidadStock' suma todas las de la empresa.
     l_id_sucursal  := TO_NUMBER(NULLIF(p_id_sucursal, ''));
@@ -480,6 +492,12 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
      WHERE (l_id_empresa   IS NULL OR a.ID_EMPRESA   = l_id_empresa)
        AND (l_id_categoria IS NULL OR a.ID_CATEGORIA = l_id_categoria)
        AND (l_id_marca     IS NULL OR a.ID_MARCA     = l_id_marca)
+       -- EXISTS y no JOIN: un articulo puede estar en varias ubicaciones, y con
+       -- un JOIN se contaria una vez por cada una. Ver la nota de la spec.
+       AND (l_id_ubicacion IS NULL
+            OR EXISTS (SELECT 1 FROM ARTICULOS_UBICACIONES au
+                        WHERE au.ID_ARTICULO  = a.ID_ARTICULO
+                          AND au.ID_UBICACION = l_id_ubicacion))
        AND (l_busqueda IS NULL
             OR LOWER(a.NOMBRE_ARTICULO) LIKE '%' || l_busqueda || '%'
             OR LOWER(a.CODIGO_ARTICULO) LIKE '%' || l_busqueda || '%'
@@ -679,6 +697,12 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
          WHERE (l_id_empresa   IS NULL OR a.ID_EMPRESA   = l_id_empresa)
            AND (l_id_categoria IS NULL OR a.ID_CATEGORIA = l_id_categoria)
            AND (l_id_marca     IS NULL OR a.ID_MARCA     = l_id_marca)
+           -- IDENTICO AL DEL COUNT DE ARRIBA. Si filtran distinto, el total dice
+           -- una cosa y las filas otra, y el "Mostrar mas" ofrece paginas vacias.
+           AND (l_id_ubicacion IS NULL
+                OR EXISTS (SELECT 1 FROM ARTICULOS_UBICACIONES au
+                            WHERE au.ID_ARTICULO  = a.ID_ARTICULO
+                              AND au.ID_UBICACION = l_id_ubicacion))
            AND (l_busqueda IS NULL
                 OR LOWER(a.NOMBRE_ARTICULO) LIKE '%' || l_busqueda || '%'
                 OR LOWER(a.CODIGO_ARTICULO) LIKE '%' || l_busqueda || '%'
@@ -1170,12 +1194,12 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     );
 
     ----------------------------------------------------------------------------
-    -- GET /articulos/listar?idEmpresa=&busqueda=&idCategoria=&idMarca=&pagina=&tamanio=
+    -- GET /articulos/listar?idEmpresa=&busqueda=&idCategoria=&idMarca=&idUbicacion=&idSucursal=&pagina=&tamanio=
     --
     -- Ninguno se declara con DEFINE_PARAMETER: los query params se vinculan
     -- solos al bind del mismo nombre.
     --
-    -- Los cinco son opcionales. Ausentes, el listado devuelve la primera página
+    -- Los seis son opcionales. Ausentes, el listado devuelve la primera página
     -- de 20 sin filtrar — nunca el catálogo completo.
     ----------------------------------------------------------------------------
     ORDS.DEFINE_TEMPLATE(p_module_name => 'articulos', p_pattern => 'listar');
@@ -1185,7 +1209,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
       p_pattern     => 'listar',
       p_method      => 'GET',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_ARTICULOS.LISTAR(:authorization, :idEmpresa, :busqueda, :idCategoria, :idMarca, :idSucursal, :pagina, :tamanio, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_ARTICULOS.LISTAR(:authorization, :idEmpresa, :busqueda, :idCategoria, :idMarca, :idUbicacion, :idSucursal, :pagina, :tamanio, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(

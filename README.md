@@ -495,43 +495,87 @@ por resta— para que las facturas viejas sigan mostrando lo mismo. La elección
 >
 > Toda división va protegida con `NULLIF(..., 0)`.
 
-### Máquina de estados: `INVENTARIOS` (retirado)
+### Máquina de estados: `INVENTARIOS`
 
-> **El módulo se eliminó** junto con `LOTES`: un conteo colgaba de una partida, y
-> contar por partida es imposible —en el estante las unidades son idénticas—.
-> Vuelve como conteo **por artículo y sucursal** cuando exista `EXISTENCIAS`. Lo
-> que sigue vale como registro de lo que había y de lo que conviene repetir.
-
-Los conteos físicos son la única tabla con estados y transiciones:
+El conteo físico volvió, ahora **por artículo y sucursal** — sin lotes, que era
+lo que lo hacía imposible: en el estante las unidades son idénticas y nadie sabe
+de qué compra vino cada una. Es la única tabla con estados y transiciones:
 
 ```
-ABIERTO ──> PROCESADO   (aplica el conteo)
-        └─> ANULADO     (lo descarta sin tocar nada)
+ABIERTO ──> CERRADO   escribe EXISTENCIAS y congela la fila
+        └─> ANULADO   descarta el conteo, no toca nada
 ```
 
-Desde un estado terminal no se sale, y un conteo que ya no está `ABIERTO` no deja
-tocar su `CANTIDAD_FISICA`. **Eso lo imponen los triggers**, no el paquete: vale
-aunque alguien toque la tabla por fuera de la API. Lo que hace `PKG_INVENTARIOS`
-es chequear antes para devolver un 409 legible en vez de dejar salir un
-`ORA-20002` crudo como error 500.
+Las dos reglas las imponen los **triggers** de
+[db/inventarios-triggers-ddl.sql](db/inventarios-triggers-ddl.sql), no un
+paquete, y ese es el punto: valen aunque alguien corrija la tabla a mano en la
+hoja SQL de APEX. El candado no puede vivir sólo en la API.
 
-> **El módulo no tiene `/eliminar`.** `TRG_INVENTARIOS_BD` prohíbe el `DELETE`, y
-> es la decisión correcta: un conteo físico es evidencia de que alguien fue al
-> depósito y contó. Borrarlo hace desaparecer esa evidencia; anularlo la deja
-> asentada. `/anular` ocupa el lugar del `/eliminar` de las demás tablas.
+| Trigger                          | Qué hace                                            |
+| -------------------------------- | --------------------------------------------------- |
+| `TRG_INVENTARIOS_BIUD`           | El candado: fuera de `ABIERTO` no se toca nada       |
+| `TRG_INVENTARIOS_AU_EXISTENCIAS` | Al cerrar, escribe `EXISTENCIAS.CANTIDAD_DISPONIBLE` |
 
-**Los triggers originales tenían dos errores** que corrige
-`db/inventarios-triggers-ddl.sql` —el único archivo de `db/` que administra DDL:
+**`PKG_INVENTARIOS` no repite esas reglas: las chequea antes.**
+[db/inventarios.sql](db/inventarios.sql) publica `/inventarios/` y
+[/inventarios](src/routes/_auth.inventarios.tsx) es su pantalla. El paquete lee
+la fila con `SELECT … FOR UPDATE`, verifica el estado y responde 404/409/400 con
+el mismo texto que diría el trigger; y su `WHEN OTHERS` traduce igual los
+`ORA-201xx` por si el trigger dispara de todos modos —dos sesiones cerrando el
+mismo conteo—. Sin esa traducción, un `RAISE_APPLICATION_ERROR` sale como un
+**500 mudo** y la pantalla muestra "Error al guardar" tapando el mensaje que
+explicaba qué pasaba. La tabla de códigos vive en `ERROR_DE_NEGOCIO`: una regla
+nueva en el trigger tiene que sumar su código ahí.
 
-1. `TRG_INVENTARIOS_AU` ajustaba `LOTES.CANTIDAD` al procesar, pero **el stock de
-   un artículo suma `CANTIDAD_DISPON`**. Procesar un conteo no movía el stock que
-   se ve en pantalla, y no fallaba — simplemente no hacía efecto.
+**Cerrar tiene endpoint propio, no es un campo del `PUT`.** Contar y aplicar son
+dos actos distintos: el primero se corrige cuantas veces haga falta, el segundo
+mueve el stock y no se deshace. Igual que `/anular` no es lo mismo que
+`/eliminar`: eliminar es para el borrador cargado por error, anular para el
+conteo que se hizo y se decide no aplicar — deja la constancia de que alguien
+fue al depósito.
+
+**El conteo fija la cantidad, no la ajusta**: `CANTIDAD_DISPONIBLE` pasa a valer
+`CANTIDAD_FISICA`. Lo que hay en el estante manda, y hoy ninguna transacción
+mueve stock, así que no hay nada que se pise. **Cuando exista `PKG_STOCK` hay
+que volver sobre esto**: con ventas moviendo la existencia, un cierre tardío
+borraría las ventas posteriores al conteo, y el ajuste pasa a ser por diferencia
+contra `CANTIDAD_SISTEMA`.
+
+`CANTIDAD_SISTEMA` la sella el trigger **en el cierre**, con lo que `EXISTENCIAS`
+decía un instante antes de pisarla — no con lo que el formulario haya cargado al
+abrir el conteo. El número que explica un ajuste es el que el ajuste reemplazó;
+sin él la fila no deja rastro de cuánto se corrigió.
+
+> **Este es el primer escritor de `EXISTENCIAS`.** La tabla era de sólo lectura
+> y está escrito que `PKG_STOCK` iba a ser su único escritor. Un conteo físico
+> es la excepción razonable —no es una transacción, es la corrección de las
+> transacciones— pero cuando `PKG_STOCK` exista van a ser dos, y hay que decidir
+> si el cierre pasa a llamarlo en vez de escribir la tabla de frente.
+
+> **Borrar se permite sólo mientras está `ABIERTO`.** Un conteo cerrado ya movió
+> el stock: borrarlo deja la existencia sin la explicación de por qué dice lo que
+> dice. Un módulo ORDS sobre esta tabla usaría `/anular` en el lugar del
+> `/eliminar` de las demás.
+
+> **`PROCESADO` es un valor legado.** El `COMMENT` de la tabla lo describe como
+> "aplicado a `LOTES.CANTIDAD`", de cuando el stock vivía en partidas. Hoy el
+> efecto lo tiene `CERRADO` y ninguna transición produce `PROCESADO`; las filas
+> históricas que lo tengan quedan congeladas igual, porque no están `ABIERTO`.
+> Otro `COMMENT` que no es una restricción.
+
+**Los triggers originales tenían dos errores**, y por eso se reemplazaron
+enteros en vez de corregirse:
+
+1. `TRG_INVENTARIOS_AU` ajustaba `LOTES.CANTIDAD` al procesar, pero el stock de
+   un artículo sumaba `CANTIDAD_DISPON`. Procesar un conteo no movía el stock
+   que se veía en pantalla, y no fallaba — simplemente no hacía efecto.
 2. `TRG_INVENTARIOS_BIU` escribía `USUARIO_PROCESA`, columna que el DDL nuevo
-   reemplazó por `ID_USUARIO` (FK a `USUARIOS`). El trigger no compilaba, y un
-   trigger inválido bloquea todo `INSERT` y `UPDATE` de la tabla.
+   reemplazó por `ID_USUARIO` (FK a `USUARIOS`). El trigger no compilaba, y **un
+   trigger inválido bloquea todo `INSERT` y `UPDATE` de la tabla**.
 
-`ID_USUARIO` lo escribe el paquete, resolviéndolo del token: `USER` dentro de un
-handler de ORDS devuelve el esquema del workspace, igual para todo el mundo.
+`ID_USUARIO` no lo escribe ningún trigger: lo resuelve del token quien haga el
+alta. `USER` dentro de un handler de ORDS devuelve el esquema del workspace,
+igual para todo el mundo.
 
 ### `PERSONAS`: físicas y jurídicas en una tabla
 
@@ -619,21 +663,27 @@ archivo se ejecute después.
 
    > `lotes.sql` estaba acá, antes que `articulos.sql`, porque el stock se
    > sumaba de sus partidas. Ya no existe: ver "El stock, en migración".
-3. **`inventarios-triggers-ddl.sql` antes que `inventarios.sql`.**
+3. **`retirar-lotes-inventarios.sql` antes que `inventarios-triggers-ddl.sql`.**
 
-   > ⚠️ **Este archivo no está en el repo.** Se lo documenta acá y en la guía,
-   > pero `git log` no registra que haya existido nunca. Si los triggers de
-   > `INVENTARIOS` ya funcionan, el DDL se aplicó a mano y falta commitearlo;
-   > si no, hay que escribirlo. Verificalo con:
+   > El script de limpieza borra **todos** los triggers de `INVENTARIOS` sin
+   > mirar el nombre. Corrido después, se lleva puestos los nuevos y la tabla
+   > queda otra vez sin ninguna regla. Verificá con:
    >
    > ```sql
    > SELECT TRIGGER_NAME, STATUS FROM USER_TRIGGERS WHERE TABLE_NAME = 'INVENTARIOS';
    > ```
 
-   Los triggers
-   que vinieron con el DDL original ajustaban la columna equivocada de `LOTES` y
-   escribían una columna que ya no existe. Con los viejos, `PKG_INVENTARIOS`
-   compila igual pero **procesar un conteo no mueve el stock**.
+   Los triggers que vinieron con el DDL original ajustaban la columna
+   equivocada de `LOTES` y escribían una columna que ya no existe; quedaron
+   `INVALID` al desaparecer `LOTES`, y **un trigger `INVALID` bloquea todo
+   `INSERT` y `UPDATE` de su tabla**. Los reemplaza
+   [db/inventarios-triggers-ddl.sql](db/inventarios-triggers-ddl.sql) — ver
+   [Máquina de estados](#máquina-de-estados-inventarios).
+
+   Y **`inventarios-triggers-ddl.sql` antes que `inventarios.sql`**: el paquete
+   no repite las reglas, las supone. Con los triggers ausentes compila igual,
+   pero un conteo cerrado se puede volver a editar y cerrar no ajusta ninguna
+   existencia.
 
 4. **`iva.sql`, `personas.sql` y `condiciones-pago.sql` antes que
    `facturas-compras.sql`.** El listado de facturas hace JOIN contra las tres.

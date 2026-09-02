@@ -1486,9 +1486,39 @@ asignación del trigger y hacela en el paquete.
 
 La regla es que los archivos de `db/` **no administran DDL**. Cuando hay que
 corregir triggers, el archivo va aparte y con otro nombre —
-`db/inventarios-triggers-ddl.sql` (⚠️ **documentado pero ausente del repo** —
-ver la nota del README) — para que
+[`db/inventarios-triggers-ddl.sql`](../db/inventarios-triggers-ddl.sql) — para que
 quede claro que no es el paquete y que se ejecuta una sola vez, antes.
+
+Ese archivo es hoy el **único** de `db/` sin paquete ni módulo ORDS, y eso es lo
+que lo justifica: la regla —un conteo cerrado no se toca, y al cerrarse escribe
+`EXISTENCIAS`— tiene que valer aunque alguien corrija la tabla a mano en la hoja
+SQL. Sólo el trigger garantiza que no haya puerta de atrás.
+
+El paquete de la tabla va aparte, en
+[`db/inventarios.sql`](../db/inventarios.sql), y **se ejecuta después**. No
+repite las reglas: las chequea antes —con `SELECT … FOR UPDATE` sobre la fila,
+para que entre leer el estado y escribirlo no se meta otra sesión— y traduce los
+`ORA-201xx` que el trigger pueda tirar igual. Sin esa traducción, un
+`RAISE_APPLICATION_ERROR` llega al navegador como un **500 mudo**: el mensaje que
+explicaba qué hacer queda adentro del `SQLERRM` y la pantalla muestra "Error al
+guardar".
+
+```plsql
+-- El código del trigger decide el status; el TEXTO es el del trigger, no uno
+-- propio: dos versiones del mismo mensaje se desincronizan a la primera
+-- corrección. Se le saca el prefijo "ORA-20102: " y el backtrace de abajo.
+l_estado := CASE p_sqlcode
+              WHEN -20102 THEN 409   -- la fila ya no está ABIERTA
+              WHEN -20105 THEN 400   -- cerrar sin cantidad contada
+              ...
+            END;
+l_mensaje := SUBSTR(p_sqlerrm, 1, INSTR(p_sqlerrm || CHR(10), CHR(10)) - 1);
+l_mensaje := REGEXP_REPLACE(l_mensaje, '^ORA-[0-9]+:[[:space:]]*', '');
+```
+
+`SQLCODE` y `SQLERRM` se pasan **por parámetro** al helper que traduce: dentro de
+un procedimiento llamado desde un manejador de excepciones no hay garantía de que
+sigan apuntando al error original.
 
 ---
 

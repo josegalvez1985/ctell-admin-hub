@@ -558,6 +558,13 @@ export type Ubicacion = {
   estante: number;
   nivel: number;
   descripcion: string | null;
+  /**
+   * Cuántos artículos hay asignados a este estante.
+   *
+   * Viene siempre, se haya filtrado o no. Un 0 es un dato útil: dice que la
+   * ubicación se puede borrar sin romper nada.
+   */
+  cantidadArticulos: number;
 };
 
 export type ListaUbicaciones = {
@@ -1079,6 +1086,116 @@ export type ListaExistencias = {
   pagina: number;
   /** El que el backend aplicó, que pudo recortarse al techo de 50. */
   tamanio: number;
+};
+
+/**
+ * Estado de un conteo físico.
+ *
+ * `PROCESADO` es **legado**: describe el efecto que el conteo tenía cuando el
+ * stock vivía en lotes, y ninguna transición lo produce hoy. Está en el tipo
+ * porque las filas históricas pueden traerlo y la pantalla tiene que poder
+ * mostrarlas.
+ */
+export type EstadoInventario = "ABIERTO" | "CERRADO" | "ANULADO" | "PROCESADO";
+
+/**
+ * Un conteo físico: cuánto hay REALMENTE de un artículo en una sucursal.
+ *
+ * Es la única corrección de `EXISTENCIAS` que existe hoy. Al cerrarse,
+ * `CANTIDAD_DISPONIBLE` pasa a valer `cantidadFisica` — lo escribe un trigger,
+ * no el paquete.
+ *
+ * **Sin lotes.** Un conteo es por artículo y depósito, no por partida: en el
+ * estante las unidades son idénticas y nadie sabe de qué compra vino cada una,
+ * que es justamente lo que hacía imposible contar con el modelo viejo.
+ */
+export type Inventario = {
+  id: number;
+  idEmpresa: number;
+  idSucursal: number;
+  /** Del JOIN. `null` sólo si la sucursal se borró. */
+  sucursal: string | null;
+  idArticulo: number;
+  nombreArticulo: string;
+  codigoArticulo: string | null;
+  /**
+   * Del JOIN contra `MARCAS`. `null` si el artículo no tiene una asignada.
+   *
+   * Va porque **la marca identifica la pieza**: dos artículos llamados "Filtro
+   * de aceite" son cosas distintas según de quién sean, y en un conteo lo que
+   * se tiene en la mano es la pieza. Es también el dato con el que se lo eligió
+   * en la lista de valores.
+   */
+  marca: string | null;
+  /**
+   * Del JOIN contra `CATEGORIAS`. `null` si el artículo no tiene una asignada.
+   *
+   * Mismo criterio que `marca`: el diálogo de conteo ofrece completarla ahí
+   * mismo si falta.
+   */
+  categoria: string | null;
+  /**
+   * Lo contado en el estante. `null` mientras la planilla esté abierta y nadie
+   * haya ido al depósito todavía — por eso no se puede cerrar así.
+   */
+  cantidadFisica: number | null;
+  /**
+   * Lo que el sistema decía **al cerrar**, sellado por el trigger. `null` en
+   * los abiertos: todavía no hay ajuste que explicar.
+   *
+   * Es contra esto que se mide la diferencia de un conteo cerrado. Contra
+   * `existenciaActual` daría cero siempre, porque el cierre las igualó.
+   */
+  cantidadSistema: number | null;
+  /**
+   * Lo que `EXISTENCIAS` dice **ahora**, leído en vivo. Nunca `null`: el
+   * backend ya aplica `NVL(..., 0)`.
+   *
+   * Es el número contra el que se compara **mientras se cuenta**.
+   */
+  existenciaActual: number;
+  estado: EstadoInventario;
+  /** ISO con hora: cuándo se contó. */
+  fechaInventario: string | null;
+  /** ISO con hora. En un conteo cerrado, cuándo se aplicó. */
+  fechaActualizacion: string | null;
+  idUsuario: number | null;
+  /** Quién contó, del JOIN. Un ajuste de stock sin firma no se le puede preguntar a nadie. */
+  usuario: string | null;
+  /**
+   * Los primeros 150 caracteres nada más — el listado la recorta.
+   *
+   * **No la mandes de vuelta en un PUT**: escribiría el resumen encima del
+   * texto completo. Para editar, `obtener()`, que trae `observaciones` entera.
+   */
+  observacionesResumen: string | null;
+};
+
+export type ListaInventarios = {
+  items: Inventario[];
+  /** Las filas que pasan el filtro, **no** las de esta página. */
+  total: number;
+  pagina: number;
+  /** El que el backend aplicó, que pudo recortarse al techo de 50. */
+  tamanio: number;
+};
+
+/**
+ * Un conteo con su observación completa. Es lo que devuelve `obtener()`, y lo
+ * que tiene que cargar el formulario de edición.
+ */
+export type InventarioDetalle = Omit<Inventario, "observacionesResumen"> & {
+  observaciones: string | null;
+};
+
+/** Lo que devuelve cerrar un conteo: cuánto se corrigió, sin volver a consultar. */
+export type CierreInventario = {
+  ok: boolean;
+  /** Lo que el sistema decía antes del ajuste. */
+  cantidadSistema: number | null;
+  cantidadFisica: number;
+  /** `cantidadFisica - cantidadSistema`. Negativa es faltante. */
+  diferencia: number;
 };
 
 /**
@@ -2099,6 +2216,173 @@ export const api = {
     },
   },
 
+  /**
+   * Inventarios: los conteos físicos, y la única cosa que hoy corrige
+   * `EXISTENCIAS`.
+   *
+   * **`cerrar` mueve el stock y no se deshace.** Por eso es su propio endpoint y
+   * no un campo de `actualizar`: contar y aplicar son dos actos distintos. Un
+   * conteo cerrado no se edita ni se borra — para corregirlo, se carga otro.
+   *
+   * **`anular` y `eliminar` no son lo mismo**: eliminar es para el borrador
+   * cargado por error, que no significa nada; anular es para el conteo que se
+   * hizo y se decide no aplicar, y deja constancia de que alguien fue a contar.
+   */
+  inventarios: {
+    /**
+     * `idEmpresa` es obligatorio; el resto de los filtros se combinan.
+     *
+     * `busqueda` mira **todo lo que identifica la pieza**: nombre, código del
+     * fabricante, marca y códigos equivalentes. Mismo criterio que la lista de
+     * valores de artículos, y tiene que serlo: si el conteo se cargó eligiendo
+     * el artículo por una equivalencia, buscarlo después con esa misma
+     * equivalencia no puede fallar.
+     *
+     * Paginado en el servidor, 20 por página y **50 como techo**: el JSON viaja
+     * por un bind de ORDS con límite de 4000 bytes.
+     *
+     * **`observaciones` viene recortada** a 150 caracteres, como
+     * `observacionesResumen`, por ese mismo límite. Para el texto entero,
+     * `obtener()`.
+     */
+    listar: (params: {
+      idEmpresa: number;
+      idSucursal?: number | undefined;
+      idArticulo?: number | undefined;
+      estado?: EstadoInventario | undefined;
+      busqueda?: string | undefined;
+      pagina?: number | undefined;
+      tamanio?: number | undefined;
+    }) => {
+      const q = new URLSearchParams({ idEmpresa: String(params.idEmpresa) });
+      if (params.idSucursal) q.set("idSucursal", String(params.idSucursal));
+      if (params.idArticulo) q.set("idArticulo", String(params.idArticulo));
+      if (params.estado) q.set("estado", params.estado);
+      if (params.busqueda?.trim()) q.set("busqueda", params.busqueda.trim());
+      if (params.pagina) q.set("pagina", String(params.pagina));
+      if (params.tamanio) q.set("tamanio", String(params.tamanio));
+      return request<ListaInventarios>(`/inventarios/listar?${q}`);
+    },
+
+    /**
+     * Un conteo con su `observaciones` COMPLETA.
+     *
+     * **El formulario de edición tiene que usar esto**, no la fila del listado:
+     * guardar el resumen de 150 caracteres escribiría encima de los 1000 y se
+     * perdería el resto sin ningún error a la vista.
+     */
+    obtener: (id: number, idEmpresa: number) =>
+      request<InventarioDetalle>(`/inventarios/obtener/${id}/${idEmpresa}`),
+
+    /**
+     * Nace `ABIERTO` y firmado por el usuario del token — `idUsuario` no se
+     * manda: dejaría firmar un conteo a nombre de otro.
+     *
+     * `cantidadFisica` es opcional: se abre la planilla y se cuenta después.
+     * Sin ella no se puede cerrar, que es donde el número importa.
+     *
+     * Da **409** si ya hay un conteo abierto de ese artículo en esa sucursal:
+     * dos planillas del mismo estante terminan en que la última que se cierre
+     * pisa a la otra sin dejar rastro.
+     *
+     * Las claves van todas aunque estén vacías: una clave omitida deja el bind
+     * de ORDS sin definir, no en `NULL`.
+     */
+    crear: (datos: {
+      idEmpresa: number;
+      idSucursal: number;
+      idArticulo: number;
+      /**
+       * `YYYY-MM-DDTHH:mm:ss` local, **con hora**. Vacío = el momento de la
+       * carga (lo pone el trigger con `SYSTIMESTAMP`).
+       *
+       * El backend también acepta `YYYY-MM-DDTHH:mm` —un
+       * `<input type="datetime-local">` omite los segundos cuando están en
+       * cero— y `YYYY-MM-DD` a secas, que vale medianoche.
+       *
+       * La hora importa: dos conteos del mismo artículo el mismo día se ordenan
+       * entre sí por ella.
+       */
+      fechaInventario?: string | undefined;
+      cantidadFisica?: number | undefined;
+      observaciones?: string | undefined;
+    }) =>
+      request<{ id: number; ok: boolean }>("/inventarios/crear", {
+        method: "POST",
+        body: JSON.stringify({
+          idEmpresa: datos.idEmpresa,
+          idSucursal: datos.idSucursal,
+          idArticulo: datos.idArticulo,
+          fechaInventario: datos.fechaInventario ?? "",
+          cantidadFisica: datos.cantidadFisica ?? "",
+          observaciones: datos.observaciones ?? "",
+        }),
+      }),
+
+    /**
+     * Corrige un conteo **abierto**. Empresa, sucursal y artículo no se
+     * modifican: contar otra cosa es cargar otro inventario.
+     *
+     * **ACÁ UN CAMPO VACÍO BORRA, no conserva** — al revés que el resto del
+     * proyecto. Es deliberado: la cantidad puede volver a quedar sin cargar, y
+     * con la regla habitual quien escribió 12 por error se quedaría con ese 12
+     * para siempre… y cerrar lo aplicaría al stock. Mandá siempre los tres
+     * campos con lo que tenga el formulario.
+     *
+     * `fechaInventario` es la excepción: vacía conserva la que ya tenía. Un
+     * conteo sin fecha no significa nada.
+     */
+    actualizar: (
+      id: number,
+      datos: {
+        idEmpresa: number;
+        fechaInventario?: string | undefined;
+        cantidadFisica?: number | undefined;
+        observaciones?: string | undefined;
+      },
+    ) =>
+      request<{ ok: boolean }>(`/inventarios/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          idEmpresa: datos.idEmpresa,
+          fechaInventario: datos.fechaInventario ?? "",
+          cantidadFisica: datos.cantidadFisica ?? "",
+          observaciones: datos.observaciones ?? "",
+        }),
+      }),
+
+    /**
+     * Aplica el conteo: `EXISTENCIAS.CANTIDAD_DISPONIBLE` pasa a valer
+     * `cantidadFisica`, y la fila queda congelada.
+     *
+     * **No se deshace.** Da 400 si el conteo no tiene cantidad cargada, y 409
+     * si ya estaba cerrado o anulado.
+     *
+     * Invalidá también `["existencias"]` y `["articulos"]` al volver: los
+     * números que muestran acaban de cambiar.
+     */
+    cerrar: (id: number, idEmpresa: number) =>
+      request<CierreInventario>(`/inventarios/cerrar/${id}`, {
+        method: "POST",
+        body: JSON.stringify({ idEmpresa }),
+      }),
+
+    /** Descarta el conteo sin tocar el stock. Sólo desde `ABIERTO`. */
+    anular: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/inventarios/anular/${id}`, {
+        method: "POST",
+        body: JSON.stringify({ idEmpresa }),
+      }),
+
+    /**
+     * Baja física, **sólo mientras está abierto** (409 si no). Un conteo cerrado
+     * ya movió el stock: borrarlo dejaría la existencia sin la explicación de
+     * por qué dice lo que dice.
+     */
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/inventarios/eliminar/${id}/${idEmpresa}`, { method: "DELETE" }),
+  },
+
   paises: {
     listar: () => request<ListaPaises>("/paises/listar"),
 
@@ -2715,10 +2999,21 @@ export const api = {
    * sucursal activa además de la empresa.
    */
   ubicaciones: {
-    listar: (params: { idEmpresa?: number; idSucursal?: number } = {}) => {
+    /**
+     * Con `conArticulos`, devuelve **sólo los estantes que tienen algo**.
+     *
+     * Es lo que hace usable un filtro "qué hay acá": en un depósito con la
+     * grilla entera cargada, la mayoría de las ubicaciones están vacías, y
+     * ofrecerlas es ofrecer búsquedas que ya se sabe que no devuelven nada.
+     *
+     * **El ABM de ubicaciones no debe usarlo**: ahí hay que ver las vacías, que
+     * son justamente las que se pueden editar o borrar sin romper nada.
+     */
+    listar: (params: { idEmpresa?: number; idSucursal?: number; conArticulos?: boolean } = {}) => {
       const q = new URLSearchParams();
       if (params.idEmpresa) q.set("idEmpresa", String(params.idEmpresa));
       if (params.idSucursal) q.set("idSucursal", String(params.idSucursal));
+      if (params.conArticulos) q.set("conArticulos", "S");
       const query = q.toString();
       return request<ListaUbicaciones>(`/ubicaciones/listar${query ? `?${query}` : ""}`);
     },
@@ -3161,10 +3456,23 @@ export const api = {
         idCategoria?: number | undefined;
         idMarca?: number | undefined;
         /**
+         * Deja **sólo los artículos guardados en ese estante**. Responde "qué
+         * hay acá", que es la pregunta con la que alguien se para delante de la
+         * ubicación.
+         *
+         * Es el único filtro que no es una columna de `ARTICULOS`: sale de la
+         * tabla de cruce, así que un artículo puede aparecer bajo varias
+         * ubicaciones — el backend usa `EXISTS` para que eso no lo duplique en
+         * el listado ni infle el total del paginador.
+         */
+        idUbicacion?: number | undefined;
+        /**
          * **Acota el stock, no la lista.** El catálogo es de la empresa y no
          * cambia según el depósito; lo que cambia es `cantidadStock`, que sin
          * esto suma todas las sucursales de la empresa y con esto devuelve el de
          * una sola.
+         *
+         * Ojo con la diferencia: `idUbicacion` sí filtra qué artículos vuelven.
          */
         idSucursal?: number | undefined;
         pagina?: number | undefined;
@@ -3177,6 +3485,7 @@ export const api = {
         partes.push(`busqueda=${encodeURIComponent(params.busqueda.trim())}`);
       if (params.idCategoria) partes.push(`idCategoria=${params.idCategoria}`);
       if (params.idMarca) partes.push(`idMarca=${params.idMarca}`);
+      if (params.idUbicacion) partes.push(`idUbicacion=${params.idUbicacion}`);
       if (params.idSucursal) partes.push(`idSucursal=${params.idSucursal}`);
       if (params.pagina) partes.push(`pagina=${params.pagina}`);
       if (params.tamanio) partes.push(`tamanio=${params.tamanio}`);
