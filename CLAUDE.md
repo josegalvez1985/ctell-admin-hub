@@ -180,6 +180,8 @@ De los indicadores de stock, **sólo el valor sigue en cero**: unidades en depó
 
 Un endpoint propio y no sumar en el frontend porque los listados están paginados: sumarlos en el cliente daría el total de la página, no del mes.
 
+**"Últimos movimientos" une ventas, compras e inventarios** con `UNION ALL`, ocho de cada uno. El monto de un inventario es la **diferencia** del conteo y viaja con `enUnidades: 'S'`, porque son unidades y no guaraníes. Contra qué se resta **depende del estado**: un conteo `ABIERTO` va contra `EXISTENCIAS` en vivo —`CANTIDAD_SISTEMA` es `NULL` hasta el cierre, y restar 0 mostraría lo contado como si fuera la diferencia— y uno `CERRADO` contra `CANTIDAD_SISTEMA`, que el trigger congeló. Es el mismo criterio que `sistemaDe()` en `_auth.inventarios.tsx`: **si cambia uno, cambia el otro**.
+
 ### Los totales no se guardan: se calculan
 
 `VENTAS_CABECERAS` y `FACTURAS_COMPRAS_CAB` **no tienen** columnas de monto. Total, descuento, gravado, IVA, cobrado/pagado y saldo se derivan sumando el detalle en cada consulta.
@@ -274,7 +276,11 @@ Las columnas `ACTIVO` son `VARCHAR2(1)` con valores `'A'` o `'I'`. **Este códig
 - **`_auth.marcas.tsx`:** "/marcas" → ABM de marcas de artículos, **por empresa** (`useEmpresa()`, como el resto). Las filas con `ID_EMPRESA` en NULL son anteriores a esa columna y las ve toda empresa ("heredadas"): los filtros van como `(ID_EMPRESA = l_empresa OR ID_EMPRESA IS NULL)`.
 - **`_auth.articulos.tsx`:** "/articulos" → ABM del catálogo. Categoría y marca se filtran desde el header de su columna; **la ubicación no puede** —un artículo está en varios estantes a la vez, así que no hay columna que la muestre— y va en un `SelectorModal` al lado del buscador. Ese selector ofrece **sólo estantes con artículos** (`conArticulos`) y de la sucursal activa: en un depósito con la grilla entera cargada, la mayoría están vacíos y ofrecerlos es ofrecer búsquedas que ya se sabe que no devuelven nada.
 - **`_auth.existencias.tsx`:** "/existencias" → Consulta de existencia de artículos, con exportación a Excel y PDF. Es una CONSULTA: no da de alta ni edita nada.
-- **`_auth.inventarios.tsx`:** "/inventarios" → Conteo físico **de la sucursal activa**. Cargar el conteo y **cerrarlo son dos actos distintos**: el primero se corrige cuantas veces haga falta, el segundo escribe `EXISTENCIAS` y no se deshace, así que va por un `AlertDialog` que dice de qué número a qué número pasa. Un conteo cerrado o anulado sólo se mira. Al cerrar se invalidan también `["existencias"]`, `["articulos"]` y `["dashboard"]`: los tres muestran el número que acaba de cambiar.
+- **`_auth.inventarios.tsx`:** "/inventarios" → Carga del conteo físico **de la sucursal activa**. Un conteo `ABIERTO` se edita, se anula o se elimina; uno `CERRADO` o `ANULADO` **sólo se mira**.
+
+  > **Acá NO se cierra, a propósito.** Cargar el conteo y aplicarlo son dos actos distintos: el primero se corrige cuantas veces haga falta, el segundo escribe `EXISTENCIAS` y no se deshace. Una acción así no va como un ícono más en la fila de un listado, al lado de editar y borrar, donde se toca de paso. Anular sí está, porque no mueve stock. `POST /inventarios/cerrar/:id` existe y funciona: lo va a consumir la pantalla que se haga para eso, que además tendrá que invalidar `["existencias"]`, `["articulos"]` y `["dashboard"]` — los tres muestran el número que el cierre acaba de cambiar.
+
+  El diálogo de alta ofrece completar la ficha del artículo si le falta **marca, categoría o ubicación**, y un filtro por estante arriba del selector para contar recorriendo el depósito.
 - **`_auth.sucursales.tsx`:** "/sucursales" → Sucursales **de la empresa activa**. El recorte lo hace el backend (`?idEmpresa=`), con la misma queryKey que `sucursal-provider` para compartir caché. No hay selector de empresa: el alta va a la activa.
 - **`_auth.configuracion.tsx`:** "/configuracion" → Preferencias (tema, acento).
 
@@ -306,6 +312,16 @@ garantiza que tarde o temprano el Excel tenga una columna que el PDF no.
 - **El guaraní (`₲`) no existe en las fuentes de fábrica de jsPDF** y sale como
   un cuadrito: en un PDF, poné "Gs." en el título de la columna y mandá el
   número pelado.
+- **`urlLogo`** pone el logo de la empresa arriba a la derecha del PDF. Se pasa
+  sólo si `empresa.tieneLogo` —`urlLogoEmpresa(empresa.id)`— para no pedir una
+  imagen que ya se sabe que da 404. jsPDF **no acepta una URL**: el helper la
+  baja con `fetch` y la convierte a data URL, y **nunca lanza** — sin logo el
+  reporte sale igual, que es mejor que no generarlo porque la imagen falló. El
+  nombre de la empresa sigue en los subtítulos: el logo lo acompaña, no lo
+  reemplaza (en una fotocopia en blanco y negro un logo puede no decir de quién
+  es el reporte). La tabla arranca debajo de **lo más bajo** del encabezado —
+  `max(bloque de texto, logo)`— porque con pocos subtítulos el logo es lo más
+  alto y la primera fila se le montaba encima.
 - Las dos librerías entran con `import()` dinámico y quedan en su propio chunk:
   no las paga quien nunca exporta.
 

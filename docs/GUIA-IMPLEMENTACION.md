@@ -21,6 +21,7 @@ de plantilla para todo lo demás.
    - [Columnas calculadas: lo que no se guarda](#34-columnas-calculadas-lo-que-no-se-guarda)
    - [Máquinas de estado y triggers](#35-máquinas-de-estado-y-triggers)
    - [Agregar una columna a una tabla que ya existe](#352-agregar-una-columna-a-una-tabla-que-ya-existe)
+   - [Agregar un parámetro a un `LISTAR` que ya usan varias pantallas](#353-agregar-un-parámetro-a-un-listar-que-ya-usan-varias-pantallas)
    - [Transacciones que mueven stock o plata](#36-transacciones-que-mueven-stock-o-plata)
    - [Trampas de PL/SQL que se repiten](#37-trampas-de-plsql-que-se-repiten)
    - [Un `UNIQUE` sobre texto necesita el texto normalizado](#38-un-unique-sobre-texto-necesita-el-texto-normalizado)
@@ -1142,6 +1143,12 @@ El `PUT` **sí valida token** —escribir nunca es público— y solo acepta
 `image/*`: sin ese control, cualquier archivo quedaría guardado y se serviría de
 vuelta con su content-type a quien abra el listado.
 
+> **Que sea público es además lo que permite usarlo fuera de un `<img>`.** El
+> logo de la empresa entra en los PDF exportados, y ahí quien baja la imagen es
+> un `fetch` desde `lib/exportar.ts` — jsPDF necesita los bytes, no una URL. Con
+> el endpoint detrás de token habría que resolver lo mismo dos veces. Ver la
+> sección de exportación en [GUIA-FRONTEND.md](GUIA-FRONTEND.md).
+
 ### `tieneImagen` en el listado, no el binario
 
 El listado devuelve un booleano, así el frontend sabe si pedir la imagen o
@@ -1708,6 +1715,92 @@ SELECT COLUMN_NAME, NULLABLE, DATA_TYPE
 
 ---
 
+## 3.5.3 Agregar un parámetro a un `LISTAR` que ya usan varias pantallas
+
+Distinto de agregar una columna: acá no hay dato nuevo, hay una **firma que
+cambia**. Y una firma de `LISTAR` es un contrato compartido — `/articulos/listar`
+lo consumen siete pantallas y `/ubicaciones/listar` cinco.
+
+### El parámetro nuevo va ÚLTIMO entre los `IN`, y con `DEFAULT`
+
+Un parámetro obligatorio en el medio **invalida toda llamada con la firma vieja**.
+Y hay un instante en que eso pasa de verdad: entre que se compila el paquete y
+`PUBLICAR_ENDPOINTS` republica el módulo, el handler publicado todavía manda los
+argumentos viejos. Ahí no se cae sólo lo nuevo — se caen las siete pantallas.
+
+```plsql
+-- MAL: en el medio y sin default. Toda llamada posicional vieja deja de compilar.
+p_id_marca      IN  VARCHAR2,
+p_id_ubicacion  IN  VARCHAR2,
+p_id_sucursal   IN  VARCHAR2,
+
+-- MAL TAMBIÉN: el DEFAULT en el medio NO cubre nada en una llamada posicional,
+-- sólo alcanza a los argumentos FINALES. Da la misma rotura, con la falsa
+-- sensación de estar protegido.
+p_id_ubicacion  IN  VARCHAR2 DEFAULT NULL,
+p_id_sucursal   IN  VARCHAR2,
+
+-- BIEN: último de los IN, antes de los OUT.
+p_pagina        IN  VARCHAR2,
+p_tamanio       IN  VARCHAR2,
+p_id_ubicacion  IN  VARCHAR2 DEFAULT NULL,
+p_status_code   OUT NUMBER,
+```
+
+Queda fuera del orden lógico de los demás filtros, y está bien que así sea: la
+posición es parte del arreglo, no un descuido de estilo. Un `DEFAULT` seguido de
+parámetros `OUT` es válido en PL/SQL — `PKG_AUTH.CREAR_TOKEN` ya lo hace.
+
+> Al reejecutar, pegar **el archivo entero**: compila el paquete y republica el
+> módulo de una. Y revisar que el `p_source` del handler enumere los binds en el
+> **mismo orden nuevo** — es un string, nadie lo valida hasta que falla.
+
+### Filtrar por una tabla de cruce: `EXISTS`, nunca `JOIN`
+
+Cuando el filtro no es una columna propia sino una relación N:M —"qué artículos
+hay en este estante"— un `JOIN` **duplica filas**: un artículo asignado a tres
+ubicaciones aparece tres veces, y el `COUNT` del paginador dice cualquier cosa.
+
+```sql
+AND (l_id_ubicacion IS NULL
+     OR EXISTS (SELECT 1 FROM ARTICULOS_UBICACIONES au
+                 WHERE au.ID_ARTICULO  = a.ID_ARTICULO
+                   AND au.ID_UBICACION = l_id_ubicacion))
+```
+
+Va idéntico en el `WHERE` de la consulta **y en el del `COUNT`**. Si filtran
+distinto, el total dice una cosa y las filas otra, y el "Mostrar más" ofrece
+páginas vacías.
+
+### Un flag booleano se recibe como `VARCHAR2`, no como `BOOLEAN`
+
+**Un `BOOLEAN` de PL/SQL no se puede usar dentro de una sentencia SQL.** Si el
+flag va a terminar en un `WHERE` —que es para lo que suele existir— declararlo
+`BOOLEAN` hace que el paquete no compile.
+
+```plsql
+-- MAL: l_solo_con es BOOLEAN y abajo entra en un WHERE.
+l_solo_con BOOLEAN := UPPER(TRIM(p_con_articulos)) = 'S';
+
+-- BIEN
+l_solo_con VARCHAR2(1) := CASE WHEN UPPER(TRIM(p_con_articulos)) = 'S'
+                               THEN 'S' ELSE 'N' END;
+...
+AND (l_solo_con = 'N' OR EXISTS (...))
+```
+
+Es la misma familia de trampas que los helpers privados en SQL (`PLS-00231`): lo
+que vive sólo en PL/SQL no cruza al motor SQL.
+
+### Un filtro nuevo no cambia el comportamiento por defecto
+
+`?conArticulos=S` recorta; ausente, el listado devuelve lo de siempre. Eso es lo
+que permite que las cinco pantallas que ya lo usaban sigan igual sin tocarlas —
+y es deliberado que el ABM de la propia tabla **no** lo use: ahí las filas vacías
+son justamente las que se pueden editar o borrar sin romper nada.
+
+---
+
 ## 3.6 Transacciones que mueven stock o plata
 
 Comprar hace entrar mercadería, vender la saca, cobrar y pagar mueven dinero.
@@ -1791,9 +1884,33 @@ END LOOP;
 
 ## 3.7 Trampas de PL/SQL que se repiten
 
-Tres errores de compilación que aparecieron más de una vez en este proyecto. No
+Cuatro errores de compilación que aparecieron más de una vez en este proyecto. No
 son casos raros: salen del estilo normal del código de acá —helpers privados y
 `JSON_OBJECT` para armar la respuesta— así que conviene reconocerlos de memoria.
+
+Las tres primeras son la misma idea vista de tres formas: **lo que vive sólo en
+PL/SQL no cruza al motor SQL**. Ni una función del body, ni un `BOOLEAN`.
+
+### Un `BOOLEAN` no se puede usar dentro de una sentencia SQL
+
+Aparece al recibir un flag por parámetro y usarlo en un `WHERE`:
+
+```plsql
+-- MAL: el paquete no compila
+l_solo_con BOOLEAN := UPPER(TRIM(p_con_articulos)) = 'S';
+...
+AND (NOT l_solo_con OR EXISTS (...))
+
+-- BIEN: VARCHAR2 con el mismo criterio 'S'/'N' del resto del proyecto
+l_solo_con VARCHAR2(1) := CASE WHEN UPPER(TRIM(p_con_articulos)) = 'S'
+                               THEN 'S' ELSE 'N' END;
+...
+AND (l_solo_con = 'N' OR EXISTS (...))
+```
+
+Un `BOOLEAN` sí sirve para un `IF` o para el retorno de un helper que se llama
+desde PL/SQL — `ERROR_DE_NEGOCIO` en `db/inventarios.sql` devuelve uno. El
+problema es únicamente cruzarlo a SQL.
 
 ### `PLS-00231`: una función privada del _body_ no se puede usar en SQL
 

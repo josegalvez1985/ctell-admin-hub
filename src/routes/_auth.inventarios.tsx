@@ -1,17 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { createFileRoute } from "@tanstack/react-router";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  AlertTriangle,
-  Ban,
-  ClipboardCheck,
-  Eye,
-  Loader2,
-  Pencil,
-  Plus,
-  Search,
-  Trash2,
-} from "lucide-react";
+import { AlertTriangle, Ban, Eye, Loader2, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
@@ -103,6 +93,15 @@ const ESPERA_BUSQUEDA_MS = 350;
 
 /** El valor del combo de estado que significa "todos". Un `""` no lo acepta Radix. */
 const TODOS = "todos";
+
+/**
+ * La opción "sin filtrar por estante" del selector de ubicación.
+ *
+ * No es `""`: `SelectorModal` trata la cadena vacía como "nada elegido" y no la
+ * marcaría como seleccionada. Con un centinela propio, la fila se ve tildada
+ * como cualquier otra.
+ */
+const TODAS_UBICACIONES = "todas";
 
 const ESTADOS: { valor: EstadoInventario; etiqueta: string }[] = [
   { valor: "ABIERTO", etiqueta: "Abiertos" },
@@ -242,7 +241,6 @@ function InventariosPage() {
   const [creando, setCreando] = useState(false);
   const [editando, setEditando] = useState<Inventario | null>(null);
   const [viendo, setViendo] = useState<Inventario | null>(null);
-  const [aCerrar, setACerrar] = useState<Inventario | null>(null);
   const [aAnular, setAAnular] = useState<Inventario | null>(null);
   const [aEliminar, setAEliminar] = useState<Inventario | null>(null);
   const [filtroEstado, setFiltroEstado] = useState<string>(TODOS);
@@ -290,38 +288,14 @@ function InventariosPage() {
   const total = data?.pages[0]?.total ?? 0;
 
   /**
-   * Después de cerrar hay que invalidar TODO lo que muestra stock, no sólo esta
-   * lista: el cierre acaba de escribir `EXISTENCIAS`, así que la consulta de
-   * existencias, el listado de artículos y los indicadores de la home quedaron
-   * mostrando el número viejo.
+   * NOTA PARA QUIEN IMPLEMENTE EL CIERRE, en la pantalla que corresponda:
+   * aplicar un conteo escribe `EXISTENCIAS`, así que hay que invalidar TODO lo
+   * que muestra stock —`["existencias"]`, `["articulos"]` y `["dashboard"]`—, no
+   * sólo `["inventarios"]`. Si no, los tres siguen mostrando el número viejo.
+   *
+   * Acá no hace falta: ninguna acción de esta pantalla mueve stock. Anular no
+   * toca la existencia y eliminar sólo borra un borrador.
    */
-  function invalidarStock() {
-    queryClient.invalidateQueries({ queryKey: ["inventarios"] });
-    queryClient.invalidateQueries({ queryKey: ["existencias"] });
-    queryClient.invalidateQueries({ queryKey: ["articulos"] });
-    queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-  }
-
-  const cerrar = useMutation({
-    mutationFn: (inventario: Inventario) =>
-      api.inventarios.cerrar(inventario.id, inventario.idEmpresa),
-    onSuccess: (resultado, inventario) => {
-      invalidarStock();
-      // El toast dice CUÁNTO se corrigió, no sólo que salió bien: es la única
-      // confirmación de que el ajuste hizo lo que se esperaba.
-      const diferencia = resultado.diferencia;
-      toast.success(
-        diferencia === 0
-          ? `${inventario.nombreArticulo}: el conteo coincidía con el sistema`
-          : `${inventario.nombreArticulo}: ${diferencia > 0 ? "+" : ""}${formatearMoneda(diferencia)} — la existencia quedó en ${formatearMoneda(resultado.cantidadFisica)}`,
-      );
-      setACerrar(null);
-    },
-    onError: (e) => {
-      toast.error(MENSAJE_ERROR(e, "No se pudo cerrar el conteo"));
-      setACerrar(null);
-    },
-  });
 
   const anular = useMutation({
     mutationFn: (inventario: Inventario) =>
@@ -498,10 +472,6 @@ function InventariosPage() {
                         <Pencil className="size-4" />
                         Editar
                       </Button>
-                      <Button size="sm" className="flex-1" onClick={() => setACerrar(inv)}>
-                        <ClipboardCheck className="size-4" />
-                        Cerrar
-                      </Button>
                       <Button
                         variant="outline"
                         size="sm"
@@ -591,6 +561,12 @@ function InventariosPage() {
                       {inv.usuario ?? "—"}
                     </TableCell>
                     <TableCell className="text-right">
+                      {/* NO HAY "CERRAR" ACÁ, Y NO ES UN OLVIDO. Cerrar aplica el
+                          conteo al stock y no se deshace: no va como un ícono
+                          más de una fila de listado, al lado de editar y borrar,
+                          donde se toca de paso. Anular sí, porque no mueve nada.
+                          El endpoint existe (`POST /inventarios/cerrar/:id`) y lo
+                          va a usar la pantalla que se haga para eso. */}
                       <div className="flex justify-end gap-1">
                         {inv.estado === "ABIERTO" ? (
                           <>
@@ -601,14 +577,6 @@ function InventariosPage() {
                               title="Editar el conteo"
                             >
                               <Pencil className="size-4" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => setACerrar(inv)}
-                              title="Cerrar: aplica el conteo a la existencia"
-                            >
-                              <ClipboardCheck className="size-4" />
                             </Button>
                             <Button
                               variant="ghost"
@@ -683,34 +651,6 @@ function InventariosPage() {
             nombreSucursal={sucursal.nombreSucursal}
           />
         )}
-
-        <AlertDialog open={aCerrar !== null} onOpenChange={(v) => !v && setACerrar(null)}>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>¿Aplicar el conteo?</AlertDialogTitle>
-              <AlertDialogDescription>
-                {aCerrar
-                  ? `La existencia de "${aCerrar.nombreArticulo}" pasa de ${formatearMoneda(
-                      aCerrar.existenciaActual,
-                    )} a ${
-                      aCerrar.cantidadFisica === null
-                        ? "—"
-                        : formatearMoneda(aCerrar.cantidadFisica)
-                    }. El conteo queda congelado y no se puede deshacer: para corregirlo hay que cargar uno nuevo.`
-                  : ""}
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Cancelar</AlertDialogCancel>
-              <AlertDialogAction
-                onClick={() => aCerrar && cerrar.mutate(aCerrar)}
-                disabled={cerrar.isPending}
-              >
-                Cerrar el conteo
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
 
         <AlertDialog open={aAnular !== null} onOpenChange={(v) => !v && setAAnular(null)}>
           <AlertDialogContent>
@@ -857,6 +797,19 @@ function InventarioDialog({
    */
   const [idUbicacionAAsignar, setIdUbicacionAAsignar] = useState("");
 
+  /**
+   * Estante por el que se está filtrando la lista de artículos.
+   *
+   * NO ES UN CAMPO DEL CONTEO: no viaja al backend ni se guarda. El conteo ya
+   * queda ubicado por su artículo — esto sólo acorta la lista para el que está
+   * parado delante del estante contando lo que hay.
+   */
+  const [filtroUbicacion, setFiltroUbicacion] = useState(TODAS_UBICACIONES);
+
+  /** El id que se le pasa al selector de artículo, o nada si es "todo el depósito". */
+  const ubicacionFiltrada =
+    filtroUbicacion === TODAS_UBICACIONES ? undefined : Number(filtroUbicacion);
+
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: {
@@ -890,6 +843,46 @@ function InventarioDialog({
   const esperandoDetalle = editando && detalle === undefined;
 
   const idArticuloElegido = Number(form.watch("idArticulo"));
+
+  /**
+   * Los estantes que ofrece el filtro de arriba: SÓLO los que tienen algo, y de
+   * esta sucursal.
+   *
+   * `conArticulos` es lo que lo hace usable: en un depósito con la grilla entera
+   * cargada la mayoría está vacía, y ofrecer un estante vacío acá es ofrecer una
+   * lista de artículos que ya se sabe que va a salir en blanco.
+   *
+   * queryKey con `con-articulos`, la misma que usa el filtro de /articulos: es
+   * el mismo recorte y conviene que compartan respuesta. NO es la del aviso de
+   * "sin ubicación" de más abajo, que trae también las vacías porque ahí hacen
+   * falta para poder asignar una.
+   */
+  const { data: ubicacionesFiltro, isPending: cargandoUbicacionesFiltro } = useQuery({
+    queryKey: ["ubicaciones", "con-articulos", idEmpresa, idSucursal],
+    queryFn: () => api.ubicaciones.listar({ idEmpresa, idSucursal, conArticulos: true }),
+    enabled: abierto && !soloLectura && !editando,
+  });
+
+  /**
+   * "Todo el depósito" va como una OPCIÓN MÁS, la primera.
+   *
+   * `SelectorModal` no ofrece un "ninguna" propio: una vez adentro del modal
+   * sólo se puede elegir algo de la lista, así que sin esta fila no hay forma de
+   * deshacer el filtro desde donde se lo puso. La ✕ de al lado no alcanza —
+   * aparece recién con algo elegido, y para verla hay que cerrar el modal.
+   *
+   * El centinela es `TODAS` y no `""`: el selector usa la cadena vacía para "sin
+   * elegir", y una opción con ese valor se vería como no seleccionada aunque
+   * fuera justamente lo elegido.
+   */
+  const ubicacionesFiltroOpciones = [
+    { valor: TODAS_UBICACIONES, etiqueta: "Todo el depósito" },
+    ...(ubicacionesFiltro?.items ?? []).map((u) => ({
+      valor: String(u.id),
+      etiqueta: etiquetaUbicacion(u.zona, u.estante, u.nivel),
+      descripcion: `${u.cantidadArticulos} artículo${u.cantidadArticulos === 1 ? "" : "s"}`,
+    })),
+  ];
 
   /**
    * Lo que el sistema dice para el artículo elegido, EN ESTA SUCURSAL.
@@ -1220,6 +1213,10 @@ function InventarioDialog({
     // La ubicación no tiene "asignada"/"ya asignada": su aviso sale de una
     // consulta, no de estado local. Sólo hay que limpiar lo elegido a medias.
     setIdUbicacionAAsignar("");
+    // El filtro de arriba también: es de la sesión de carga anterior, y dejarlo
+    // haría que el próximo conteo arranque con la lista acotada a un estante que
+    // nadie eligió esta vez.
+    setFiltroUbicacion(TODAS_UBICACIONES);
 
     if (inventario === null) {
       form.reset({
@@ -1315,6 +1312,50 @@ function InventarioDialog({
             className="space-y-4"
             noValidate
           >
+            {/* ARRIBA DEL ARTÍCULO, y no es sólo orden visual: así se cuenta de
+                verdad. Alguien se para delante de un estante y cuenta lo que
+                hay ahí, uno por uno — elegir primero la ubicación deja el
+                selector de artículo con esa lista corta en vez del catálogo
+                entero, que obliga a teclear cada nombre de memoria.
+
+                NO ES UN CAMPO DEL CONTEO: no se guarda. El conteo se ubica solo,
+                por el artículo. Por eso va fuera del <FormField> y sin hijos de
+                ui/form, que lanzarían sin su <FormItem>.
+
+                En sólo lectura no se muestra: filtrar una lista que no se puede
+                usar no sirve de nada. */}
+            {!soloLectura && !editando && (
+              <div className="space-y-2">
+                <Label>Ubicación (opcional)</Label>
+                {/* Sin botón de limpiar al lado: "Todo el depósito" es la
+                    primera opción DENTRO del modal, así que se deshace el
+                    filtro desde el mismo lugar donde se lo puso. Una ✕ afuera
+                    obligaba a cerrar el modal para encontrarla. */}
+                <SelectorModal
+                  opciones={ubicacionesFiltroOpciones}
+                  value={filtroUbicacion}
+                  onChange={(valor) => {
+                    setFiltroUbicacion(valor);
+                    // El artículo elegido puede no estar en el estante nuevo:
+                    // dejarlo seleccionado mostraría un nombre que ya no figura
+                    // en la lista de abajo.
+                    form.setValue("idArticulo", "");
+                    setNombreArticulo("");
+                    setArticuloElegido(null);
+                  }}
+                  titulo={`Ubicaciones de ${nombreSucursal}`}
+                  descripcion="Sólo los estantes que tienen algo guardado."
+                  buscarPlaceholder="Buscar zona, estante o nivel…"
+                  vacioTexto="Ningún estante de esta sucursal tiene artículos asignados."
+                  cargando={cargandoUbicacionesFiltro}
+                  className="w-full"
+                />
+                <p className="text-[0.8rem] text-muted-foreground">
+                  Acota la lista de abajo a lo guardado en ese estante. No se guarda en el conteo.
+                </p>
+              </div>
+            )}
+
             <FormField
               control={form.control}
               name="idArticulo"
@@ -1324,6 +1365,7 @@ function InventarioDialog({
                   <FormControl>
                     <SelectorArticulo
                       idEmpresa={idEmpresa}
+                      {...(ubicacionFiltrada ? { idUbicacion: ubicacionFiltrada } : {})}
                       value={field.value}
                       etiquetaSeleccionada={nombreArticulo || undefined}
                       onChange={(valor, etiqueta, articulo) => {

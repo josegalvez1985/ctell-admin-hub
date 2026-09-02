@@ -186,12 +186,15 @@ casos porque la tabla no se comporta como una ficha:
 | Endpoint                                       | Por qué existe                                                                                                                                       |
 | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /facturas-compras/obtener/:id/:idEmpresa` | La factura **con su detalle**. El listado no lo trae: cien facturas con todas sus líneas serían un CLOB enorme para dibujar una tabla de encabezados |
-| `POST /inventarios/procesar/:id/:idEmpresa`    | `ABIERTO → PROCESADO`. Dispara una acción con efectos, no reemplaza un recurso — por eso `POST` y no `PUT`                                            |
-| `POST /inventarios/anular/:id/:idEmpresa`      | `ABIERTO → ANULADO`. **Ocupa el lugar del `/eliminar`**: un trigger prohíbe el `DELETE`                                                              |
+| `GET /inventarios/obtener/:id/:idEmpresa`      | El conteo con su `observaciones` **entera**: el listado la recorta a 150 caracteres por el techo del bind de ORDS                                    |
+| `POST /inventarios/cerrar/:id`                 | `ABIERTO → CERRADO`, y ahí el trigger escribe `EXISTENCIAS`. Dispara una acción con efectos, no reemplaza un recurso — por eso `POST` y no `PUT`     |
+| `POST /inventarios/anular/:id`                 | `ABIERTO → ANULADO`. Descarta el conteo sin tocar el stock                                                                                           |
 | `GET /empresas/publicas`                       | El único endpoint **sin token**: alimenta el selector de empresa del login, donde todavía no hay sesión                                              |
 | `GET /<tabla>/<imagen>/:id`                    | Los BLOB, también públicos: los consume un `<img>`, que no manda el header `Authorization`                                                           |
 
-E `INVENTARIOS` **no tiene `/eliminar`** en absoluto — ver
+`INVENTARIOS` **sí tiene `/eliminar`**, pero sólo mientras el conteo está
+`ABIERTO`: es para el borrador cargado por error. El que ya se contó y se decide
+no aplicar se **anula**, que deja constancia de que alguien fue al depósito. Ver
 [Máquina de estados](#máquina-de-estados-inventarios).
 
 ### Filas heredadas: una columna de empresa agregada tarde
@@ -383,6 +386,32 @@ artículo". El selector ofrece sólo las ubicaciones **no** asignadas todavía �
 ofrecer una ya asignada daría 409 — y **no** se filtra por la sucursal activa, porque
 un artículo puede estar en depósitos de varias sucursales.
 
+#### La pregunta inversa: "¿qué hay en este estante?"
+
+El mismo cruce se lee al revés desde dos lugares, y los dos usan
+`?idUbicacion=` de `/articulos/listar`:
+
+- **`/articulos`**, como filtro al lado del buscador. No puede ir en el header de
+  una columna como categoría y marca: un artículo está en varios estantes a la
+  vez, así que **no hay columna que lo muestre**.
+- **El diálogo de conteo físico**, arriba del campo Artículo. Ahí acota la lista
+  de valores en vez de una tabla, y es como se cuenta de verdad: alguien se para
+  delante de un estante y cuenta lo que hay ahí, uno por uno. Sin eso hay que
+  teclear cada nombre de memoria sobre el catálogo entero.
+
+**El filtro va con `EXISTS`, no con `JOIN`.** Un artículo asignado a tres
+ubicaciones aparecería tres veces en el listado y el total del paginador diría
+cualquier cosa. Es la misma razón por la que el `COUNT` y la consulta repiten el
+predicado idéntico.
+
+**Y los dos ofrecen sólo estantes que tienen algo** (`?conArticulos=S` en
+`/ubicaciones/listar`): en un depósito con la grilla entera cargada la mayoría
+está vacía, y ofrecerlas es ofrecer búsquedas que ya se sabe que no devuelven
+nada. El ABM de `/ubicaciones` **no** lo usa — ahí las vacías son justamente las
+que se pueden editar o borrar sin romper nada. Ese mismo listado devuelve
+`cantidadArticulos` por fila, que es lo que deja mostrar "A · Estante 3 — 12
+artículos" al elegir.
+
 ### Imágenes (BLOB)
 
 `EMPRESAS.LOGO`, `ARTICULOS.IMAGEN` y `DETALLE_MONEDAS.FOTO` son BLOB y **no
@@ -502,9 +531,35 @@ lo que lo hacía imposible: en el estante las unidades son idénticas y nadie sa
 de qué compra vino cada una. Es la única tabla con estados y transiciones:
 
 ```
-ABIERTO ──> CERRADO   escribe EXISTENCIAS y congela la fila
-        └─> ANULADO   descarta el conteo, no toca nada
+                    ┌─> CERRADO   escribe EXISTENCIAS y congela la fila
+(alta) ──> ABIERTO ─┤
+                    └─> ANULADO   descarta el conteo, no toca nada
 ```
+
+**Tres estados y nada más.** Un conteo **nace `ABIERTO`** —el alta no acepta otro
+valor— y desde ahí sale hacia uno de los dos terminales. **De un terminal no se
+vuelve:** ni `CERRADO` ni `ANULADO` se modifican, ni en la cantidad, ni en las
+observaciones, ni en el estado. Si el número cambió o el conteo se descartó, lo
+que corresponde es **contar de nuevo** y cargar otro.
+
+Eso vale en las tres capas, y no por casualidad:
+
+| Capa       | Cómo lo impone                                                                  |
+| ---------- | ------------------------------------------------------------------------------- |
+| Triggers   | `TRG_INVENTARIOS_BIUD` rechaza todo `UPDATE`/`DELETE` sobre una fila no abierta  |
+| Paquete    | Chequea el estado antes y devuelve **409** con el texto que explica qué hacer    |
+| Pantalla   | Un conteo no abierto sólo ofrece **Ver**: no hay editar, anular ni borrar        |
+
+La pantalla no es la que garantiza nada —esconder un botón no impide llamar al
+endpoint— pero sí evita ofrecer una acción que va a fallar. El paquete traduce, y
+el trigger es el que realmente cierra la puerta.
+
+> **`/inventarios` carga conteos; no los cierra.** Sobre un `ABIERTO` ofrece
+> editar, anular y eliminar — no **cerrar**, aunque el estado lo permita. Aplicar
+> un conteo escribe `EXISTENCIAS` y no se deshace: no puede ser un ícono más en
+> la fila de un listado, donde se toca de paso. Anular sí, porque no mueve stock.
+> `POST /inventarios/cerrar/:id` existe y está probado; le falta la pantalla
+> donde cerrar sea el acto principal y no un botón al costado.
 
 Las dos reglas las imponen los **triggers** de
 [db/inventarios-triggers-ddl.sql](db/inventarios-triggers-ddl.sql), no un
@@ -546,6 +601,31 @@ decía un instante antes de pisarla — no con lo que el formulario haya cargado
 abrir el conteo. El número que explica un ajuste es el que el ajuste reemplazó;
 sin él la fila no deja rastro de cuánto se corrigió.
 
+> **Cuidado al leer la diferencia: hay DOS números de "sistema" y no son
+> intercambiables.** `existenciaActual` es lo que hay ahora, en vivo, y es contra
+> lo que se compara **mientras se cuenta**; `cantidadSistema` es lo que había al
+> cerrar, congelado, y es contra lo que se mide un conteo **ya aplicado**. Usar
+> el primero en un cerrado da cero siempre, porque el propio cierre los igualó.
+> El panel de la home todavía se equivoca en esto — ver la nota de más abajo.
+
+**`FECHA_INVENTARIO` lleva hora, no sólo el día.** Dos conteos del mismo artículo
+el mismo día se ordenan entre sí por ella, y el que se cierra después es el que
+manda: sin hora los dos empatan a medianoche y el orden lo termina decidiendo el
+id, que es el momento de **carga** y no el del conteo. El paquete acepta
+`YYYY-MM-DDTHH:MI:SS`, `YYYY-MM-DDTHH:MI` (un `<input type="datetime-local">`
+omite los segundos cuando son cero) y `YYYY-MM-DD` a secas, que vale medianoche.
+En el frontend, el campo necesita `step="1"` o el navegador redondea a minutos y
+descarta lo que ya estaba guardado.
+
+**El conteo también completa la ficha del artículo.** Si el artículo elegido no
+tiene marca, categoría o ubicación en esa sucursal, el diálogo ofrece cargarla
+ahí mismo — elegir una existente o crearla. Es el momento en que alguien tiene la
+pieza en la mano; mandarlo a `/articulos` significa perder el conteo a medio
+cargar, así que en la práctica no se hace nunca y el catálogo se queda incompleto.
+Son cambios sobre el **artículo**, no sobre el conteo, y se aplican al tocar
+"Asignar" sin esperar al guardado — ver
+[GUIA-FRONTEND.md](docs/GUIA-FRONTEND.md).
+
 > **Este es el primer escritor de `EXISTENCIAS`.** La tabla era de sólo lectura
 > y está escrito que `PKG_STOCK` iba a ser su único escritor. Un conteo físico
 > es la excepción razonable —no es una transacción, es la corrección de las
@@ -576,6 +656,18 @@ enteros en vez de corregirse:
 `ID_USUARIO` no lo escribe ningún trigger: lo resuelve del token quien haga el
 alta. `USER` dentro de un handler de ORDS devuelve el esquema del workspace,
 igual para todo el mundo.
+
+> **El panel de la home usa el mismo criterio, y hubo que corregirlo.**
+> "Últimos movimientos" calculaba el monto del inventario como
+> `NVL(CANTIDAD_FISICA, 0) - NVL(CANTIDAD_SISTEMA, 0)`, sin mirar el estado. Como
+> `CANTIDAD_SISTEMA` está en `NULL` hasta el cierre, un conteo `ABIERTO` de 40
+> unidades sobre un artículo que ya tenía 40 salía como **+40 de diferencia** en
+> vez de 0 — y cuanto más grande el conteo, mayor el número inventado.
+>
+> No se notaba porque hasta que existió `/inventarios` nadie podía crear una fila
+> desde la app: el panel nunca mostró una. `db/dashboard.sql` ahora elige con un
+> `CASE` según el estado, igual que `sistemaDe()` en la pantalla. **Si se cambia
+> uno hay que cambiar el otro**, o los dos números dejan de coincidir.
 
 ### `PERSONAS`: físicas y jurídicas en una tabla
 
@@ -1031,6 +1123,48 @@ Y tenelo presente: **el código corregido en el repo no cambia nada por sí
 solo.** ORDS solo conoce lo que se ejecutó en la hoja SQL de APEX. Si el script
 falló a mitad, el endpoint viejo sigue sirviendo por más que el archivo esté
 bien — revisá siempre el resultado de cada paso.
+
+## Exportar un listado
+
+Un listado que se baja a Excel y a PDF declara sus columnas **una sola vez**
+(`ColumnaExport<T>` en [src/lib/exportar.ts](src/lib/exportar.ts)) y de ahí salen
+los dos archivos. Declararlas por separado garantiza que tarde o temprano el
+Excel tenga una columna que el PDF no.
+
+- **`descargarExcel`** hace un `.xlsx` de verdad, no un CSV renombrado: las
+  cantidades entran como número y se pueden sumar en la planilla.
+- **`abrirPdf`** abre el PDF en una pestaña nueva. **La pestaña se abre en la
+  primera línea, antes de cualquier `await`** — los bloqueadores sólo dejan pasar
+  el `window.open` que ocurre dentro del click, así que el handler que la llama
+  tampoco puede ser `async`. Por eso `filas` acepta una función: primero la
+  pestaña, después los datos. Si igual la bloquean, el archivo se descarga.
+- Las dos librerías entran con `import()` dinámico y quedan en su propio chunk:
+  no las paga quien nunca exporta.
+
+**El guaraní (`₲`) no existe en las fuentes de fábrica de jsPDF** y sale como un
+cuadrito. En un PDF va "Gs." en el título de la columna y el número pelado.
+
+### El logo de la empresa
+
+`abrirPdf` acepta `urlLogo` y lo dibuja arriba a la derecha, **sólo si
+`empresa.tieneLogo`** — sin esa guarda se pediría una imagen que ya se sabe que
+da 404. Sale de `GET /empresas/logo/:id`, que es público porque lo consume un
+`<img>` sin header `Authorization`.
+
+Va a la derecha y no sobre el título porque el bloque de título y subtítulos
+tiene **alto variable** —depende de cuántos filtros se hayan aplicado— y así el
+logo no empuja nada. Por lo mismo, la tabla arranca debajo de **lo más bajo** del
+encabezado: con pocos subtítulos el logo es lo más alto y la primera fila se le
+montaría encima.
+
+> **Si el logo falla, el reporte sale igual.** jsPDF necesita los bytes, no una
+> URL, así que la imagen se baja con `fetch` y se convierte a data URL; ese
+> helper **nunca lanza**. Un reporte sin logo sigue siendo válido — uno que no se
+> genera porque una imagen dio 404, no.
+
+El **nombre de la empresa sigue en los subtítulos**: el logo lo acompaña, no lo
+reemplaza. Un reporte se fotocopia en blanco y negro y se archiva, y ahí un logo
+recortado puede no decir de quién es.
 
 ## Temas y colores
 

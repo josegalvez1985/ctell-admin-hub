@@ -236,16 +236,24 @@ CREATE OR REPLACE PACKAGE PKG_ARTICULOS AS
   -- de el. Va con EXISTS y no con un JOIN: un articulo asignado a tres
   -- ubicaciones aparecería tres veces, y el total del paginador diria cualquier
   -- cosa.
+  --
+  -- VA ULTIMO ENTRE LOS 'IN' Y CON DEFAULT, fuera del orden logico de los demas
+  -- filtros. A este endpoint lo consumen SIETE pantallas: un parametro
+  -- obligatorio en el medio invalida toda llamada con la firma vieja, y entre
+  -- compilar el paquete y republicar el modulo ORDS hay un instante en que el
+  -- handler publicado manda los argumentos viejos. Un DEFAULT en el medio NO
+  -- alcanza —en una llamada posicional solo cubre los argumentos finales— asi
+  -- que la posicion es parte del arreglo, no un detalle de estilo.
   PROCEDURE LISTAR (
     p_authorization IN  VARCHAR2,
     p_id_empresa    IN  VARCHAR2,
     p_busqueda      IN  VARCHAR2,
     p_id_categoria  IN  VARCHAR2,
     p_id_marca      IN  VARCHAR2,
-    p_id_ubicacion  IN  VARCHAR2,
     p_id_sucursal   IN  VARCHAR2,
     p_pagina        IN  VARCHAR2,
     p_tamanio       IN  VARCHAR2,
+    p_id_ubicacion  IN  VARCHAR2 DEFAULT NULL,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   );
@@ -423,10 +431,10 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     p_busqueda      IN  VARCHAR2,
     p_id_categoria  IN  VARCHAR2,
     p_id_marca      IN  VARCHAR2,
-    p_id_ubicacion  IN  VARCHAR2,
     p_id_sucursal   IN  VARCHAR2,
     p_pagina        IN  VARCHAR2,
     p_tamanio       IN  VARCHAR2,
+    p_id_ubicacion  IN  VARCHAR2 DEFAULT NULL,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
@@ -1209,7 +1217,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
       p_pattern     => 'listar',
       p_method      => 'GET',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_ARTICULOS.LISTAR(:authorization, :idEmpresa, :busqueda, :idCategoria, :idMarca, :idUbicacion, :idSucursal, :pagina, :tamanio, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_ARTICULOS.LISTAR(:authorization, :idEmpresa, :busqueda, :idCategoria, :idMarca, :idSucursal, :pagina, :tamanio, :idUbicacion, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(

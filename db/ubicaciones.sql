@@ -72,7 +72,7 @@ SET SERVEROUTPUT ON
 --     l_status NUMBER;
 --     l_result CLOB;
 --   BEGIN
---     PKG_UBICACIONES.LISTAR('Bearer TU_TOKEN', NULL, NULL, NULL, l_status, l_result);
+--     PKG_UBICACIONES.LISTAR('Bearer TU_TOKEN', NULL, NULL, p_status_code => l_status, p_resultado => l_result);
 --     DBMS_OUTPUT.PUT_LINE('status: ' || l_status);
 --     DBMS_OUTPUT.PUT_LINE('resultado: ' || l_result);
 --   END;
@@ -95,11 +95,21 @@ CREATE OR REPLACE PACKAGE PKG_UBICACIONES AS
   --
   -- El ABM de ubicaciones NO lo usa: ahi hay que ver los vacios, que son
   -- justamente los que se pueden editar o borrar sin romper nada.
+  --
+  -- CON DEFAULT, y NO es cosmetico. A este endpoint lo consumen CINCO pantallas.
+  -- Un parametro obligatorio invalida toda llamada con la firma vieja, y entre
+  -- que se compila el paquete y se republica el modulo ORDS hay un instante en
+  -- que el handler publicado todavia manda tres argumentos: ahi se caen las
+  -- cinco, no solo la nueva. Con el DEFAULT ese instante no existe.
+  --
+  -- POR ESO VA ULTIMO ENTRE LOS 'IN'. Un DEFAULT en el medio no sirve de nada en
+  -- una llamada posicional —solo cubre los argumentos finales— y habria dado la
+  -- misma rotura con la falsa sensacion de estar cubierta.
   PROCEDURE LISTAR (
     p_authorization IN  VARCHAR2,
     p_id_empresa    IN  VARCHAR2,
     p_id_sucursal   IN  VARCHAR2,
-    p_con_articulos IN  VARCHAR2,
+    p_con_articulos IN  VARCHAR2 DEFAULT NULL,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   );
@@ -215,7 +225,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_UBICACIONES AS
     p_authorization IN  VARCHAR2,
     p_id_empresa    IN  VARCHAR2,
     p_id_sucursal   IN  VARCHAR2,
-    p_con_articulos IN  VARCHAR2,
+    p_con_articulos IN  VARCHAR2 DEFAULT NULL,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS

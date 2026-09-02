@@ -854,6 +854,46 @@ de todas.
 > `MARCAS` fue por un tiempo un catálogo global, sin empresa. Si ves un
 > `queryKey: ["marcas"]` pelado en un ejemplo viejo, está desactualizado.
 
+### El logo de la empresa en un PDF
+
+`abrirPdf` acepta `urlLogo` y lo dibuja arriba a la derecha. Va **sólo si la
+empresa tiene uno cargado**, para no pedir una imagen que ya se sabe que da 404:
+
+```tsx
+...(empresa?.tieneLogo ? { urlLogo: urlLogoEmpresa(empresa.id) } : {}),
+```
+
+Tres cosas que no son obvias:
+
+**jsPDF no acepta una URL.** Necesita los bytes, así que hay que bajar la imagen
+con `fetch` y pasarla a data URL con `FileReader`. Y además hace falta medirla
+con un `Image`: el PDF no sabe cuánto mide un PNG, y sin las dimensiones reales
+no se puede escalar sin deformarlo. Se escala **por el lado más largo**, así un
+logo apaisado toca el ancho máximo y uno cuadrado el alto.
+
+**El helper nunca lanza.** Los tres motivos por los que puede fallar —la empresa
+no tiene logo, el endpoint no está publicado todavía, la red— terminan en
+`null`, y el PDF sale sin él. Un reporte sin logo sigue siendo válido; uno que no
+se genera porque una imagen dio 404 no le sirve a nadie.
+
+**La tabla arranca debajo de lo más bajo del encabezado**, no debajo del texto:
+
+```ts
+startY: Math.max(62 + subtitulos.length * 12, finLogo) + 10,
+```
+
+El bloque de título y subtítulos crece según cuántos filtros haya. Con pocos, el
+logo es lo más alto de la página y la primera fila se le monta encima. `finLogo`
+vale 0 cuando no hay logo, así que la fórmula vieja sigue valiendo.
+
+> **El logo no reemplaza al nombre de la empresa**, que sigue en los subtítulos.
+> Un reporte se fotocopia en blanco y negro y se archiva: ahí un logo recortado
+> puede no decir de quién es.
+
+El logo va anclado a la **derecha** justamente porque el encabezado izquierdo
+tiene alto variable. Sobre el título habría que recalcular la posición del texto
+según haya logo o no.
+
 ### Agrupar filas de un reporte: `rowSpan` en las tres salidas
 
 La planilla de asistencias tiene una columna **Sem.** que abarca los días de su
@@ -1577,6 +1617,106 @@ const sinArticulos = (articulos?.total ?? 0) === 0;
 Buscá los consumidores con `grep -rn "api.<tabla>.listar" src/` antes de dar por
 cerrada la migración: quedan queries que ya nadie usa y otras que siguen
 funcionando pero con datos incompletos.
+
+### Una fila con estados: qué se ofrece y qué se esconde
+
+`INVENTARIOS` es la única tabla con máquina de estados, y la pantalla la refleja
+sin repetir sus reglas:
+
+| Estado    | Qué ofrece la fila                    |
+| --------- | ------------------------------------- |
+| `ABIERTO` | Editar · Anular · Eliminar            |
+| `CERRADO` | **Ver** — nada más                    |
+| `ANULADO` | **Ver** — nada más                    |
+
+El diálogo se abre en `soloLectura`, con los campos deshabilitados y sin botón de
+guardar. Y los avisos de "completá la marca / la categoría / la ubicación"
+**tampoco aparecen ahí**: aunque toquen el artículo y no el conteo, un botón que
+escribe dentro de un diálogo que no edita nada hace dudar de todo lo demás.
+
+> **Esconder el botón no es la regla, es la cortesía.** El endpoint sigue siendo
+> público para cualquiera con sesión, y quien lo llame igual recibe un 409 del
+> paquete — y detrás, un trigger que rechaza el `UPDATE` aunque se toque la tabla
+> a mano. La pantalla sólo evita ofrecer una acción que va a fallar. Ver
+> [README](../README.md#máquina-de-estados-inventarios).
+
+Corolario para cualquier tabla con estados: **las acciones se derivan del estado
+de la fila**, no de un permiso ni de una bandera aparte. Si hay que mirar dos
+cosas para saber si un botón va, la de más es probablemente redundante.
+
+> **No todo lo que el estado permite va en la fila.** `ABIERTO` habilita también
+> **cerrar**, y aun así no está acá: aplicar un conteo escribe `EXISTENCIAS` y no
+> se deshace, así que no puede ser un ícono más al lado de editar y borrar, donde
+> se toca de paso. Anular sí está, porque no mueve nada.
+>
+> El criterio: **el estado dice qué es posible; el peso de la acción dice dónde
+> ponerla.** Una acción irreversible que toca otra tabla va en su propio flujo,
+> no en la fila de un listado. El endpoint existe y está probado — lo usará la
+> pantalla que se haga para eso.
+
+### `SelectorModal` como filtro: la opción "todas" va ADENTRO
+
+`SelectorModal` **no ofrece un "ninguna" propio**. Una vez abierto el modal sólo
+se puede elegir algo de la lista, así que si el único modo de limpiar el filtro
+es una ✕ al lado del campo, hay que **cerrar el modal para encontrarla** — y
+mientras tanto no hay forma de deshacer lo que se acaba de elegir.
+
+La opción de "sin filtrar" va como **la primera fila de `opciones`**:
+
+```tsx
+// No es "": el selector trata la cadena vacía como "nada elegido", así que una
+// opción con ese valor no se vería tildada aunque fuera justamente la elegida.
+const TODAS_UBICACIONES = "todas";
+
+const opciones = [
+  { valor: TODAS_UBICACIONES, etiqueta: "Todo el depósito" },
+  ...items.map((u) => ({ valor: String(u.id), etiqueta: etiquetaUbicacion(u) })),
+];
+
+// Y al consumirlo, el centinela se traduce a "sin filtro":
+const idUbicacion = filtro === TODAS_UBICACIONES ? undefined : Number(filtro);
+```
+
+Dentro de un diálogo alcanza con eso. En una barra de filtros —donde el control
+convive con otros y se ve de un vistazo cuáles están puestos— conviene además la
+✕ al lado, que ahorra abrir el modal para algo que ya se sabe que se quiere
+descartar.
+
+> **Un filtro que acota otro selector tiene que limpiar lo ya elegido.** Si el
+> artículo seleccionado no está en el estante nuevo, dejarlo muestra un nombre
+> que no figura en la lista de abajo. Lo mismo al reabrir el diálogo: el filtro
+> se resetea, o el próximo alta arranca acotada a algo que nadie eligió esta vez.
+
+### Fechas con hora: `datetime-local` necesita `step="1"`
+
+Cuando el dato es un **momento** y no un día —la hora de un conteo físico, que
+desempata dos conteos del mismo artículo— el campo va `type="datetime-local"`
+**con `step="1"`**. Sin ese atributo el navegador redondea a minutos y descarta
+los segundos, incluidos los que ya estaban guardados al reabrir para editar.
+
+```tsx
+<Input type="datetime-local" step="1" {...field} />
+```
+
+Y el valor se arma **a mano, en hora local**:
+
+```tsx
+// MAL: toISOString() devuelve UTC. En Paraguay adelanta hasta cuatro horas, y
+// pasadas las 20:00 adelanta también el día.
+new Date().toISOString().slice(0, 19);
+
+// BIEN
+const d = (n: number) => String(n).padStart(2, "0");
+`${f.getFullYear()}-${d(f.getMonth() + 1)}-${d(f.getDate())}T${d(f.getHours())}:${d(f.getMinutes())}:${d(f.getSeconds())}`;
+```
+
+Para precargar desde el backend, `valor.slice(0, 19)` — el ISO ya viene sin zona
+y en hora local, así que pasarlo por `Date` sólo agrega una oportunidad de
+correrlo de huso.
+
+Al mostrarlo, los segundos van **sólo donde se mira una fila sola**. En una
+columna de tabla son ruido: nadie escanea una lista por el segundo en que se
+contó.
 
 ### Confirmación de borrado
 

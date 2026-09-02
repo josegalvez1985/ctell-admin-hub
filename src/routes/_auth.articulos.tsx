@@ -133,6 +133,17 @@ const POR_PAGINA = 20;
 const ESPERA_BUSQUEDA_MS = 350;
 
 /**
+ * La opción "sin filtrar por estante" del selector de ubicación.
+ *
+ * No es `""`: `SelectorModal` trata la cadena vacía como "nada elegido", así que
+ * una opción con ese valor no se vería tildada aunque fuera la elegida. Y va
+ * como opción DENTRO del modal, no sólo como la ✕ de al lado: el selector no
+ * ofrece un "ninguna" propio, y sin esa fila hay que cerrar el modal para
+ * encontrar cómo deshacer el filtro.
+ */
+const TODAS_UBICACIONES = "todas";
+
+/**
  * Cómo se nombra un estante: "A · Estante 3 · Nivel 2".
  *
  * Mismo formato que `/articulos-ubicaciones` y que el conteo físico: es el mismo
@@ -176,11 +187,13 @@ function ArticulosPage() {
   const [filtroCategoria, setFiltroCategoria] = useState<string>(SIN_FILTRO);
   const [filtroMarca, setFiltroMarca] = useState<string>(SIN_FILTRO);
   /**
-   * Estante elegido. `""` es "todas", no `SIN_FILTRO`: este filtro no vive en el
-   * header de una columna sino en un `SelectorModal`, que usa la cadena vacía
-   * para "sin elegir".
+   * Estante elegido, o `TODAS_UBICACIONES`.
+   *
+   * No usa `SIN_FILTRO` como los otros dos: aquéllos viven en el header de su
+   * columna (`TableHeadFiltrable`) y éste en un `SelectorModal`, que tiene su
+   * propio centinela — ver `TODAS_UBICACIONES`.
    */
-  const [filtroUbicacion, setFiltroUbicacion] = useState("");
+  const [filtroUbicacion, setFiltroUbicacion] = useState(TODAS_UBICACIONES);
 
   // Los artículos son POR EMPRESA: la que se eligió al iniciar sesión.
   const { empresa } = useEmpresa();
@@ -225,7 +238,7 @@ function ArticulosPage() {
           busqueda: busquedaEnvio,
           idCategoria: filtroCategoria === SIN_FILTRO ? undefined : Number(filtroCategoria),
           idMarca: filtroMarca === SIN_FILTRO ? undefined : Number(filtroMarca),
-          idUbicacion: filtroUbicacion === "" ? undefined : Number(filtroUbicacion),
+          idUbicacion: filtroUbicacion === TODAS_UBICACIONES ? undefined : Number(filtroUbicacion),
           pagina: pageParam,
           tamanio: POR_PAGINA,
         }),
@@ -281,13 +294,21 @@ function ArticulosPage() {
     enabled: empresa !== null && sucursal !== null,
   });
 
-  const ubicacionesOpciones = (ubicaciones?.items ?? []).map((u) => ({
-    valor: String(u.id),
-    etiqueta: etiquetaUbicacion(u.zona, u.estante, u.nivel),
-    // Cuántos hay: da idea de si el estante está lleno o tiene dos cosas, y es
-    // lo que distingue dos ubicaciones parecidas al elegir.
-    descripcion: `${u.cantidadArticulos} artículo${u.cantidadArticulos === 1 ? "" : "s"}`,
-  }));
+  /**
+   * "Todas las ubicaciones" va como la PRIMERA opción, además de la ✕ de al
+   * lado: `SelectorModal` no ofrece un "ninguna" propio, así que sin esta fila
+   * hay que cerrar el modal para encontrar cómo deshacer el filtro.
+   */
+  const ubicacionesOpciones = [
+    { valor: TODAS_UBICACIONES, etiqueta: "Todas las ubicaciones" },
+    ...(ubicaciones?.items ?? []).map((u) => ({
+      valor: String(u.id),
+      etiqueta: etiquetaUbicacion(u.zona, u.estante, u.nivel),
+      // Cuántos hay: da idea de si el estante está lleno o tiene dos cosas, y es
+      // lo que distingue dos ubicaciones parecidas al elegir.
+      descripcion: `${u.cantidadArticulos} artículo${u.cantidadArticulos === 1 ? "" : "s"}`,
+    })),
+  ];
 
   const eliminar = useMutation({
     mutationFn: (articulo: Articulo) => api.articulos.eliminar(articulo.id, articulo.idEmpresa),
@@ -359,7 +380,9 @@ function ArticulosPage() {
 
   /** Si hay algún filtro puesto, para distinguir "sin datos" de "sin resultados". */
   const hayFiltros =
-    filtroCategoria !== SIN_FILTRO || filtroMarca !== SIN_FILTRO || filtroUbicacion !== "";
+    filtroCategoria !== SIN_FILTRO ||
+    filtroMarca !== SIN_FILTRO ||
+    filtroUbicacion !== TODAS_UBICACIONES;
 
   return (
     <AppLayout active="/articulos" title="Artículos">
@@ -410,12 +433,12 @@ function ArticulosPage() {
             />
             {/* Limpiar es su propio botón: el SelectorModal no ofrece "ninguna",
                 y sin esto habría que recargar para volver al catálogo completo. */}
-            {filtroUbicacion !== "" && (
+            {filtroUbicacion !== TODAS_UBICACIONES && (
               <Button
                 type="button"
                 variant="ghost"
                 size="icon"
-                onClick={() => setFiltroUbicacion("")}
+                onClick={() => setFiltroUbicacion(TODAS_UBICACIONES)}
                 title="Quitar el filtro por ubicación"
                 aria-label="Quitar el filtro por ubicación"
               >
@@ -454,7 +477,7 @@ function ArticulosPage() {
                 ? `Sin resultados para "${busqueda.trim()}".`
                 : !hayFiltros
                   ? "Esta empresa todavía no tiene artículos cargados."
-                  : filtroUbicacion !== "" &&
+                  : filtroUbicacion !== TODAS_UBICACIONES &&
                       filtroCategoria === SIN_FILTRO &&
                       filtroMarca === SIN_FILTRO
                     ? // El caso propio de este filtro: el estante figura con

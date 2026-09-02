@@ -22,7 +22,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { api, ApiError, esActivo, esGasto as esGastoArticulo, type Articulo } from "@/lib/api";
+import {
+  api,
+  ApiError,
+  esActivo,
+  esGasto as esGastoArticulo,
+  urlLogoEmpresa,
+  type Articulo,
+} from "@/lib/api";
 import { abrirPdf, descargarExcel, type ColumnaExport } from "@/lib/exportar";
 import { tituloPagina } from "@/lib/marca";
 import { formatearMoneda } from "@/lib/moneda";
@@ -302,6 +309,11 @@ function ExistenciasPage() {
       // Apaisado: son nueve columnas y en vertical el nombre del artículo queda
       // partido en tres renglones.
       orientacion: "landscape",
+      // Sólo si la empresa tiene uno cargado: sin esa guarda se pediría una
+      // imagen que ya se sabe que da 404. El nombre sigue en los subtítulos —
+      // el logo lo acompaña, no lo reemplaza, porque un logo recortado en una
+      // fotocopia en blanco y negro puede no decir de quién es el reporte.
+      ...(empresa?.tieneLogo ? { urlLogo: urlLogoEmpresa(empresa.id) } : {}),
     })
       .catch((e: unknown) => toast.error(MENSAJE_ERROR(e, "No se pudo generar el PDF")))
       .finally(() => setExportando(null));

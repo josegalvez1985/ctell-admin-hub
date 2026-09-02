@@ -43,6 +43,7 @@ const ESPERA_BUSQUEDA_MS = 350;
  */
 export function SelectorArticulo({
   idEmpresa,
+  idUbicacion,
   value,
   etiquetaSeleccionada,
   onChange,
@@ -52,6 +53,17 @@ export function SelectorArticulo({
   alta,
 }: {
   idEmpresa: number;
+  /**
+   * Acota la lista a los artículos guardados en ESE estante.
+   *
+   * Sirve para contar: quien está parado delante de la ubicación quiere ver lo
+   * que hay ahí, no el catálogo entero. Sin esto, encontrar el artículo en una
+   * empresa con cientos es teclear el nombre de memoria.
+   *
+   * Va en la queryKey, así que cambiar de estante vuelve a consultar en vez de
+   * servir la lista del anterior.
+   */
+  idUbicacion?: number | undefined;
   /** Id del artículo elegido, como string (""` = sin elegir). */
   value: string;
   /**
@@ -145,6 +157,7 @@ export function SelectorArticulo({
       {abierto && (
         <DialogoArticulos
           idEmpresa={idEmpresa}
+          {...(idUbicacion ? { idUbicacion } : {})}
           value={value}
           onCerrar={() => setAbierto(false)}
           onElegir={(valor, etiqueta, articulo) => {
@@ -197,6 +210,7 @@ function etiquetaDe(articulo: Articulo): string {
 
 function DialogoArticulos({
   idEmpresa,
+  idUbicacion,
   value,
   onCerrar,
   onElegir,
@@ -204,6 +218,7 @@ function DialogoArticulos({
   textoCrear = "Crear",
 }: {
   idEmpresa: number;
+  idUbicacion?: number | undefined;
   value: string;
   onCerrar: () => void;
   onElegir: (valor: string, etiqueta: string, articulo: Articulo) => void;
@@ -223,10 +238,13 @@ function DialogoArticulos({
 
   const { data, isPending, isError, fetchNextPage, hasNextPage, isFetchingNextPage } =
     useInfiniteQuery({
-      queryKey: ["articulos-selector", idEmpresa, busquedaEnvio.trim()],
+      // La ubicación VA en la clave: sin ella, cambiar de estante serviría la
+      // lista cacheada del anterior y nada avisaría de que son otros artículos.
+      queryKey: ["articulos-selector", idEmpresa, idUbicacion ?? null, busquedaEnvio.trim()],
       queryFn: ({ pageParam }) =>
         api.articulos.listar({
           idEmpresa,
+          idUbicacion,
           busqueda: busquedaEnvio,
           pagina: pageParam,
           tamanio: POR_PAGINA,
@@ -282,9 +300,14 @@ function DialogoArticulos({
 
           {!isPending && !isError && articulos.length === 0 && (
             <p className="py-8 text-center text-sm text-muted-foreground">
+              {/* Con un estante filtrando, el vacío tiene otra causa y otra
+                  salida: no es que no haya catálogo, es que ahí no hay nada
+                  asignado. Sin decirlo, parece que el buscador está roto. */}
               {busquedaEnvio.trim()
-                ? `Sin resultados para "${busquedaEnvio.trim()}".`
-                : "Esta empresa todavía no tiene artículos cargados."}
+                ? `Sin resultados para "${busquedaEnvio.trim()}"${idUbicacion ? " en esta ubicación" : ""}.`
+                : idUbicacion
+                  ? "Esta ubicación no tiene artículos asignados."
+                  : "Esta empresa todavía no tiene artículos cargados."}
             </p>
           )}
 

@@ -101,6 +101,53 @@ export async function descargarExcel<T>({
 }
 
 /**
+ * El logo, como data URL, o `null` si no se pudo traer.
+ *
+ * jsPDF **no acepta una URL**: necesita los bytes. Se baja con `fetch` y se pasa
+ * a base64 con `FileReader`.
+ *
+ * **Nunca lanza.** Un reporte sin logo es un reporte igual de válido; uno que no
+ * se genera porque la imagen dio 404 no le sirve a nadie. Los tres motivos por
+ * los que puede fallar —la empresa no tiene logo cargado, el endpoint todavía no
+ * está publicado en APEX, o la red— terminan en el mismo lugar: se sigue sin él.
+ *
+ * Devuelve también las dimensiones: hacen falta para escalar sin deformar, y
+ * salen de un `Image` porque el PDF no sabe cuánto mide un PNG.
+ */
+async function traerLogo(
+  url: string,
+): Promise<{ datos: string; ancho: number; alto: number } | null> {
+  try {
+    const respuesta = await fetch(url);
+    if (!respuesta.ok) return null;
+
+    const blob = await respuesta.blob();
+    // Un blob vacío no es una imagen: el endpoint puede devolver 200 con cero
+    // bytes si la columna está en NULL.
+    if (blob.size === 0) return null;
+
+    const datos = await new Promise<string>((resolver, rechazar) => {
+      const lector = new FileReader();
+      lector.onload = () => resolver(String(lector.result));
+      lector.onerror = () => rechazar(new Error("No se pudo leer el logo"));
+      lector.readAsDataURL(blob);
+    });
+
+    const medidas = await new Promise<{ ancho: number; alto: number }>((resolver, rechazar) => {
+      const imagen = new Image();
+      imagen.onload = () => resolver({ ancho: imagen.naturalWidth, alto: imagen.naturalHeight });
+      imagen.onerror = () => rechazar(new Error("El logo no es una imagen legible"));
+      imagen.src = datos;
+    });
+
+    if (medidas.ancho === 0 || medidas.alto === 0) return null;
+    return { datos, ...medidas };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Arma el PDF y lo abre en una pestaña nueva, con el visor del navegador.
  *
  * **La pestaña se abre ANTES de generar nada.** Los bloqueadores de ventanas
@@ -125,6 +172,7 @@ export async function abrirPdf<T>({
   columnas,
   filas,
   orientacion = "portrait",
+  urlLogo,
 }: {
   nombreArchivo: string;
   titulo: string;
@@ -134,6 +182,15 @@ export async function abrirPdf<T>({
   /** Las filas, o cómo traerlas. La función corre con la pestaña ya abierta. */
   filas: T[] | (() => Promise<T[]>);
   orientacion?: "portrait" | "landscape";
+  /**
+   * Logo de la empresa, arriba a la derecha. `urlLogoEmpresa(empresa.id)`.
+   *
+   * **Opcional, y su fallo no rompe el reporte**: si la empresa no tiene logo
+   * cargado o la imagen no se puede traer, el PDF sale igual sin él. Pasarla
+   * sólo cuando `empresa.tieneLogo` es `true` ahorra una petición que ya se sabe
+   * que va a dar 404.
+   */
+  urlLogo?: string | undefined;
 }): Promise<void> {
   // Primera línea, y síncrona: ver el porqué en el encabezado.
   const pestania = window.open("", "_blank");
@@ -147,10 +204,13 @@ export async function abrirPdf<T>({
   }
 
   try {
-    const [{ jsPDF }, { default: autoTable }, datos] = await Promise.all([
+    // El logo entra en el mismo Promise.all: es una petición más, y esperarla en
+    // serie después de las filas sumaría su latencia a la espera de la pestaña.
+    const [{ jsPDF }, { default: autoTable }, datos, logo] = await Promise.all([
       import("jspdf"),
       import("jspdf-autotable"),
       typeof filas === "function" ? filas() : Promise.resolve(filas),
+      urlLogo ? traerLogo(urlLogo) : Promise.resolve(null),
     ]);
 
     const tiempo = marcaDeTiempo();
@@ -159,6 +219,35 @@ export async function abrirPdf<T>({
     // global del DOM que es un número— y el PDF sale siempre en vertical.
     const doc = new jsPDF({ orientation: orientacion, unit: "pt", format: "a4" });
     const anchoPagina = doc.internal.pageSize.getWidth();
+
+    /**
+     * El logo va ARRIBA A LA DERECHA, no sobre el título.
+     *
+     * El título y los subtítulos crecen hacia abajo desde el margen izquierdo y
+     * su alto depende de cuántos filtros haya; anclado a la derecha, el logo no
+     * empuja nada y el encabezado se lee igual con uno o con cinco subtítulos.
+     *
+     * Se escala **por el lado más largo** para no deformarlo: un logo apaisado
+     * toca el ancho máximo y uno cuadrado el alto. El techo de alto es lo que
+     * mide el bloque de texto de un reporte típico, así que no desborda sobre la
+     * tabla.
+     */
+    const LOGO_Y = 28;
+    /** Dónde termina el logo. 0 sin logo, para que no afecte el `startY`. */
+    let finLogo = 0;
+
+    if (logo) {
+      const MAX_ANCHO = 120;
+      const MAX_ALTO = 42;
+      const escala = Math.min(MAX_ANCHO / logo.ancho, MAX_ALTO / logo.alto);
+      const ancho = logo.ancho * escala;
+      const alto = logo.alto * escala;
+
+      // addImage infiere el formato del data URL, así que sirve igual para PNG
+      // que para JPEG — que es lo que puede haber cargado cada empresa.
+      doc.addImage(logo.datos, anchoPagina - 40 - ancho, LOGO_Y, ancho, alto);
+      finLogo = LOGO_Y + alto;
+    }
 
     doc.setFont("helvetica", "bold");
     doc.setFontSize(15);
@@ -170,7 +259,10 @@ export async function abrirPdf<T>({
     subtitulos.forEach((linea, i) => doc.text(linea, 40, 62 + i * 12));
 
     autoTable(doc, {
-      startY: 62 + subtitulos.length * 12 + 10,
+      // La tabla empieza debajo de LO MÁS BAJO del encabezado. Con pocos
+      // subtítulos el bloque de texto es más corto que el logo, y sin este
+      // `max` la primera fila se le montaba encima.
+      startY: Math.max(62 + subtitulos.length * 12, finLogo) + 10,
       head: [columnas.map((c) => c.titulo)],
       body: datos.map((fila) =>
         columnas.map((c) => {

@@ -198,7 +198,32 @@ CREATE OR REPLACE PACKAGE BODY PKG_DASHBOARD AS
                    'parte'      VALUE a.NOMBRE_ARTICULO,
                    -- La DIFERENCIA, no lo contado: un conteo que coincide con el
                    -- sistema no es noticia; lo que importa es el faltante.
-                   'monto'      VALUE NVL(i.CANTIDAD_FISICA, 0) - NVL(i.CANTIDAD_SISTEMA, 0),
+                   --
+                   -- CONTRA QUE SE RESTA DEPENDE DEL ESTADO, y no son
+                   -- intercambiables:
+                   --
+                   --   ABIERTO  contra EXISTENCIAS, en vivo. CANTIDAD_SISTEMA
+                   --            todavia es NULL —la sella el trigger recien al
+                   --            cerrar— asi que un NVL(...,0) restaria cero y el
+                   --            panel mostraria lo CONTADO como si fuera la
+                   --            diferencia: un conteo de 40 sobre un articulo
+                   --            que ya tiene 40 salia "+40" en vez de 0.
+                   --   CERRADO  contra CANTIDAD_SISTEMA, congelado. Contra
+                   --            EXISTENCIAS daria cero siempre, porque el propio
+                   --            cierre acaba de igualarlas.
+                   --
+                   -- Mismo criterio que la pantalla de conteos (sistemaDe() en
+                   -- src/routes/_auth.inventarios.tsx). Si cambia uno, cambia el
+                   -- otro o los dos numeros dejan de coincidir.
+                   'monto'      VALUE NVL(i.CANTIDAD_FISICA, 0) -
+                                  CASE WHEN NVL(UPPER(TRIM(i.ESTADO)), 'ABIERTO') = 'ABIERTO'
+                                       THEN NVL((SELECT e.CANTIDAD_DISPONIBLE
+                                                   FROM EXISTENCIAS e
+                                                  WHERE e.ID_EMPRESA  = i.ID_EMPRESA
+                                                    AND e.ID_SUCURSAL = i.ID_SUCURSAL
+                                                    AND e.ID_ARTICULO = i.ID_ARTICULO), 0)
+                                       ELSE NVL(i.CANTIDAD_SISTEMA, 0)
+                                  END,
                    'enUnidades' VALUE 'S',
                    'fecha'      VALUE TO_CHAR(i.FECHA_INVENTARIO, 'YYYY-MM-DD'),
                    'estado'     VALUE i.ESTADO
