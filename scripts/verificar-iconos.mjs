@@ -71,6 +71,16 @@ const SINONIMOS = [
   // El conteo físico es la misma página escrita de las cuatro formas en que una
   // persona la carga en el ABM de páginas.
   ["inventarios", "inventario", "conteo fisico", "conteos fisicos", "carga de inventarios"],
+  // El REPORTE es su propio grupo, aparte de la carga de arriba: son dos
+  // páginas distintas del menú y por eso tienen íconos distintos. Lo que sí
+  // comparte ícono son las cinco formas de escribir su nombre en el ABM.
+  [
+    "reporte de inventarios",
+    "reportes de inventarios",
+    "reporte de conteos",
+    "inventarios reporte",
+    "diferencias de inventario",
+  ],
   ["ordenes", "ordenes de compra"],
   ["facturas de compra", "facturas compras"],
   ["iva", "tasas de iva"],

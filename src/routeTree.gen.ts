@@ -30,6 +30,7 @@ import { Route as AuthFacturasComprasRouteImport } from './routes/_auth.facturas
 import { Route as AuthHomeRouteImport } from './routes/_auth.home'
 import { Route as AuthInstitucionesRouteImport } from './routes/_auth.instituciones'
 import { Route as AuthInventariosRouteImport } from './routes/_auth.inventarios'
+import { Route as AuthInventariosReporteRouteImport } from './routes/_auth.inventarios-reporte'
 import { Route as AuthIvaRouteImport } from './routes/_auth.iva'
 import { Route as AuthListasDescuentosRouteImport } from './routes/_auth.listas-descuentos'
 import { Route as AuthMarcasRouteImport } from './routes/_auth.marcas'
@@ -151,6 +152,11 @@ const AuthInventariosRoute = AuthInventariosRouteImport.update({
   path: '/inventarios',
   getParentRoute: () => AuthRoute,
 } as any)
+const AuthInventariosReporteRoute = AuthInventariosReporteRouteImport.update({
+  id: '/inventarios-reporte',
+  path: '/inventarios-reporte',
+  getParentRoute: () => AuthRoute,
+} as any)
 const AuthIvaRoute = AuthIvaRouteImport.update({
   id: '/iva',
   path: '/iva',
@@ -248,6 +254,7 @@ export interface FileRoutesByFullPath {
   '/home': typeof AuthHomeRoute
   '/instituciones': typeof AuthInstitucionesRoute
   '/inventarios': typeof AuthInventariosRoute
+  '/inventarios-reporte': typeof AuthInventariosReporteRoute
   '/iva': typeof AuthIvaRoute
   '/listas-descuentos': typeof AuthListasDescuentosRoute
   '/marcas': typeof AuthMarcasRoute
@@ -285,6 +292,7 @@ export interface FileRoutesByTo {
   '/home': typeof AuthHomeRoute
   '/instituciones': typeof AuthInstitucionesRoute
   '/inventarios': typeof AuthInventariosRoute
+  '/inventarios-reporte': typeof AuthInventariosReporteRoute
   '/iva': typeof AuthIvaRoute
   '/listas-descuentos': typeof AuthListasDescuentosRoute
   '/marcas': typeof AuthMarcasRoute
@@ -324,6 +332,7 @@ export interface FileRoutesById {
   '/_auth/home': typeof AuthHomeRoute
   '/_auth/instituciones': typeof AuthInstitucionesRoute
   '/_auth/inventarios': typeof AuthInventariosRoute
+  '/_auth/inventarios-reporte': typeof AuthInventariosReporteRoute
   '/_auth/iva': typeof AuthIvaRoute
   '/_auth/listas-descuentos': typeof AuthListasDescuentosRoute
   '/_auth/marcas': typeof AuthMarcasRoute
@@ -363,6 +372,7 @@ export interface FileRouteTypes {
     | '/home'
     | '/instituciones'
     | '/inventarios'
+    | '/inventarios-reporte'
     | '/iva'
     | '/listas-descuentos'
     | '/marcas'
@@ -400,6 +410,7 @@ export interface FileRouteTypes {
     | '/home'
     | '/instituciones'
     | '/inventarios'
+    | '/inventarios-reporte'
     | '/iva'
     | '/listas-descuentos'
     | '/marcas'
@@ -438,6 +449,7 @@ export interface FileRouteTypes {
     | '/_auth/home'
     | '/_auth/instituciones'
     | '/_auth/inventarios'
+    | '/_auth/inventarios-reporte'
     | '/_auth/iva'
     | '/_auth/listas-descuentos'
     | '/_auth/marcas'
@@ -609,6 +621,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthInventariosRouteImport
       parentRoute: typeof AuthRoute
     }
+    '/_auth/inventarios-reporte': {
+      id: '/_auth/inventarios-reporte'
+      path: '/inventarios-reporte'
+      fullPath: '/inventarios-reporte'
+      preLoaderRoute: typeof AuthInventariosReporteRouteImport
+      parentRoute: typeof AuthRoute
+    }
     '/_auth/iva': {
       id: '/_auth/iva'
       path: '/iva'
@@ -737,6 +756,7 @@ interface AuthRouteChildren {
   AuthHomeRoute: typeof AuthHomeRoute
   AuthInstitucionesRoute: typeof AuthInstitucionesRoute
   AuthInventariosRoute: typeof AuthInventariosRoute
+  AuthInventariosReporteRoute: typeof AuthInventariosReporteRoute
   AuthIvaRoute: typeof AuthIvaRoute
   AuthListasDescuentosRoute: typeof AuthListasDescuentosRoute
   AuthMarcasRoute: typeof AuthMarcasRoute
@@ -774,6 +794,7 @@ const AuthRouteChildren: AuthRouteChildren = {
   AuthHomeRoute: AuthHomeRoute,
   AuthInstitucionesRoute: AuthInstitucionesRoute,
   AuthInventariosRoute: AuthInventariosRoute,
+  AuthInventariosReporteRoute: AuthInventariosReporteRoute,
   AuthIvaRoute: AuthIvaRoute,
   AuthListasDescuentosRoute: AuthListasDescuentosRoute,
   AuthMarcasRoute: AuthMarcasRoute,

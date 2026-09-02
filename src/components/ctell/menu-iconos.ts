@@ -24,6 +24,7 @@ import {
   CircleDot,
   ClipboardCheck,
   ClipboardList,
+  ClipboardX,
   Cog,
   Coins,
   Component,
@@ -288,6 +289,22 @@ const ICONOS_PAGINA: Record<string, LucideIcon> = {
   "conteo fisico": ClipboardCheck,
   "conteos fisicos": ClipboardCheck,
   "carga de inventarios": ClipboardCheck,
+  // EL REPORTE NO COMPARTE CON LA CARGA (ClipboardCheck), aunque las dos miren
+  // la misma tabla: una es la planilla que se completa en el depósito, la otra
+  // la consulta de lo que no cuadró. En un menú de Stock donde ya conviven
+  // existencias e inventarios, con el mismo ícono sólo las distinguiría el
+  // texto — que es el problema que ya se corrigió entre esas dos.
+  //
+  // Tampoco FileBarChart: es el ícono por defecto de las entradas tipo "R", así
+  // que cualquier reporte nuevo sin mapear se vería igual a éste.
+  //
+  // ClipboardX es la planilla con el desvío, hermana visual de ClipboardCheck
+  // (la planilla ya verificada).
+  "reporte de inventarios": ClipboardX,
+  "reportes de inventarios": ClipboardX,
+  "reporte de conteos": ClipboardX,
+  "inventarios reporte": ClipboardX,
+  "diferencias de inventario": ClipboardX,
   ordenes: ClipboardList,
   "ordenes de compra": ClipboardList,
   // COMPRA Y VENTA NO COMPARTEN ÍCONO: son los dos comprobantes que más se
