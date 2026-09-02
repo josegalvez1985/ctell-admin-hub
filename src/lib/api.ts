@@ -408,6 +408,81 @@ export type PeriodoAsistencias = {
   cantidad: number;
 };
 
+/**
+ * Si el profesor leyó la notificación.
+ *
+ * **`'S'`/`'N'`, no `'A'`/`'I'`**: rompe la convención del proyecto a propósito,
+ * porque no es el estado de la fila —una lectura no se da de baja— sino la
+ * respuesta a "¿la leyó?". Mismo criterio que `IND_BANCO` en `CANALES_PAGOS` y
+ * que `entradaOffline` acá al lado. **`esActivo()` no aplica**: se compara
+ * contra `'S'` directo.
+ */
+export type Leido = "S" | "N";
+
+/** Un profesor al que se le mandó una notificación, con su estado de lectura. */
+export type DestinatarioNotificacion = {
+  idProfesor: number;
+  /** "Nombre Apellido", del JOIN. `null` sólo si el profesor se borró. */
+  profesor: string | null;
+  numeroCi: string | null;
+  leido: Leido;
+  /** ISO con hora. `null` mientras no la haya abierto. */
+  fechaLectura: string | null;
+};
+
+/**
+ * Un aviso enviado a profesores desde administración.
+ *
+ * Es **cabecera y detalle**, como una factura: la notificación y sus
+ * destinatarios se guardan en una sola transacción. Una notificación sin
+ * destinatarios no le llegó a nadie, así que el backend la rechaza.
+ */
+export type Notificacion = {
+  id: number;
+  idEmpresa: number;
+  titulo: string;
+  /**
+   * Los primeros 150 caracteres nada más — el listado la recorta por el techo
+   * de 4000 bytes del bind de ORDS.
+   *
+   * **No la mandes de vuelta en un PUT**: escribiría el resumen encima del
+   * mensaje completo. Para editar, `obtener()`.
+   */
+  descripcionResumen: string | null;
+  /** ISO con hora: cuándo se envió. */
+  fechaNotificacion: string | null;
+  fechaCreacion: string | null;
+  /**
+   * Cuántos la recibieron y cuántos la leyeron. **Se derivan** contando el
+   * detalle en cada consulta, no se guardan: una columna con el total quedaría
+   * desincronizada el día que alguien toque el detalle. Mismo criterio que los
+   * totales de una factura.
+   */
+  destinatarios: number;
+  leidos: number;
+};
+
+export type ListaNotificaciones = {
+  items: Notificacion[];
+  /** Las filas que pasan el filtro, **no** las de esta página. */
+  total: number;
+  pagina: number;
+  /** El que el backend aplicó, que pudo recortarse al techo de 50. */
+  tamanio: number;
+};
+
+/**
+ * Una notificación con su `descripcion` COMPLETA y la lista de destinatarios.
+ *
+ * Es lo que devuelve `obtener()`, y lo que tiene que cargar el formulario de
+ * edición: guardar el resumen del listado perdería el resto del mensaje sin
+ * ningún error a la vista.
+ */
+export type NotificacionDetalle = Omit<Notificacion, "descripcionResumen" | "destinatarios"> & {
+  descripcion: string | null;
+  destinatarios: DestinatarioNotificacion[];
+};
+
 export type Empresa = {
   id: number;
   nombreEmpresa: string;
@@ -2880,6 +2955,122 @@ export const api = {
       request<{ items: PeriodoAsistencias[] }>(
         `/asistencias-profesores/periodos?idEmpresa=${idEmpresa}`,
       ),
+  },
+
+  /**
+   * Notificaciones a profesores. **Cabecera y detalle en un solo request**: los
+   * destinatarios viajan con la notificación y se guardan en la misma
+   * transacción, como el detalle de una factura.
+   *
+   * Hoy nadie marca una notificación como leída: `leido` se muestra pero el
+   * endpoint que lo escribe —el de la app del profesor— todavía no existe.
+   */
+  notificaciones: {
+    /**
+     * `idEmpresa` es obligatorio. `busqueda` mira título y descripción.
+     *
+     * Paginado en el servidor, 20 por página y **50 como techo**: el JSON viaja
+     * por un bind de ORDS con límite de 4000 bytes.
+     *
+     * **`descripcion` viene recortada** a 150 caracteres, como
+     * `descripcionResumen`. Para el texto entero, `obtener()`.
+     */
+    listar: (params: {
+      idEmpresa: number;
+      busqueda?: string | undefined;
+      pagina?: number | undefined;
+      tamanio?: number | undefined;
+    }) => {
+      const q = new URLSearchParams({ idEmpresa: String(params.idEmpresa) });
+      if (params.busqueda?.trim()) q.set("busqueda", params.busqueda.trim());
+      if (params.pagina) q.set("pagina", String(params.pagina));
+      if (params.tamanio) q.set("tamanio", String(params.tamanio));
+      return request<ListaNotificaciones>(`/notificaciones/listar?${q}`);
+    },
+
+    /**
+     * La notificación con su `descripcion` COMPLETA y sus destinatarios.
+     *
+     * **El formulario de edición tiene que usar esto**, no la fila del listado:
+     * guardar el resumen de 150 caracteres escribiría encima del mensaje entero
+     * y se perdería el resto sin ningún error a la vista.
+     */
+    obtener: (id: number, idEmpresa: number) =>
+      request<NotificacionDetalle>(`/notificaciones/obtener/${id}/${idEmpresa}`),
+
+    /**
+     * `destinatarios` es un array de ids de profesor y **no puede ir vacío**:
+     * una notificación que no le llega a nadie no es un aviso a medio cargar,
+     * es un registro inútil. El backend responde 400.
+     *
+     * Los profesores tienen que ser de la empresa: mandar un id ajeno da 400,
+     * porque la FK sola no lo impide —valida que el profesor exista, no de
+     * quién es.
+     *
+     * `fechaNotificacion` vacía = ahora, que es el caso normal. Se manda
+     * explícita para registrar un aviso ya comunicado por otro medio.
+     *
+     * Las claves van todas aunque estén vacías: una clave omitida deja el bind
+     * de ORDS sin definir en vez de en `NULL`.
+     */
+    crear: (datos: {
+      idEmpresa: number;
+      titulo: string;
+      descripcion: string;
+      /** `YYYY-MM-DDTHH:mm:ss` local. También acepta sin segundos y sólo la fecha. */
+      fechaNotificacion?: string | undefined;
+      destinatarios: number[];
+    }) =>
+      request<{ id: number; destinatarios: number; ok: boolean }>("/notificaciones/crear", {
+        method: "POST",
+        body: JSON.stringify({
+          idEmpresa: datos.idEmpresa,
+          titulo: datos.titulo,
+          descripcion: datos.descripcion,
+          fechaNotificacion: datos.fechaNotificacion ?? "",
+          // Como texto: ORDS crea un bind por clave de primer nivel, y el
+          // paquete lo lee con JSON_TABLE.
+          destinatarios: JSON.stringify(datos.destinatarios),
+        }),
+      }),
+
+    /**
+     * Un campo ausente **conserva** su valor, como en el resto del proyecto.
+     *
+     * **`destinatarios` omitido deja la lista intacta, con sus lecturas** — así
+     * corregir un typo del título no reinicia lo que ya se leyó. Cuando sí va,
+     * la lista se reemplaza entera, pero el backend **preserva la marca de
+     * lectura de quien siga estando**: agregar un destinatario a un aviso que
+     * diez personas ya leyeron no reinicia a esas diez.
+     */
+    actualizar: (
+      id: number,
+      datos: {
+        idEmpresa: number;
+        titulo?: string | undefined;
+        descripcion?: string | undefined;
+        fechaNotificacion?: string | undefined;
+        destinatarios?: number[] | undefined;
+      },
+    ) =>
+      request<{ ok: boolean }>(`/notificaciones/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          idEmpresa: datos.idEmpresa,
+          titulo: datos.titulo ?? "",
+          descripcion: datos.descripcion ?? "",
+          fechaNotificacion: datos.fechaNotificacion ?? "",
+          // "" y no "[]": el paquete distingue "no vino" de "vino vacío", y un
+          // array vacío sería un intento de dejarla sin destinatarios (400).
+          destinatarios: datos.destinatarios ? JSON.stringify(datos.destinatarios) : "",
+        }),
+      }),
+
+    /** Baja física. Los destinatarios se borran primero, en la misma transacción. */
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/notificaciones/eliminar/${id}/${idEmpresa}`, {
+        method: "DELETE",
+      }),
   },
 
   empresas: {

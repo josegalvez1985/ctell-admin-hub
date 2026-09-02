@@ -106,6 +106,10 @@ src/
 │   ├── _auth.cobros.tsx         "/cobros"        → cobros de ventas
 │   ├── _auth.pagos.tsx          "/pagos"         → pagos a proveedores
 │   ├── _auth.existencias.tsx    "/existencias"   → consulta de stock + Excel/PDF
+│   ├── _auth.inventarios.tsx    "/inventarios"   → carga del conteo físico
+│   ├── _auth.inventarios-reporte.tsx  "/inventarios-reporte" → conteos por
+│   │                                    período y diferencia + Excel/PDF
+│   ├── _auth.asistencias.tsx    "/asistencias"   → planilla por profesor + Excel
 │   ├── _auth.configuracion.tsx  "/configuracion" → preferencias
 │   └── _auth.<tabla>.tsx        una por cada ABM
 ├── components/
@@ -560,6 +564,10 @@ el trigger es el que realmente cierra la puerta.
 > la fila de un listado, donde se toca de paso. Anular sí, porque no mueve stock.
 > `POST /inventarios/cerrar/:id` existe y está probado; le falta la pantalla
 > donde cerrar sea el acto principal y no un botón al costado.
+>
+> **`/inventarios-reporte` tampoco cierra**, y no es la pantalla que falta: es
+> una consulta con filtros de período, estado y diferencia, más Excel y PDF. Mira
+> los conteos, no los aplica.
 
 Las dos reglas las imponen los **triggers** de
 [db/inventarios-triggers-ddl.sql](db/inventarios-triggers-ddl.sql), no un

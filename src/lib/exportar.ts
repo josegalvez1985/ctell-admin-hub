@@ -371,6 +371,21 @@ export type DatosPlanilla = {
   /** IVA contenido en `totalImporte`, no un importe a sumarle. */
   totalIva: number;
   /**
+   * Horas de cada semana del mes, por número de semana.
+   *
+   * Viene calculada de afuera por lo mismo que `semana` en cada fila: quien arma
+   * los datos ya sumó los minutos del período, y recalcular acá partiendo de las
+   * horas ya redondeadas de cada día daría un total distinto del de la pantalla.
+   */
+  horasPorSemana?: Map<number, number>;
+  /**
+   * El nombre que encabeza el bloque de resumen: "RESUMEN <empresa>".
+   *
+   * Opcional: sin empresa activa el bloque sale igual, sólo que rotulado
+   * "RESUMEN" a secas.
+   */
+  nombreEmpresa?: string;
+  /**
    * Renglones en blanco del bloque "Actividad extra".
    *
    * Ese bloque NO sale de la base: no hay tabla que lo respalde. Se imprime
@@ -401,6 +416,14 @@ function gruposDeSemana(filas: FilaPlanilla[]): Map<number, { inicio: number; ca
 const AZUL: [number, number, number] = [19, 98, 192];
 /** Amarillo suave de las celdas de carga, como la planilla de papel. */
 const CREMA = "#FFF9E6";
+/**
+ * Rojo de las dos últimas filas del resumen: IVA y total general.
+ *
+ * Es un color literal y no el `--destructive` del tema: el archivo se abre en
+ * Excel, donde las variables CSS no existen, y además una planilla impresa tiene
+ * que verse igual sin importar si quien la generó usaba el tema claro u oscuro.
+ */
+const ROJO = "#C00000";
 /** Celeste de la columna de totales. */
 const CELESTE = "#DCE9F7";
 /** Gris del fin de semana. */
@@ -437,13 +460,81 @@ export async function descargarPlanillaExcel(
     return;
   }
 
+  // Acá abajo ya hay más de una planilla —la de una sola salió por el `return`
+  // de arriba—, así que la hoja de resumen siempre corresponde: consolida cuánto
+  // le toca a cada profesor, igual que el cuadro del pie de la pantalla. Con un
+  // solo profesor no aparece, porque repetiría el total que su propia planilla
+  // ya cierra.
+  const consolidado = armarResumenProfesores(lista);
+
   await writeXlsxFile(
-    armadas.map((p) => p.filas) as never,
+    [...armadas.map((p) => p.filas), consolidado.filas] as never,
     {
-      columns: armadas.map((p) => p.columnas),
-      sheets: armadas.map((p, i) => nombreHoja(p.profesor, i, armadas)),
+      columns: [...armadas.map((p) => p.columnas), consolidado.columnas],
+      sheets: [...armadas.map((p, i) => nombreHoja(p.profesor, i, armadas)), "Resumen"],
     } as never,
   ).toFile(archivo);
+}
+
+/**
+ * La hoja consolidada: cuánto le corresponde a cada profesor.
+ *
+ * Es el mismo cuadro que la pantalla muestra al pie de todas las planillas.
+ * Va en su propia hoja y no al final de la última planilla porque no pertenece a
+ * ninguna: cada planilla se imprime y se firma por separado, y el consolidado es
+ * de quien liquida.
+ *
+ * **El monto de cada uno sale de SUS horas**, redondeado a guaraníes — es la
+ * cifra que se le paga y no puede llevar centavos. El total suma esos montos ya
+ * redondeados, que es la cuenta que alguien va a rehacer sobre el papel.
+ */
+function armarResumenProfesores(lista: DatosPlanilla[]): {
+  filas: unknown[][];
+  columnas: { width: number }[];
+} {
+  const filas: unknown[][] = [];
+
+  filas.push([
+    {
+      value: "RESUMEN",
+      fontWeight: "bold" as const,
+      backgroundColor: CELESTE,
+      align: "center" as const,
+      columnSpan: 2,
+    },
+    null,
+  ]);
+  filas.push([
+    {
+      value: "PROFESORES",
+      fontWeight: "bold" as const,
+      backgroundColor: CELESTE,
+      align: "center" as const,
+    },
+    {
+      value: "MONTO",
+      fontWeight: "bold" as const,
+      backgroundColor: CELESTE,
+      align: "center" as const,
+    },
+  ]);
+
+  let total = 0;
+  for (const p of lista) {
+    const monto = Math.round(p.totalImporte);
+    total += monto;
+    filas.push([
+      { value: p.profesor, type: String },
+      { value: monto, type: Number, align: "right" as const },
+    ]);
+  }
+
+  filas.push([
+    { value: "TOTALES", fontWeight: "bold" as const, align: "center" as const },
+    { value: total, type: Number, fontWeight: "bold" as const, align: "right" as const },
+  ]);
+
+  return { filas, columnas: [{ width: 34 }, { width: 16 }] };
 }
 
 /**
@@ -472,9 +563,24 @@ function armarPlanillaExcel(datos: DatosPlanilla): {
   profesor: string;
 } {
   const n = datos.columnasMarca;
-  // Semana, Día, Fecha, (Ent./Sal.) × n, Total horas
-  const anchoTotal = 3 + n * 2 + 1;
+  // Semana, Día, Fecha, (Ent./Sal.) × n, Horas, Total semana, Total mes
+  const anchoTotal = 3 + n * 2 + 3;
   const semanas = gruposDeSemana(datos.filas);
+
+  /**
+   * Horas de cada semana. Si no vienen calculadas, se derivan de las filas.
+   *
+   * El respaldo existe para no romper a quien ya llamaba a esto sin el campo,
+   * pero suma las horas YA REDONDEADAS de cada día: puede quedar un par de
+   * centésimas por debajo del total real. Quien quiera el número exacto —la
+   * pantalla— lo manda hecho.
+   */
+  const horasSemana =
+    datos.horasPorSemana ??
+    datos.filas.reduce((mapa, f) => {
+      mapa.set(f.semana, Number(((mapa.get(f.semana) ?? 0) + f.horas).toFixed(2)));
+      return mapa;
+    }, new Map<number, number>());
 
   /** Fila de `anchoTotal` celdas, rellenando con null lo que no se usa. */
   const completar = (celdas: unknown[]): unknown[] => [
@@ -492,17 +598,44 @@ function armarPlanillaExcel(datos: DatosPlanilla): {
     align: "right" as const,
   });
 
-  filas.push(
+  /**
+   * DOS FILAS, no cuatro apiladas: quién y cuándo a la izquierda, los datos del
+   * cálculo a la derecha.
+   *
+   * Cada rótulo va pegado a su valor, y el par de la derecha arranca donde
+   * terminan los pares Ent./Sal. — así el encabezado ocupa el mismo ancho que la
+   * grilla de abajo en vez de dejar media hoja vacía.
+   *
+   * `anchoIzquierda` es cuántas columnas ocupa el valor de la izquierda: todo lo
+   * que hay entre su rótulo y el rótulo de la derecha. Se descuentan tres —el
+   * rótulo de la izquierda, el de la derecha y su valor— y `completar` rellena
+   * lo que sobre, así la fila mide exactamente `anchoTotal`.
+   */
+  const anchoIzquierda = Math.max(1, anchoTotal - 3);
+
+  const encabezado = (
+    rotuloIzq: string,
+    valorIzq: string,
+    rotuloDer: string,
+    valorDer: string | number,
+  ): unknown[] =>
     completar([
-      rotulo("Profesor/a"),
-      { value: datos.profesor, columnSpan: Math.max(1, n), fontWeight: "bold" as const },
-    ]),
-  );
-  filas.push(
-    completar([rotulo("Institución"), { value: datos.institucion, columnSpan: Math.max(1, n) }]),
-  );
-  filas.push(completar([rotulo("Mes"), { value: datos.periodo }]));
-  filas.push(completar([rotulo("Hora cátedra (min)"), { value: datos.horaCatedra, type: Number }]));
+      rotulo(rotuloIzq),
+      { value: valorIzq, columnSpan: anchoIzquierda, fontWeight: "bold" as const },
+      ...Array<null>(anchoIzquierda - 1).fill(null),
+      rotulo(rotuloDer),
+      {
+        value: valorDer,
+        // El tipo sigue al dato: la hora cátedra es un número y tiene que entrar
+        // como tal, o Excel la alinea como texto y no se puede usar en una cuenta.
+        type: typeof valorDer === "number" ? Number : String,
+        align: "center" as const,
+        fontWeight: "bold" as const,
+      },
+    ]);
+
+  filas.push(encabezado("Profesor/a", datos.profesor, "Mes", datos.periodo));
+  filas.push(encabezado("Institución", datos.institucion, "Hora Cátedra", datos.horaCatedra));
   filas.push(completar([]));
 
   // --- Cabecera de la grilla ----------------------------------------------
@@ -542,13 +675,31 @@ function armarPlanillaExcel(datos: DatosPlanilla): {
       null,
     );
   }
-  cabecera1.push({
-    value: "Total Cant. Hs.",
-    fontWeight: "bold" as const,
-    backgroundColor: CELESTE,
-    align: "center" as const,
-    rowSpan: 2,
-  });
+  cabecera1.push(
+    {
+      value: "Total Cant. Hs.",
+      fontWeight: "bold" as const,
+      backgroundColor: CELESTE,
+      align: "center" as const,
+      rowSpan: 2,
+    },
+    // Los dos acumulados, en el orden en que se suman: el día va a la semana y
+    // la semana al mes. Mismas columnas que la grilla de la pantalla.
+    {
+      value: "Total Semana",
+      fontWeight: "bold" as const,
+      backgroundColor: CELESTE,
+      align: "center" as const,
+      rowSpan: 2,
+    },
+    {
+      value: "Total",
+      fontWeight: "bold" as const,
+      backgroundColor: CELESTE,
+      align: "center" as const,
+      rowSpan: 2,
+    },
+  );
   filas.push(cabecera1);
 
   // Las celdas de la fila combinada van en null: la librería las ignora, pero
@@ -561,7 +712,8 @@ function armarPlanillaExcel(datos: DatosPlanilla): {
       { value: "Sal.", fontWeight: "bold" as const, align: "center" as const },
     );
   }
-  cabecera2.push(null);
+  // Tres null: Horas, Total semana y Total, que abarcan las dos filas.
+  cabecera2.push(null, null, null);
   filas.push(cabecera2);
 
   // --- Un renglón por día del mes -----------------------------------------
@@ -611,34 +763,107 @@ function armarPlanillaExcel(datos: DatosPlanilla): {
           }
         : { value: null, backgroundColor: CELESTE },
     );
+
+    // Total de la semana: una celda estirada sobre sus días, igual que la de
+    // Sem. Se declara en el PRIMER día del grupo porque un rowSpan sólo crece
+    // hacia abajo, y se alinea abajo para que el número quede donde cierra la
+    // cuenta — el mismo criterio que la pantalla.
+    const horasDeLaSemana = horasSemana.get(fila.semana) ?? 0;
+    celdas.push(
+      grupo && grupo.inicio === indice
+        ? {
+            value: horasDeLaSemana > 0 ? Number(horasDeLaSemana.toFixed(2)) : null,
+            type: Number,
+            align: "center" as const,
+            alignVertical: "bottom" as const,
+            fontWeight: "bold" as const,
+            backgroundColor: CELESTE,
+            rowSpan: grupo.cantidad,
+          }
+        : null,
+    );
+
+    // Total del mes: una sola celda sobre TODA la grilla, declarada en el primer
+    // día. Es una única cuenta, no una por semana.
+    celdas.push(
+      indice === 0
+        ? {
+            value: datos.totalHoras > 0 ? datos.totalHoras : null,
+            type: Number,
+            align: "center" as const,
+            alignVertical: "bottom" as const,
+            fontWeight: "bold" as const,
+            backgroundColor: CELESTE,
+            rowSpan: datos.filas.length,
+          }
+        : null,
+    );
     filas.push(celdas);
   }
 
   // --- Resumen ------------------------------------------------------------
+  // Las mismas siete filas que el bloque de la pantalla, en el mismo orden. El
+  // importe va redondeado a guaraníes: no hay centavos en la moneda, y el
+  // desglose del IVA tiene que cerrar contra el número que se muestra.
   filas.push(completar([]));
-  const resumen: Array<[string, number]> = [
-    ["TOTAL HORAS TRABAJADAS", datos.totalHoras],
-    ["IMPORTE POR HORA", datos.precioHora],
-    ["IMPORTE TOTAL", datos.totalImporte],
-    ["IVA INCLUIDO", datos.totalIva],
+  // El rótulo lateral toma dos columnas y el importe una: lo del medio es la
+  // etiqueta.
+  const anchoEtiquetaResumen = Math.max(1, anchoTotal - 3);
+  const importe = Math.round(datos.totalImporte);
+  const resumen: Array<{ etiqueta: string; valor: number | null; destacada?: boolean }> = [
+    { etiqueta: "TOTAL HORAS TRABAJADAS", valor: datos.totalHoras },
+    { etiqueta: "IMPORTE POR HORA", valor: datos.precioHora },
+    { etiqueta: "IMPORTE NORMAL", valor: importe },
+    // En null y no en 0: un cero afirma que se calcularon las horas extra y
+    // dieron cero, y lo que pasa es que hoy nada las distingue de las normales.
+    { etiqueta: "IMPORTE EXTRA", valor: null },
+    { etiqueta: "IMPORTE TOTAL", valor: importe },
+    // "INCLUIDO EN EL TOTAL" y no "IVA" a secas: es un desglose, no algo que
+    // haya que sumarle al total de abajo. Ver la nota de `totalIva`.
+    { etiqueta: "IVA INCLUIDO EN EL TOTAL", valor: Math.round(datos.totalIva), destacada: true },
+    { etiqueta: "TOTAL GENERAL", valor: importe, destacada: true },
   ];
-  for (const [etiqueta, valor] of resumen) {
+
+  resumen.forEach(({ etiqueta, valor, destacada }, i) => {
     filas.push(
       completar([
+        // El rótulo lateral estirado sobre las siete filas, como en la pantalla.
+        i === 0
+          ? {
+              value: datos.nombreEmpresa ? `RESUMEN ${datos.nombreEmpresa}` : "RESUMEN",
+              fontWeight: "bold" as const,
+              backgroundColor: CELESTE,
+              align: "center" as const,
+              alignVertical: "center" as const,
+              wrap: true,
+              rowSpan: resumen.length,
+              columnSpan: 2,
+            }
+          : null,
+        null,
         {
           value: etiqueta,
           fontWeight: "bold" as const,
-          // Tres y no dos: la columna de semana se sumó adelante, y sin esto el
-          // importe caería una celda antes de donde está la grilla.
-          columnSpan: 3,
-          align: "right" as const,
+          align: "left" as const,
+          // Ocupa todo lo que hay entre el rótulo lateral y la columna del
+          // importe, para que el número caiga en la ÚLTIMA columna de la grilla
+          // —alineado con los totales de arriba— y no a media hoja.
+          columnSpan: anchoEtiquetaResumen,
+          // Las dos últimas en rojo, como en la planilla de papel: son las que
+          // se controlan contra la factura.
+          ...(destacada ? { color: ROJO } : {}),
         },
-        null,
-        null,
-        { value: valor, type: Number, fontWeight: "bold" as const },
+        ...Array<null>(anchoEtiquetaResumen - 1).fill(null),
+        {
+          value: valor,
+          type: Number,
+          fontWeight: "bold" as const,
+          align: "right" as const,
+          ...(destacada ? { color: ROJO } : {}),
+        },
       ]),
     );
-  }
+  });
 
   // --- Actividad extra: renglones en blanco para llenar a mano -------------
   const filasExtra = datos.filasActividadExtra ?? 0;
@@ -674,14 +899,16 @@ function armarPlanillaExcel(datos: DatosPlanilla): {
     }
   }
 
-  // Semana, Día, Fecha, los pares Ent./Sal. y el total. Tiene que haber tantos
-  // anchos como columnas tiene la grilla, o Excel las corre.
+  // Semana, Día, Fecha, los pares Ent./Sal. y los TRES totales. Tiene que haber
+  // tantos anchos como columnas tiene la grilla, o Excel las corre.
   const columnas = [
     { width: 6 },
     { width: 8 },
     { width: 8 },
     ...Array.from({ length: n * 2 }, () => ({ width: 7 })),
     { width: 14 },
+    { width: 14 },
+    { width: 12 },
   ];
 
   return { filas, columnas, profesor: datos.profesor };

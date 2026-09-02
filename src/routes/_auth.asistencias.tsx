@@ -61,8 +61,6 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { api, ApiError, type AsistenciaProfesor } from "@/lib/api";
 import {
-  abrirPdf,
-  abrirPlanillaPdf,
   descargarExcel,
   descargarPlanillaExcel,
   type ColumnaExport,
@@ -139,13 +137,27 @@ function aHorasCatedra(minutos: number, duracionCatedra: number): number {
   return minutos / (duracionCatedra || 60);
 }
 
+/** Minutos que dura una hora cátedra cuando el profesor no tiene otro valor. */
+const CATEDRA_POR_DEFECTO = "60";
+
+/**
+ * Precio por hora de arranque.
+ *
+ * Formateado como lo escribe `InputMoneda`, con el separador de miles: el
+ * componente lee su propio formato, y un "60000" pelado se mostraría sin punto.
+ *
+ * Con el campo vacío, la columna Importe y el resumen del pie arrancaban en cero
+ * — una planilla completa diciendo que no se le debe nada a nadie.
+ */
+const PRECIO_POR_DEFECTO = "60.000";
+
 export const Route = createFileRoute("/_auth/asistencias")({
   head: () => ({
     meta: [
       { title: tituloPagina("Asistencias") },
       {
         name: "description",
-        content: "Reporte de asistencias de profesores, con exportación a Excel y PDF.",
+        content: "Reporte de asistencias de profesores, con exportación a Excel.",
       },
     ],
   }),
@@ -188,10 +200,23 @@ function AsistenciasPage() {
    */
   const [fechaAlta, setFechaAlta] = useState<string | null>(null);
 
-  // Los dos parámetros del cálculo. Viven en la pantalla y no en la base: ver
-  // la nota de db/asistencias-profesores.sql.
-  const [precioHora, setPrecioHora] = useState("");
-  const [duracionCatedra, setDuracionCatedra] = useState("60");
+  /**
+   * Hora cátedra y precio, **por profesor**.
+   *
+   * No hay un valor global: no todos los profesores tienen la misma carga —uno
+   * da cátedras de 45 minutos y otro de 60 en el mismo período— ni cobran lo
+   * mismo, así que un único campo arriba haría que el total de alguno salga mal
+   * sin que nada lo avise. Cada planilla trae los suyos en su encabezado.
+   *
+   * Quien no está en el mapa usa `CATEDRA_POR_DEFECTO` / `PRECIO_POR_DEFECTO`,
+   * que es lo que se ve al abrir la pantalla.
+   *
+   * Viven acá y no en la base: `PROFESORES` no tiene columna para esto (ver la
+   * nota de `db/asistencias-profesores.sql`) y agregarla es un cambio de DDL.
+   * Se pierden al recargar.
+   */
+  const [catedraPorProfesor, setCatedraPorProfesor] = useState<Record<number, string>>({});
+  const [precioPorProfesor, setPrecioPorProfesor] = useState<Record<number, string>>({});
 
   /**
    * Las marcaciones del período SIN filtrar por institución ni profesor.
@@ -356,8 +381,19 @@ function AsistenciasPage() {
     !anioFueraDeLista && mesesDisponibles.length > 0 && !mesesDisponibles.includes(Number(mes));
   if (mesFueraDeLista) setMes(String(mesesDisponibles[mesesDisponibles.length - 1]));
 
-  const catedra = Number(duracionCatedra) || 60;
-  const precio = numeroMoneda(precioHora) || 0;
+  /**
+   * La hora cátedra y el precio que le corresponden a un profesor: los suyos, o
+   * los de arranque si todavía no se los tocó.
+   *
+   * Son funciones y no dos mapas ya resueltos porque las usan tanto el cálculo
+   * de las grillas como el del Excel y el de los KPI, y así los tres preguntan
+   * lo mismo en vez de repetir el `??`.
+   */
+  const catedraDe = (idProfesor: number) =>
+    Number(catedraPorProfesor[idProfesor] ?? CATEDRA_POR_DEFECTO) || 60;
+
+  const precioDe = (idProfesor: number) =>
+    numeroMoneda(precioPorProfesor[idProfesor] ?? PRECIO_POR_DEFECTO) || 0;
 
   /**
    * Los totales del período.
@@ -370,17 +406,31 @@ function AsistenciasPage() {
     let minutos = 0;
     let incompletas = 0;
     const dias = new Set<string>();
+    // Los minutos de cada profesor por separado: cada uno se convierte con SU
+    // hora cátedra y se cobra a SU precio. Sumar todo con un solo valor daría un
+    // total que no coincide con la suma de las planillas — que es el número que
+    // alguien va a controlar.
+    const minutosPorProfesor = new Map<number, number>();
 
     for (const a of items) {
       if (a.minutos === null) incompletas += 1;
       else {
         minutos += a.minutos;
         dias.add(a.fecha);
+        minutosPorProfesor.set(
+          a.idProfesor,
+          (minutosPorProfesor.get(a.idProfesor) ?? 0) + a.minutos,
+        );
       }
     }
 
-    const horas = aHorasCatedra(minutos, catedra);
-    const importe = horas * precio;
+    let horas = 0;
+    let importe = 0;
+    for (const [idProfesor, m] of minutosPorProfesor) {
+      const suyas = aHorasCatedra(m, catedraDe(idProfesor));
+      horas += suyas;
+      importe += suyas * precioDe(idProfesor);
+    }
     return {
       minutos,
       horas,
@@ -391,9 +441,10 @@ function AsistenciasPage() {
       // del sistema: nunca se suma encima. Ver la nota de IVA en CLAUDE.md.
       iva: importe - Math.round((importe / 1.1) * 100) / 100,
     };
-  }, [items, catedra, precio]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, catedraPorProfesor, precioPorProfesor]);
 
-  /** Las marcaciones de cada día, para la grilla de la planilla. */
+  /** Las marcaciones de cada día, para el modal del día y el conteo de columnas. */
   const porDia = useMemo(() => {
     const mapa = new Map<string, AsistenciaProfesor[]>();
     for (const a of items) {
@@ -404,6 +455,88 @@ function AsistenciasPage() {
     return mapa;
   }, [items]);
 
+  /**
+   * Las marcaciones agrupadas POR PROFESOR, cada una con su propio mapa por día.
+   *
+   * **Una planilla es de una persona.** Si en la institución marcaron tres
+   * profesores, la pantalla muestra tres grillas apiladas y no una sola con las
+   * marcas mezcladas: en la grilla mezclada, un día con dos entradas puede ser
+   * un profesor que entró y salió dos veces o dos profesores distintos, y el
+   * papel que se firma no permite esa ambigüedad. Además el total del pie sería
+   * la suma de todos, que no es lo que nadie cobra.
+   *
+   * Es la misma agrupación que ya hacía `planillas` para el Excel — de hecho
+   * era la diferencia que el aviso de "sale una planilla para cada uno" tenía
+   * que explicar. Ahora la pantalla y el archivo muestran lo mismo.
+   *
+   * Orden alfabético, como el Excel y el cuadro de resumen por profesor.
+   */
+  const grillasPorProfesor = useMemo(() => {
+    const porProfesor = new Map<number, AsistenciaProfesor[]>();
+    for (const a of items) {
+      const lista = porProfesor.get(a.idProfesor);
+      if (lista) lista.push(a);
+      else porProfesor.set(a.idProfesor, [a]);
+    }
+
+    return [...porProfesor.entries()]
+      .map(([idProfesor, marcas]) => {
+        const dias = new Map<string, AsistenciaProfesor[]>();
+        for (const a of marcas) {
+          const lista = dias.get(a.fecha);
+          if (lista) lista.push(a);
+          else dias.set(a.fecha, [a]);
+        }
+        return {
+          idProfesor,
+          // Los suyos, o los globales si no tiene propios. Van acá para que la
+          // grilla, su pie y el Excel usen todos el mismo número.
+          catedra: catedraDe(idProfesor),
+          precio: precioDe(idProfesor),
+          profesor: marcas[0]?.profesor ?? "—",
+          // De las marcas y no del filtro: sin filtro de institución, dice en
+          // cuáles estuvo realmente esta persona.
+          institucion:
+            [...new Set(marcas.map((a) => a.institucion).filter(Boolean))].join(" · ") || "—",
+          marcas,
+          porDia: dias,
+          // POR PROFESOR y no el máximo global: si otro tuvo cuatro marcas en un
+          // día, no tiene por qué agregar dos columnas vacías a esta grilla.
+          maxMarcas: Math.max(2, ...[...dias.values()].map((l) => l.length)),
+        };
+      })
+      .sort((a, b) => a.profesor.localeCompare(b.profesor, "es"));
+    // Los mapas de overrides y los globales entran como dependencia: cambiar
+    // cualquiera de los cuatro cambia los totales de las grillas.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, catedraPorProfesor, precioPorProfesor]);
+
+  /**
+   * Cuánto le corresponde a cada profesor: el consolidado del pie.
+   *
+   * Sale de `grillasPorProfesor` y no de `items` otra vez para que las dos cosas
+   * no puedan discrepar — es la misma gente, en el mismo orden, con las mismas
+   * marcas que se ven en las grillas de arriba.
+   *
+   * Se suman los MINUTOS de cada uno y recién ahí se convierte a horas cátedra,
+   * por lo mismo que los totales por semana: redondear antes de sumar haría que
+   * la fila no cierre contra el pie de su propia planilla.
+   */
+  const resumenPorProfesor = useMemo(
+    () =>
+      grillasPorProfesor.map((g) => {
+        const minutos = g.marcas.reduce((s, a) => s + (a.minutos ?? 0), 0);
+        return {
+          profesor: g.profesor,
+          // CON LA CÁTEDRA Y EL PRECIO DE CADA UNO, no los globales: si dos
+          // profesores tienen cátedras distintas, usar un solo valor haría que
+          // el consolidado no coincida con el pie de sus propias planillas.
+          monto: Math.round((minutos > 0 ? aHorasCatedra(minutos, g.catedra) : 0) * g.precio),
+        };
+      }),
+    [grillasPorProfesor],
+  );
+
   /** Todos los días del mes elegido, haya o no marcaciones. */
   const diasDelMes = useMemo(() => {
     const total = new Date(Number(anio), Number(mes), 0).getDate();
@@ -413,12 +546,6 @@ function AsistenciasPage() {
       return { dia: i + 1, iso, diaSemana: fecha.getDay() };
     });
   }, [anio, mes]);
-
-  /** Cuántos pares Ent./Sal. mostrar: el máximo real del mes, mínimo 2. */
-  const maxMarcas = useMemo(
-    () => Math.max(2, ...[...porDia.values()].map((l) => l.length)),
-    [porDia],
-  );
 
   // Los nombres salen de las mismas listas que alimentan los combos: el nombre
   // que ya viene en la marcación, sin volver a pedir el catálogo.
@@ -447,16 +574,21 @@ function AsistenciasPage() {
       // Número y no "3:45": en Excel tiene que poder sumarse.
       titulo: "Horas",
       valor: (a) =>
-        a.minutos === null ? null : Number(aHorasCatedra(a.minutos, catedra).toFixed(2)),
+        a.minutos === null
+          ? null
+          : Number(aHorasCatedra(a.minutos, catedraDe(a.idProfesor)).toFixed(2)),
       numerica: true,
       ancho: 10,
     },
     {
-      // "Gs." en el título y el número pelado: el símbolo ₲ no existe en las
-      // fuentes de fábrica de jsPDF y saldría como un cuadrito.
+      // "Gs." en el título y el número PELADO, sin separadores: así entra en
+      // Excel como número y la columna se puede sumar. Formatearlo lo volvería
+      // texto.
       titulo: "Importe Gs.",
       valor: (a) =>
-        a.minutos === null ? null : Math.round(aHorasCatedra(a.minutos, catedra) * precio),
+        a.minutos === null
+          ? null
+          : Math.round(aHorasCatedra(a.minutos, catedraDe(a.idProfesor)) * precioDe(a.idProfesor)),
       numerica: true,
       ancho: 16,
     },
@@ -472,12 +604,6 @@ function AsistenciasPage() {
     },
   ];
 
-  const subtitulos = [
-    `${nombreProfesor} · ${nombreInstitucion} · ${periodo}`,
-    `Hora cátedra: ${catedra} min · Precio por hora: ${formatearMoneda(precio)} Gs.`,
-    `Total: ${totales.horas.toFixed(2)} hs en ${totales.dias} día(s) · Importe: ${formatearMoneda(Math.round(totales.importe))} Gs.`,
-  ];
-
   const nombreArchivo = `asistencias-${anio}-${String(mes).padStart(2, "0")}`;
 
   /**
@@ -491,73 +617,70 @@ function AsistenciasPage() {
    * cada uno necesita la suya. Con un profesor elegido la lista tiene un solo
    * elemento, que es el caso de siempre.
    */
-  const planillas: DatosPlanilla[] = useMemo(() => {
-    // Agrupar preservando el orden en que llegan del backend (fecha, entrada):
-    // así las planillas salen en un orden estable y no en el del hash.
-    const porProfesor = new Map<number, AsistenciaProfesor[]>();
-    for (const a of items) {
-      const lista = porProfesor.get(a.idProfesor);
-      if (lista) lista.push(a);
-      else porProfesor.set(a.idProfesor, [a]);
-    }
-
-    return [...porProfesor.values()]
-      .sort((a, b) => (a[0]?.profesor ?? "").localeCompare(b[0]?.profesor ?? "", "es"))
-      .map((marcasProfesor) => {
-        // Los totales se recalculan sobre las marcas de ESTE profesor: los de
-        // la pantalla son del período entero y acá firma una sola persona.
+  const planillas: DatosPlanilla[] = useMemo(
+    () =>
+      // SALE DE LA MISMA AGRUPACIÓN QUE LAS GRILLAS de la pantalla, no de una
+      // propia: son las mismas personas, en el mismo orden, con las mismas
+      // marcas y el mismo conteo de columnas. Cuando eran dos agrupaciones
+      // paralelas, la pantalla mostraba una grilla mezclada y el archivo salía
+      // separado por profesor — una diferencia que hubo que explicar con un
+      // aviso en pantalla.
+      grillasPorProfesor.map((g) => {
+        // Los totales son de ESTE profesor: los de la pantalla son del período
+        // entero y acá firma una sola persona.
         let minutosTotales = 0;
-        for (const a of marcasProfesor) minutosTotales += a.minutos ?? 0;
-        const horas = aHorasCatedra(minutosTotales, catedra);
-        const importe = horas * precio;
+        for (const a of g.marcas) minutosTotales += a.minutos ?? 0;
+        // CON LOS VALORES DE ESTE PROFESOR, no los globales: puede tener una
+        // hora catedra distinta de la del resto.
+        const horas = aHorasCatedra(minutosTotales, g.catedra);
+        const importe = horas * g.precio;
 
-        const diasProfesor = new Map<string, AsistenciaProfesor[]>();
-        for (const a of marcasProfesor) {
-          const lista = diasProfesor.get(a.fecha);
-          if (lista) lista.push(a);
-          else diasProfesor.set(a.fecha, [a]);
-        }
+        // Las mismas filas de la grilla, y de paso los minutos de cada semana.
+        // Se acumulan en minutos y se convierten al final, igual que en la
+        // pantalla: sumando las horas ya redondeadas de cada día, el total de la
+        // semana no cerraría contra su propia columna.
+        const minutosPorSemana = new Map<number, number>();
+        const filas = agruparPorSemana(diasDelMes).map(({ dia, iso, diaSemana, semana }) => {
+          const marcas = g.porDia.get(iso) ?? [];
+          const minutos = marcas.reduce((s, m) => s + (m.minutos ?? 0), 0);
+          minutosPorSemana.set(semana, (minutosPorSemana.get(semana) ?? 0) + minutos);
+          return {
+            semana,
+            dia,
+            diaSemana: DIAS[diaSemana] ?? "",
+            marcas: marcas.map((m) => ({ entrada: m.horaEntrada, salida: m.horaSalida })),
+            horas: minutos > 0 ? Number(aHorasCatedra(minutos, g.catedra).toFixed(2)) : 0,
+            finDeSemana: diaSemana === 0 || diaSemana === 6,
+          };
+        });
 
         return {
-          profesor: marcasProfesor[0]?.profesor ?? nombreProfesor,
-          // Con el filtro de institución puesto es esa; sin filtro, todas
-          // aquellas donde este profesor marcó. Sale de las marcas y no del
-          // filtro para no afirmar una institución en la que no estuvo.
-          institucion:
-            [...new Set(marcasProfesor.map((a) => a.institucion).filter(Boolean))].join(" · ") ||
-            "—",
+          profesor: g.profesor,
+          institucion: g.institucion,
           periodo,
-          horaCatedra: catedra,
-          precioHora: precio,
-          // Por profesor y no el máximo global: si otro tuvo 4 marcas en un día,
-          // no tiene por qué agregar dos columnas vacías a esta planilla.
-          columnasMarca: Math.max(2, ...[...diasProfesor.values()].map((l) => l.length)),
-          // La misma agrupación que la grilla de la pantalla: el archivo tiene
-          // que salir con la forma de lo que se está mirando.
-          filas: agruparPorSemana(diasDelMes).map(({ dia, iso, diaSemana, semana }) => {
-            const marcas = diasProfesor.get(iso) ?? [];
-            const minutos = marcas.reduce((s, m) => s + (m.minutos ?? 0), 0);
-            return {
-              semana,
-              dia,
-              diaSemana: DIAS[diaSemana] ?? "",
-              marcas: marcas.map((m) => ({ entrada: m.horaEntrada, salida: m.horaSalida })),
-              horas: minutos > 0 ? Number(aHorasCatedra(minutos, catedra).toFixed(2)) : 0,
-              finDeSemana: diaSemana === 0 || diaSemana === 6,
-            };
-          }),
+          horaCatedra: g.catedra,
+          precioHora: g.precio,
+          columnasMarca: g.maxMarcas,
+          filas,
+          horasPorSemana: new Map(
+            [...minutosPorSemana].map(([s, m]) => [
+              s,
+              m > 0 ? Number(aHorasCatedra(m, g.catedra).toFixed(2)) : 0,
+            ]),
+          ),
           totalHoras: Number(horas.toFixed(2)),
           totalImporte: importe,
           // El IVA se DESGLOSA de un precio que ya lo incluye, igual que en el
           // resto del sistema. Mismo criterio que `totales`.
           totalIva: importe - Math.round((importe / 1.1) * 100) / 100,
+          nombreEmpresa: empresa?.nombreEmpresa ?? "",
           // Seis renglones en blanco: el bloque no sale de la base y se completa
-          // a mano sobre el papel. Es la misma cantidad que trae la planilla
-          // actual.
+          // a mano sobre el papel. Los mismos que muestra la pantalla.
           filasActividadExtra: 6,
         };
-      });
-  }, [items, catedra, precio, periodo, diasDelMes, nombreProfesor]);
+      }),
+    [grillasPorProfesor, periodo, diasDelMes, empresa],
+  );
 
   const exportaPlanilla = vista === "planilla";
   const exportarBloqueado = items.length === 0;
@@ -628,23 +751,6 @@ function AsistenciasPage() {
     }
   }
 
-  // NO es async: las dos funciones de PDF abren la pestaña en su primera línea,
-  // y los bloqueadores sólo dejan pasar el window.open que ocurre dentro del
-  // click. Con un `await` antes, el navegador ya no lo asocia al gesto.
-  function exportarPdf() {
-    const promesa = exportaPlanilla
-      ? abrirPlanillaPdf(planillas)
-      : abrirPdf({
-          nombreArchivo,
-          titulo: "Reporte de asistencias",
-          subtitulos,
-          columnas,
-          filas: items,
-          orientacion: "landscape",
-        });
-    promesa.catch((error) => toast.error(MENSAJE_ERROR(error, "No se pudo generar el PDF")));
-  }
-
   const sinDatos = !asistencias.isPending && !asistencias.isError && items.length === 0;
 
   return (
@@ -657,9 +763,9 @@ function AsistenciasPage() {
               Marcaciones de profesores por período. Tocá un día de la planilla para corregirlo.
             </p>
           </div>
-          {/* El título dice qué formato sale, que depende de la vista activa:
-              exportar algo distinto de lo que se está mirando es lo que un
-              reporte no puede hacer. */}
+          {/* El título dice QUÉ sale, que depende de la vista activa: exportar
+              algo distinto de lo que se está mirando es lo que un reporte no
+              puede hacer. */}
           <div className="flex gap-2">
             <Button onClick={() => abrirAlta()} disabled={empresa === null}>
               <Plus className="size-4" />
@@ -679,21 +785,6 @@ function AsistenciasPage() {
             >
               <FileSpreadsheet className="size-4" />
               Excel
-            </Button>
-            <Button
-              variant="outline"
-              onClick={exportarPdf}
-              disabled={exportarBloqueado}
-              title={
-                exportaPlanilla
-                  ? planillas.length > 1
-                    ? `Una planilla por profesor (${planillas.length}) en PDF`
-                    : "Planilla del mes en PDF"
-                  : "Listado de marcaciones en PDF"
-              }
-            >
-              <FileText className="size-4" />
-              PDF
             </Button>
           </div>
         </div>
@@ -767,25 +858,6 @@ function AsistenciasPage() {
               </SelectContent>
             </Select>
           </label>
-
-          <label className="space-y-1.5">
-            <span className="text-xs font-medium text-muted-foreground">Hora cátedra (min)</span>
-            <Input
-              type="number"
-              min={1}
-              max={120}
-              value={duracionCatedra}
-              onChange={(e) => setDuracionCatedra(e.target.value)}
-              placeholder="60"
-            />
-          </label>
-
-          <label className="space-y-1.5">
-            <span className="text-xs font-medium text-muted-foreground">Precio por hora</span>
-            {/* InputMoneda y no un <input number>: separa los miles mientras se
-                escribe. Number("60.000") daría 60, mil veces menos. */}
-            <InputMoneda value={precioHora} onChange={setPrecioHora} placeholder="60.000" />
-          </label>
         </div>
 
         {periodos.isError && (
@@ -837,9 +909,9 @@ function AsistenciasPage() {
                 etiqueta="Importe total"
                 valor={formatearMoneda(Math.round(totales.importe))}
                 detalle={
-                  precio > 0
+                  totales.importe > 0
                     ? `IVA incluido: ${formatearMoneda(Math.round(totales.iva))}`
-                    : "Cargá el precio por hora"
+                    : "Cargá el precio por hora en cada planilla"
                 }
               />
               <Kpi
@@ -886,32 +958,93 @@ function AsistenciasPage() {
                   </div>
                 </div>
 
-                {/* Con varios profesores la exportación ya no se bloquea: sale
-                    una planilla por cada uno. Se avisa igual porque la pantalla
-                    muestra la grilla mezclada y el archivo NO — sin esto, la
-                    diferencia entre lo que se ve y lo que se baja sorprende. */}
-                {exportaPlanilla && planillas.length > 1 && (
-                  <p className="flex items-center gap-2 rounded-lg border border-border bg-muted px-3 py-2 text-sm text-muted-foreground">
-                    <AlertTriangle className="size-4 shrink-0 text-warning" />
-                    Hay {planillas.length} profesores en el período: al exportar sale una planilla
-                    para cada uno, en un solo archivo. Elegí un profesor arriba para ver su grilla
-                    sola.
-                  </p>
-                )}
-
                 {vista === "planilla" ? (
-                  <Planilla
-                    dias={diasDelMes}
-                    porDia={porDia}
-                    maxMarcas={maxMarcas}
-                    catedra={catedra}
-                    onAbrirDia={setDiaAbierto}
-                  />
+                  /* UNA PLANILLA POR PROFESOR, apiladas. Ya no hace falta el
+                     aviso de que el archivo sale distinto de la pantalla:
+                     ahora muestran lo mismo. */
+                  <div className="space-y-6">
+                    {grillasPorProfesor.map((g) => (
+                      <section key={g.idProfesor} className="space-y-2">
+                        {/* Nombre a la izquierda y los dos parámetros del
+                            cálculo a la derecha, como el encabezado del Excel.
+
+                            LOS CAMPOS VAN POR PROFESOR: no todos tienen la misma
+                            hora cátedra —45 minutos en un colegio, 60 en otro— y
+                            con un solo valor global el total de horas de alguno
+                            sale mal. Arrancan en el valor de arriba y sólo se
+                            tocan los que difieren. */}
+                        <div className="flex flex-wrap items-end justify-between gap-3">
+                          <h2 className="text-sm font-semibold text-foreground">
+                            {g.profesor}
+                            <span className="ml-2 font-normal text-muted-foreground">
+                              {g.institucion}
+                            </span>
+                          </h2>
+                          <div className="flex items-end gap-2">
+                            <label className="space-y-1">
+                              <span className="block text-xs font-medium text-muted-foreground">
+                                Hora cátedra (min)
+                              </span>
+                              <Input
+                                type="number"
+                                min={1}
+                                className="h-8 w-24"
+                                value={catedraPorProfesor[g.idProfesor] ?? CATEDRA_POR_DEFECTO}
+                                onChange={(e) =>
+                                  setCatedraPorProfesor((previo) => ({
+                                    ...previo,
+                                    [g.idProfesor]: e.target.value,
+                                  }))
+                                }
+                              />
+                            </label>
+                            <label className="space-y-1">
+                              <span className="block text-xs font-medium text-muted-foreground">
+                                Precio por hora
+                              </span>
+                              {/* InputMoneda y no un `type="number"`: es un
+                                  monto, y va con separador de miles como todo
+                                  importe del sistema. */}
+                              <InputMoneda
+                                className="h-8 w-32"
+                                value={precioPorProfesor[g.idProfesor] ?? PRECIO_POR_DEFECTO}
+                                onChange={(valor) =>
+                                  setPrecioPorProfesor((previo) => ({
+                                    ...previo,
+                                    [g.idProfesor]: valor,
+                                  }))
+                                }
+                              />
+                            </label>
+                          </div>
+                        </div>
+                        <Planilla
+                          dias={diasDelMes}
+                          porDia={g.porDia}
+                          maxMarcas={g.maxMarcas}
+                          catedra={g.catedra}
+                          precio={g.precio}
+                          nombreEmpresa={empresa?.nombreEmpresa ?? ""}
+                          onAbrirDia={setDiaAbierto}
+                        />
+                      </section>
+                    ))}
+
+                    {/* AL FINAL DE TODAS, y sólo con más de un profesor: es el
+                        consolidado del período, no el pie de ninguna planilla en
+                        particular. Cada planilla ya cierra con su propio total,
+                        y éste dice cuánto se paga en conjunto. */}
+                    {resumenPorProfesor.length > 1 && (
+                      <div className="flex justify-center pt-2">
+                        <ResumenPorProfesor filas={resumenPorProfesor} />
+                      </div>
+                    )}
+                  </div>
                 ) : (
                   <Detalle
                     items={items}
-                    catedra={catedra}
-                    precio={precio}
+                    catedraDe={catedraDe}
+                    precioDe={precioDe}
                     onEditar={abrirEdicion}
                     onEliminar={setAEliminar}
                   />
@@ -931,8 +1064,8 @@ function AsistenciasPage() {
           // una marcación, la lista de abajo se actualiza sola cuando la query
           // se invalida.
           marcas={diaAbierto !== null ? (porDia.get(diaAbierto) ?? []) : []}
-          catedra={catedra}
-          precio={precio}
+          catedraDe={catedraDe}
+          precioDe={precioDe}
           onCerrar={() => setDiaAbierto(null)}
           onEditar={abrirEdicion}
           onEliminar={setAEliminar}
@@ -1020,8 +1153,34 @@ function Kpi({
  * línea pegada al filo de la tarjeta. El color sale del reset global de
  * `styles.css`, que le da `--color-border` a todo: `border-r` solo alcanza, y
  * sigue al tema claro y oscuro sin tocar nada más.
+ *
+ * **OJO CON `rowSpan`**: `:last-child` mira las celdas QUE ESA FILA DECLARA, no
+ * la columna en la que caen visualmente. En la planilla, las columnas de total
+ * se declaran una vez y se estiran hacia abajo, así que en las filas
+ * intermedias la última celda declarada es Horas y el selector se la saltea —
+ * dejando la columna sin separador justo donde más se la sigue con el dedo.
+ * Esas celdas llevan `border-r` explícito; ver `Planilla`.
  */
 const COLUMNAS_DIVIDIDAS = "[&_th:not(:last-child)]:border-r [&_td:not(:last-child)]:border-r";
+
+/**
+ * Devuelve el borde inferior de la ÚLTIMA fila del cuerpo.
+ *
+ * `TableBody` trae `[&_tr:last-child]:border-0` y lo quita a propósito: en una
+ * tarjeta ajustada, ese borde y el de `surface-card` se superponen y dibujan una
+ * línea doble.
+ *
+ * Acá no se superponen. Estas dos grillas van dentro de un contenedor con
+ * `overflow-x-auto`, y **cuando aparece la barra de scroll horizontal ésta ocupa
+ * lugar dentro de la tarjeta**: el borde de abajo queda separado de la tabla y
+ * la última fila se cierra igual. Sin barra —una tabla angosta, un mes de pocas
+ * marcaciones— la fila termina pegada al borde y, sin su propia línea, se lee
+ * como si le faltara: es más alta que las demás y no cierra.
+ *
+ * Por eso se lo devuelve. Va junto a `COLUMNAS_DIVIDIDAS` porque es el mismo
+ * problema —los marcos de la grilla— y las dos tablas lo necesitan igual.
+ */
+const CIERRA_ULTIMA_FILA = "[&_tbody_tr:last-child]:border-b";
 
 /**
  * Agrupa los días del mes en semanas, cortando los LUNES.
@@ -1054,6 +1213,10 @@ function agruparPorSemana(dias: Array<{ dia: number; iso: string; diaSemana: num
     // La celda se dibuja una sola vez por semana, en su primer día.
     abreSemana: i === 0 || conSemana[i - 1]?.semana !== d.semana,
     diasDeLaSemana: cuantosDias.get(d.semana) ?? 1,
+    // Cuántas filas quedan hasta el final del mes, contando ésta: es el
+    // `rowSpan` de la celda del total general, que se estira sobre toda la
+    // grilla igual que la de la semana sobre sus días.
+    diasHastaFinDeMes: conSemana.length - i,
   }));
 }
 
@@ -1072,18 +1235,61 @@ function Planilla({
   porDia,
   maxMarcas,
   catedra,
+  precio,
+  nombreEmpresa,
   onAbrirDia,
 }: {
   dias: Array<{ dia: number; iso: string; diaSemana: number }>;
+  /**
+   * Las marcaciones de UN profesor, por día.
+   *
+   * Una planilla es de una persona: la agrupación por profesor la hace la
+   * página, que renderiza una de éstas por cada uno.
+   */
   porDia: Map<string, AsistenciaProfesor[]>;
   maxMarcas: number;
   catedra: number;
+  /** Precio por hora cátedra, para el resumen del pie. */
+  precio: number;
+  /** Encabeza el resumen. Vacío si todavía no hay empresa activa. */
+  nombreEmpresa: string;
   /** Abre el modal con las marcaciones de ese día. */
   onAbrirDia: (iso: string) => void;
 }) {
+  const filas = agruparPorSemana(dias);
+
+  /**
+   * Las horas de cada semana y las del mes.
+   *
+   * Se suman los MINUTOS y recién al final se convierten a horas cátedra. Al
+   * revés —sumando las horas ya redondeadas de cada día— el total de la semana
+   * no coincidiría con la suma de su propia columna: cinco días redondeados a
+   * dos decimales arrastran hasta media centésima de error cada uno, y sobre una
+   * planilla que se firma esa diferencia hay que poder explicarla.
+   *
+   * Es el mismo criterio con el que ya se calcula el KPI "Horas trabajadas".
+   */
+  const { horasPorSemana, horasDelMes } = useMemo(() => {
+    const minutosPorSemana = new Map<number, number>();
+    let minutosDelMes = 0;
+
+    for (const { iso, semana } of filas) {
+      const minutos = (porDia.get(iso) ?? []).reduce((s, m) => s + (m.minutos ?? 0), 0);
+      minutosPorSemana.set(semana, (minutosPorSemana.get(semana) ?? 0) + minutos);
+      minutosDelMes += minutos;
+    }
+
+    return {
+      horasPorSemana: new Map(
+        [...minutosPorSemana].map(([s, m]) => [s, m > 0 ? aHorasCatedra(m, catedra) : 0]),
+      ),
+      horasDelMes: minutosDelMes > 0 ? aHorasCatedra(minutosDelMes, catedra) : 0,
+    };
+  }, [filas, porDia, catedra]);
+
   return (
     <div className="surface-card overflow-x-auto">
-      <Table className={COLUMNAS_DIVIDIDAS}>
+      <Table className={cn(COLUMNAS_DIVIDIDAS, CIERRA_ULTIMA_FILA)}>
         <TableHeader>
           <TableRow>
             <TableHead className="w-14 text-center">Sem.</TableHead>
@@ -1095,8 +1301,15 @@ function Planilla({
               </TableHead>
             ))}
             <TableHead className="text-right">Horas</TableHead>
+            {/* Los dos totales al final, en el orden en que se acumulan: el día
+                suma a la semana y la semana al mes. */}
+            <TableHead className="w-20 text-right">Semana</TableHead>
+            <TableHead className="w-20 text-right">Total</TableHead>
           </TableRow>
-          <TableRow>
+          {/* Cierra la cabecera con la misma línea gruesa que separa las
+              semanas: así el encabezado y cada bloque semanal se leen como
+              cuadros, y no como una lista de filas sueltas. */}
+          <TableRow className="border-b-2 border-b-border">
             <TableHead />
             <TableHead />
             <TableHead />
@@ -1109,11 +1322,16 @@ function Planilla({
               </TableHead>,
             ])}
             <TableHead />
+            <TableHead />
+            <TableHead />
           </TableRow>
         </TableHeader>
         <TableBody>
-          {agruparPorSemana(dias).map(
-            ({ dia, iso, diaSemana, semana, abreSemana, diasDeLaSemana }) => {
+          {filas.map(
+            (
+              { dia, iso, diaSemana, semana, abreSemana, diasDeLaSemana, diasHastaFinDeMes },
+              indice,
+            ) => {
               const marcas = porDia.get(iso) ?? [];
               const finDeSemana = diaSemana === 0 || diaSemana === 6;
               const minutos = marcas.reduce((s, m) => s + (m.minutos ?? 0), 0);
@@ -1130,6 +1348,13 @@ function Planilla({
                     // El fin de semana en gris: sin marcarlo, un sábado vacío se lee
                     // igual que un día laboral sin marcar, que sí es un problema.
                     finDeSemana && "bg-muted/40",
+                    // LÍNEA MÁS MARCADA AL ABRIR CADA SEMANA. Con los totales
+                    // estirados por rowSpan hay que poder ver de un vistazo qué
+                    // filas entran en cada suma; sin este corte, las semanas se
+                    // separan sólo por el número de la primera columna y el
+                    // total de abajo parece pertenecer a cualquiera de ellas.
+                    // No va en la primera fila: ahí ya está el borde del header.
+                    abreSemana && indice > 0 && "border-t-2 border-t-border",
                   )}
                 >
                   {/* Una sola celda por semana, estirada sobre sus días con
@@ -1186,15 +1411,291 @@ function Planilla({
                       </TableCell>,
                     ];
                   })}
-                  <TableCell className="text-right font-medium tabular-nums">
+                  {/* `border-r` explícito: con las columnas de total estiradas
+                      por rowSpan, ésta es la última celda que declara la fila y
+                      `COLUMNAS_DIVIDIDAS` la saltea. */}
+                  <TableCell className="border-r text-right font-medium tabular-nums">
                     {horas > 0 ? horas.toFixed(2) : ""}
                   </TableCell>
+                  {/* LAS DOS SE DECLARAN EN EL PRIMER DÍA DEL BLOQUE, no en el
+                      último: un `rowSpan` sólo se estira hacia abajo. El número
+                      va con `align-bottom` para que se lea al pie de la semana
+                      —y del mes—, que es donde se lo busca al cerrar la cuenta
+                      sobre el papel.
+
+                      `bg-card` explícito por lo mismo que la celda de Sem.: sin
+                      él la celda hereda el gris del fin de semana cuando el
+                      bloque arranca sábado y la columna queda de dos colores. */}
+                  {abreSemana && (
+                    <TableCell
+                      rowSpan={diasDeLaSemana}
+                      className="border-r bg-card text-right align-bottom font-semibold tabular-nums"
+                    >
+                      {(horasPorSemana.get(semana) ?? 0) > 0
+                        ? (horasPorSemana.get(semana) ?? 0).toFixed(2)
+                        : ""}
+                    </TableCell>
+                  )}
+                  {/* El total del mes se dibuja UNA sola vez, en la primera fila
+                      de la grilla, estirado sobre todas: es una única cuenta. */}
+                  {indice === 0 && (
+                    <TableCell
+                      rowSpan={diasHastaFinDeMes}
+                      className="bg-card text-right align-bottom text-base font-bold tabular-nums"
+                    >
+                      {horasDelMes > 0 ? horasDelMes.toFixed(2) : ""}
+                    </TableCell>
+                  )}
                 </TableRow>
               );
             },
           )}
         </TableBody>
       </Table>
+
+      {/* EL PIE DE LA PLANILLA: actividad extra a la izquierda, resumen a la
+          derecha, como en el papel.
+
+          `flex-wrap` y no dos columnas fijas: en una pantalla angosta el resumen
+          baja debajo del cuadro en vez de comprimir los dos hasta que no se lean.
+          `items-start` para que no se estiren a la altura del más alto. */}
+      <div className="flex flex-wrap items-start justify-between gap-4 p-4">
+        <ActividadExtra />
+        <ResumenPlanilla horas={horasDelMes} precio={precio} nombreEmpresa={nombreEmpresa} />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * El cuadro de actividad extra: **informativo y en blanco, se completa a mano**.
+ *
+ * No sale de la base y no puede salir: una actividad extra es un trabajo en otro
+ * colegio, con su propio concepto y su propio precio por hora, y nada de eso
+ * existe hoy en `ASISTENCIAS_PROFESORES` —que sólo guarda entradas y salidas de
+ * una institución—. Inventarle un origen sería mostrar números que no se pueden
+ * justificar.
+ *
+ * Va igual porque la planilla se imprime y se firma: el cuadro tiene que estar
+ * en el papel para poder anotarlo ahí, como la firma misma. Es el mismo criterio
+ * de los renglones en blanco que ya lleva el Excel.
+ *
+ * Si algún día se cargan desde el sistema, esto pasa a recibir sus filas y el
+ * TOTAL se calcula — la forma del cuadro no cambia.
+ */
+function ActividadExtra() {
+  const columnas = ["COLEGIO", "FECHA", "CONCEPTO", "HS. TRAB", "PAGO POR HS.", "IMPORTE"];
+  // Seis renglones, los mismos que trae la planilla de papel. Es lo que entra
+  // sin que el bloque crezca más que el resumen de al lado.
+  const renglones = [0, 1, 2, 3, 4, 5];
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-border">
+      {/* Las líneas verticales con el mismo helper que la grilla de arriba, para
+          que los dos cuadros de la hoja se vean como el mismo dibujo. */}
+      <table className={cn("text-sm", COLUMNAS_DIVIDIDAS)}>
+        <thead>
+          <tr>
+            <th
+              colSpan={columnas.length}
+              className="border-b border-border bg-muted/60 px-3 py-1.5 text-center font-semibold text-foreground"
+            >
+              ACTIVIDAD EXTRA
+            </th>
+          </tr>
+          <tr>
+            {columnas.map((c) => (
+              <th
+                key={c}
+                className="border-b border-border px-3 py-1.5 text-center text-xs font-semibold whitespace-nowrap text-muted-foreground"
+              >
+                {c}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {renglones.map((r) => (
+            <tr key={r} className="border-b border-border">
+              {columnas.map((c) => (
+                // Alto fijo: una celda vacía sin él colapsa a nada y el renglón
+                // desaparece — que es justamente lo que hay que poder escribir.
+                <td key={c} className="h-7 min-w-24 px-3" />
+              ))}
+            </tr>
+          ))}
+          <tr>
+            <td className="border-r border-border px-3 py-1.5 font-semibold text-foreground">
+              TOTAL
+            </td>
+            {columnas.slice(1).map((c) => (
+              <td key={c} className="h-7 px-3" />
+            ))}
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/**
+ * Cuánto le corresponde a cada profesor, cuando en el período hay más de uno.
+ *
+ * Va al centro del pie, entre la actividad extra y el resumen general: es el
+ * desglose de ese total, y leerlo al lado deja ver de un vistazo que las partes
+ * suman el todo.
+ *
+ * **El monto de cada uno sale de SUS horas**, no del total repartido: dos
+ * profesores del mismo mes trabajaron distinta cantidad, y en un papel que
+ * autoriza un pago cada cifra tiene que poder rastrearse hasta las marcaciones
+ * de esa persona.
+ *
+ * La fila TOTALES suma los montos ya redondeados de la columna, no el importe
+ * general: es la cuenta que alguien va a rehacer con la calculadora sobre el
+ * papel, y tiene que darle exactamente lo que está impreso.
+ *
+ * **Puede quedar 1 o 2 guaraníes por encima del TOTAL GENERAL del resumen de al
+ * lado**, y es correcto que así sea. Aquél redondea una sola vez, al final; éste
+ * redondea el monto de cada persona —que es la cifra que se le paga y no puede
+ * llevar centavos— y después suma. Con hora cátedra de 60 minutos coinciden
+ * siempre; la diferencia aparece con 40 o 45, donde las horas dan fracciones
+ * periódicas. Forzar el cuadre haría que alguna fila no coincida con el pago
+ * real de esa persona, que es peor: el desglose existe justamente para poder
+ * justificar cada monto por separado.
+ */
+function ResumenPorProfesor({ filas }: { filas: Array<{ profesor: string; monto: number }> }) {
+  const total = filas.reduce((suma, f) => suma + f.monto, 0);
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-border">
+      <table className={cn("text-sm", COLUMNAS_DIVIDIDAS)}>
+        <thead>
+          <tr>
+            <th
+              colSpan={2}
+              className="border-b border-border bg-muted/60 px-3 py-1.5 text-center font-semibold text-foreground"
+            >
+              RESUMEN
+            </th>
+          </tr>
+          <tr>
+            <th className="border-b border-border px-3 py-1.5 text-center text-xs font-semibold whitespace-nowrap text-muted-foreground">
+              PROFESORES
+            </th>
+            <th className="border-b border-border px-3 py-1.5 text-center text-xs font-semibold whitespace-nowrap text-muted-foreground">
+              MONTO
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {filas.map(({ profesor, monto }) => (
+            <tr key={profesor} className="border-b border-border">
+              <td className="px-3 py-1.5 whitespace-nowrap text-foreground">{profesor}</td>
+              <td className="px-3 py-1.5 text-right tabular-nums text-foreground">
+                {formatearMoneda(monto)}
+              </td>
+            </tr>
+          ))}
+          <tr>
+            <td className="px-3 py-1.5 text-center font-semibold whitespace-nowrap text-foreground">
+              TOTALES
+            </td>
+            <td className="px-3 py-1.5 text-right font-bold tabular-nums text-foreground">
+              {formatearMoneda(total)}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/**
+ * El resumen del pie: horas, precio e importes.
+ *
+ * **El IVA se DESGLOSA de un importe que ya lo incluye**, no se suma: el precio
+ * por hora que se carga arriba es el precio final. Es la misma regla que el
+ * punto de venta y las compras —"el precio incluye IVA, se desglosa nunca se
+ * suma"— y la que ya usa el KPI "Importe total" de esta pantalla. Sumarle un
+ * 10% acá haría que el pie de la planilla y el indicador de arriba mostraran
+ * dos totales distintos del mismo mes.
+ *
+ * **IMPORTE NORMAL es todo el importe y EXTRA va vacío**: hoy nada distingue
+ * una hora extra de una normal —no hay campo que la marque— y repartir el total
+ * inventando un tope sería un número que nadie puede justificar. La fila queda
+ * para completarla a mano sobre el papel, como el resto del bloque de firmas.
+ */
+function ResumenPlanilla({
+  horas,
+  precio,
+  nombreEmpresa,
+}: {
+  horas: number;
+  precio: number;
+  nombreEmpresa: string;
+}) {
+  const importe = horas * precio;
+  // Redondeado a guaraníes: no hay centavos en la moneda, y el desglose tiene
+  // que cerrar contra el número que se muestra, no contra uno con decimales.
+  const total = Math.round(importe);
+  // Mismo cálculo que `totales.iva` y que `totalIva` del Excel: una sola
+  // división y una resta, para que gravado + IVA dé exactamente el total.
+  const iva = total - Math.round(total / 1.1);
+
+  const filas: Array<{ etiqueta: string; valor: string; destacada?: boolean }> = [
+    { etiqueta: "TOTAL HORAS TRABAJADAS", valor: horas.toFixed(2) },
+    { etiqueta: "IMPORTE POR HORA", valor: formatearMoneda(precio) },
+    { etiqueta: "IMPORTE NORMAL", valor: formatearMoneda(total) },
+    // Raya y no un cero: un cero afirma que se calcularon las extras y dieron
+    // cero, y lo que pasa es que no se calculan.
+    { etiqueta: "IMPORTE EXTRA", valor: "-" },
+    { etiqueta: "IMPORTE TOTAL", valor: formatearMoneda(total) },
+    { etiqueta: "IVA INCLUIDO EN EL TOTAL", valor: formatearMoneda(iva), destacada: true },
+    { etiqueta: "TOTAL GENERAL", valor: formatearMoneda(total), destacada: true },
+  ];
+
+  return (
+    <div className="flex overflow-hidden rounded-lg border border-border">
+      {/* El rótulo estirado sobre todas las filas, como el rowSpan de la
+          planilla de papel. */}
+      <div className="flex w-32 items-center justify-center bg-muted/60 px-3 py-2 text-center">
+        <span className="font-display text-lg font-bold leading-tight text-foreground">
+          RESUMEN
+          {nombreEmpresa && (
+            <>
+              <br />
+              {nombreEmpresa}
+            </>
+          )}
+        </span>
+      </div>
+
+      <table className="border-l border-border text-sm">
+        <tbody>
+          {filas.map(({ etiqueta, valor, destacada }) => (
+            <tr key={etiqueta} className="border-b border-border last:border-b-0">
+              <td
+                className={cn(
+                  "border-r border-border px-3 py-1.5 whitespace-nowrap",
+                  // Las dos últimas en rojo, como en la planilla: son las que se
+                  // controlan contra la factura.
+                  destacada ? "font-semibold text-destructive" : "text-foreground",
+                )}
+              >
+                {etiqueta}
+              </td>
+              <td
+                className={cn(
+                  "px-3 py-1.5 text-right tabular-nums whitespace-nowrap",
+                  destacada ? "font-bold text-destructive" : "text-foreground",
+                )}
+              >
+                {valor}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -1219,8 +1720,8 @@ function MarcacionesDelDia({
   abierto,
   titulo,
   marcas,
-  catedra,
-  precio,
+  catedraDe,
+  precioDe,
   onCerrar,
   onEditar,
   onEliminar,
@@ -1230,8 +1731,10 @@ function MarcacionesDelDia({
   abierto: boolean;
   titulo: string;
   marcas: AsistenciaProfesor[];
-  catedra: number;
-  precio: number;
+  // Funciones y no numeros: un dia puede tener marcas de varios profesores, y
+  // cada uno tiene su hora catedra y su precio.
+  catedraDe: (idProfesor: number) => number;
+  precioDe: (idProfesor: number) => number;
   onCerrar: () => void;
   onEditar: (a: AsistenciaProfesor) => void;
   onEliminar: (a: AsistenciaProfesor) => void;
@@ -1239,8 +1742,19 @@ function MarcacionesDelDia({
   /** Sin empresa activa no hay a qué empresa cargarle la marcación. */
   puedeAgregar: boolean;
 }) {
-  const minutos = marcas.reduce((s, m) => s + (m.minutos ?? 0), 0);
-  const horas = aHorasCatedra(minutos, catedra);
+  // Las horas y el importe se acumulan POR PROFESOR: un mismo día puede tener
+  // marcas de varias personas, y convertir el total de minutos con una sola hora
+  // cátedra daría un número que no es de nadie.
+  const { horas, importe } = marcas.reduce(
+    (acumulado, m) => {
+      const suyas = aHorasCatedra(m.minutos ?? 0, catedraDe(m.idProfesor));
+      return {
+        horas: acumulado.horas + suyas,
+        importe: acumulado.importe + suyas * precioDe(m.idProfesor),
+      };
+    },
+    { horas: 0, importe: 0 },
+  );
 
   return (
     <Dialog open={abierto} onOpenChange={(v) => !v && onCerrar()}>
@@ -1251,7 +1765,7 @@ function MarcacionesDelDia({
             {marcas.length === 0
               ? "Sin marcaciones este día."
               : `${marcas.length} marcación(es) · ${horas.toFixed(2)} hs cátedra${
-                  precio > 0 ? ` · ${formatearMoneda(Math.round(horas * precio))} Gs.` : ""
+                  importe > 0 ? ` · ${formatearMoneda(Math.round(importe))} Gs.` : ""
                 }`}
           </DialogDescription>
         </DialogHeader>
@@ -1265,7 +1779,8 @@ function MarcacionesDelDia({
           // límite: la lista scrollea y el pie con las acciones queda fijo.
           <ul className="max-h-[50vh] space-y-2 overflow-y-auto">
             {marcas.map((m) => {
-              const horasFila = m.minutos === null ? null : aHorasCatedra(m.minutos, catedra);
+              const horasFila =
+                m.minutos === null ? null : aHorasCatedra(m.minutos, catedraDe(m.idProfesor));
               return (
                 <li
                   key={m.id}
@@ -1346,23 +1861,70 @@ function IconoOffline() {
   );
 }
 
+/**
+ * El punto donde se marcó, como enlace a Google Maps.
+ *
+ * Un solo componente para la entrada y la salida: son el mismo dato en dos
+ * momentos, y con dos bloques copiados el día que cambie la URL del mapa habría
+ * que acordarse de tocar los dos.
+ *
+ * **`rel="noopener noreferrer"` no es decorativo**: sin `noopener`, la pestaña
+ * que se abre puede redirigir a ésta desde `window.opener`.
+ *
+ * El `title` prefiere lo que grabó la app —`MARCADO_EN_ENTRADA`/`_SALIDA`, que
+ * suele ser el nombre del lugar— y cae en un texto genérico si viene vacío: sin
+ * él, el enlace sería un pin sin ninguna pista de adónde lleva.
+ */
+function EnlaceMapa({
+  latitud,
+  longitud,
+  titulo,
+  momento,
+}: {
+  latitud: string | null;
+  longitud: string | null;
+  titulo: string | null;
+  momento: "entrada" | "salida";
+}) {
+  // Las dos o ninguna: con una sola coordenada el mapa abriría en un punto
+  // equivocado, que es peor que no ofrecer el enlace.
+  if (!latitud || !longitud) return <span className="text-muted-foreground">—</span>;
+
+  return (
+    <a
+      href={`https://www.google.com/maps?q=${latitud},${longitud}`}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-primary hover:underline"
+      title={titulo ?? `Ver en el mapa dónde marcó la ${momento}`}
+    >
+      <MapPin className="mx-auto size-4" />
+    </a>
+  );
+}
+
 /** Una fila por marcación, con institución, ubicación e importe. */
 function Detalle({
   items,
-  catedra,
-  precio,
+  catedraDe,
+  precioDe,
   onEditar,
   onEliminar,
 }: {
   items: AsistenciaProfesor[];
-  catedra: number;
-  precio: number;
+  /**
+   * Funciones y no dos números: cada fila es de un profesor distinto, y cada uno
+   * tiene su hora cátedra y su precio. Con valores fijos, la columna Importe
+   * mostraría el mismo precio para todos.
+   */
+  catedraDe: (idProfesor: number) => number;
+  precioDe: (idProfesor: number) => number;
   onEditar: (a: AsistenciaProfesor) => void;
   onEliminar: (a: AsistenciaProfesor) => void;
 }) {
   return (
     <div className="surface-card overflow-x-auto">
-      <Table className={COLUMNAS_DIVIDIDAS}>
+      <Table className={cn(COLUMNAS_DIVIDIDAS, CIERRA_ULTIMA_FILA)}>
         <TableHeader>
           <TableRow>
             <TableHead>Fecha</TableHead>
@@ -1372,13 +1934,19 @@ function Detalle({
             <TableHead className="text-center">Salida</TableHead>
             <TableHead className="text-right">Horas</TableHead>
             <TableHead className="text-right">Importe</TableHead>
-            <TableHead className="text-center">Ubic.</TableHead>
+            {/* DOS UBICACIONES, no una: se marca al entrar y al salir, y son
+                puntos distintos. Con una sola columna no había forma de saber
+                si el profesor salió del mismo lugar donde entró — que es
+                justamente lo que se controla al revisar una marcación. */}
+            <TableHead className="text-center">Ubic. entrada</TableHead>
+            <TableHead className="text-center">Ubic. salida</TableHead>
             <TableHead className="text-right">Acciones</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {items.map((a) => {
-            const horas = a.minutos === null ? null : aHorasCatedra(a.minutos, catedra);
+            const horas =
+              a.minutos === null ? null : aHorasCatedra(a.minutos, catedraDe(a.idProfesor));
             return (
               <TableRow key={a.id}>
                 <TableCell className="whitespace-nowrap">
@@ -1410,22 +1978,25 @@ function Detalle({
                   )}
                 </TableCell>
                 <TableCell className="text-right tabular-nums">
-                  {horas === null ? "—" : formatearMoneda(Math.round(horas * precio))}
+                  {horas === null
+                    ? "—"
+                    : formatearMoneda(Math.round(horas * precioDe(a.idProfesor)))}
                 </TableCell>
                 <TableCell className="text-center">
-                  {a.latitud && a.longitud ? (
-                    <a
-                      href={`https://www.google.com/maps?q=${a.latitud},${a.longitud}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-primary hover:underline"
-                      title={a.marcadoEnEntrada ?? "Ver en el mapa"}
-                    >
-                      <MapPin className="mx-auto size-4" />
-                    </a>
-                  ) : (
-                    <span className="text-muted-foreground">—</span>
-                  )}
+                  <EnlaceMapa
+                    latitud={a.latitud}
+                    longitud={a.longitud}
+                    titulo={a.marcadoEnEntrada}
+                    momento="entrada"
+                  />
+                </TableCell>
+                <TableCell className="text-center">
+                  <EnlaceMapa
+                    latitud={a.latitudSalida}
+                    longitud={a.longitudSalida}
+                    titulo={a.marcadoEnSalida}
+                    momento="salida"
+                  />
                 </TableCell>
                 <TableCell className="text-right">
                   <div className="flex justify-end gap-1">

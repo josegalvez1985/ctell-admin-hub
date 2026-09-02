@@ -36,6 +36,7 @@ import { Route as AuthListasDescuentosRouteImport } from './routes/_auth.listas-
 import { Route as AuthMarcasRouteImport } from './routes/_auth.marcas'
 import { Route as AuthMenuRouteImport } from './routes/_auth.menu'
 import { Route as AuthMonedasRouteImport } from './routes/_auth.monedas'
+import { Route as AuthNotificacionesRouteImport } from './routes/_auth.notificaciones'
 import { Route as AuthPagosRouteImport } from './routes/_auth.pagos'
 import { Route as AuthPaisesRouteImport } from './routes/_auth.paises'
 import { Route as AuthPersonasRouteImport } from './routes/_auth.personas'
@@ -182,6 +183,11 @@ const AuthMonedasRoute = AuthMonedasRouteImport.update({
   path: '/monedas',
   getParentRoute: () => AuthRoute,
 } as any)
+const AuthNotificacionesRoute = AuthNotificacionesRouteImport.update({
+  id: '/notificaciones',
+  path: '/notificaciones',
+  getParentRoute: () => AuthRoute,
+} as any)
 const AuthPagosRoute = AuthPagosRouteImport.update({
   id: '/pagos',
   path: '/pagos',
@@ -260,6 +266,7 @@ export interface FileRoutesByFullPath {
   '/marcas': typeof AuthMarcasRoute
   '/menu': typeof AuthMenuRoute
   '/monedas': typeof AuthMonedasRoute
+  '/notificaciones': typeof AuthNotificacionesRoute
   '/pagos': typeof AuthPagosRoute
   '/paises': typeof AuthPaisesRoute
   '/personas': typeof AuthPersonasRoute
@@ -298,6 +305,7 @@ export interface FileRoutesByTo {
   '/marcas': typeof AuthMarcasRoute
   '/menu': typeof AuthMenuRoute
   '/monedas': typeof AuthMonedasRoute
+  '/notificaciones': typeof AuthNotificacionesRoute
   '/pagos': typeof AuthPagosRoute
   '/paises': typeof AuthPaisesRoute
   '/personas': typeof AuthPersonasRoute
@@ -338,6 +346,7 @@ export interface FileRoutesById {
   '/_auth/marcas': typeof AuthMarcasRoute
   '/_auth/menu': typeof AuthMenuRoute
   '/_auth/monedas': typeof AuthMonedasRoute
+  '/_auth/notificaciones': typeof AuthNotificacionesRoute
   '/_auth/pagos': typeof AuthPagosRoute
   '/_auth/paises': typeof AuthPaisesRoute
   '/_auth/personas': typeof AuthPersonasRoute
@@ -378,6 +387,7 @@ export interface FileRouteTypes {
     | '/marcas'
     | '/menu'
     | '/monedas'
+    | '/notificaciones'
     | '/pagos'
     | '/paises'
     | '/personas'
@@ -416,6 +426,7 @@ export interface FileRouteTypes {
     | '/marcas'
     | '/menu'
     | '/monedas'
+    | '/notificaciones'
     | '/pagos'
     | '/paises'
     | '/personas'
@@ -455,6 +466,7 @@ export interface FileRouteTypes {
     | '/_auth/marcas'
     | '/_auth/menu'
     | '/_auth/monedas'
+    | '/_auth/notificaciones'
     | '/_auth/pagos'
     | '/_auth/paises'
     | '/_auth/personas'
@@ -663,6 +675,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthMonedasRouteImport
       parentRoute: typeof AuthRoute
     }
+    '/_auth/notificaciones': {
+      id: '/_auth/notificaciones'
+      path: '/notificaciones'
+      fullPath: '/notificaciones'
+      preLoaderRoute: typeof AuthNotificacionesRouteImport
+      parentRoute: typeof AuthRoute
+    }
     '/_auth/pagos': {
       id: '/_auth/pagos'
       path: '/pagos'
@@ -762,6 +781,7 @@ interface AuthRouteChildren {
   AuthMarcasRoute: typeof AuthMarcasRoute
   AuthMenuRoute: typeof AuthMenuRoute
   AuthMonedasRoute: typeof AuthMonedasRoute
+  AuthNotificacionesRoute: typeof AuthNotificacionesRoute
   AuthPagosRoute: typeof AuthPagosRoute
   AuthPaisesRoute: typeof AuthPaisesRoute
   AuthPersonasRoute: typeof AuthPersonasRoute
@@ -800,6 +820,7 @@ const AuthRouteChildren: AuthRouteChildren = {
   AuthMarcasRoute: AuthMarcasRoute,
   AuthMenuRoute: AuthMenuRoute,
   AuthMonedasRoute: AuthMonedasRoute,
+  AuthNotificacionesRoute: AuthNotificacionesRoute,
   AuthPagosRoute: AuthPagosRoute,
   AuthPaisesRoute: AuthPaisesRoute,
   AuthPersonasRoute: AuthPersonasRoute,

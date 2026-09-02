@@ -930,6 +930,29 @@ Dos detalles que sólo se ven al mirar el resultado:
   de columna, los `null` de la segunda fila de cabecera y el `columnSpan` del
   bloque de totales, o el importe cae una celda antes.
 
+**Todas las filas tienen que medir lo mismo, y el compilador no lo verifica.**
+Un `columnSpan` mal contado no rompe nada: genera un `.xlsx` válido con las
+columnas corridas, y sólo se ve abriendo el archivo. Agregar dos columnas a la
+planilla dejó el encabezado una celda corto y el bloque de totales a la mitad —
+los dos "funcionaban".
+
+Vale la pena verificarlo con un script suelto antes de abrir Excel: sumar a mano
+las celdas que produce cada tipo de fila (encabezado, cabeceras, día, resumen)
+para varios anchos de grilla, y comparar contra `anchoTotal`.
+
+```js
+// n = pares Ent./Sal. Si alguna fila no da anchoTotal, las columnas se corren.
+for (const n of [2, 3, 4, 6]) {
+  const anchoTotal = 3 + n * 2 + 3;
+  const dia = 1 + 2 + n * 2 + 3; // semana + día/fecha + pares + tres totales
+  console.log(n, dia === anchoTotal ? "OK" : "DESCUADRE");
+}
+```
+
+Un helper `completar()` que rellene con `null` hasta `anchoTotal` cubre las filas
+cortas, pero **no** las que se pasan ni las que ponen el valor en la columna
+equivocada — para eso hay que contar.
+
 ### Líneas divisorias: un selector, no una clase por celda
 
 ```tsx
@@ -944,6 +967,27 @@ olvidarse.
 - El color sale del reset global de `styles.css`, que da `--color-border` a todo:
   `border-r` solo alcanza y sigue al tema claro y oscuro.
 
+**`:last-child` mira las celdas que la FILA declara, no la columna visual.** Con
+`rowSpan`, las filas intermedias no declaran las celdas estiradas desde arriba,
+así que la "última" pasa a ser otra y el selector se la saltea — dejando sin
+separador justo la columna que se sigue con el dedo. Esas celdas llevan
+`border-r` explícito.
+
+El otro efecto del mismo selector: **`TableBody` de shadcn trae
+`[&_tr:last-child]:border-0`**, que le quita el borde inferior a la última fila
+porque normalmente coincide con el de `surface-card`. Cuando la tabla vive en un
+contenedor con `overflow-x-auto`, sólo coinciden **si no hay barra de scroll** —
+con barra, ésta ocupa lugar y los separa. Resultado: la última fila se ve "sin
+cerrar" exactamente cuando la tabla es angosta. Se le devuelve con un helper al
+lado de `COLUMNAS_DIVIDIDAS`:
+
+```tsx
+const CIERRA_ULTIMA_FILA = "[&_tbody_tr:last-child]:border-b";
+```
+
+No se toca `ui/table.tsx`: el resto de las pantallas depende de ese
+comportamiento para no mostrar la línea doble.
+
 ### Un documento que se firma sale uno por persona, no uno mezclado
 
 La planilla de asistencias se imprime y **se firma**: su encabezado dice
@@ -954,20 +998,72 @@ La primera versión resolvió eso **bloqueando** la exportación mientras el fil
 de profesor estuviera en "Todos". Funcionaba, pero dejaba afuera el caso real:
 liquidar **una institución completa**, donde justamente participan varios.
 
-Hoy `asistencias` arma **una planilla por profesor** y las manda todas juntas:
+Hoy `asistencias` arma **una planilla por profesor** y las manda todas juntas.
+
+> **Y la pantalla también.** Durante un tiempo sólo el archivo salía separado: la
+> vista mostraba una grilla con las marcas de todos mezcladas, y la diferencia
+> hubo que explicarla con un cartel ("al exportar sale una planilla para cada
+> uno"). Un cartel que avisa que lo que ves no es lo que bajás es la señal de que
+> falta arreglar algo, no de que falte explicarlo mejor.
+>
+> Peor todavía, la grilla mezclada era **ambigua**: un día con dos entradas puede
+> ser alguien que entró y salió dos veces, o dos personas distintas. Sobre un
+> papel que se firma eso no se puede sostener.
+
+**La agrupación se hace UNA vez y la usan las dos salidas.** Es lo que garantiza
+que no vuelvan a divergir:
 
 ```tsx
-// Una lista, no un objeto: con el filtro de institución salen todos los que
-// dieron clase ahí, y cada uno necesita la suya. Con un profesor elegido la
-// lista tiene un solo elemento, que es el caso de siempre.
-const planillas: DatosPlanilla[] = useMemo(() => {
+// Una sola fuente: la pantalla renderiza un <Planilla> por cada elemento, y
+// `planillas` (lo que va al Excel) se deriva de esta misma lista.
+const grillasPorProfesor = useMemo(() => {
   const porProfesor = new Map<number, AsistenciaProfesor[]>();
   for (const a of items) {
-    /* agrupar */
+    /* agrupar por a.idProfesor */
   }
-  return [...porProfesor.values()].map((marcas) => ({/* … */}));
-}, [items, catedra, precio, periodo, diasDelMes, nombreProfesor]);
+  return [...porProfesor.entries()]
+    .map(([idProfesor, marcas]) => ({
+      idProfesor,
+      marcas,
+      porDia: /* … las marcas de ESTE profesor, por fecha */,
+      // POR PROFESOR y no el máximo global: si otro tuvo cuatro marcas en un
+      // día, no tiene por qué agregar dos columnas vacías a esta grilla.
+      maxMarcas: /* … */,
+      // Cada uno con SU hora cátedra y SU precio: ver abajo.
+      catedra: catedraDe(idProfesor),
+      precio: precioDe(idProfesor),
+    }))
+    .sort((a, b) => a.profesor.localeCompare(b.profesor, "es"));
+}, [items, catedraPorProfesor, precioPorProfesor]);
 ```
+
+### Un parámetro de cálculo que no es igual para todos va por fila, no arriba
+
+La hora cátedra y el precio por hora empezaron como **dos campos globales** en la
+barra de filtros. Era lo simple, y estaba mal: no todos los profesores dan
+cátedras de la misma duración —45 minutos en un colegio, 60 en otro— ni cobran lo
+mismo. Con un solo valor, el total de horas de alguno salía mal **sin que nada lo
+avisara**: la planilla se veía completa y correcta.
+
+Hoy cada planilla los trae en su encabezado, con un mapa por id y un valor de
+arranque:
+
+```tsx
+const [catedraPorProfesor, setCatedraPorProfesor] = useState<Record<number, string>>({});
+
+const catedraDe = (idProfesor: number) =>
+  Number(catedraPorProfesor[idProfesor] ?? CATEDRA_POR_DEFECTO) || 60;
+```
+
+**Al hacer un cambio así hay que perseguir TODOS los consumidores**, no sólo el
+que motivó el cambio. Acá eran cinco: los KPI del período —que ahora acumulan por
+profesor y recién después totalizan—, la columna Importe del Detalle, el modal
+del día (que puede tener marcas de varias personas), el consolidado del pie y el
+Excel. TypeScript ayuda a encontrarlos: al borrar las variables globales, el
+compilador marca uno por uno.
+
+> No se guardan en la base: `PROFESORES` no tiene columna para esto y agregarla
+> es un cambio de DDL. Se pierden al recargar, como los globales que reemplazaron.
 
 Tres cosas que hay que respetar al hacer esto:
 
