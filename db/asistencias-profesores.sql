@@ -60,16 +60,43 @@
 -- mismo criterio que LISTAS_DESCUENTOS— y no como una columna suelta.
 --
 --------------------------------------------------------------------------------
--- FILTRO POR EMPRESA
+-- FILTRO POR EMPRESA: LA DEL PROFESOR, NO LA DE LA MARCACION
 --
--- La tabla tiene ID_EMPRESA, pero es NULLABLE: las filas cargadas antes de que
--- existiera la columna la tienen en NULL. Por eso el filtro mira TAMBIEN la
--- empresa del profesor, que es la fuente real:
+-- El filtro es UNO SOLO, y no mira ASISTENCIAS_PROFESORES.ID_EMPRESA:
+--
+--   JOIN PROFESORES p ON p.ID_PROFESOR = a.ID_PROFESOR
+--   WHERE p.ID_EMPRESA = l_empresa
+--
+-- POR QUE LA DEL PROFESOR ES LA FUENTE REAL. PROFESORES tiene
+-- UNIQUE (NUMERO_CI) GLOBAL: una cedula existe una sola vez en todo el sistema,
+-- asi que un profesor pertenece a EXACTAMENTE UNA empresa. La empresa de una
+-- marcacion no es un dato independiente — es la de quien marco.
+--
+-- QUE PASABA ANTES. El filtro era:
 --
 --   (a.ID_EMPRESA = l_empresa OR (a.ID_EMPRESA IS NULL AND p.ID_EMPRESA = l_empresa))
 --
--- Con solo a.ID_EMPRESA, las asistencias historicas desaparecerian del reporte
--- sin ningun error visible.
+-- que cubre las filas historicas con la columna en NULL, pero le CREE a
+-- a.ID_EMPRESA cuando tiene valor. Nada en el DDL garantiza que ese valor
+-- coincida con la empresa del profesor: la FK apunta a EMPRESAS y no mira
+-- PROFESORES. Una marcacion grabada con la empresa equivocada —o con la de la
+-- sesion de quien la cargo a mano— aparecia en el reporte de esa empresa, con
+-- el nombre de un profesor que no es suyo. Es el bug que se reporto como
+-- "asistencias muestra registros de otra empresa".
+--
+-- Con p.ID_EMPRESA el problema no se puede dar: la fila se lista donde esta su
+-- profesor, tenga a.ID_EMPRESA lo que tenga —incluido NULL, que deja de ser un
+-- caso especial—.
+--
+-- LO QUE ESTO IMPLICA: mover un profesor de empresa se lleva su historial. Es
+-- lo correcto —el historial es de la persona— y ademas es lo unico consistente
+-- con el UNIQUE global de la cedula.
+--
+-- La consulta de diagnostico del final del archivo lista las filas cuya
+-- ID_EMPRESA no coincide con la de su profesor, con el UPDATE para corregirlas.
+-- No hace falta correrlo para que el reporte salga bien: el filtro ya no las
+-- mira. Conviene igual, porque cualquier consulta que se escriba mañana contra
+-- a.ID_EMPRESA volveria a leer el dato malo.
 --
 --------------------------------------------------------------------------------
 -- UNA FILA POR MARCACION, NO POR DIA
@@ -298,7 +325,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ASISTENCIAS_PROFESORES AS
       INTO l_total
       FROM ASISTENCIAS_PROFESORES a
       JOIN PROFESORES p ON p.ID_PROFESOR = a.ID_PROFESOR
-     WHERE (a.ID_EMPRESA = l_empresa OR (a.ID_EMPRESA IS NULL AND p.ID_EMPRESA = l_empresa))
+     WHERE p.ID_EMPRESA = l_empresa
        AND (l_desde IS NULL OR (a.FECHA_ASISTENCIA >= l_desde AND a.FECHA_ASISTENCIA < l_hasta))
        AND (l_profesor IS NULL OR a.ID_PROFESOR = l_profesor)
        AND (l_institucion IS NULL OR a.ID_INSTITUCION = l_institucion);
@@ -365,7 +392,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ASISTENCIAS_PROFESORES AS
           -- fila apunta a una institucion borrada, un JOIN interno la haria
           -- desaparecer del reporte sin ningun aviso.
           LEFT JOIN INSTITUCIONES i ON i.ID_INSTITUCION = a.ID_INSTITUCION
-         WHERE (a.ID_EMPRESA = l_empresa OR (a.ID_EMPRESA IS NULL AND p.ID_EMPRESA = l_empresa))
+         WHERE p.ID_EMPRESA = l_empresa
            AND (l_desde IS NULL OR (a.FECHA_ASISTENCIA >= l_desde AND a.FECHA_ASISTENCIA < l_hasta))
            AND (l_profesor IS NULL OR a.ID_PROFESOR = l_profesor)
            AND (l_institucion IS NULL OR a.ID_INSTITUCION = l_institucion)
@@ -444,7 +471,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ASISTENCIAS_PROFESORES AS
                EXTRACT(MONTH FROM a.FECHA_ASISTENCIA) AS mes
           FROM ASISTENCIAS_PROFESORES a
           JOIN PROFESORES p ON p.ID_PROFESOR = a.ID_PROFESOR
-         WHERE (a.ID_EMPRESA = l_empresa OR (a.ID_EMPRESA IS NULL AND p.ID_EMPRESA = l_empresa))
+         WHERE p.ID_EMPRESA = l_empresa
            AND a.FECHA_ASISTENCIA IS NOT NULL
          GROUP BY EXTRACT(YEAR FROM a.FECHA_ASISTENCIA), EXTRACT(MONTH FROM a.FECHA_ASISTENCIA)
       );
@@ -717,11 +744,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_ASISTENCIAS_PROFESORES AS
            HORA_SALIDA         = l_salida,
            FECHA_ACTUALIZACION = SYSTIMESTAMP
      WHERE a.ID_ASISTENCIA = l_id
-       AND (a.ID_EMPRESA = l_empresa
-            OR (a.ID_EMPRESA IS NULL
-                AND EXISTS (SELECT 1 FROM PROFESORES p
-                             WHERE p.ID_PROFESOR = a.ID_PROFESOR
-                               AND p.ID_EMPRESA  = l_empresa)));
+       AND EXISTS (SELECT 1 FROM PROFESORES p
+                    WHERE p.ID_PROFESOR = a.ID_PROFESOR
+                      AND p.ID_EMPRESA  = l_empresa);
 
     IF SQL%ROWCOUNT = 0 THEN
       ROLLBACK;
@@ -775,11 +800,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_ASISTENCIAS_PROFESORES AS
     -- inactiva no significa nada — o paso o no paso.
     DELETE FROM ASISTENCIAS_PROFESORES a
      WHERE a.ID_ASISTENCIA = l_id
-       AND (a.ID_EMPRESA = l_empresa
-            OR (a.ID_EMPRESA IS NULL
-                AND EXISTS (SELECT 1 FROM PROFESORES p
-                             WHERE p.ID_PROFESOR = a.ID_PROFESOR
-                               AND p.ID_EMPRESA  = l_empresa)));
+       AND EXISTS (SELECT 1 FROM PROFESORES p
+                    WHERE p.ID_PROFESOR = a.ID_PROFESOR
+                      AND p.ID_EMPRESA  = l_empresa);
 
     IF SQL%ROWCOUNT = 0 THEN
       ROLLBACK;
@@ -1053,3 +1076,37 @@ SELECT COUNT(*) AS SIN_SALIDA
  WHERE HORA_ENTRADA IS NOT NULL
    AND HORA_SALIDA IS NULL
    AND FECHA_ASISTENCIA < TRUNC(SYSDATE);
+
+--------------------------------------------------------------------------------
+-- MARCACIONES CON LA EMPRESA EQUIVOCADA
+--
+-- Filas cuya ID_EMPRESA no es la de su profesor. Nada en el DDL lo impide: la
+-- FK apunta a EMPRESAS sin mirar PROFESORES.
+--
+-- Con el filtro actual (p.ID_EMPRESA) estas filas YA se listan donde
+-- corresponde, asi que el reporte sale bien sin tocar nada. Se corrigen igual
+-- porque el dato sigue mal guardado, y cualquier consulta que se escriba manana
+-- contra a.ID_EMPRESA volveria a leerlo.
+--
+-- Si esta consulta devuelve filas, ESA es la causa de "veo asistencias de otra
+-- empresa" en una version anterior del reporte.
+--------------------------------------------------------------------------------
+SELECT a.ID_ASISTENCIA,
+       TO_CHAR(a.FECHA_ASISTENCIA, 'YYYY-MM-DD') AS FECHA,
+       p.NOMBRE || ' ' || p.APELLIDO             AS PROFESOR,
+       a.ID_EMPRESA                              AS EMPRESA_MARCACION,
+       p.ID_EMPRESA                              AS EMPRESA_PROFESOR
+  FROM ASISTENCIAS_PROFESORES a
+  JOIN PROFESORES p ON p.ID_PROFESOR = a.ID_PROFESOR
+ WHERE a.ID_EMPRESA IS NOT NULL
+   AND a.ID_EMPRESA <> p.ID_EMPRESA
+ ORDER BY a.FECHA_ASISTENCIA DESC;
+
+-- Correccion (revisar la lista de arriba antes de correrlo):
+--   UPDATE ASISTENCIAS_PROFESORES a
+--      SET ID_EMPRESA = (SELECT p.ID_EMPRESA FROM PROFESORES p
+--                         WHERE p.ID_PROFESOR = a.ID_PROFESOR)
+--    WHERE a.ID_EMPRESA IS NULL
+--       OR a.ID_EMPRESA <> (SELECT p.ID_EMPRESA FROM PROFESORES p
+--                            WHERE p.ID_PROFESOR = a.ID_PROFESOR);
+--   COMMIT;

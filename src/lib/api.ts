@@ -3616,9 +3616,9 @@ export const api = {
   },
 
   sucursales: {
-    /** Sin `idEmpresa` devuelve las sucursales de todas las empresas. */
-    listar: (params: { idEmpresa?: number } = {}) => {
-      const q = params.idEmpresa ? `?idEmpresa=${params.idEmpresa}` : "";
+    /** **`idEmpresa` es obligatorio.** Sin él devolvía las de todas las empresas. */
+    listar: (params: { idEmpresa: number }) => {
+      const q = `?idEmpresa=${params.idEmpresa}`;
       return request<ListaSucursales>(`/sucursales/listar${q}`);
     },
 
@@ -3771,18 +3771,20 @@ export const api = {
    */
   articulosUbicaciones: {
     /**
-     * Los dos filtros se combinan:
+     * **`idEmpresa` es obligatorio.** `ARTICULOS_UBICACIONES` es una tabla de
+     * cruce y no tiene columna de empresa: sin este parámetro la consulta no se
+     * acota sola y devolvía el cruce de **todas** las empresas. El backend ahora
+     * responde 400 si falta, pero el tipo lo pide antes de compilar.
+     *
+     * Los otros dos filtros se combinan:
      * - `idArticulo` → dónde está ese artículo (lo que usa el ABM de artículos).
      * - `idUbicacion` → qué hay en ese estante.
      */
-    listar: (params: { idArticulo?: number; idUbicacion?: number } = {}) => {
-      const q = new URLSearchParams();
+    listar: (params: { idEmpresa: number; idArticulo?: number; idUbicacion?: number }) => {
+      const q = new URLSearchParams({ idEmpresa: String(params.idEmpresa) });
       if (params.idArticulo) q.set("idArticulo", String(params.idArticulo));
       if (params.idUbicacion) q.set("idUbicacion", String(params.idUbicacion));
-      const query = q.toString();
-      return request<ListaArticulosUbicaciones>(
-        `/articulos-ubicaciones/listar${query ? `?${query}` : ""}`,
-      );
+      return request<ListaArticulosUbicaciones>(`/articulos-ubicaciones/listar?${q}`);
     },
 
     /**
@@ -3816,11 +3818,11 @@ export const api = {
      * Monedas de una empresa. `idEmpresa` sale de la empresa activa de la
      * sesión (`useEmpresa()`), no de un filtro de la pantalla.
      *
-     * Sin `idEmpresa` devuelve las de todas las empresas — no se usa desde la
-     * app, pero el endpoint lo permite para poder inspeccionarlo.
+     * **Es obligatorio.** Antes, sin `idEmpresa`, el endpoint devolvía las de
+     * todas las empresas: un olvido en el cliente no fallaba, mezclaba.
      */
-    listar: (params: { idEmpresa?: number } = {}) => {
-      const q = params.idEmpresa ? `?idEmpresa=${params.idEmpresa}` : "";
+    listar: (params: { idEmpresa: number }) => {
+      const q = `?idEmpresa=${params.idEmpresa}`;
       return request<ListaMonedas>(`/monedas/listar${q}`);
     },
 
@@ -3903,11 +3905,11 @@ export const api = {
      *
      * Vienen ordenadas por vigencia descendente: lo que rige hoy primero.
      *
-     * Sin `idEmpresa` devuelve las de todas las empresas — no se usa desde la
-     * app, pero el endpoint lo permite para poder inspeccionarlo.
+     * **Es obligatorio.** Antes, sin `idEmpresa`, el endpoint devolvía las de
+     * todas las empresas: un olvido en el cliente no fallaba, mezclaba.
      */
-    listar: (params: { idEmpresa?: number } = {}) => {
-      const q = params.idEmpresa ? `?idEmpresa=${params.idEmpresa}` : "";
+    listar: (params: { idEmpresa: number }) => {
+      const q = `?idEmpresa=${params.idEmpresa}`;
       return request<ListaListasDescuentos>(`/listas-descuentos/listar${q}`);
     },
 
@@ -3962,9 +3964,16 @@ export const api = {
    * la moneda que se está viendo. La empresa se deduce por la moneda padre.
    */
   detalleMonedas: {
-    listar: (params: { idMoneda?: number } = {}) => {
-      const q = params.idMoneda ? `?idMoneda=${params.idMoneda}` : "";
-      return request<ListaDetalleMonedas>(`/detalle-monedas/listar${q}`);
+    /**
+     * **`idEmpresa` es obligatorio.** `DETALLE_MONEDAS` cuelga de `MONEDAS` y no
+     * tiene columna de empresa: el backend la valida contra el padre. Sin ella
+     * alcanzaba con conocer un `idMoneda` ajeno para leer denominaciones de otra
+     * empresa.
+     */
+    listar: (params: { idEmpresa: number; idMoneda?: number }) => {
+      const q = new URLSearchParams({ idEmpresa: String(params.idEmpresa) });
+      if (params.idMoneda) q.set("idMoneda", String(params.idMoneda));
+      return request<ListaDetalleMonedas>(`/detalle-monedas/listar?${q}`);
     },
 
     /**
@@ -4015,11 +4024,11 @@ export const api = {
      * Unidades de una empresa. `idEmpresa` sale de la empresa activa de la
      * sesión (`useEmpresa()`), no de un filtro de la pantalla.
      *
-     * Sin `idEmpresa` devuelve las de todas las empresas — no se usa desde la
-     * app, pero el endpoint lo permite para poder inspeccionarlo.
+     * **Es obligatorio.** Antes, sin `idEmpresa`, el endpoint devolvía las de
+     * todas las empresas: un olvido en el cliente no fallaba, mezclaba.
      */
-    listar: (params: { idEmpresa?: number } = {}) => {
-      const q = params.idEmpresa ? `?idEmpresa=${params.idEmpresa}` : "";
+    listar: (params: { idEmpresa: number }) => {
+      const q = `?idEmpresa=${params.idEmpresa}`;
       return request<ListaUnidadesMedida>(`/unidades-medida/listar${q}`);
     },
 
@@ -4057,11 +4066,11 @@ export const api = {
      * Categorías de una empresa. `idEmpresa` sale de la empresa activa de la
      * sesión (`useEmpresa()`), no de un filtro de la pantalla.
      *
-     * Sin `idEmpresa` devuelve las de todas las empresas — no se usa desde la
-     * app, pero el endpoint lo permite para poder inspeccionarlo.
+     * **Es obligatorio.** Antes, sin `idEmpresa`, el endpoint devolvía las de
+     * todas las empresas: un olvido en el cliente no fallaba, mezclaba.
      */
-    listar: (params: { idEmpresa?: number } = {}) => {
-      const q = params.idEmpresa ? `?idEmpresa=${params.idEmpresa}` : "";
+    listar: (params: { idEmpresa: number }) => {
+      const q = `?idEmpresa=${params.idEmpresa}`;
       return request<ListaCategorias>(`/categorias/listar${q}`);
     },
 

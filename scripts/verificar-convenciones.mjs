@@ -17,6 +17,16 @@
  *      su contexto, y eso tira abajo la página entera con "This page didn't
  *      load". No es un warning: es un crash.
  *
+ *   3. El filtro por empresa escrito como OPCIONAL en el backend — un
+ *      `l_empresa IS NULL OR ID_EMPRESA = l_empresa` devuelve las filas de
+ *      TODAS las empresas cuando el parámetro no llega. No falla: mezcla. Así
+ *      es como /articulos-ubicaciones mostró el cruce de todas las empresas.
+ *
+ *   4. La empresa ausente de la `queryKey` — la consulta manda `idEmpresa` pero
+ *      guarda la respuesta bajo una clave que no lo distingue: al cambiar de
+ *      empresa, TanStack sirve la caché de la anterior. El mismo síntoma sin
+ *      ninguna petición mal hecha.
+ *
  * Son chequeos de TEXTO, no un parser: prefieren un falso positivo raro a
  * dejar pasar el caso real. Si alguno molesta, la salida dice qué línea es.
  *
@@ -171,6 +181,96 @@ for (const archivo of exigirArchivos("src/**/*.tsx")) {
     // Se cuenta DESPUÉS de evaluar: la apertura y su hijo pueden compartir línea.
     profundidad += (linea.match(abre) ?? []).length;
     profundidad -= (linea.match(cierra) ?? []).length;
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* 3. El filtro por empresa, opcional en el backend                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `WHERE l_empresa IS NULL OR ID_EMPRESA = l_empresa` significa, literalmente:
+ * **si el cliente no manda la empresa, devolvé las de todas**.
+ *
+ * Suena defensivo y es lo contrario. El día que una pantalla olvida el
+ * parámetro, o lo manda `undefined` porque la empresa activa todavía no
+ * hidrató, la consulta no falla: se llena de datos ajenos. Nadie reporta un
+ * error, porque en la pantalla no hay ninguno — hay filas de más, y hay que
+ * conocer los datos para notarlo.
+ *
+ * Es exactamente como se filtró el cruce de artículos y ubicaciones de todas
+ * las empresas en /articulos-ubicaciones. La forma correcta es un 400 temprano:
+ * un endpoint que se niega a responder sin empresa hace ruido en la primera
+ * prueba, no en producción.
+ *
+ * NO confundir con `(ID_EMPRESA = l_empresa OR ID_EMPRESA IS NULL)`, que es
+ * otra cosa y sí es válida: son las filas HEREDADAS —anteriores a la columna—
+ * que toda empresa ve. Ahí el NULL está en el DATO, no en el parámetro.
+ */
+const EMPRESA_OPCIONAL = /\bl_(?:id_)?empresa\s+IS NULL\s+OR\s+[a-z]*\.?ID_EMPRESA\s*=/i;
+
+for (const archivo of exigirArchivos("db/*.sql")) {
+  readFileSync(join(raiz, archivo), "utf8")
+    .split("\n")
+    .forEach((linea, i) => {
+      if (!EMPRESA_OPCIONAL.test(linea)) return;
+      reportar(
+        archivo,
+        i + 1,
+        linea,
+        "El filtro por empresa es OPCIONAL: sin el parámetro devuelve las de TODAS.\n" +
+          "     Un olvido del cliente no falla, mezcla — y en pantalla no se ve como error.\n" +
+          "     Validá antes: IF l_id_empresa IS NULL THEN 400 'idEmpresa es obligatorio'.",
+      );
+    });
+}
+
+/* -------------------------------------------------------------------------- */
+/* 4. La empresa, ausente de la queryKey                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Una consulta que manda `idEmpresa` pero no lo pone en su `queryKey` guarda la
+ * respuesta bajo una clave que no distingue empresas: al cambiar de empresa,
+ * TanStack Query devuelve la caché de la anterior. La pantalla muestra datos de
+ * otra empresa **sin haber hecho ninguna petición mal**.
+ *
+ * Se mira el bloque de cada useQuery: si el queryFn nombra la empresa, la
+ * queryKey también tiene que hacerlo.
+ */
+for (const archivo of exigirArchivos("src/routes/*.tsx src/components/ctell/*.tsx")) {
+  const contenido = readFileSync(join(raiz, archivo), "utf8");
+  const lineas = contenido.split("\n");
+
+  lineas.forEach((linea, i) => {
+    if (!/useQuery\(\{|useInfiniteQuery\(\{/.test(linea)) return;
+
+    // El bloque: hasta 25 líneas, que cubre queryKey + queryFn + enabled, y
+    // CORTADO en el useQuery siguiente. Sin ese corte, una consulta de una
+    // línea (`useQuery({ queryKey: ["bancos"], queryFn: ... })`) se lee junto
+    // con la de abajo y hereda su empresa: falso positivo garantizado.
+    const siguiente = lineas
+      .slice(i + 1, i + 25)
+      .findIndex((l) => /useQuery\(\{|useInfiniteQuery\(\{/.test(l));
+    const bloque = lineas.slice(i, i + 1 + (siguiente === -1 ? 24 : siguiente)).join("\n");
+    const key = /queryKey:\s*(\[[\s\S]*?\])/.exec(bloque)?.[1];
+    const fn =
+      /queryFn:\s*([\s\S]*?)(?:\n\s*(?:enabled|staleTime|select|placeholderData):|\n\s*\}\))/.exec(
+        bloque,
+      )?.[1];
+    if (!key || !fn) return;
+
+    const mandaEmpresa = /idEmpresa|empresa[!?]?\.?\??\.id/.test(fn);
+    if (mandaEmpresa && !/empresa/i.test(key)) {
+      reportar(
+        archivo,
+        i + 1,
+        key.replace(/\s+/g, " "),
+        "La consulta filtra por empresa pero la queryKey no la incluye: al cambiar de\n" +
+          "     empresa se sirve la caché de la anterior y la pantalla muestra datos ajenos.\n" +
+          "     Agregá `empresa?.id ?? null` a la clave.",
+      );
+    }
   });
 }
 

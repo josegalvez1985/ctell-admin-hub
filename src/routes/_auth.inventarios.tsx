@@ -966,8 +966,8 @@ function InventarioDialog({
    * para un dato que sólo importa cuando se está mirando un artículo concreto.
    */
   const { data: ubicacionesDelArticulo, isPending: cargandoAsignaciones } = useQuery({
-    queryKey: ["articulos-ubicaciones", idArticuloElegido],
-    queryFn: () => api.articulosUbicaciones.listar({ idArticulo: idArticuloElegido }),
+    queryKey: ["articulos-ubicaciones", idEmpresa, idArticuloElegido],
+    queryFn: () => api.articulosUbicaciones.listar({ idEmpresa, idArticulo: idArticuloElegido }),
     enabled: abierto && !soloLectura && idArticuloElegido > 0,
   });
 

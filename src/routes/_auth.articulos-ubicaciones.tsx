@@ -88,12 +88,17 @@ function ArticulosUbicacionesPage() {
   const [filtroSucursal, setFiltroSucursal] = useState<string>(SIN_FILTRO);
   const [visibles, setVisibles] = useState(POR_PAGINA);
 
-  // Sin filtros: el cruce completo. El backend acepta ?idArticulo= y
-  // ?idUbicacion=, pero acá se lista todo y se filtra en el cliente con el
+  // El cruce completo DE LA EMPRESA. El backend acepta ?idArticulo= y
+  // ?idUbicacion=, pero acá se listan todos y se filtra en el cliente con el
   // buscador — son pocas filas y así se busca por artículo Y por zona a la vez.
+  //
+  // `idEmpresa` va en la llamada Y en la queryKey. Esta pantalla mostraba el
+  // cruce de TODAS las empresas: la tabla no tiene columna de empresa, así que
+  // la consulta no se acotaba sola, y sin la empresa en la clave, cambiar de
+  // empresa ni siquiera volvía a pedir los datos.
   const { data, isPending, isError } = useQuery({
-    queryKey: ["articulos-ubicaciones", "todos"],
-    queryFn: () => api.articulosUbicaciones.listar(),
+    queryKey: ["articulos-ubicaciones", "todos", empresa?.id ?? null],
+    queryFn: () => api.articulosUbicaciones.listar({ idEmpresa: empresa!.id }),
     enabled: empresa !== null,
   });
 

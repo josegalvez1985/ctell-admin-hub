@@ -273,10 +273,19 @@ CREATE OR REPLACE PACKAGE BODY PKG_LISTAS_DESCUENTOS AS
     -- de que exista el EXCEPTION y el error escaparia del procedimiento.
     l_id_empresa := A_NUMERO(p_id_empresa);
 
+    -- Sin empresa NO se devuelve nada. El default de "todas" que tenia antes es
+    -- el error: un olvido en el cliente pasaba desapercibido justamente porque
+    -- la pantalla se llenaba de datos —y de datos ajenos—.
+    IF l_id_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
+      RETURN;
+    END IF;
+
     SELECT COUNT(*)
       INTO l_total
       FROM LISTAS_DESCUENTOS
-     WHERE l_id_empresa IS NULL OR ID_EMPRESA = l_id_empresa;
+     WHERE ID_EMPRESA = l_id_empresa;
 
     -- Sin JOIN: la consulta sale de LISTAS_DESCUENTOS y nada mas. El nombre de la
     -- empresa no se devuelve porque el listado ya viene filtrado por una sola.
@@ -330,7 +339,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_LISTAS_DESCUENTOS AS
                lp.FECHA_VIGENCIA_DESDE AS desde,
                lp.NOMBRE_LISTA         AS nombre_lista
           FROM LISTAS_DESCUENTOS lp
-         WHERE l_id_empresa IS NULL OR lp.ID_EMPRESA = l_id_empresa
+         WHERE lp.ID_EMPRESA = l_id_empresa
       );
 
     p_status_code := 200;

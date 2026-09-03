@@ -463,6 +463,15 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     -- NULLIF convierte la cadena vacía del parámetro ausente en NULL antes de
     -- que TO_NUMBER la toque (si no, ORA-01722).
     l_id_empresa   := TO_NUMBER(NULLIF(p_id_empresa, ''));
+
+    -- Sin empresa NO se devuelve nada. El default de "todas" que tenia antes es
+    -- el error: un olvido en el cliente pasaba desapercibido justamente porque
+    -- la pantalla se llenaba de datos —y de datos ajenos—.
+    IF l_id_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
+      RETURN;
+    END IF;
     l_id_categoria := TO_NUMBER(NULLIF(p_id_categoria, ''));
     l_id_marca     := TO_NUMBER(NULLIF(p_id_marca, ''));
     -- La ubicacion SI filtra el catalogo, al reves que la sucursal de abajo.
@@ -497,7 +506,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     SELECT COUNT(*)
       INTO l_total
       FROM ARTICULOS a
-     WHERE (l_id_empresa   IS NULL OR a.ID_EMPRESA   = l_id_empresa)
+     WHERE a.ID_EMPRESA = l_id_empresa
        AND (l_id_categoria IS NULL OR a.ID_CATEGORIA = l_id_categoria)
        AND (l_id_marca     IS NULL OR a.ID_MARCA     = l_id_marca)
        -- EXISTS y no JOIN: un articulo puede estar en varias ubicaciones, y con
@@ -702,7 +711,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
           -- articulo sin marca —que son todos los cargados antes de la columna—
           -- desapareceria del listado sin ningun error visible.
           LEFT JOIN MARCAS          mc ON mc.ID_MARCA       = a.ID_MARCA
-         WHERE (l_id_empresa   IS NULL OR a.ID_EMPRESA   = l_id_empresa)
+         WHERE a.ID_EMPRESA = l_id_empresa
            AND (l_id_categoria IS NULL OR a.ID_CATEGORIA = l_id_categoria)
            AND (l_id_marca     IS NULL OR a.ID_MARCA     = l_id_marca)
            -- IDENTICO AL DEL COUNT DE ARRIBA. Si filtran distinto, el total dice

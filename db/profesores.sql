@@ -471,6 +471,15 @@ CREATE OR REPLACE PACKAGE BODY PKG_PROFESORES AS
     l_id_empresa := A_NUMERO(p_id_empresa);
     l_estado     := A_ESTADO(p_activo);
 
+    -- Sin empresa NO se devuelve nada. El default de "todas" que tenia antes es
+    -- el error: un olvido en el cliente pasaba desapercibido justamente porque
+    -- la pantalla se llenaba de datos —y de datos ajenos—.
+    IF l_id_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
+      RETURN;
+    END IF;
+
     -- En minusculas una sola vez aca, no por fila: el WHERE compara contra
     -- LOWER() de cada columna, asi que subir el termino tambien dentro del SQL
     -- haria el trabajo tantas veces como filas tenga la tabla.
@@ -487,7 +496,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_PROFESORES AS
       INTO l_total
       FROM PROFESORES p
       LEFT JOIN USUARIOS u ON u.ID_USUARIO = p.ID_USUARIO
-     WHERE (l_id_empresa IS NULL OR p.ID_EMPRESA = l_id_empresa)
+     WHERE p.ID_EMPRESA = l_id_empresa
        AND (l_estado IS NULL OR NVL(UPPER(TRIM(p.ACTIVO)), 'A') = l_estado)
        AND (l_busqueda IS NULL
             OR LOWER(p.NOMBRE)    LIKE '%' || l_busqueda || '%'
@@ -547,7 +556,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_PROFESORES AS
                p.NOMBRE   AS nombre
           FROM PROFESORES p
           LEFT JOIN USUARIOS u ON u.ID_USUARIO = p.ID_USUARIO
-         WHERE (l_id_empresa IS NULL OR p.ID_EMPRESA = l_id_empresa)
+         WHERE p.ID_EMPRESA = l_id_empresa
            AND (l_estado IS NULL OR NVL(UPPER(TRIM(p.ACTIVO)), 'A') = l_estado)
            AND (l_busqueda IS NULL
                 OR LOWER(p.NOMBRE)    LIKE '%' || l_busqueda || '%'

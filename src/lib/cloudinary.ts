@@ -91,20 +91,34 @@ export function tipoDeArchivo(mime: string): TipoArchivo {
  * se pierde nada por no usarlo como identificador.
  */
 function nombrePublico(archivo: File): string {
-  const base = archivo.name
-    .replace(/\.[^./]+$/, "")
-    // NFD separa la tilde de su letra y el filtro siguiente se la lleva: "Educación"
-    // queda "Educacion" en vez de "Educaci-n".
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "")
-    .replace(/[^a-zA-Z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 60);
+  const base = sanear(archivo.name.replace(/\.[^./]+$/, ""), 60);
 
   const sello = Date.now().toString(36);
   const azar = Math.random().toString(36).slice(2, 8);
 
   return `${base || "evidencia"}-${sello}${azar}`;
+}
+
+/**
+ * Texto apto para una URL de Cloudinary y para un nombre de archivo.
+ *
+ * La coma y la barra **separan componentes de la transformación**, así que un
+ * nombre con cualquiera de las dos rompe la URL en vez de ensuciar el archivo.
+ * Y `.` se saca porque el que manda la extensión es Cloudinary: un punto en el
+ * medio deja `Clase.3ro.jpg`, que Windows abrevia mal en más de un diálogo.
+ */
+export function sanear(texto: string, largo = 120): string {
+  return (
+    texto
+      // NFD separa la tilde de su letra y el filtro siguiente se la lleva:
+      // "Educación" queda "Educacion" en vez de "Educaci-n".
+      .normalize("NFD")
+      .replace(/\p{Diacritic}/gu, "")
+      .replace(/[^a-zA-Z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, largo)
+      .replace(/-+$/, "")
+  );
 }
 
 /**
@@ -194,6 +208,32 @@ export function miniatura(url: string, tipo: TipoArchivo, lado = 320): string | 
   }
 
   return `${antes}c_fill,w_${lado},h_${lado},q_auto,f_auto/${despues}`;
+}
+
+/**
+ * La misma URL, pero que el navegador **baja con el nombre que le pasamos** en
+ * vez de abrirla.
+ *
+ * Lo hace el flag `fl_attachment`: Cloudinary responde con un
+ * `Content-Disposition: attachment` y ese nombre de archivo, agregándole la
+ * extensión que corresponda. **No se puede resolver del lado del navegador:**
+ * el atributo `download` de un `<a>` se ignora cuando el archivo es de otro
+ * origen, así que un link común abriría la foto en una pestaña con su nombre
+ * ilegible de Cloudinary. La alternativa —bajarla con `fetch`, hacer un blob y
+ * un object URL— pasa el archivo entero por la memoria de la pestaña, que con
+ * un video de 80 MB es exactamente lo que no queremos.
+ *
+ * De una URL que no es de Cloudinary devuelve la original: se abrirá en vez de
+ * bajarse, que es lo único posible sin control del servidor que la sirve.
+ */
+export function urlDescarga(url: string, nombre: string): string {
+  const marca = "/upload/";
+  const corte = url.indexOf(marca);
+  if (corte === -1) return url;
+
+  const limpio = sanear(nombre) || "evidencia";
+
+  return `${url.slice(0, corte + marca.length)}fl_attachment:${limpio}/${url.slice(corte + marca.length)}`;
 }
 
 /** "2,4 MB". Para el pie de una evidencia; `null` cuando el peso no se guardó. */

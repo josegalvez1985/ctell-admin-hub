@@ -106,12 +106,19 @@
 --------------------------------------------------------------------------------
 -- FILTRO POR EMPRESA
 --
--- REPORTES_ACTIVIDADES tiene ID_EMPRESA NOT NULL, asi que el WHERE la usa
--- directo. Pero al CREAR no se toma del body: se resuelve como en
--- db/asistencias-profesores.sql, mirando la de la marcacion y cayendo a la del
--- profesor cuando la marcacion la tiene en NULL (las filas anteriores a esa
--- columna). Con solo a.ID_EMPRESA, las marcaciones historicas no se podrian
--- reportar.
+-- REPORTES_ACTIVIDADES tiene ID_EMPRESA NOT NULL, asi que sus propias consultas
+-- la usan directo.
+--
+-- Pero todo lo que sale de ASISTENCIAS_PROFESORES —/pendientes, /vinculos y la
+-- validacion del alta— filtra por LA EMPRESA DEL PROFESOR (p.ID_EMPRESA), no
+-- por la de la marcacion. PROFESORES tiene UNIQUE (NUMERO_CI) global: un
+-- profesor pertenece a una sola empresa, asi que la suya es la fuente real.
+-- Nada en el DDL obliga a que ASISTENCIAS_PROFESORES.ID_EMPRESA coincida, y una
+-- marcacion grabada con la empresa equivocada aparecia en el listado de esa
+-- empresa con el nombre de un profesor ajeno. Ver la explicacion completa en
+-- db/asistencias-profesores.sql.
+--
+-- Al CREAR, ID_EMPRESA se copia de esa misma fuente: la del profesor.
 --------------------------------------------------------------------------------
 
 SET DEFINE OFF
@@ -545,7 +552,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_REPORTES_ACTIVIDADES AS
       INTO l_total
       FROM ASISTENCIAS_PROFESORES a
       JOIN PROFESORES p ON p.ID_PROFESOR = a.ID_PROFESOR
-     WHERE (a.ID_EMPRESA = l_empresa OR (a.ID_EMPRESA IS NULL AND p.ID_EMPRESA = l_empresa))
+     WHERE p.ID_EMPRESA = l_empresa
        AND (l_desde IS NULL OR a.FECHA_ASISTENCIA >= l_desde)
        AND (l_hasta IS NULL OR a.FECHA_ASISTENCIA <  l_hasta)
        AND (l_profesor IS NULL OR a.ID_PROFESOR = l_profesor)
@@ -573,7 +580,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_REPORTES_ACTIVIDADES AS
           FROM ASISTENCIAS_PROFESORES a
           JOIN PROFESORES p ON p.ID_PROFESOR = a.ID_PROFESOR
           LEFT JOIN INSTITUCIONES i ON i.ID_INSTITUCION = a.ID_INSTITUCION
-         WHERE (a.ID_EMPRESA = l_empresa OR (a.ID_EMPRESA IS NULL AND p.ID_EMPRESA = l_empresa))
+         WHERE p.ID_EMPRESA = l_empresa
            AND (l_desde IS NULL OR a.FECHA_ASISTENCIA >= l_desde)
            AND (l_hasta IS NULL OR a.FECHA_ASISTENCIA <  l_hasta)
            AND (l_profesor IS NULL OR a.ID_PROFESOR = l_profesor)
@@ -669,8 +676,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_REPORTES_ACTIVIDADES AS
             SELECT DISTINCT a.ID_PROFESOR profesor, a.ID_INSTITUCION institucion
               FROM ASISTENCIAS_PROFESORES a
               JOIN PROFESORES p ON p.ID_PROFESOR = a.ID_PROFESOR
-             WHERE (a.ID_EMPRESA = l_empresa
-                    OR (a.ID_EMPRESA IS NULL AND p.ID_EMPRESA = l_empresa))
+             WHERE p.ID_EMPRESA = l_empresa
                AND (l_desde IS NULL OR a.FECHA_ASISTENCIA >= l_desde)
                AND (l_hasta IS NULL OR a.FECHA_ASISTENCIA <  l_hasta)
                AND a.ID_INSTITUCION IS NOT NULL
@@ -819,7 +825,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_REPORTES_ACTIVIDADES AS
         FROM ASISTENCIAS_PROFESORES a
         JOIN PROFESORES p ON p.ID_PROFESOR = a.ID_PROFESOR
        WHERE a.ID_ASISTENCIA = l_asistencia
-         AND (a.ID_EMPRESA = l_empresa OR (a.ID_EMPRESA IS NULL AND p.ID_EMPRESA = l_empresa));
+         AND p.ID_EMPRESA = l_empresa;
     EXCEPTION
       WHEN NO_DATA_FOUND THEN
         p_status_code := 404;

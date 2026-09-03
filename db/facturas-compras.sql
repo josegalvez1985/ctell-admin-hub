@@ -607,6 +607,15 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
     -- Las conversiones van dentro del BEGIN: en el DECLARE se ejecutarian antes
     -- de que exista el EXCEPTION y el error escaparia del procedimiento.
     l_id_empresa   := TO_NUMBER(NULLIF(p_id_empresa, ''));
+
+    -- Sin empresa NO se devuelve nada. El default de "todas" que tenia antes es
+    -- el error: un olvido en el cliente pasaba desapercibido justamente porque
+    -- la pantalla se llenaba de datos —y de datos ajenos—.
+    IF l_id_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
+      RETURN;
+    END IF;
     l_id_sucursal  := TO_NUMBER(NULLIF(p_id_sucursal, ''));
     l_id_proveedor := TO_NUMBER(NULLIF(p_id_proveedor, ''));
     l_desde        := A_FECHA(p_desde);
@@ -615,7 +624,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
     SELECT COUNT(*)
       INTO l_total
       FROM FACTURAS_COMPRAS_CAB
-     WHERE (l_id_empresa   IS NULL OR ID_EMPRESA   = l_id_empresa)
+     WHERE ID_EMPRESA = l_id_empresa
        AND (l_id_sucursal  IS NULL OR ID_SUCURSAL  = l_id_sucursal)
        AND (l_id_proveedor IS NULL OR ID_PROVEEDOR = l_id_proveedor)
        AND (l_desde        IS NULL OR FECHA_FACTURA >= l_desde)
@@ -710,7 +719,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
           -- todas las cargadas antes de que existiera la columna— desaparecerian
           -- del listado sin ningun error visible.
           LEFT JOIN CONDICIONES_PAGO cp ON cp.ID_CONDICION = f.ID_CONDICION
-         WHERE (l_id_empresa   IS NULL OR f.ID_EMPRESA   = l_id_empresa)
+         WHERE f.ID_EMPRESA = l_id_empresa
            AND (l_id_sucursal  IS NULL OR f.ID_SUCURSAL  = l_id_sucursal)
            AND (l_id_proveedor IS NULL OR f.ID_PROVEEDOR = l_id_proveedor)
            AND (l_desde        IS NULL OR f.FECHA_FACTURA >= l_desde)

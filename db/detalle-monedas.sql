@@ -141,16 +141,25 @@ CREATE OR REPLACE PACKAGE PKG_DETALLE_MONEDAS AS
 
   -- p_id_moneda NULL o vacio devuelve las denominaciones de todas las monedas.
   -- En la app siempre viaja con la moneda de la cabecera.
+  -- idEmpresa es OBLIGATORIO: DETALLE_MONEDAS no tiene columna de empresa
+  -- —cuelga de MONEDAS— asi que la consulta no se acota sola. Sin el, bastaba
+  -- con conocer un idMoneda ajeno para leer las denominaciones de otra empresa.
   PROCEDURE LISTAR (
     p_authorization IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_id_moneda     IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   );
 
+  -- p_id_empresa es OBLIGATORIO aunque la tabla no tenga esa columna: acota la
+  -- moneda padre. Sin el, una sesion de la empresa A podia agregarle una
+  -- denominacion a una moneda de la B con solo conocer su id — el ACTUALIZAR y
+  -- el ELIMINAR ya lo validaban, el alta no.
   PROCEDURE INSERTAR (
     p_authorization IN  VARCHAR2,
     p_id_moneda     IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_denominacion  IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
@@ -275,14 +284,19 @@ CREATE OR REPLACE PACKAGE BODY PKG_DETALLE_MONEDAS AS
     RETURN l_existe > 0;
   END ES_DE_EMPRESA;
 
+  -- idEmpresa es OBLIGATORIO: DETALLE_MONEDAS no tiene columna de empresa
+  -- —cuelga de MONEDAS— asi que la consulta no se acota sola. Sin el, bastaba
+  -- con conocer un idMoneda ajeno para leer las denominaciones de otra empresa.
   PROCEDURE LISTAR (
     p_authorization IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_id_moneda     IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
-    l_sesion    NUMBER;
-    l_id_moneda NUMBER;
+    l_sesion     NUMBER;
+    l_id_empresa NUMBER;
+    l_id_moneda  NUMBER;
     l_total     NUMBER;
     l_items     CLOB;
   BEGIN
@@ -297,12 +311,21 @@ CREATE OR REPLACE PACKAGE BODY PKG_DETALLE_MONEDAS AS
     -- de que exista el EXCEPTION y el error escaparia del procedimiento.
     -- NULLIF convierte la cadena vacia del parametro ausente en NULL antes de
     -- que TO_NUMBER la toque (si no, ORA-01722).
-    l_id_moneda := TO_NUMBER(NULLIF(p_id_moneda, ''));
+    l_id_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
+    l_id_moneda  := TO_NUMBER(NULLIF(p_id_moneda, ''));
+
+    IF l_id_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
+      RETURN;
+    END IF;
 
     SELECT COUNT(*)
       INTO l_total
-      FROM DETALLE_MONEDAS
-     WHERE l_id_moneda IS NULL OR ID_MONEDA = l_id_moneda;
+      FROM DETALLE_MONEDAS d
+      JOIN MONEDAS m ON m.ID_MONEDA = d.ID_MONEDA
+     WHERE m.ID_EMPRESA = l_id_empresa
+       AND (l_id_moneda IS NULL OR d.ID_MONEDA = l_id_moneda);
 
     -- Sin JOIN: la consulta sale de DETALLE_MONEDAS y nada mas. El nombre de la
     -- moneda no se devuelve porque el listado ya viene filtrado por una sola.
@@ -345,7 +368,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_DETALLE_MONEDAS AS
                  DEFAULT NULL ON CONVERSION ERROR
                ) AS valor
           FROM DETALLE_MONEDAS d
-         WHERE l_id_moneda IS NULL OR d.ID_MONEDA = l_id_moneda
+          JOIN MONEDAS m ON m.ID_MONEDA = d.ID_MONEDA
+         WHERE m.ID_EMPRESA = l_id_empresa
+           AND (l_id_moneda IS NULL OR d.ID_MONEDA = l_id_moneda)
       );
 
     p_status_code := 200;
@@ -369,16 +394,23 @@ CREATE OR REPLACE PACKAGE BODY PKG_DETALLE_MONEDAS AS
       p_resultado := '{"error":"Error al listar las denominaciones"}';
   END LISTAR;
 
+  -- p_id_empresa es OBLIGATORIO aunque la tabla no tenga esa columna: acota la
+  -- moneda padre. Sin el, una sesion de la empresa A podia agregarle una
+  -- denominacion a una moneda de la B con solo conocer su id — el ACTUALIZAR y
+  -- el ELIMINAR ya lo validaban, el alta no.
   PROCEDURE INSERTAR (
     p_authorization IN  VARCHAR2,
     p_id_moneda     IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_denominacion  IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
-    l_sesion    NUMBER;
-    l_id_moneda NUMBER;
-    l_id        NUMBER;
+    l_sesion     NUMBER;
+    l_id_moneda  NUMBER;
+    l_id_empresa NUMBER;
+    l_cuenta     PLS_INTEGER;
+    l_id         NUMBER;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -387,11 +419,25 @@ CREATE OR REPLACE PACKAGE BODY PKG_DETALLE_MONEDAS AS
       RETURN;
     END IF;
 
-    l_id_moneda := TO_NUMBER(NULLIF(p_id_moneda, ''));
+    l_id_moneda  := TO_NUMBER(NULLIF(p_id_moneda, ''));
+    l_id_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
 
-    IF l_id_moneda IS NULL OR TRIM(p_denominacion) IS NULL THEN
+    IF l_id_moneda IS NULL OR l_id_empresa IS NULL OR TRIM(p_denominacion) IS NULL THEN
       p_status_code := 400;
-      p_resultado := '{"error":"idMoneda y denominacion son obligatorios"}';
+      p_resultado := '{"error":"idMoneda, idEmpresa y denominacion son obligatorios"}';
+      RETURN;
+    END IF;
+
+    -- La moneda tiene que ser de esta empresa. 404 y no 403: responder "existe
+    -- pero no es tuya" confirmaria que el id es valido en otra.
+    SELECT COUNT(*) INTO l_cuenta
+      FROM MONEDAS
+     WHERE ID_MONEDA  = l_id_moneda
+       AND ID_EMPRESA = l_id_empresa;
+
+    IF l_cuenta = 0 THEN
+      p_status_code := 404;
+      p_resultado := '{"error":"Moneda no encontrada"}';
       RETURN;
     END IF;
 
@@ -698,7 +744,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_DETALLE_MONEDAS AS
       p_pattern     => 'listar',
       p_method      => 'GET',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_DETALLE_MONEDAS.LISTAR(:authorization, :idMoneda, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_DETALLE_MONEDAS.LISTAR(:authorization, :idEmpresa, :idMoneda, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
@@ -727,7 +773,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_DETALLE_MONEDAS AS
       p_pattern     => 'crear',
       p_method      => 'POST',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_DETALLE_MONEDAS.INSERTAR(:authorization, :idMoneda, :denominacion, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_DETALLE_MONEDAS.INSERTAR(:authorization, :idMoneda, :idEmpresa, :denominacion, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(

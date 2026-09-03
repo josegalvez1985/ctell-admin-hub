@@ -649,7 +649,7 @@ function FacturaVerDialog({
   onOpenChange: (abierto: boolean) => void;
 }) {
   const { data, isPending } = useQuery({
-    queryKey: ["factura-compra", factura?.id ?? null],
+    queryKey: ["factura-compra", factura?.idEmpresa ?? null, factura?.id ?? null],
     queryFn: () => api.facturasCompras.obtener(factura!.id, factura!.idEmpresa),
     enabled: factura !== null,
   });
@@ -821,7 +821,7 @@ function FacturaFormDialog({
   // El detalle de la factura que se está editando. Sólo se pide en edición: en
   // un alta no hay nada que traer.
   const { data: completa } = useQuery({
-    queryKey: ["factura-compra", factura?.id ?? null],
+    queryKey: ["factura-compra", factura?.idEmpresa ?? null, factura?.id ?? null],
     queryFn: () => api.facturasCompras.obtener(factura!.id, factura!.idEmpresa),
     enabled: factura !== null,
   });

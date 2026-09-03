@@ -877,6 +877,89 @@ de actualización y borrado también exigen ese id para aislar la fila.
 `BANCOS` no es una tabla por empresa: se comparte entre todas y sus endpoints
 no reciben `idEmpresa`.
 
+### `idEmpresa` se EXIGE: sin él, 400 — nunca "todas"
+
+La forma más cara de escribir el filtro es la que parece más amable:
+
+```sql
+-- ❌ "Si no la mandan, devuelvo las de todas". No falla: MEZCLA.
+SELECT ... FROM CATEGORIAS
+ WHERE l_id_empresa IS NULL OR ID_EMPRESA = l_id_empresa;
+
+-- ✅ Sin empresa no hay respuesta.
+IF l_id_empresa IS NULL THEN
+  p_status_code := 400;
+  p_resultado := '{"error":"idEmpresa es obligatorio"}';
+  RETURN;
+END IF;
+
+SELECT ... FROM CATEGORIAS WHERE ID_EMPRESA = l_id_empresa;
+```
+
+El default de "todas" convierte **un olvido del cliente en una fuga silenciosa**.
+La pantalla no muestra un error: muestra filas de más. Y hay que conocer los
+datos para notarlo — por eso este tipo de bug vive meses.
+
+Los olvidos ocurren, y de maneras que no se ven en el código: un `?? 0` como
+relleno mientras la empresa activa hidrata, un armador de query string escrito
+como `if (params.idEmpresa) q.set(...)` que descarta el cero, un endpoint nuevo
+al que se le copió la firma pero no el parámetro. Con el 400, cualquiera de esos
+falla en la primera prueba.
+
+**El caso real:** `/articulos-ubicaciones` llamaba al listado sin ningún
+parámetro para mostrar "todo el depósito", y `ARTICULOS_UBICACIONES` —una tabla
+de cruce, sin `ID_EMPRESA` propia— no se acotaba sola. La pantalla mostraba el
+cruce de todas las empresas del sistema, prolijo y ordenado.
+
+`npm run lint` lo detecta: el chequeo 3 de `verificar-convenciones` marca
+cualquier `l_empresa IS NULL OR ID_EMPRESA =`.
+
+> **No confundirlo con `(ID_EMPRESA = l_empresa OR ID_EMPRESA IS NULL)`**, que
+> es válido y significa otra cosa: las filas **heredadas**, anteriores a que la
+> columna existiera, que toda empresa ve (ver [Filas heredadas](#filas-heredadas)
+> en el README). Ahí el NULL está en el **dato**, no en el parámetro.
+
+### Una `ID_EMPRESA` copiada no es la fuente: filtrá por la del padre
+
+Hay tablas que **tienen** su columna `ID_EMPRESA` y aun así no hay que creerle.
+`ASISTENCIAS_PROFESORES` es el caso: la columna existe, pero la empresa de una
+marcación no es un dato independiente — es la del profesor que marcó, y
+`PROFESORES` tiene `UNIQUE (NUMERO_CI)` **global**, así que un profesor
+pertenece a exactamente una empresa.
+
+Nada en el DDL obliga a que las dos coincidan: la FK apunta a `EMPRESAS` sin
+mirar `PROFESORES`. Basta con que algo escriba la columna con la empresa de la
+sesión en vez de la del profesor —la app que toma las marcaciones, una carga
+vieja, una migración— para que la fila aparezca en el reporte de una empresa con
+el nombre de un profesor de otra.
+
+```sql
+-- ❌ Le cree a la columna de la fila. Si está mal escrita, la fuga es invisible.
+WHERE (a.ID_EMPRESA = l_empresa
+       OR (a.ID_EMPRESA IS NULL AND p.ID_EMPRESA = l_empresa))
+
+-- ✅ La empresa del profesor, que es la única fuente.
+  JOIN PROFESORES p ON p.ID_PROFESOR = a.ID_PROFESOR
+ WHERE p.ID_EMPRESA = l_empresa
+```
+
+Fijate lo que se gana de yapa: el `IS NULL` **deja de ser un caso especial**. Las
+filas históricas sin empresa se listan bien sin la rama extra, y el filtro pasa
+de tres condiciones a una.
+
+**Cómo saber si estás en este caso.** Preguntate de dónde sale la empresa de esa
+fila. Si la respuesta es "de la de su padre, siempre" —y el padre tiene un
+`UNIQUE` que lo ata a una sola empresa— entonces la columna es una **copia**, y
+lo que hay que filtrar es el original. Si en cambio la fila puede pertenecer a
+una empresa distinta de la de su padre por una razón de negocio, entonces sí es
+un dato propio.
+
+La columna copiada no se borra: sus índices son los que hacen barato filtrar. Lo
+que cambia es a quién se le cree al leer. Y conviene dejar en el archivo la
+consulta que lista las filas descoordinadas con su `UPDATE` correctivo — el
+reporte ya sale bien, pero el dato sigue mal guardado y la próxima consulta que
+alguien escriba contra la columna volvería a leerlo.
+
 ### El filtro por empresa va TAMBIÉN en las subconsultas
 
 > **Toda consulta que toque una tabla con `ID_EMPRESA` filtra por empresa.
@@ -2745,6 +2828,14 @@ Backend (`db/<tabla>.sql`):
       dato desaparece del listado sin ningún error visible
 - [ ] Si es una tabla por empresa: se filtra por `?idEmpresa=` y **no** hace
       `JOIN` contra `EMPRESAS` (ver [3.1](#31-tablas-por-empresa))
+- [ ] **El `LISTAR` devuelve 400 si falta `idEmpresa`.** Nunca
+      `WHERE l_empresa IS NULL OR ID_EMPRESA = l_empresa`: ese "si no la mandan,
+      todas" convierte un olvido del cliente en una fuga que no da error, sólo
+      filas de más (ver [idEmpresa se exige](#idempresa-se-exige-sin-él-400--nunca-todas))
+- [ ] **Si la tabla NO tiene `ID_EMPRESA` (cruce o detalle): no se la agregues.**
+      El `LISTAR` igual recibe `idEmpresa` y filtra con un `JOIN` contra el padre
+      que sí la tiene — y el `COUNT` lleva el mismo `JOIN`, o el total cuenta de
+      más
 - [ ] **Si tiene dos FK de contexto (empresa + sucursal): se valida a mano que
       una pertenezca a la otra** y se devuelve 400 si no. Las FK sueltas no lo
       garantizan (ver [3.1.1](#311-tablas-por-empresa-y-sucursal))
@@ -2836,6 +2927,7 @@ Para que la página sea alcanzable (el backend listo no alcanza):
 | **500 sin mensaje, con el `EXCEPTION` escrito**                                   | La conversión está en el `DECLARE`: se ejecuta antes de que exista el `EXCEPTION` y escapa del handler                                                                                                                                                                                                |
 | **500 solo cuando falta un query param**                                          | `TO_NUMBER('')`: un parámetro ausente llega como cadena vacía. Usá `NULLIF(:param, '')`                                                                                                                                                                                                               |
 | **El listado anda filtrado (`?idX=5`) pero da 500 sin filtro**                    | `JSON_OBJECT` anidado dentro de `JSON_ARRAYAGG`: el intermedio se materializa como VARCHAR2 y se pasa de 4000 bytes. Armá el objeto en una subconsulta — ver [3](#3-crear-el-backend-de-una-tabla). El paquete compila bien y `USER_ERRORS` está vacío, por eso despista                              |
+| **La pantalla muestra registros de OTRA empresa**                                  | Cuatro causas, en este orden: (1) el `LISTAR` tiene el filtro opcional —`l_empresa IS NULL OR ID_EMPRESA = …`— y el cliente no mandó `idEmpresa`; (2) la tabla es un cruce sin `ID_EMPRESA` y nadie la acota contra el padre; (3) la `queryKey` del frontend no lleva la empresa y sirve la caché de la anterior; (4) la fila TIENE `ID_EMPRESA` pero mal escrita, y el filtro le cree en vez de mirar la del padre. `npm run lint` detecta la 1 y la 3; la 4 se busca con un `WHERE a.ID_EMPRESA <> p.ID_EMPRESA` |
 | El endpoint devuelve 404                                                          | Falta `DEFINE_TEMPLATE` para ese patrón                                                                                                                                                                                                                                                               |
 | Devuelve 200 pero no guardó                                                       | Falta chequear `SQL%ROWCOUNT`                                                                                                                                                                                                                                                                         |
 | 401 en todo                                                                       | El token venció (8 h) o falta el header                                                                                                                                                                                                                                                               |

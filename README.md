@@ -68,14 +68,23 @@ archivos ofrece pegar una URL `https://` a mano. En el deploy van como
 `npm run lint` corre además dos chequeos propios, que también se pueden llamar
 sueltos:
 
-| Comando                          | Qué evita                                                         |
-| -------------------------------- | ----------------------------------------------------------------- |
-| `npm run verificar-iconos`       | Dos entradas del menú con el mismo ícono                          |
-| `npm run verificar-convenciones` | `:body` leído con `JSON_VALUE`, y hijos de `ui/form` sin contexto |
+| Comando                          | Qué evita                                                                 |
+| -------------------------------- | ------------------------------------------------------------------------- |
+| `npm run verificar-iconos`       | Dos entradas del menú con el mismo ícono                                  |
+| `npm run verificar-convenciones` | Cuatro trampas que ya costaron horas y no se ven leyendo el código (abajo) |
 
-Los dos casos del segundo ya nos costaron horas cada uno, y ninguno se ve al
-leer el código: uno responde un 400 con el body bien puesto y el otro tira abajo
-la página entera. Ver [`scripts/verificar-convenciones.mjs`](scripts/verificar-convenciones.mjs).
+Los cuatro casos del segundo se cobraron su tiempo, y ninguno se ve al leer el
+código:
+
+1. **`:body` leído con `JSON_VALUE`** → responde 400 con el body perfectamente
+   puesto.
+2. **Hijos de `ui/form` sin `<FormItem>`** → tira abajo la página entera.
+3. **El filtro por empresa escrito como opcional en `db/`** → devuelve las filas
+   de todas las empresas cuando el parámetro no llega. No falla: mezcla.
+4. **La empresa ausente de la `queryKey`** → al cambiar de empresa se sirve la
+   caché de la anterior. Mismo síntoma, sin ninguna petición mal hecha.
+
+Ver [`scripts/verificar-convenciones.mjs`](scripts/verificar-convenciones.mjs).
 
 ## Estructura
 
@@ -356,6 +365,48 @@ y no contra la variable del parámetro, para que el filtro siga aplicando cuando
 el listado se pide sin `idEmpresa`. El ejemplo está escrito contra
 `EXISTENCIAS`, que es de donde va a salir el stock: hoy ese campo devuelve 0
 porque `LOTES` se eliminó, y la trampa hay que recordarla para cuando vuelva.
+
+**El `LISTAR` exige `idEmpresa`: sin él, 400 — nunca "todas".** Esta forma es la
+que costó un bug real:
+
+```sql
+-- ❌ "Si no la mandan, devuelvo las de todas". No falla: MEZCLA.
+WHERE l_id_empresa IS NULL OR ID_EMPRESA = l_id_empresa
+
+-- ✅ Sin empresa no hay respuesta.
+IF l_id_empresa IS NULL THEN
+  p_status_code := 400; p_resultado := '{"error":"idEmpresa es obligatorio"}'; RETURN;
+END IF;
+```
+
+El default de "todas" convierte **un olvido del cliente en una fuga silenciosa**:
+la pantalla no muestra un error, muestra filas de más, y hay que conocer los
+datos para notarlo. `/articulos-ubicaciones` mostró durante semanas el cruce de
+todas las empresas por esto — la tabla es un cruce, no tiene `ID_EMPRESA`
+propia, y nadie la acotaba contra el padre.
+
+**Una tabla sin `ID_EMPRESA` no lleva la columna: se filtra contra el padre.**
+Los cruces (`ARTICULOS_UBICACIONES`) y los detalles (`DETALLE_MONEDAS`) reciben
+`idEmpresa` igual y hacen `JOIN` contra la tabla que sí la tiene — y el `COUNT`
+lleva el mismo `JOIN`, o el total cuenta filas que la lista no muestra.
+
+**Y a una `ID_EMPRESA` copiada tampoco se le cree.** `ASISTENCIAS_PROFESORES`
+tiene la columna, pero la empresa de una marcación es la del profesor que marcó
+—`PROFESORES` tiene `UNIQUE (NUMERO_CI)` global, así que pertenece a una sola
+empresa— y nada en el DDL obliga a que las dos coincidan. Una marcación grabada
+con la empresa equivocada aparecía en el reporte de esa empresa con el nombre de
+un profesor ajeno. El filtro es `JOIN PROFESORES … WHERE p.ID_EMPRESA = …`, y
+como efecto lateral el `IS NULL` de las filas históricas deja de ser un caso
+especial. La consulta que lista las filas descoordinadas está al final de
+[db/asistencias-profesores.sql](db/asistencias-profesores.sql).
+
+**`npm run lint` verifica las dos formas del error:** el filtro opcional en
+`db/` y la `queryKey` sin empresa en el frontend (esta última da el mismo
+síntoma sin ninguna petición mal hecha — se sirve la caché de la empresa
+anterior). Ver [Convenciones](#convenciones).
+
+No se toca el DDL para esto: si el backend no tiene `ID_EMPRESA`, **no se le
+agrega**.
 
 Tres detalles que hacen que el control no tenga puerta trasera:
 
@@ -1393,7 +1444,15 @@ Antes de escribir código nuevo, leé la
 tabla nueva de punta a punta — paquete PL/SQL, endpoints ORDS, cliente HTTP,
 página y formulario — siguiendo los patrones del proyecto.
 
-Las cuatro que más se olvidan:
+Las que más se olvidan:
+
+**Ninguna consulta cruza empresas.** El `LISTAR` de una tabla por empresa
+devuelve **400 si falta `idEmpresa`** —el "si no la mandan, todas" es una fuga
+que no da error, sólo filas de más— y en el frontend `empresa.id` va en la
+`queryKey` de toda consulta que lo mande, o al cambiar de empresa se sirve la
+caché de la anterior. Las tablas de cruce y de detalle **no llevan la columna**:
+se filtran con un `JOIN` contra el padre. `npm run lint` chequea las dos formas.
+Ver [Aislamiento por empresa](#aislamiento-por-empresa).
 
 **Los totales se derivan, no se guardan.** Ni `VENTAS_CABECERAS` ni
 `FACTURAS_COMPRAS_CAB` tienen columnas de monto: total, IVA, cobrado y saldo

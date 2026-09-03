@@ -49,10 +49,18 @@ CREATE OR REPLACE PACKAGE BODY PKG_TALONARIOS AS
     l_sesion := SESION(p_authorization);
     IF l_sesion IS NULL THEN p_status_code := 401; p_resultado := '{"error":"Sesion invalida o vencida"}'; RETURN; END IF;
     l_empresa := TO_NUMBER(NULLIF(p_id_empresa, '')); l_sucursal := TO_NUMBER(NULLIF(p_id_sucursal, ''));
-    SELECT COUNT(*) INTO l_total FROM TALONARIOS WHERE (l_empresa IS NULL OR ID_EMPRESA = l_empresa) AND (l_sucursal IS NULL OR ID_SUCURSAL = l_sucursal);
+    -- Sin empresa NO se devuelve nada. El default de "todas" que tenia antes es
+    -- el error: un olvido en el cliente pasaba desapercibido justamente porque
+    -- la pantalla se llenaba de datos —y de datos ajenos—.
+    IF l_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
+      RETURN;
+    END IF;
+    SELECT COUNT(*) INTO l_total FROM TALONARIOS WHERE ID_EMPRESA = l_empresa AND (l_sucursal IS NULL OR ID_SUCURSAL = l_sucursal);
     SELECT JSON_ARRAYAGG(fila ORDER BY tipo, timbrado RETURNING CLOB) INTO l_items FROM (
       SELECT JSON_OBJECT('id' VALUE ID_TALONARIO, 'idEmpresa' VALUE ID_EMPRESA, 'idSucursal' VALUE ID_SUCURSAL, 'tipoComprobante' VALUE TIPO_COMPROBANTE, 'nroTimbrado' VALUE NRO_TIMBRADO, 'establecimiento' VALUE ESTABLECIMIENTO, 'puntoExpedicion' VALUE PUNTO_EXPEDICION, 'nroInicial' VALUE NRO_INICIAL, 'nroFinal' VALUE NRO_FINAL, 'nroActual' VALUE NRO_ACTUAL, 'fechaInicio' VALUE TO_CHAR(FECHA_INICIO, 'YYYY-MM-DD'), 'fechaVencimiento' VALUE TO_CHAR(FECHA_VENCIMIENTO, 'YYYY-MM-DD'), 'activo' VALUE ACTIVO) fila, TIPO_COMPROBANTE tipo, NRO_TIMBRADO timbrado
-      FROM TALONARIOS WHERE (l_empresa IS NULL OR ID_EMPRESA = l_empresa) AND (l_sucursal IS NULL OR ID_SUCURSAL = l_sucursal));
+      FROM TALONARIOS WHERE ID_EMPRESA = l_empresa AND (l_sucursal IS NULL OR ID_SUCURSAL = l_sucursal));
     SELECT JSON_OBJECT('items' VALUE NVL(l_items, TO_CLOB('[]')) FORMAT JSON, 'total' VALUE l_total RETURNING CLOB) INTO p_resultado FROM DUAL;
     p_status_code := 200;
   EXCEPTION WHEN OTHERS THEN p_status_code := 400; p_resultado := JSON_OBJECT('error' VALUE SQLERRM); END LISTAR;

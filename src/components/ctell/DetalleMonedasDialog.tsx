@@ -115,9 +115,12 @@ export function DetalleMonedasDialog({
 
   const idMoneda = moneda?.id ?? null;
 
+  // La empresa sale de la moneda, que ya viene filtrada por la de la sesión.
+  // Va en la llamada porque DETALLE_MONEDAS no tiene columna de empresa y el
+  // backend la valida contra MONEDAS, y en la queryKey por la regla de siempre.
   const { data, isPending, isError } = useQuery({
-    queryKey: ["detalle-monedas", idMoneda],
-    queryFn: () => api.detalleMonedas.listar({ idMoneda: idMoneda! }),
+    queryKey: ["detalle-monedas", moneda?.idEmpresa ?? null, idMoneda],
+    queryFn: () => api.detalleMonedas.listar({ idEmpresa: moneda!.idEmpresa, idMoneda: idMoneda! }),
     // El diálogo cerrado no tiene moneda: sin esto la primera petición saldría
     // sin filtro y traería las denominaciones de todas.
     enabled: idMoneda !== null,
@@ -144,7 +147,11 @@ export function DetalleMonedasDialog({
   }, [data?.items]);
 
   function invalidar() {
-    queryClient.invalidateQueries({ queryKey: ["detalle-monedas", idMoneda] });
+    // Sólo el prefijo: TanStack compara las claves ELEMENTO POR ELEMENTO, y la
+    // de la consulta es ["detalle-monedas", idEmpresa, idMoneda]. Invalidando
+    // con ["detalle-monedas", idMoneda] el segundo elemento no coincide y el
+    // alta no refrescaría nada.
+    queryClient.invalidateQueries({ queryKey: ["detalle-monedas"] });
   }
 
   const eliminar = useMutation({

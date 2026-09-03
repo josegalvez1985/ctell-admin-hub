@@ -341,6 +341,15 @@ CREATE OR REPLACE PACKAGE BODY PKG_INSTITUCIONES AS
     -- Las conversiones van aca, dentro del BEGIN: en el DECLARE se ejecutarian
     -- antes de que exista el EXCEPTION y el error escaparia del procedimiento.
     l_id_empresa      := A_NUMERO(p_id_empresa);
+
+    -- Sin empresa NO se devuelve nada. El default de "todas" que tenia antes es
+    -- el error: un olvido en el cliente pasaba desapercibido justamente porque
+    -- la pantalla se llenaba de datos —y de datos ajenos—.
+    IF l_id_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
+      RETURN;
+    END IF;
     l_id_pais         := A_NUMERO(p_id_pais);
     l_id_departamento := A_NUMERO(p_id_departamento);
     l_id_ciudad       := A_NUMERO(p_id_ciudad);
@@ -349,7 +358,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_INSTITUCIONES AS
     SELECT COUNT(*)
       INTO l_total
       FROM INSTITUCIONES
-     WHERE (l_id_empresa      IS NULL OR ID_EMPRESA      = l_id_empresa)
+     WHERE ID_EMPRESA = l_id_empresa
        AND (l_id_pais         IS NULL OR ID_PAIS         = l_id_pais)
        AND (l_id_departamento IS NULL OR ID_DEPARTAMENTO = l_id_departamento)
       AND (l_id_ciudad       IS NULL OR ID_CIUDAD       = l_id_ciudad)
@@ -392,7 +401,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_INSTITUCIONES AS
           LEFT JOIN PAISES        p ON p.ID_PAIS         = i.ID_PAIS
           LEFT JOIN DEPARTAMENTOS d ON d.ID_DEPARTAMENTO = i.ID_DEPARTAMENTO
           LEFT JOIN CIUDADES c ON c.ID_CIUDAD       = i.ID_CIUDAD
-         WHERE (l_id_empresa      IS NULL OR i.ID_EMPRESA      = l_id_empresa)
+         WHERE i.ID_EMPRESA = l_id_empresa
            AND (l_id_pais         IS NULL OR i.ID_PAIS         = l_id_pais)
            AND (l_id_departamento IS NULL OR i.ID_DEPARTAMENTO = l_id_departamento)
            AND (l_id_ciudad       IS NULL OR i.ID_CIUDAD       = l_id_ciudad)

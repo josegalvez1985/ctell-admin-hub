@@ -56,10 +56,13 @@ export function ArticuloUbicacionesDialog({
 
   const idArticulo = articulo?.id ?? null;
 
+  // La empresa va en la llamada y en la queryKey aunque ya se filtre por
+  // artículo: el cruce no tiene columna de empresa y el backend la exige.
   const asignadas = useQuery({
-    queryKey: ["articulos-ubicaciones", idArticulo],
-    queryFn: () => api.articulosUbicaciones.listar({ idArticulo: idArticulo! }),
-    enabled: idArticulo !== null,
+    queryKey: ["articulos-ubicaciones", empresa?.id ?? null, idArticulo],
+    queryFn: () =>
+      api.articulosUbicaciones.listar({ idEmpresa: empresa!.id, idArticulo: idArticulo! }),
+    enabled: idArticulo !== null && empresa !== null,
   });
 
   // Todas las ubicaciones de la empresa, para el selector. Sin filtrar por
@@ -92,7 +95,11 @@ export function ArticuloUbicacionesDialog({
   }, [disponibles.data?.items, items]);
 
   function invalidar() {
-    queryClient.invalidateQueries({ queryKey: ["articulos-ubicaciones", idArticulo] });
+    // Sólo el prefijo: la clave ahora lleva la empresa en el medio
+    // (["articulos-ubicaciones", idEmpresa, idArticulo]) y TanStack compara
+    // elemento por elemento — con el id del artículo en segunda posición no
+    // matchearía ninguna consulta.
+    queryClient.invalidateQueries({ queryKey: ["articulos-ubicaciones"] });
   }
 
   const asignar = useMutation({

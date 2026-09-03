@@ -174,10 +174,19 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
     -- que TO_NUMBER la toque (si no, ORA-01722).
     l_id_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
 
+    -- Sin empresa NO se devuelve nada. El default de "todas" que tenia antes es
+    -- el error: un olvido en el cliente pasaba desapercibido justamente porque
+    -- la pantalla se llenaba de datos —y de datos ajenos—.
+    IF l_id_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
+      RETURN;
+    END IF;
+
     SELECT COUNT(*)
       INTO l_total
       FROM SUCURSALES
-     WHERE l_id_empresa IS NULL OR ID_EMPRESA = l_id_empresa;
+     WHERE ID_EMPRESA = l_id_empresa;
 
     -- El JOIN trae el nombre de la empresa: el frontend lo muestra en la lista
     -- y no tendría cómo resolverlo sin otra petición.
@@ -209,7 +218,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_SUCURSALES AS
                s.NOMBRE_SUCURSAL AS nombre_sucursal
           FROM SUCURSALES s
           JOIN EMPRESAS e ON e.ID_EMPRESA = s.ID_EMPRESA
-         WHERE l_id_empresa IS NULL OR s.ID_EMPRESA = l_id_empresa
+         WHERE s.ID_EMPRESA = l_id_empresa
       );
 
     p_status_code := 200;

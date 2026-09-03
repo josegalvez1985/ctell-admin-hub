@@ -255,6 +255,15 @@ CREATE OR REPLACE PACKAGE BODY PKG_UBICACIONES AS
     l_id_empresa  := TO_NUMBER(NULLIF(p_id_empresa, ''));
     l_id_sucursal := TO_NUMBER(NULLIF(p_id_sucursal, ''));
 
+    -- Sin empresa NO se devuelve nada. El default de "todas" que tenia antes es
+    -- el error: un olvido en el cliente pasaba desapercibido justamente porque
+    -- la pantalla se llenaba de datos —y de datos ajenos—.
+    IF l_id_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
+      RETURN;
+    END IF;
+
     -- Solo 'S' activa el recorte. Cualquier otra cosa —vacio, 'N', basura— deja
     -- el listado completo, que es el comportamiento que ya tenia y el que usa el
     -- ABM de ubicaciones.
@@ -265,7 +274,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_UBICACIONES AS
     SELECT COUNT(*)
       INTO l_total
       FROM UBICACIONES u
-     WHERE (l_id_empresa IS NULL OR u.ID_EMPRESA = l_id_empresa)
+     WHERE u.ID_EMPRESA = l_id_empresa
        AND (l_id_sucursal IS NULL OR u.ID_SUCURSAL = l_id_sucursal)
        AND (l_solo_con = 'N'
             OR EXISTS (SELECT 1 FROM ARTICULOS_UBICACIONES au
@@ -312,7 +321,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_UBICACIONES AS
                u.ESTANTE AS estante,
                u.NIVEL   AS nivel
           FROM UBICACIONES u
-         WHERE (l_id_empresa IS NULL OR u.ID_EMPRESA = l_id_empresa)
+         WHERE u.ID_EMPRESA = l_id_empresa
            AND (l_id_sucursal IS NULL OR u.ID_SUCURSAL = l_id_sucursal)
            -- IDENTICO AL DEL COUNT DE ARRIBA.
            AND (l_solo_con = 'N'

@@ -4,6 +4,7 @@ import {
   CalendarDays,
   ChevronLeft,
   ChevronRight,
+  Download,
   FileText,
   ImageIcon,
   Loader2,
@@ -34,8 +35,10 @@ import {
 import {
   miniatura,
   pesoLegible,
+  sanear,
   subidaDirectaDisponible,
   subirACloudinary,
+  urlDescarga,
   type TipoArchivo,
 } from "@/lib/cloudinary";
 import { tituloPagina } from "@/lib/marca";
@@ -116,6 +119,48 @@ const iniciales = (nombre: string) =>
     .slice(0, 2)
     .map((parte) => parte.charAt(0).toLocaleUpperCase("es-PY"))
     .join("");
+
+/* -------------------------------------------------------------------------- */
+/*  Nombre del archivo descargado                                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Con qué nombre se guarda una evidencia bajada:
+ *
+ *     2026-09-02-0730-Maria-Duarte-Colegio-San-Jose-01.jpg
+ *     └─ fecha ─┘ └hora┘ └ profesor ┘ └─ institución ─┘ └┘ posición
+ *
+ * Fuera de la app el archivo pierde todo su contexto —queda una `IMG_0001.jpg`
+ * en una carpeta de Descargas—, así que el nombre carga lo que después permite
+ * identificarla: cuándo, quién y dónde.
+ *
+ * **La hora es la de entrada de la marcación**, que es cuando empezó la clase.
+ * Si esa marcación quedó sin hora, el segmento no va: mejor un nombre más corto
+ * que un `0000` que se lee como medianoche.
+ *
+ * **La posición evita el pisado.** Cinco fotos de la misma clase comparten todo
+ * lo demás, y el navegador las guardaría como `(1)`, `(2)`… — el sufijo propio
+ * las ordena y además las deja iguales en cualquier sistema.
+ *
+ * **Grado y sección todavía no salen de ningún lado:** ninguna tabla del modelo
+ * los tiene (`GRADO` existe sólo en `MANUALES`, y `SECCION` en ninguna). Cuando
+ * `REPORTES_ACTIVIDADES` los guarde, van entre la institución y la posición —el
+ * `filter(Boolean)` ya está puesto para que agregarlos sea una línea.
+ */
+function nombreDescarga(
+  reporte: Pick<ReporteActividad, "fecha" | "horaEntrada" | "profesor" | "institucion">,
+  posicion: number,
+): string {
+  const partes = [
+    reporte.fecha,
+    reporte.horaEntrada?.replace(":", "") ?? "",
+    reporte.profesor,
+    reporte.institucion ?? "",
+    String(posicion).padStart(2, "0"),
+  ];
+
+  return sanear(partes.filter(Boolean).join("-"));
+}
 
 /* -------------------------------------------------------------------------- */
 /*  Carga                                                                      */
@@ -201,7 +246,13 @@ function ReportesActividadesPage() {
   const hasta = iso(anio, mes, ultimoDia(anio, mes));
 
   const filtros: Filtros = {
-    idEmpresa: empresa?.id ?? 0,
+    // `-1` y no `0` como relleno mientras la empresa no hidrató. Ninguna de las
+    // consultas corre sin empresa (`enabled`), pero un `0` es falsy: si alguna
+    // vez llega a un armador de query string escrito como
+    // `if (params.idEmpresa) q.set(...)`, la clave se omite y el backend
+    // recibe la petición sin empresa. Ese patrón es exactamente el que dejaba
+    // ver datos de otras empresas en /articulos-ubicaciones.
+    idEmpresa: empresa?.id ?? -1,
     desde,
     hasta,
     ...(profesorFiltro !== TODOS ? { idProfesor: Number(profesorFiltro) } : {}),
@@ -869,6 +920,16 @@ function FichaReporte({
   const hayCambios = borrador !== null && borrador !== (ficha.data?.descripcion ?? "");
   const enVisor = viendo === null ? null : (archivos.find((a) => a.id === viendo) ?? null);
 
+  /**
+   * El nombre con el que se baja la evidencia número `posicion`.
+   *
+   * Se arma acá y no en la galería porque los datos son del reporte —fecha,
+   * hora, profesor, institución—, no del archivo. La posición la aporta quien
+   * la muestra, que es el único que sabe en qué orden quedaron.
+   */
+  const nombrarDescarga = (posicion: number) =>
+    ficha.data ? nombreDescarga(ficha.data, posicion) : `evidencia-${posicion}`;
+
   return (
     <>
       <Dialog open onOpenChange={(abierto) => !abierto && onCerrar()}>
@@ -933,6 +994,7 @@ function FichaReporte({
                 idEmpresa={idEmpresa}
                 archivos={archivos}
                 cargando={evidencias.isPending}
+                nombrarDescarga={nombrarDescarga}
                 onVer={setViendo}
                 onCambio={refrescarEvidencias}
               />
@@ -951,6 +1013,7 @@ function FichaReporte({
         <Visor
           archivo={enVisor}
           idEmpresa={idEmpresa}
+          nombreDescarga={nombrarDescarga(archivos.findIndex((a) => a.id === enVisor.id) + 1)}
           onCerrar={() => setViendo(null)}
           onCambio={refrescarEvidencias}
         />
@@ -974,6 +1037,7 @@ function Galeria({
   idEmpresa,
   archivos,
   cargando,
+  nombrarDescarga,
   onVer,
   onCambio,
 }: {
@@ -981,6 +1045,7 @@ function Galeria({
   idEmpresa: number;
   archivos: ReporteMultimedia[];
   cargando: boolean;
+  nombrarDescarga: (posicion: number) => string;
   onVer: (id: number) => void;
   onCambio: () => void;
 }) {
@@ -1102,39 +1167,60 @@ function Galeria({
 
       {(archivos.length > 0 || subiendo.length > 0) && (
         <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
-          {archivos.map((archivo) => {
+          {archivos.map((archivo, indice) => {
             const previa = miniatura(archivo.urlArchivo, archivo.tipoArchivo);
             return (
-              <button
+              // El contenedor es un <div> y no el propio botón: adentro va
+              // también el <a> de descarga, y un enlace dentro de un botón es
+              // HTML inválido —el navegador lo saca del botón al parsear y la
+              // grilla se desarma—.
+              <div
                 key={archivo.id}
-                type="button"
-                onClick={() => onVer(archivo.id)}
                 className="group relative aspect-square overflow-hidden rounded-lg border border-border bg-muted"
-                aria-label={archivo.nombreArchivo ?? "Ver evidencia"}
               >
-                {previa ? (
-                  <img
-                    src={previa}
-                    alt={archivo.descripcionTexto ?? archivo.nombreArchivo ?? ""}
-                    loading="lazy"
-                    className="size-full object-cover transition group-hover:scale-105"
-                  />
-                ) : (
-                  <span className="flex size-full items-center justify-center">
-                    <FileText className="size-6 text-muted-foreground" />
-                  </span>
-                )}
-                {archivo.tipoArchivo === "video" && (
-                  <span className="absolute inset-0 flex items-center justify-center bg-black/25">
-                    <Play className="size-6 text-white drop-shadow" />
-                  </span>
-                )}
+                <button
+                  type="button"
+                  onClick={() => onVer(archivo.id)}
+                  className="size-full"
+                  aria-label={`Ver ${archivo.nombreArchivo ?? "evidencia"}`}
+                >
+                  {previa ? (
+                    <img
+                      src={previa}
+                      alt={archivo.descripcionTexto ?? archivo.nombreArchivo ?? ""}
+                      loading="lazy"
+                      className="size-full object-cover transition group-hover:scale-105"
+                    />
+                  ) : (
+                    <span className="flex size-full items-center justify-center">
+                      <FileText className="size-6 text-muted-foreground" />
+                    </span>
+                  )}
+                  {archivo.tipoArchivo === "video" && (
+                    <span className="absolute inset-0 flex items-center justify-center bg-black/25">
+                      <Play className="size-6 text-white drop-shadow" />
+                    </span>
+                  )}
+                </button>
+
+                {/* Visible siempre en pantalla táctil (no hay hover donde
+                    apoyar el dedo) y al pasar el mouse en escritorio. */}
+                <a
+                  href={urlDescarga(archivo.urlArchivo, nombrarDescarga(indice + 1))}
+                  download
+                  className="absolute right-1 top-1 rounded-md bg-black/55 p-1.5 text-white opacity-100 transition hover:bg-black/75 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+                  aria-label={`Descargar ${archivo.nombreArchivo ?? "evidencia"}`}
+                  title="Descargar"
+                >
+                  <Download className="size-3.5" />
+                </a>
+
                 {archivo.descripcionTexto && (
-                  <span className="absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/70 to-transparent px-1.5 pb-1 pt-4 text-left text-[11px] text-white">
+                  <span className="pointer-events-none absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/70 to-transparent px-1.5 pb-1 pt-4 text-left text-[11px] text-white">
                     {archivo.descripcionTexto}
                   </span>
                 )}
-              </button>
+              </div>
             );
           })}
 
@@ -1193,11 +1279,14 @@ function Galeria({
 function Visor({
   archivo,
   idEmpresa,
+  nombreDescarga: nombre,
   onCerrar,
   onCambio,
 }: {
   archivo: ReporteMultimedia;
   idEmpresa: number;
+  /** Ya compuesto por la ficha: fecha, hora, profesor, institución y posición. */
+  nombreDescarga: string;
   onCerrar: () => void;
   onCambio: () => void;
 }) {
@@ -1238,6 +1327,8 @@ function Visor({
           <DialogDescription>
             {archivo.tipoArchivo}
             {peso ? ` · ${peso}` : ""}
+            {" · se baja como "}
+            <span className="font-mono text-xs">{nombre}</span>
           </DialogDescription>
         </DialogHeader>
 
@@ -1288,6 +1379,14 @@ function Visor({
             <Trash2 className="size-4" /> Quitar
           </Button>
           <div className="flex gap-2">
+            {/* Un <a> y no un onClick: `fl_attachment` hace que Cloudinary
+                mande el Content-Disposition, así que el archivo no pasa por la
+                memoria de la pestaña. */}
+            <Button variant="outline" asChild>
+              <a href={urlDescarga(archivo.urlArchivo, nombre)} download>
+                <Download className="size-4" /> Descargar
+              </a>
+            </Button>
             <Button variant="outline" onClick={onCerrar}>
               <X className="size-4" /> Cerrar
             </Button>

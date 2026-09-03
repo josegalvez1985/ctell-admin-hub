@@ -188,10 +188,19 @@ CREATE OR REPLACE PACKAGE BODY PKG_UNIDADES_MEDIDA AS
     -- que TO_NUMBER la toque (si no, ORA-01722).
     l_id_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
 
+    -- Sin empresa NO se devuelve nada. El default de "todas" que tenia antes es
+    -- el error: un olvido en el cliente pasaba desapercibido justamente porque
+    -- la pantalla se llenaba de datos —y de datos ajenos—.
+    IF l_id_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
+      RETURN;
+    END IF;
+
     SELECT COUNT(*)
       INTO l_total
       FROM UNIDADES_MEDIDA
-     WHERE l_id_empresa IS NULL OR ID_EMPRESA = l_id_empresa;
+     WHERE ID_EMPRESA = l_id_empresa;
 
     -- Sin JOIN: la consulta sale de UNIDADES_MEDIDA y nada más. El nombre de la
     -- empresa no se devuelve porque el listado ya viene filtrado por una sola
@@ -218,7 +227,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_UNIDADES_MEDIDA AS
                ) AS fila,
                u.NOMBRE_UNIDAD AS nombre_unidad
           FROM UNIDADES_MEDIDA u
-         WHERE l_id_empresa IS NULL OR u.ID_EMPRESA = l_id_empresa
+         WHERE u.ID_EMPRESA = l_id_empresa
       );
 
     p_status_code := 200;

@@ -5,7 +5,7 @@
 -- publicacion de los endpoints ORDS. Todo vive dentro del paquete: no hay
 -- procedimientos sueltos ni PL/SQL embebido como texto dentro de los handlers.
 --
---   1. LISTAR   GET    /articulos-ubicaciones/listar   (?idArticulo= &idUbicacion=)
+--   1. LISTAR   GET    /articulos-ubicaciones/listar   (?idEmpresa= &idArticulo= &idUbicacion=)
 --   2. ASIGNAR  POST   /articulos-ubicaciones/crear
 --   3. QUITAR   DELETE /articulos-ubicaciones/eliminar/:id/:idEmpresa
 --
@@ -41,6 +41,13 @@
 -- problema que db/ubicaciones.sql resuelve con SUCURSAL_ES_DE_EMPRESA, pero aca
 -- cruzando dos tablas en vez de una.
 --
+-- Y ESO SOLO NO ALCANZA: comparar el articulo con la ubicacion garantiza que
+-- sean coherentes ENTRE SI, no que sean del que llama. Dos filas ajenas
+-- coherentes entre si pasaban la validacion, asi que una sesion de la empresa A
+-- podia crear asignaciones dentro de la B con solo conocer dos ids. Por eso
+-- ASIGNAR recibe idEmpresa y exige que las dos sean de esa empresa. El QUITAR
+-- ya lo hacia; era el alta la que faltaba.
+--
 -- CON JOIN, A DIFERENCIA DE LAS TABLAS POR EMPRESA: el listado SI trae el nombre
 -- del articulo y los datos de la ubicacion (zona, estante, nivel). No es la
 -- misma constante repetida — cada fila cruza un articulo distinto con una
@@ -68,7 +75,7 @@ SET SERVEROUTPUT ON
 --     l_status NUMBER;
 --     l_result CLOB;
 --   BEGIN
---     PKG_ARTICULOS_UBICACIONES.LISTAR('Bearer TU_TOKEN', '1', NULL,
+--     PKG_ARTICULOS_UBICACIONES.LISTAR('Bearer TU_TOKEN', '21', '1', NULL,
 --                                      l_status, l_result);
 --     DBMS_OUTPUT.PUT_LINE('status: ' || l_status);
 --     DBMS_OUTPUT.PUT_LINE('resultado: ' || l_result);
@@ -81,18 +88,38 @@ CREATE OR REPLACE PACKAGE PKG_ARTICULOS_UBICACIONES AS
   -- Los dos filtros son opcionales y se combinan:
   --   ?idArticulo=   -> donde esta ese articulo (la vista del ABM de articulos)
   --   ?idUbicacion=  -> que hay en ese estante
-  -- Sin ninguno devuelve todo, que no se usa desde la app pero permite
-  -- inspeccionar el endpoint.
+  -- Sin ninguno devuelve el cruce entero DE LA EMPRESA, que es la vista de
+  -- /articulos-ubicaciones.
+  ----------------------------------------------------------------------------
+  -- idEmpresa es OBLIGATORIO, y no es una formalidad.
+  --
+  -- ARTICULOS_UBICACIONES no tiene ID_EMPRESA —es un cruce— asi que la consulta
+  -- NO se acota sola: sin este parametro devolvia el cruce COMPLETO, de todas
+  -- las empresas del sistema. La pantalla /articulos-ubicaciones lo llamaba sin
+  -- filtros para mostrar "todo el deposito", y mostraba el de todos.
+  --
+  -- El recorte se hace CONTRA EL PADRE, como en MANUALES: JOIN a ARTICULOS y
+  -- WHERE sobre su ID_EMPRESA. Es el articulo el que define de quien es la
+  -- fila; la ubicacion tambien tiene empresa, pero filtrar por las dos
+  -- ESCONDERIA las filas cruzadas entre empresas, que es justamente lo que la
+  -- consulta de control del final del archivo existe para encontrar.
+  ----------------------------------------------------------------------------
   PROCEDURE LISTAR (
     p_authorization IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_id_articulo   IN  VARCHAR2,
     p_id_ubicacion  IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   );
 
+  -- p_id_empresa es OBLIGATORIO. El ASIGNAR comprobaba que el articulo y la
+  -- ubicacion fueran de la MISMA empresa, pero no de la del que llama: una
+  -- sesion de la empresa A podia crear una asignacion entre dos filas de la B
+  -- con solo conocer sus ids. El QUITAR si lo validaba; el alta no.
   PROCEDURE ASIGNAR (
     p_authorization IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_id_articulo   IN  VARCHAR2,
     p_id_ubicacion  IN  VARCHAR2,
     p_status_code   OUT NUMBER,
@@ -161,12 +188,14 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS_UBICACIONES AS
 
   PROCEDURE LISTAR (
     p_authorization IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_id_articulo   IN  VARCHAR2,
     p_id_ubicacion  IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
     l_sesion       NUMBER;
+    l_id_empresa   NUMBER;
     l_id_articulo  NUMBER;
     l_id_ubicacion NUMBER;
     l_total        NUMBER;
@@ -183,14 +212,29 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS_UBICACIONES AS
     -- antes de que exista el EXCEPTION y el error escaparia del procedimiento.
     -- NULLIF convierte la cadena vacia del parametro ausente en NULL antes de
     -- que TO_NUMBER la toque (si no, ORA-01722).
+    l_id_empresa   := TO_NUMBER(NULLIF(p_id_empresa, ''));
     l_id_articulo  := TO_NUMBER(NULLIF(p_id_articulo, ''));
     l_id_ubicacion := TO_NUMBER(NULLIF(p_id_ubicacion, ''));
 
+    -- Sin empresa NO se devuelve nada. El default de "todas" que tenia antes es
+    -- el error: un olvido en el cliente pasaba desapercibido justamente porque
+    -- la pantalla se llenaba de datos.
+    IF l_id_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
+      RETURN;
+    END IF;
+
+    -- El COUNT lleva el MISMO JOIN que el SELECT: si contara sobre la tabla
+    -- pelada, `total` diria cuantas filas hay en todas las empresas mientras la
+    -- lista muestra las de una.
     SELECT COUNT(*)
       INTO l_total
-      FROM ARTICULOS_UBICACIONES
-     WHERE (l_id_articulo IS NULL OR ID_ARTICULO = l_id_articulo)
-       AND (l_id_ubicacion IS NULL OR ID_UBICACION = l_id_ubicacion);
+      FROM ARTICULOS_UBICACIONES au
+      JOIN ARTICULOS a ON a.ID_ARTICULO = au.ID_ARTICULO
+     WHERE a.ID_EMPRESA = l_id_empresa
+       AND (l_id_articulo IS NULL OR au.ID_ARTICULO = l_id_articulo)
+       AND (l_id_ubicacion IS NULL OR au.ID_UBICACION = l_id_ubicacion);
 
     -- CON JOIN, al reves que las tablas por empresa: cada fila cruza un articulo
     -- distinto con una ubicacion distinta, asi que sus nombres no son una
@@ -241,7 +285,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS_UBICACIONES AS
           JOIN ARTICULOS   a ON a.ID_ARTICULO  = au.ID_ARTICULO
           JOIN UBICACIONES u ON u.ID_UBICACION = au.ID_UBICACION
           JOIN SUCURSALES  s ON s.ID_SUCURSAL  = u.ID_SUCURSAL
-         WHERE (l_id_articulo IS NULL OR au.ID_ARTICULO = l_id_articulo)
+         WHERE a.ID_EMPRESA = l_id_empresa
+           AND (l_id_articulo IS NULL OR au.ID_ARTICULO = l_id_articulo)
            AND (l_id_ubicacion IS NULL OR au.ID_UBICACION = l_id_ubicacion)
       );
 
@@ -266,19 +311,25 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS_UBICACIONES AS
       p_resultado := '{"error":"Error al listar las ubicaciones del articulo"}';
   END LISTAR;
 
+  -- p_id_empresa es OBLIGATORIO. El ASIGNAR comprobaba que el articulo y la
+  -- ubicacion fueran de la MISMA empresa, pero no de la del que llama: una
+  -- sesion de la empresa A podia crear una asignacion entre dos filas de la B
+  -- con solo conocer sus ids. El QUITAR si lo validaba; el alta no.
   PROCEDURE ASIGNAR (
     p_authorization IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_id_articulo   IN  VARCHAR2,
     p_id_ubicacion  IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
-    l_sesion       NUMBER;
-    l_id_articulo  NUMBER;
-    l_id_ubicacion NUMBER;
+    l_sesion        NUMBER;
+    l_id_empresa    NUMBER;
+    l_id_articulo   NUMBER;
+    l_id_ubicacion  NUMBER;
     l_emp_articulo  NUMBER;
     l_emp_ubicacion NUMBER;
-    l_id           NUMBER;
+    l_id            NUMBER;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -287,12 +338,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS_UBICACIONES AS
       RETURN;
     END IF;
 
+    l_id_empresa   := TO_NUMBER(NULLIF(p_id_empresa, ''));
     l_id_articulo  := TO_NUMBER(NULLIF(p_id_articulo, ''));
     l_id_ubicacion := TO_NUMBER(NULLIF(p_id_ubicacion, ''));
 
-    IF l_id_articulo IS NULL OR l_id_ubicacion IS NULL THEN
+    IF l_id_empresa IS NULL OR l_id_articulo IS NULL OR l_id_ubicacion IS NULL THEN
       p_status_code := 400;
-      p_resultado := '{"error":"idArticulo e idUbicacion son obligatorios"}';
+      p_resultado := '{"error":"idEmpresa, idArticulo e idUbicacion son obligatorios"}';
       RETURN;
     END IF;
 
@@ -326,6 +378,16 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS_UBICACIONES AS
     IF l_emp_articulo != l_emp_ubicacion THEN
       p_status_code := 400;
       p_resultado := '{"error":"El articulo y la ubicacion son de empresas distintas"}';
+      RETURN;
+    END IF;
+
+    -- Y las dos tienen que ser de LA EMPRESA DE LA SESION. Sin esta linea, la
+    -- comprobacion de arriba solo garantiza coherencia entre ellas: dos filas
+    -- ajenas coherentes entre si pasaban igual. 404 y no 403, para no confirmar
+    -- que el id existe en otra empresa.
+    IF l_emp_articulo != l_id_empresa THEN
+      p_status_code := 404;
+      p_resultado := '{"error":"El articulo no existe"}';
       RETURN;
     END IF;
 
@@ -475,7 +537,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS_UBICACIONES AS
       p_pattern     => 'listar',
       p_method      => 'GET',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_ARTICULOS_UBICACIONES.LISTAR(:authorization, :idArticulo, :idUbicacion, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_ARTICULOS_UBICACIONES.LISTAR(:authorization, :idEmpresa, :idArticulo, :idUbicacion, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
@@ -504,7 +566,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS_UBICACIONES AS
       p_pattern     => 'crear',
       p_method      => 'POST',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_ARTICULOS_UBICACIONES.ASIGNAR(:authorization, :idArticulo, :idUbicacion, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_ARTICULOS_UBICACIONES.ASIGNAR(:authorization, :idEmpresa, :idArticulo, :idUbicacion, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(

@@ -931,6 +931,28 @@ de todas.
 > `MARCAS` fue por un tiempo un catálogo global, sin empresa. Si ves un
 > `queryKey: ["marcas"]` pelado en un ejemplo viejo, está desactualizado.
 
+**`npm run lint` lo verifica** (chequeo 4 de `verificar-convenciones`): si el
+`queryFn` nombra la empresa y la `queryKey` no, falla. Es el mismo síntoma que
+una consulta mal filtrada —ver datos de otra empresa— pero sin ninguna petición
+mal hecha: la petición nunca salió, se sirvió la caché.
+
+Dos cosas que se rompen al agregar la empresa a una clave que ya existía:
+
+- **La invalidación deja de matchear.** TanStack compara las claves **elemento
+  por elemento**: `["detalle-monedas", idMoneda]` no alcanza a
+  `["detalle-monedas", idEmpresa, idMoneda]`, y el alta deja de refrescar la
+  lista. Invalidá por el **prefijo solo** —`["detalle-monedas"]`— salvo que
+  tengas una razón concreta para acotar.
+- **El relleno `?? 0` es una trampa.** Si la empresa todavía no hidrató, un cero
+  es *falsy*: un armador de query string escrito como
+  `if (params.idEmpresa) q.set(...)` lo descarta y la petición sale sin empresa.
+  Con el backend exigiéndola ahora da 400, pero el hábito correcto es `?? null`
+  en la clave y un `enabled` que no deje correr la consulta.
+
+**Ojo con las tablas de cruce**, que son las que más fácil se escapan: no tienen
+`ID_EMPRESA` propia, así que ni la consulta se acota sola ni el tipo te avisa.
+`/articulos-ubicaciones` mostraba el cruce de **todas** las empresas por esto.
+
 ### El logo de la empresa en un PDF
 
 `abrirPdf` acepta `urlLogo` y lo dibuja arriba a la derecha. Va **sólo si la
@@ -2289,6 +2311,30 @@ Cuatro cosas que no son obvias:
   espera. De un video se pide su primer cuadro; de un PDF no hay miniatura y va
   el ícono.
 
+### Bajar el archivo con un nombre útil
+
+El atributo `download` de un `<a>` **se ignora cuando el archivo es de otro
+origen**. Un link común, entonces, no baja nada: abre la foto en una pestaña con
+el nombre ilegible que tiene en el proveedor. Se resuelve del lado de Cloudinary,
+con el flag `fl_attachment:<nombre>` en la URL, que hace que responda con
+`Content-Disposition: attachment` y ese nombre:
+
+```
+https://res.cloudinary.com/<cuenta>/image/upload/
+  fl_attachment:2026-09-02-0730-Maria-Duarte-Colegio-San-Jose-01/v1712/...jpg
+```
+
+La otra salida —`fetch` + blob + object URL— pasa el archivo **entero por la
+memoria de la pestaña**, que con un video de 80 MB es justo lo que se quería
+evitar al no mandarlo por ORDS.
+
+Sobre el nombre en sí: fuera de la app el archivo pierde todo su contexto —queda
+una `IMG_0001.jpg` en Descargas—, así que carga lo que después permite
+identificarlo (cuándo, quién, dónde) y termina en un número de posición, porque
+cinco fotos de la misma clase comparten todo lo demás. Hay que sanearlo: la coma
+y la barra **separan componentes de la transformación**, así que un nombre con
+cualquiera de las dos no ensucia el archivo, rompe la URL.
+
 Y lo que hay que decir en la interfaz: **borrar la evidencia borra la
 referencia, no el archivo**. El binario queda en Cloudinary —limpiarlo exige la
 credencial secreta—, así que el diálogo lo dice en lugar de dar a entender que
@@ -2495,6 +2541,18 @@ Antes de dar por terminada una pantalla:
 - [ ] Registrada en Administración → Páginas, y asignada en Permisos
 - [ ] Si es una tabla por empresa: `empresa.id` en la `queryKey`, `enabled:
 empresa !== null`, y el caso `empresa === null` contemplado en el render
+- [ ] **`empresa.id` en la `queryKey` de TODA consulta que lo mande, incluidas
+      las de los diálogos.** Sin él, cambiar de empresa sirve la caché de la
+      anterior: la pantalla muestra datos ajenos sin haber hecho ninguna
+      petición mal. Y si agregás la empresa a una clave que ya existía,
+      **revisá las invalidaciones**: TanStack compara elemento por elemento y
+      `["x", idHijo]` deja de alcanzar a `["x", idEmpresa, idHijo]`
+- [ ] **Nada de `?? 0` como relleno de `idEmpresa`.** Un cero es *falsy* y un
+      armador de query string lo descarta: la petición sale sin empresa. Va
+      `?? null` en la clave y un `enabled` que impida correr la consulta
+- [ ] **Si la tabla es un cruce o un detalle** (sin `ID_EMPRESA` propia), el
+      endpoint igual lleva `idEmpresa`: son las que más fácil se escapan, porque
+      ni la consulta se acota sola ni el tipo avisa
 - [ ] Si tiene FK a otro catálogo: selector con datos de la API relacionada,
       filtrando opciones inactivas y validando en backend la pertenencia a la
       empresa cuando corresponda
@@ -2554,7 +2612,8 @@ empresa !== null`, y el caso `empresa === null` contemplado en el render
 | Hay que scrollear para llegar al botón de guardar                         | El diálogo quedó en una columna con demasiados campos: subí el ancho y pasá a `sm:grid-cols-2`                                                                                                                                                  |
 | Un campo bloqueado se puede editar igual                                  | El `<fieldset disabled>` está con `display:contents` dentro de una grilla: poné `disabled` en cada `Input`                                                                                                                                      |
 | El error del backend no se ve al borrar                                   | Falta `e.preventDefault()` en el `AlertDialogAction`                                                                                                                                                                                            |
-| La lista no se actualiza tras guardar                                     | Falta `invalidateQueries`                                                                                                                                                                                                                       |
+| La lista no se actualiza tras guardar                                     | Falta `invalidateQueries` — o su clave dejó de matchear porque a la de la consulta se le agregó la empresa en el medio. TanStack compara **elemento por elemento**: invalidá por el prefijo solo                                               |
+| **Veo registros de otra empresa**                                         | La `queryKey` no lleva `empresa?.id` (se sirvió la caché de la empresa anterior), o la consulta no manda `idEmpresa` y el backend lo trata como "todas". Es lo que pasó en `/articulos-ubicaciones`: `npm run lint` ahora detecta las dos formas |
 | `window is not defined`                                                   | Acceso al DOM fuera de `useEffect` (corre en el prerender de build)                                                                                                                                                                             |
 | Cambios que no aparecen por más que recargues                             | Hay más de un `npm run dev` corriendo: mirá en qué puerto estás                                                                                                                                                                                 |
 | El buscador no encuentra nada que sí está en pantalla                     | Falta agregar ese campo al array que devuelve la función de `useTablaListado`                                                                                                                                                                   |

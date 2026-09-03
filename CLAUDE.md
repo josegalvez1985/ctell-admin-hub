@@ -319,6 +319,8 @@ Las columnas `ACTIVO` son `VARCHAR2(1)` con valores `'A'` o `'I'`. **Este códig
 - **`_auth.pagos.tsx`:** "/pagos" → Pagos a proveedores. Espejo de cobros.
 - **`_auth.asistencias.tsx`:** "/asistencias" → Reporte de marcaciones de profesores. Dos vistas: **Planilla** (se imprime y se firma) y **Detalle**. Tocar un día abre el modal con sus marcaciones, para editarlas, borrarlas o agregar una. Los combos de año y mes ofrecen **sólo períodos con datos**, que salen de `/asistencias-profesores/periodos`. Exporta a **Excel solamente**: el PDF se retiró.
 
+  > **La empresa de una marcación es la de su profesor**, no la de su columna `ID_EMPRESA`. Las tres consultas del módulo filtran por `p.ID_EMPRESA` con un JOIN a `PROFESORES`: la cédula es única en todo el sistema, así que un profesor pertenece a una sola empresa, y nada en el DDL obliga a que `ASISTENCIAS_PROFESORES.ID_EMPRESA` coincida. Confiar en esa columna hacía aparecer marcaciones de otra empresa en el detalle. De regalo, el `IS NULL` de las filas históricas deja de necesitar una rama aparte.
+  >
   > **Una planilla es de UNA persona.** Si en la institución marcaron tres profesores, la vista muestra tres grillas apiladas, no una sola mezclada: ahí un día con dos entradas puede ser alguien que entró y salió dos veces o dos personas distintas, y un papel que se firma no admite esa ambigüedad. El Excel ya salía separado por profesor, así que la pantalla mostraba una cosa y el archivo otra — hubo que avisarlo con un cartel hasta que se corrigió. Hoy **las dos salen de la misma agrupación** (`grillasPorProfesor`), que es lo que garantiza que no vuelvan a divergir.
   >
   > **La hora cátedra y el precio son POR PROFESOR**, en el encabezado de cada planilla: no todos dan cátedras de la misma duración —45 minutos en un colegio, 60 en otro— ni cobran lo mismo, y un campo global hacía que el total de alguno saliera mal sin que nada lo avisara. No se guardan: `PROFESORES` no tiene columna para eso.
@@ -331,6 +333,8 @@ Las columnas `ACTIVO` son `VARCHAR2(1)` con valores `'A'` o `'I'`. **Este códig
   > **El alta no pide profesor, institución ni fecha:** se escribe sobre una marcación y el backend deriva los tres. Al crear se abre la ficha del reporte nuevo, porque el paso siguiente es cargarle las fotos.
   >
   > **La ficha carga con `obtener()`, nunca con la fila del listado** — ahí la descripción viene recortada a 200 y guardar eso pisaría los 2000. El pie de foto se escribe **en el visor, con la foto a la vista**, y no al subir: se cargan cinco de una, y pedir la descripción de cada una antes de guardar convierte un gesto en un formulario.
+  >
+  > **Cada evidencia se baja con un nombre que la explica:** `2026-09-02-0730-Maria-Duarte-Colegio-San-Jose-01`. Fuera de la app queda una `IMG_0001.jpg` en Descargas, así que el nombre lleva cuándo, quién y dónde, más la posición —cinco fotos de la misma clase comparten todo lo demás—. Lo hace `fl_attachment` en la URL de Cloudinary, **no el atributo `download`**, que el navegador ignora cuando el archivo es de otro origen. **Grado y sección no están en el nombre porque no están en ninguna tabla** (`GRADO` existe sólo en `MANUALES`, `SECCION` en ninguna): el día que `REPORTES_ACTIVIDADES` los guarde, van entre la institución y la posición.
   >
   > **El combo de institución depende del de profesor:** elegido un profesor ofrece sólo donde marcó ese mes (`/vinculos`), con un cartel que lo dice — un colegio ausente sin explicación parece un dato perdido. Si la institución elegida no es suya, vuelve a "Todas": un filtro que ya no figura en su propio combo es invisible y deja la pantalla vacía sin motivo aparente.
   >
@@ -576,8 +580,11 @@ Las tres están explicadas con ejemplos en [GUIA-IMPLEMENTACION.md](docs/GUIA-IM
 10. **Ninguna transacción mueve stock hoy** — es un estado intermedio, mientras se migra a existencias por artículo. Lo que sí sigue: una venta con cobros o una compra con pagos no se borran (409).
 11. **Mirá la salida al ejecutar en APEX.** Cada archivo termina con un bloque que consulta `USER_OBJECTS`/`USER_ERRORS`. Un paquete `INVALID` da un 500 mudo: el `WHEN OTHERS` no captura errores de compilación.
 12. **El techo de 4000 bytes pega en tres lugares** (agregado anidado, CLOB final, bind de ORDS). Si desanidaste y paginaste y sigue el 500, bajá el tamaño de página — no busques más en el SQL.
-13. **Filtrar por empresa incluye las subconsultas**, no sólo el `WHERE` principal.
+13. **Filtrar por empresa incluye las subconsultas**, no sólo el `WHERE` principal. Y **`idEmpresa` se exige con un 400 — nunca vale "todas"**: un `WHERE l_empresa IS NULL OR ID_EMPRESA = l_empresa` convierte un olvido del cliente en una fuga silenciosa, porque la pantalla no muestra un error sino filas de más. Una tabla **sin** `ID_EMPRESA` (cruces como `ARTICULOS_UBICACIONES`, detalles como `DETALLE_MONEDAS`) **no lleva la columna**: se filtra con un JOIN contra el padre que sí la tiene. Y a una `ID_EMPRESA` **copiada** tampoco se le cree: la empresa de una marcación es la del profesor (`UNIQUE (NUMERO_CI)` global ⇒ un profesor, una empresa), y nada en el DDL obliga a que la columna coincida — se filtra por `p.ID_EMPRESA`. `npm run lint` chequea las dos formas del error — el filtro opcional en `db/` y la `queryKey` sin empresa en el frontend.
 14. **`:body` es un BLOB, no el JSON.** Los campos llegan como binds sueltos por
     nombre. Si el `DELETE` anda y el `UPDATE` no, es esto.
-15. **`npm run lint` corre `verificar-convenciones`**, que atrapa esa trampa y la
-    de `ui/form` sin contexto. Correlo antes de ejecutar nada en APEX.
+15. **`npm run lint` corre `verificar-convenciones`**, que atrapa cuatro trampas:
+    el `:body` con `JSON_VALUE`, `ui/form` sin contexto, el filtro por empresa
+    escrito como opcional en `db/` y la `queryKey` sin empresa en el frontend.
+    Las dos últimas son la misma fuga vista de los dos lados. Correlo antes de
+    ejecutar nada en APEX.
