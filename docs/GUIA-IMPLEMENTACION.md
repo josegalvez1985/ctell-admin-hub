@@ -1270,6 +1270,33 @@ END;
 El `COUNT` no es adorno: sin él, la segunda ejecución del archivo muere con
 `ORA-01430` y nada de lo que viene después llega a ejecutarse.
 
+### La otra opción: guardar la URL en vez del binario
+
+Todo lo anterior asume que el archivo vive en la base. `REPORTES_MULTIMEDIA` es
+el primer caso donde **no**: el navegador sube directo a Cloudinary y en Oracle
+queda `URL_ARCHIVO`. Conviene cuando los archivos son muchos, pesados o hay que
+mostrarlos en varios tamaños —fotos y videos de una clase— porque el binario
+nunca atraviesa ORDS y las miniaturas salen de transformar la dirección.
+
+Lo que cambia, y hay que aceptarlo entero:
+
+- **Borrar la fila no borra el archivo.** Hacerlo exigiría la credencial secreta
+  del proveedor, y en un frontend estático no hay dónde guardarla: cualquier
+  cosa que entre al bundle se puede leer. El binario queda huérfano, y limpiarlo
+  es una tarea manual contra la consola del proveedor. Si eso no es aceptable
+  para el caso, el archivo va a la base.
+- **La URL es dato de entrada.** Termina en un `<a href>` y un `<img src>`, así
+  que el paquete valida que empiece con `https://`. Sin esa comprobación, un
+  POST con `javascript:…` deja guardado un enlace que ejecuta script en el
+  navegador de quien abra la galería. Que el formulario no lo permita no alcanza:
+  el endpoint está abierto a cualquiera con sesión.
+- **No se valida el dominio del proveedor.** Sería una atadura en el peor lugar
+  posible: una validación que hay que acordarse de aflojar el día de la
+  migración, y que no agrega seguridad sobre exigir `https`.
+
+El resto sigue igual que con un BLOB: el listado devuelve la referencia, no el
+contenido, y el `ELIMINAR` del padre se lleva las filas hijas primero.
+
 ---
 
 ## 3.3 Cabecera y detalle: una transacción
@@ -1436,6 +1463,32 @@ y el registro dejaría de probar nada.
 
 La regla completa es: **derivá lo que describe el presente, guardá lo que
 describe un momento**.
+
+### Lo mismo vale para las FK: si el padre ya lo dice, no lo pidas
+
+`REPORTES_ACTIVIDADES` tiene `ID_PROFESOR`, `ID_INSTITUCION` y `FECHA_ACTIVIDAD`
+además de `ID_ASISTENCIA`, y los cuatro salen de la misma marcación. El `POST`
+**recibe sólo `idAsistencia`** y copia los otros tres de
+`ASISTENCIAS_PROFESORES`.
+
+Aceptarlos del body no es más flexible, es más frágil: obliga a validar que
+coincidan en cada alta, y el día que esa validación se afloje la base guarda un
+reporte del profesor A sobre la marcación de B, o fechado el 3 colgado de una
+marcación del 10. Nada lo detecta —las tres FK son válidas por separado— y el
+listado muestra un dato que la planilla de asistencias contradice.
+
+El corolario incómodo hay que decirlo, porque es una decisión de negocio
+disfrazada de detalle técnico: **si no hay marcación, no se puede reportar**. Se
+carga la marcación primero (el ABM manual de `/asistencias` existe para eso) y
+recién después el reporte.
+
+Y por lo mismo, **la fecha no se edita**: moverla sin mover la de su marcación
+las desalinea, y la correcta siempre es la de la marcación.
+
+> Distinguilo del caso opuesto de más arriba: las columnas se copian **al
+> insertar** —no se leen por JOIN en cada consulta— porque el DDL las trae con
+> sus índices y son las que hacen barato filtrar por profesor o institución. Lo
+> que no se acepta es que el **cliente** las elija.
 
 ### IVA: los precios lo incluyen
 
@@ -1962,9 +2015,11 @@ END LOOP;
 
 ## 3.7 Trampas de PL/SQL que se repiten
 
-Cuatro errores de compilación que aparecieron más de una vez en este proyecto. No
-son casos raros: salen del estilo normal del código de acá —helpers privados y
-`JSON_OBJECT` para armar la respuesta— así que conviene reconocerlos de memoria.
+Los errores que aparecieron más de una vez en este proyecto. No son casos raros:
+salen del estilo normal del código de acá —helpers privados y `JSON_OBJECT` para
+armar la respuesta— así que conviene reconocerlos de memoria. Los últimos dos ni
+siquiera son de compilación: el paquete queda `VALID` y lo que falla es la
+ejecución.
 
 Las tres primeras son la misma idea vista de tres formas: **lo que vive sólo en
 PL/SQL no cruza al motor SQL**. Ni una función del body, ni un `BOOLEAN`.
@@ -2083,6 +2138,65 @@ BEGIN
   IF INSTR(UPPER(l_def), 'MONTO_IVA') > 0 THEN ...
 END;
 ```
+
+### `ORA-00932` otra vez: `SELECT DISTINCT` no funciona sobre un CLOB
+
+Un CLOB no se puede comparar para deduplicar, y el `JSON_OBJECT ... RETURNING
+CLOB` de la subconsulta es exactamente eso. El `DISTINCT` va **adentro, sobre
+las columnas crudas**, y el JSON se arma afuera:
+
+```sql
+-- MAL: ORA-00932 — el DISTINCT cae sobre la columna CLOB
+SELECT JSON_ARRAYAGG(fila RETURNING CLOB) INTO l_items
+  FROM (SELECT DISTINCT JSON_OBJECT('a' VALUE x RETURNING CLOB) fila FROM t);
+
+-- BIEN: deduplicar números, después armar el JSON
+SELECT JSON_ARRAYAGG(fila ORDER BY a RETURNING CLOB) INTO l_items
+  FROM (
+    SELECT JSON_OBJECT('a' VALUE d.a RETURNING CLOB) fila, d.a
+      FROM (SELECT DISTINCT t.a FROM t WHERE ...) d
+  );
+```
+
+Es el mismo movimiento que evita el techo de 4000 del agregado anidado, así que
+la consulta ya venía escrita en tres niveles: lo único que cambia es dónde va el
+`DISTINCT`. Ver `PKG_REPORTES_ACTIVIDADES.VINCULOS`.
+
+### `ORA-02290`: `DEFINE_PARAMETER` no acepta sus valores por variable
+
+Publicar los endpoints son tres llamadas casi idénticas por handler, y la
+tentación de envolverlas en un helper es fuerte:
+
+```sql
+-- MAL: ORA-02290 (ORDS_METADATA.REST_PARAMS_SOURCE_TYPE_CK)
+PROCEDURE PARAMETRO(p_patron VARCHAR2, p_metodo VARCHAR2, p_nombre VARCHAR2,
+                    p_fuente VARCHAR2, p_acceso VARCHAR2) IS
+BEGIN
+  ORDS.DEFINE_PARAMETER(
+    p_module_name => 'mi-modulo', p_pattern => p_patron, p_method => p_metodo,
+    p_name => p_nombre, p_bind_variable_name => p_nombre,
+    p_source_type => p_fuente, p_param_type => 'STRING',
+    p_access_method => p_acceso);
+END;
+...
+PARAMETRO('listar', 'GET', 'authorization', 'HEADER', 'IN');
+```
+
+El paquete **compila sin errores** y `PUBLICAR_ENDPOINTS` muere en la **primera**
+llamada, sobre un parámetro `'HEADER'`/`'IN'` idéntico al que publican sin
+problema los otros cuarenta módulos. Lo único distinto es que el valor llega por
+variable en vez de literal.
+
+No se pudo confirmar el motivo: la constraint vive en el esquema
+`ORDS_METADATA`, al que el usuario del workspace no tiene acceso, así que
+`ALL_CONSTRAINTS` vuelve vacía. Y averiguarlo a fuerza de intentos sale caro,
+porque **un `ORA-02290` aborta `PUBLICAR_ENDPOINTS` a la mitad y deja el módulo
+sin ningún endpoint** — se cae la pantalla entera, no sólo el handler que
+falla. Es el mismo castigo que ya cobró el `p_param_type => 'BLOB'` del logo de
+empresas (ver 3.2).
+
+**Las llamadas se escriben una por una, con literales.** Son verbosas y
+funcionan; `db/manuales.sql` y `db/reportes-actividades.sql` son el modelo.
 
 ---
 

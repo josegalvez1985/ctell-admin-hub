@@ -395,6 +395,114 @@ export type ListaAsistenciasProfesores = {
 };
 
 /**
+ * Los tres tipos que acepta `REPORTES_MULTIMEDIA.TIPO_ARCHIVO`.
+ *
+ * **La misma lista está en `TIPO_VALIDO` de `db/reportes-multimedia.sql`**: el
+ * DDL no tiene `CHECK` —sólo un `COMMENT`, que no es una restricción—, así que
+ * si se agrega un tipo, van los dos.
+ */
+export const TIPOS_MULTIMEDIA = ["foto", "video", "documento"] as const;
+export type TipoMultimedia = (typeof TIPOS_MULTIMEDIA)[number];
+
+/** Máximos que acepta el backend. No son de negocio: son el techo del bind de
+ * ORDS. Ver la cabecera de `db/reportes-actividades.sql`. */
+export const MAX_DESCRIPCION_REPORTE = 2000;
+export const MAX_PIE_MULTIMEDIA = 200;
+
+export type ReporteMultimedia = {
+  id: number;
+  idReporte: number;
+  tipoArchivo: TipoMultimedia;
+  /** Pie de foto. Viaja entero: el backend lo limita a 200 al guardarlo. */
+  descripcionTexto: string | null;
+  /** URL en Cloudinary. El backend exige `https://`. */
+  urlArchivo: string;
+  nombreArchivo: string | null;
+  tamanioBytes: number | null;
+  fechaCreacion: string;
+};
+
+export type ListaReportesMultimedia = {
+  items: ReporteMultimedia[];
+  total: number;
+  pagina: number;
+  tamanio: number;
+};
+
+export type ReporteActividad = {
+  id: number;
+  idEmpresa: number;
+  idProfesor: number;
+  profesor: string;
+  idInstitucion: number;
+  /** `null` si la institución fue borrada. */
+  institucion: string | null;
+  /**
+   * ISO `YYYY-MM-DD`. **No es editable**: es la fecha de la marcación de la que
+   * cuelga el reporte. Ver `db/reportes-actividades.sql`.
+   */
+  fecha: string;
+  idAsistencia: number;
+  /** De la marcación, para ubicar el reporte en el día. `HH:MM` o `null`. */
+  horaEntrada: string | null;
+  horaSalida: string | null;
+  /**
+   * **En el listado viene recortada a 200 caracteres** y `truncada` vale `'S'`.
+   * El formulario de edición tiene que cargarla con `obtener()`: guardar el
+   * resumen escribiría 200 caracteres encima de los 2000.
+   */
+  descripcion: string | null;
+  truncada: "S" | "N";
+  cantidadMultimedia: number;
+  fechaCreacion: string;
+  fechaActualizacion: string;
+};
+
+export type ListaReportesActividades = {
+  items: ReporteActividad[];
+  total: number;
+  pagina: number;
+  tamanio: number;
+};
+
+/**
+ * Una marcación que todavía no tiene reporte.
+ *
+ * Sale de `/reportes-actividades/pendientes`, que es la resta entre las
+ * marcaciones del período y los reportes ya cargados. No se deduce del listado:
+ * habría que traerse las dos tablas enteras y restarlas en el navegador.
+ */
+export type AsistenciaSinReporte = {
+  idAsistencia: number;
+  idProfesor: number;
+  profesor: string;
+  idInstitucion: number;
+  institucion: string | null;
+  fecha: string;
+  horaEntrada: string | null;
+  horaSalida: string | null;
+};
+
+/**
+ * Un par (profesor, institución) que tiene marcaciones.
+ *
+ * Es la relación que ninguna tabla guarda: la escribe el historial de
+ * asistencias. Con ella, elegir un profesor deja el combo de institución sólo
+ * con las que le corresponden.
+ */
+export type VinculoProfesorInstitucion = {
+  idProfesor: number;
+  idInstitucion: number;
+};
+
+export type ListaAsistenciasSinReporte = {
+  items: AsistenciaSinReporte[];
+  total: number;
+  pagina: number;
+  tamanio: number;
+};
+
+/**
  * Un mes que tiene marcaciones, con cuántas.
  *
  * Alimenta los combos del reporte. Viene de su propio endpoint y no se deduce
@@ -3153,6 +3261,166 @@ export const api = {
       request<{ items: PeriodoAsistencias[] }>(
         `/asistencias-profesores/periodos?idEmpresa=${idEmpresa}`,
       ),
+  },
+
+  /**
+   * Reportes de actividades: qué se hizo en la clase de un día que el profesor
+   * ya marcó.
+   *
+   * **Un reporte cuelga de una marcación** (`UNIQUE (ID_ASISTENCIA)`), y de ahí
+   * sale la forma de este cliente: al crear se manda `idAsistencia` y nada más
+   * —profesor, institución y fecha los deriva el backend de la marcación—, y al
+   * editar se manda sólo la descripción. Ver `db/reportes-actividades.sql`.
+   */
+  reportesActividades: {
+    /** `descripcion` viene recortada a 200 caracteres; la entera, en `obtener`. */
+    listar: (params: {
+      idEmpresa: number;
+      desde?: string | undefined;
+      hasta?: string | undefined;
+      idProfesor?: number | undefined;
+      idInstitucion?: number | undefined;
+      busqueda?: string | undefined;
+      pagina?: number | undefined;
+      /**
+       * De a 20 por defecto, y **50 como techo**: cada fila lleva texto libre y
+       * una página grande vuelve a chocar contra el bind de ORDS.
+       */
+      tamanio?: number | undefined;
+    }) => {
+      const q = new URLSearchParams({ idEmpresa: String(params.idEmpresa) });
+      if (params.desde) q.set("desde", params.desde);
+      if (params.hasta) q.set("hasta", params.hasta);
+      if (params.idProfesor) q.set("idProfesor", String(params.idProfesor));
+      if (params.idInstitucion) q.set("idInstitucion", String(params.idInstitucion));
+      if (params.busqueda) q.set("busqueda", params.busqueda);
+      if (params.pagina) q.set("pagina", String(params.pagina));
+      if (params.tamanio) q.set("tamanio", String(params.tamanio));
+      return request<ListaReportesActividades>(`/reportes-actividades/listar?${q}`);
+    },
+
+    /** Marcaciones del período que todavía no tienen reporte. Es lo que ofrece
+     * el alta y el número de "pendientes" del encabezado. */
+    pendientes: (params: {
+      idEmpresa: number;
+      desde?: string | undefined;
+      hasta?: string | undefined;
+      idProfesor?: number | undefined;
+      idInstitucion?: number | undefined;
+      pagina?: number | undefined;
+      tamanio?: number | undefined;
+    }) => {
+      const q = new URLSearchParams({ idEmpresa: String(params.idEmpresa) });
+      if (params.desde) q.set("desde", params.desde);
+      if (params.hasta) q.set("hasta", params.hasta);
+      if (params.idProfesor) q.set("idProfesor", String(params.idProfesor));
+      if (params.idInstitucion) q.set("idInstitucion", String(params.idInstitucion));
+      if (params.pagina) q.set("pagina", String(params.pagina));
+      if (params.tamanio) q.set("tamanio", String(params.tamanio));
+      return request<ListaAsistenciasSinReporte>(`/reportes-actividades/pendientes?${q}`);
+    },
+
+    /**
+     * Qué profesor estuvo en qué institución, según las marcaciones del período.
+     *
+     * Alimenta el combo dependiente: elegido un profesor, Institución ofrece
+     * sólo donde ese profesor marcó. **No hay tabla de relación** —`PROFESORES`
+     * no tiene institución— así que el vínculo sale del historial de
+     * asistencias.
+     */
+    vinculos: (params: {
+      idEmpresa: number;
+      desde?: string | undefined;
+      hasta?: string | undefined;
+    }) => {
+      const q = new URLSearchParams({ idEmpresa: String(params.idEmpresa) });
+      if (params.desde) q.set("desde", params.desde);
+      if (params.hasta) q.set("hasta", params.hasta);
+      return request<{ items: VinculoProfesorInstitucion[] }>(
+        `/reportes-actividades/vinculos?${q}`,
+      );
+    },
+
+    /** La ficha con la descripción entera. **La edición carga de acá**, nunca
+     * de la fila del listado. */
+    obtener: (id: number, idEmpresa: number) =>
+      request<ReporteActividad>(`/reportes-actividades/obtener/${id}/${idEmpresa}`),
+
+    /**
+     * `idAsistencia` identifica todo lo demás. `descripcion` va siempre, con
+     * `""` cuando está vacía: una clave omitida deja el bind sin definir en vez
+     * de en NULL, y el backend responde 400.
+     */
+    crear: (datos: { idEmpresa: number; idAsistencia: number; descripcion: string }) =>
+      request<{ ok: boolean; id: number }>("/reportes-actividades/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Sólo la descripción — y vacía la borra. La fecha es de la marcación. */
+    actualizar: (id: number, datos: { idEmpresa: number; descripcion: string }) =>
+      request<{ ok: boolean }>(`/reportes-actividades/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Se lleva las filas de multimedia. Los archivos siguen en Cloudinary:
+     * `archivosEliminados` dice cuántas referencias se borraron. */
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean; archivosEliminados: number }>(
+        `/reportes-actividades/eliminar/${id}/${idEmpresa}`,
+        { method: "DELETE" },
+      ),
+  },
+
+  /**
+   * Evidencias de un reporte. **Acá viaja la URL, no el binario**: el archivo lo
+   * sube el navegador directo a Cloudinary y esto guarda su dirección. Por eso
+   * borrar una fila no borra el archivo.
+   */
+  reportesMultimedia: {
+    listar: (params: {
+      idReporte: number;
+      idEmpresa: number;
+      pagina?: number | undefined;
+      tamanio?: number | undefined;
+    }) => {
+      const q = new URLSearchParams({
+        idReporte: String(params.idReporte),
+        idEmpresa: String(params.idEmpresa),
+      });
+      if (params.pagina) q.set("pagina", String(params.pagina));
+      if (params.tamanio) q.set("tamanio", String(params.tamanio));
+      return request<ListaReportesMultimedia>(`/reportes-multimedia/listar?${q}`);
+    },
+
+    /** Todas las claves van siempre, con `""` o `0` cuando no hay dato. */
+    crear: (datos: {
+      idReporte: number;
+      idEmpresa: number;
+      tipoArchivo: TipoMultimedia;
+      descripcionTexto: string;
+      urlArchivo: string;
+      nombreArchivo: string;
+      tamanioBytes: number;
+    }) =>
+      request<{ ok: boolean; id: number }>("/reportes-multimedia/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Sólo el pie de foto: cambiar la URL sería otro archivo, y eso es borrar
+     * y volver a agregar. */
+    actualizar: (id: number, datos: { idEmpresa: number; descripcionTexto: string }) =>
+      request<{ ok: boolean }>(`/reportes-multimedia/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/reportes-multimedia/eliminar/${id}/${idEmpresa}`, {
+        method: "DELETE",
+      }),
   },
 
   /**

@@ -38,8 +38,19 @@ jobs:
 
       # El sitio se sirve en la raíz de www.ctell.online, así que el build no
       # lleva prefijo: `base` es "/" fijo en vite.config.ts.
+      #
+      # Las variables de Cloudinary se hornean en el bundle, y está bien: el
+      # cloud name y un upload preset "unsigned" son públicos por diseño —el
+      # navegador de cualquier visitante los ve igual—. Lo que NUNCA va acá es
+      # la api_secret. Se cargan en Settings → Secrets and variables → Actions →
+      # Variables; si faltan, el build sale igual y la pantalla de reportes
+      # ofrece pegar la URL a mano en vez del selector de archivos.
       - name: Build (SPA estático)
         run: npm run build
+        env:
+          VITE_CLOUDINARY_CLOUD_NAME: ${{ vars.VITE_CLOUDINARY_CLOUD_NAME }}
+          VITE_CLOUDINARY_UPLOAD_PRESET: ${{ vars.VITE_CLOUDINARY_UPLOAD_PRESET }}
+          VITE_CLOUDINARY_CARPETA: ${{ vars.VITE_CLOUDINARY_CARPETA }}
 
       # Renombra el shell a index.html/404.html y agrega .nojekyll. Ver
       # scripts/preparar-shell.mjs para el detalle de qué genera y por qué.

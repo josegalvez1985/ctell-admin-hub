@@ -43,6 +43,7 @@ import { Route as AuthPaisesRouteImport } from './routes/_auth.paises'
 import { Route as AuthPersonasRouteImport } from './routes/_auth.personas'
 import { Route as AuthProfesoresRouteImport } from './routes/_auth.profesores'
 import { Route as AuthPuntoVentaRouteImport } from './routes/_auth.punto-venta'
+import { Route as AuthReportesActividadesRouteImport } from './routes/_auth.reportes-actividades'
 import { Route as AuthSucursalesRouteImport } from './routes/_auth.sucursales'
 import { Route as AuthTalonariosRouteImport } from './routes/_auth.talonarios'
 import { Route as AuthUbicacionesRouteImport } from './routes/_auth.ubicaciones'
@@ -219,6 +220,11 @@ const AuthPuntoVentaRoute = AuthPuntoVentaRouteImport.update({
   path: '/punto-venta',
   getParentRoute: () => AuthRoute,
 } as any)
+const AuthReportesActividadesRoute = AuthReportesActividadesRouteImport.update({
+  id: '/reportes-actividades',
+  path: '/reportes-actividades',
+  getParentRoute: () => AuthRoute,
+} as any)
 const AuthSucursalesRoute = AuthSucursalesRouteImport.update({
   id: '/sucursales',
   path: '/sucursales',
@@ -279,6 +285,7 @@ export interface FileRoutesByFullPath {
   '/personas': typeof AuthPersonasRoute
   '/profesores': typeof AuthProfesoresRoute
   '/punto-venta': typeof AuthPuntoVentaRoute
+  '/reportes-actividades': typeof AuthReportesActividadesRoute
   '/sucursales': typeof AuthSucursalesRoute
   '/talonarios': typeof AuthTalonariosRoute
   '/ubicaciones': typeof AuthUbicacionesRoute
@@ -319,6 +326,7 @@ export interface FileRoutesByTo {
   '/personas': typeof AuthPersonasRoute
   '/profesores': typeof AuthProfesoresRoute
   '/punto-venta': typeof AuthPuntoVentaRoute
+  '/reportes-actividades': typeof AuthReportesActividadesRoute
   '/sucursales': typeof AuthSucursalesRoute
   '/talonarios': typeof AuthTalonariosRoute
   '/ubicaciones': typeof AuthUbicacionesRoute
@@ -361,6 +369,7 @@ export interface FileRoutesById {
   '/_auth/personas': typeof AuthPersonasRoute
   '/_auth/profesores': typeof AuthProfesoresRoute
   '/_auth/punto-venta': typeof AuthPuntoVentaRoute
+  '/_auth/reportes-actividades': typeof AuthReportesActividadesRoute
   '/_auth/sucursales': typeof AuthSucursalesRoute
   '/_auth/talonarios': typeof AuthTalonariosRoute
   '/_auth/ubicaciones': typeof AuthUbicacionesRoute
@@ -403,6 +412,7 @@ export interface FileRouteTypes {
     | '/personas'
     | '/profesores'
     | '/punto-venta'
+    | '/reportes-actividades'
     | '/sucursales'
     | '/talonarios'
     | '/ubicaciones'
@@ -443,6 +453,7 @@ export interface FileRouteTypes {
     | '/personas'
     | '/profesores'
     | '/punto-venta'
+    | '/reportes-actividades'
     | '/sucursales'
     | '/talonarios'
     | '/ubicaciones'
@@ -484,6 +495,7 @@ export interface FileRouteTypes {
     | '/_auth/personas'
     | '/_auth/profesores'
     | '/_auth/punto-venta'
+    | '/_auth/reportes-actividades'
     | '/_auth/sucursales'
     | '/_auth/talonarios'
     | '/_auth/ubicaciones'
@@ -736,6 +748,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthPuntoVentaRouteImport
       parentRoute: typeof AuthRoute
     }
+    '/_auth/reportes-actividades': {
+      id: '/_auth/reportes-actividades'
+      path: '/reportes-actividades'
+      fullPath: '/reportes-actividades'
+      preLoaderRoute: typeof AuthReportesActividadesRouteImport
+      parentRoute: typeof AuthRoute
+    }
     '/_auth/sucursales': {
       id: '/_auth/sucursales'
       path: '/sucursales'
@@ -807,6 +826,7 @@ interface AuthRouteChildren {
   AuthPersonasRoute: typeof AuthPersonasRoute
   AuthProfesoresRoute: typeof AuthProfesoresRoute
   AuthPuntoVentaRoute: typeof AuthPuntoVentaRoute
+  AuthReportesActividadesRoute: typeof AuthReportesActividadesRoute
   AuthSucursalesRoute: typeof AuthSucursalesRoute
   AuthTalonariosRoute: typeof AuthTalonariosRoute
   AuthUbicacionesRoute: typeof AuthUbicacionesRoute
@@ -847,6 +867,7 @@ const AuthRouteChildren: AuthRouteChildren = {
   AuthPersonasRoute: AuthPersonasRoute,
   AuthProfesoresRoute: AuthProfesoresRoute,
   AuthPuntoVentaRoute: AuthPuntoVentaRoute,
+  AuthReportesActividadesRoute: AuthReportesActividadesRoute,
   AuthSucursalesRoute: AuthSucursalesRoute,
   AuthTalonariosRoute: AuthTalonariosRoute,
   AuthUbicacionesRoute: AuthUbicacionesRoute,

@@ -191,6 +191,32 @@ Misma forma que ventas, en espejo. `/compras-pagos` es idéntico a `/ventas-cobr
 - **El alta no lleva el PDF**, porque un binario no entra en un `JSON_OBJECT`: se crea la fila y con el id que devuelve se sube el archivo, igual que la foto de un profesor. La pantalla encadena las dos llamadas para que sea una sola operación, y si la subida falla **el alta no se deshace**: la fila queda con su cartel de "Sin PDF", desde donde se reintenta.
 - **El `GET` del archivo es público**, como los otros dos binarios del proyecto: así el manual se abre con un `<a href>` en el visor del navegador, se imprime y el link se comparte. El `PUT` sí pide token, y acepta **sólo `application/pdf`** — el GET devuelve el archivo con el content-type guardado, así que aceptar `text/html` dejaría servir un documento con script desde el origen de la API.
 
+#### Reportes de actividades — `/reportes-actividades`, `/reportes-multimedia`
+
+| Método   | Ruta                                          | Qué hace                                                       |
+| -------- | --------------------------------------------- | -------------------------------------------------------------- |
+| `GET`    | `/reportes-actividades/listar`                | Paginado. `descripcion` viene **recortada a 200 caracteres**    |
+| `GET`    | `/reportes-actividades/pendientes`            | Marcaciones del período **sin** reporte                         |
+| `GET`    | `/reportes-actividades/vinculos`              | Pares (profesor, institución) con marcaciones, sin repetir      |
+| `GET`    | `/reportes-actividades/obtener/:id/:idEmpresa`| La ficha, con la descripción entera                             |
+| `POST`   | `/reportes-actividades/crear`                 | Body: `{ idEmpresa, idAsistencia, descripcion }` y nada más    |
+| `PUT`    | `/reportes-actividades/actualizar/:id`        | Sólo la descripción                                             |
+| `DELETE` | `/reportes-actividades/eliminar/:id/:idEmpresa`| Se lleva las filas de multimedia (no los archivos)             |
+| `GET`    | `/reportes-multimedia/listar`                 | Galería de un reporte, paginada                                 |
+| `POST`   | `/reportes-multimedia/crear`                  | Guarda la **URL**, no el archivo                                |
+| `PUT`    | `/reportes-multimedia/actualizar/:id`         | Sólo el pie de foto                                             |
+| `DELETE` | `/reportes-multimedia/eliminar/:id/:idEmpresa`| Borra la referencia; el binario sigue en Cloudinary             |
+
+- **Un reporte cuelga de una marcación** (`UNIQUE (ID_ASISTENCIA)`), y eso define el módulo entero: el alta manda **sólo `idAsistencia`**, y profesor, institución, fecha y empresa **se derivan** de `ASISTENCIAS_PROFESORES`. Aceptarlos del body obligaría a validar que coincidan, y el día que esa validación se afloje la base guarda un reporte del profesor A sobre la marcación de B. Es el mismo criterio con el que los totales de una venta no se guardan: **si se puede derivar, se deriva**.
+- **La fecha no se edita.** Moverla sin mover la de su marcación las desalinea, y la correcta siempre es la de la marcación: si el reporte quedó en el día equivocado, lo que está mal es la marcación. La contracara es que **no se puede reportar un día que no se marcó** — se carga la marcación a mano en `/asistencias` y recién ahí se reporta.
+- **`/vinculos` existe porque no hay tabla de relación:** `PROFESORES` no tiene institución y no hay cruce entre ambas — el vínculo lo escribe la marcación. Devuelve los pares distintos del período, y con eso elegir un profesor deja el combo de institución **sólo con las suyas**, en vez de las veinte de la empresa (diecinueve de las cuales devuelven la pantalla vacía). El `DISTINCT` va sobre los dos números en la subconsulta de adentro: sobre la columna CLOB del `JSON_OBJECT` falla con `ORA-00932`.
+- **`/pendientes` no se deduce del listado:** saber qué días faltan exigiría traerse las marcaciones y los reportes enteros y restarlos en el navegador. El endpoint devuelve la resta (`NOT EXISTS`) con su `total`, que es el número de "faltan 7" del encabezado.
+- **La columna acepta 4000 caracteres y el endpoint 2000.** No es negocio, es el techo del bind de ORDS: una descripción de 4000 no se puede devolver, y guardarla sería cargar un reporte que después no abre nunca. Por lo mismo el listado la recorta a 200 — **el formulario de edición carga de `/obtener`**, o guardaría el resumen encima del texto entero, que es la trampa de `INVENTARIOS.OBSERVACIONES`.
+- **Las evidencias guardan la URL, no el binario.** Es la excepción a los otros tres archivos del proyecto (foto del profesor, logo, PDF del manual, todos BLOB): acá el navegador sube directo a Cloudinary con un preset _unsigned_ y en Oracle queda la dirección. Un video de 80 MB no pasa por ORDS y las miniaturas salen de transformar la URL. **Borrar la fila no borra el archivo** —eso necesitaría la `api_secret`, que no puede vivir en un frontend estático—, así que el binario queda huérfano en Cloudinary.
+- **La URL se valida contra `https://`.** Es dato de entrada y termina en un `<a href>` y un `<img src>`: sin esa comprobación, un POST con `javascript:…` deja guardado un enlace que ejecuta script al abrir la galería. No se valida que sea de Cloudinary: ataría el módulo a un proveedor en el peor lugar posible.
+- **El pie de foto se limita a 200 aunque la columna acepte 1000**, porque viaja entero en la galería. Recortarlo en el listado —el camino de inventarios— traería su trampa de edición; para un pie no vale la pena.
+- **Nada de helpers en `PUBLICAR_ENDPOINTS`.** Envolver `ORDS.DEFINE_PARAMETER` en un procedimiento propio hace que ORDS rechace el **primer** parámetro con `ORA-02290 (REST_PARAMS_SOURCE_TYPE_CK)` sobre un `'HEADER'/'IN'` idéntico al que publican los otros cuarenta módulos; lo único distinto es pasar el valor por variable en vez de literal. El `ORA-02290` aborta la publicación a la mitad y **deja el módulo sin ningún endpoint**. Las llamadas van escritas una por una, como en `db/manuales.sql`.
+
 #### Dashboard — `/dashboard/resumen?idEmpresa=&idSucursal=`
 
 Los indicadores de la home en una consulta: montos del mes con su mes anterior, valor de stock, artículos bajo mínimo, últimos movimientos, stock crítico y cuotas de compra por vencer.
@@ -298,6 +324,18 @@ Las columnas `ACTIVO` son `VARCHAR2(1)` con valores `'A'` o `'I'`. **Este códig
   > **La hora cátedra y el precio son POR PROFESOR**, en el encabezado de cada planilla: no todos dan cátedras de la misma duración —45 minutos en un colegio, 60 en otro— ni cobran lo mismo, y un campo global hacía que el total de alguno saliera mal sin que nada lo avisara. No se guardan: `PROFESORES` no tiene columna para eso.
   >
   > La grilla lleva columnas **Semana** y **Total** con `rowSpan` (el número alineado abajo, donde cierra la cuenta), y al pie **Actividad extra** —en blanco, se completa a mano— y el **Resumen** con el desglose del IVA. Con varios profesores, un cuadro consolidado al final. **Sumar minutos y convertir al final, nunca al revés:** redondear las horas de cada día y después sumarlas hace que el total de la semana no cierre contra su propia columna.
+- **`_auth.reportes-actividades.tsx`:** "/reportes-actividades" → Bitácora de clases: qué se hizo cada día, con sus fotos. **Una línea de tiempo por mes, no una tabla.**
+
+  > **Los pendientes van en el mismo hilo que los reportes.** Una marcación sin reporte aparece como tarjeta punteada en su día, con el botón para escribirlo. En una pestaña aparte el hueco hay que acordarse de ir a mirarlo; acá se ve donde está. El buscador filtra los reportes en el SQL y los pendientes **en memoria**, por profesor e institución: no tienen texto que buscar, y sin eso escribir en el buscador dejaría la línea de tiempo a medias.
+  >
+  > **El alta no pide profesor, institución ni fecha:** se escribe sobre una marcación y el backend deriva los tres. Al crear se abre la ficha del reporte nuevo, porque el paso siguiente es cargarle las fotos.
+  >
+  > **La ficha carga con `obtener()`, nunca con la fila del listado** — ahí la descripción viene recortada a 200 y guardar eso pisaría los 2000. El pie de foto se escribe **en el visor, con la foto a la vista**, y no al subir: se cargan cinco de una, y pedir la descripción de cada una antes de guardar convierte un gesto en un formulario.
+  >
+  > **El combo de institución depende del de profesor:** elegido un profesor ofrece sólo donde marcó ese mes (`/vinculos`), con un cartel que lo dice — un colegio ausente sin explicación parece un dato perdido. Si la institución elegida no es suya, vuelve a "Todas": un filtro que ya no figura en su propio combo es invisible y deja la pantalla vacía sin motivo aparente.
+  >
+  > **La subida necesita `VITE_CLOUDINARY_CLOUD_NAME` y `VITE_CLOUDINARY_UPLOAD_PRESET`** (ver `.env.example`; en el deploy son _variables_ del repo, no secrets). Sin ellas la pantalla no muestra un botón que falla siempre: ofrece pegar la URL a mano. **El `public_id` lo manda la app**, no el preset: con `use_filename` y sin `unique_filename`, dos `IMG_0001.jpg` de dos celulares comparten identificador y Cloudinary devuelve 200 con la URL de la primera sin subir la segunda — la evidencia de una clase mostrando la foto de otra, sin ningún error.
+
 - **`_auth.manuales.tsx`:** "/manuales" → ABM de los manuales en PDF, por institución y grado. La institución y el grado se filtran desde el header de su columna; el PDF se ve y se reemplaza desde la fila.
 
   > **La tabla no tiene `ID_EMPRESA` ni `ACTIVO`.** Lo primero significa que el recorte por empresa lo hace el backend contra `INSTITUCIONES` (ver arriba), pero la pantalla se escribe igual que cualquier otra por empresa: `empresa.id` en la `queryKey` y en el `enabled`. Lo segundo, que **no hay baja lógica**: no va el toggle de activo, y el diálogo de borrado avisa que se lleva el PDF.

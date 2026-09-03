@@ -25,6 +25,7 @@ pantalla ABM completa.
    - [Formularios con detalle: cabecera y líneas](#61-formularios-con-detalle-cabecera-y-líneas)
 7. [El menú dinámico por dentro](#7-el-menú-dinámico-por-dentro)
    - [Imágenes: siempre con respaldo](#71-imágenes-siempre-con-respaldo)
+   - [Archivos que no van a la base: subida directa](#711-archivos-que-no-van-a-la-base-subida-directa)
    - [Paneles con scroll: `scrollbar-fino`](#72-paneles-con-scroll-scrollbar-fino)
    - [Montos: `InputMoneda` y `lib/moneda.ts`](#721-montos-inputmoneda-y-libmonedats)
    - [Texto largo: `truncate` no alcanza](#73-texto-largo-truncate-no-alcanza-y-en-un-diálogo-molesta)
@@ -681,6 +682,47 @@ const hayFiltro =
 }
 ```
 
+### Cuando lo que falta importa tanto como lo que hay
+
+Un ABM lista lo que existe. Hay pantallas donde el dato que se busca es **lo que
+todavía no existe**: qué clases no tienen su reporte, qué días nadie cargó. En
+esos casos lo pendiente va **en la misma lista y en su lugar cronológico**, no
+en una segunda pestaña.
+
+`/reportes-actividades` es una línea de tiempo por mes donde cada día muestra sus
+reportes y, debajo, las marcaciones sin reporte como tarjeta de borde punteado
+con el botón para escribirlo. En una pestaña aparte el hueco hay que acordarse de
+ir a mirarlo; en el hilo se ve donde está.
+
+Lo que hay que resolver para que funcione:
+
+- **Las dos listas se traen enteras y se ordenan una sola vez.** Con paginado
+  incremental de a dos fuentes, un día aparecería, desaparecería y volvería según
+  cuánto se haya cargado de cada una. Un mes tiene volumen acotado: se pagina
+  hasta el final (ver la sección siguiente) y recién ahí se agrupa.
+- **El buscador no aplica igual a las dos.** Los reportes se filtran por texto en
+  el SQL; lo pendiente no tiene texto que buscar, así que se filtra en memoria
+  por profesor e institución. Sin eso, escribir en el buscador dejaría la línea
+  de tiempo a medias sin explicación.
+- **El encabezado cuenta las dos cosas**, y lo pendiente se pinta distinto
+  (`variant="destructive"` sólo si hay): es el número que dice cuánto trabajo
+  queda.
+
+### El listado recorta el texto largo; la ficha lo trae entero
+
+Cuando una columna de texto libre no entra en la respuesta —el techo del bind de
+ORDS— el backend la manda **recortada** en el listado y completa en `/obtener`.
+Eso deja una trampa lista para el próximo que edite la pantalla:
+
+> **El formulario de edición carga con `obtener()`, nunca con la fila del
+> listado.** Si toma la fila, guarda el resumen de 200 caracteres encima de los
+> 2000 que había, y el texto original no vuelve.
+
+Ya pasó con `INVENTARIOS.OBSERVACIONES` y se repite en
+`REPORTES_ACTIVIDADES.DESCRIPCION`. La fila del listado sirve para mostrar; para
+editar hay que pedir la ficha. Si el backend manda un `truncada: 'S'`, usalo para
+poner el "seguir leyendo" en vez de calcular el largo a ojo.
+
 ### Listados largos: cortar de a 20 con "Mostrar más"
 
 Traer todo de una vez está bien para la red y mal para el DOM: sin corte, un
@@ -826,6 +868,41 @@ Dos detalles que cuestan un rato si se pasan por alto:
   caer al período más reciente con datos, con la misma corrección durante el
   render de arriba. Y tenerlo presente: un mes vacío deja de ser alcanzable, así
   que no se puede navegar hasta él para cargarle la primera marcación.
+
+#### Y si el listado tampoco se puede traer entero, van los pares
+
+Derivar los combos de una consulta sin filtrar supone que esa consulta se puede
+traer completa. En `/reportes-actividades` no: cada fila lleva texto libre, así
+que el listado pagina de a 20 y traerlo entero sólo para poblar dos combos es
+justamente lo que el paginado vino a evitar.
+
+`/reportes-actividades/vinculos` devuelve **los pares (profesor, institución) con
+marcaciones en el período**, sin repetir: dos números por par, decenas de filas.
+Elegido un profesor, el combo de institución se queda con las suyas.
+
+```tsx
+// No depende de los filtros, sólo del período: si dependiera del profesor
+// elegido, el combo quedaría con la única opción ya seleccionada.
+const vinculos = useQuery({
+  queryKey: ["reportes-actividades", "vinculos", empresa?.id ?? null, desde, hasta],
+  queryFn: () => api.reportesActividades.vinculos({ idEmpresa: empresa!.id, desde, hasta }),
+  enabled: empresa !== null,
+});
+```
+
+Dos cosas que no cambian respecto de lo anterior:
+
+- **Se limpia lo que dejó de ser opción.** Acá la corrección va en el handler del
+  combo que manda (`elegirProfesor`) y no durante el render, porque el cambio
+  tiene un disparador concreto: si el profesor nuevo no estuvo en la institución
+  elegida, la institución vuelve a "Todas".
+- **Se dice por qué la lista es corta.** Un cartel bajo el combo —"Sólo donde
+  marcó este mes (3)"— evita que un colegio ausente parezca un dato perdido. Sin
+  eso, la única lectura posible es que el sistema se comió algo.
+
+Y una que sí: **la relación no sale de ninguna tabla**. `PROFESORES` no tiene
+institución y no hay cruce entre ambas; el vínculo lo escribe el historial de
+marcaciones. Vale la pena tenerlo presente antes de buscar la FK que no existe.
 
 ### La empresa va en la queryKey de todo catálogo
 
@@ -2164,6 +2241,58 @@ const archivo = event.target.files?.[0];
 // Sin esto, elegir el mismo archivo dos veces seguidas no dispara el change.
 event.target.value = "";
 ```
+
+---
+
+## 7.1.1 Archivos que no van a la base: subida directa
+
+Las evidencias de `/reportes-actividades` no viajan a Oracle: el navegador las
+sube **directo a Cloudinary** y la fila guarda la URL
+([src/lib/cloudinary.ts](../src/lib/cloudinary.ts)). Es la excepción a todo lo
+anterior, y conviene cuando los archivos son muchos, pesados o hay que mostrarlos
+en varios tamaños — un video de 80 MB no tiene por qué atravesar ORDS.
+
+**El orden importa: primero sube el archivo, después se guarda la fila.** La fila
+exige la URL, que sólo existe una vez subido. Se sube de a varios, así que un
+fallo no corta el lote: se avisa cuál falló y los demás siguen.
+
+```tsx
+for (const archivo of seleccionados) {
+  try {
+    const resultado = await subirACloudinary(archivo);
+    await api.reportesMultimedia.crear({ ...resultado, idReporte, idEmpresa });
+  } catch (error) {
+    toast.error(`${archivo.name}: ${mensajeError(error, "no se pudo subir")}`);
+  }
+}
+```
+
+Cuatro cosas que no son obvias:
+
+- **Las credenciales van por `import.meta.env`, y no son secretas.** El
+  `cloud_name` y un `upload_preset` en modo _unsigned_ terminan en el bundle,
+  como la URL de ORDS: están pensados para eso. Firmar la subida exigiría la
+  `api_secret`, que en un frontend estático no tiene dónde vivir. Los límites de
+  tamaño y formato se configuran **en el preset**, que es el único lugar donde se
+  hacen cumplir: lo que valide el navegador se puede saltear.
+- **Sin configuración, la pantalla ofrece otra cosa.** Un botón que falla siempre
+  es peor que un campo donde pegar una URL. `subidaDirectaDisponible` decide cuál
+  de los dos se muestra, así que el módulo funciona antes de que exista la cuenta.
+- **El identificador del archivo lo manda la app.** Con `use_filename` y sin
+  `unique_filename`, dos fotos llamadas `IMG_0001.jpg` —dos celulares— comparten
+  identificador, y Cloudinary responde 200 con la URL de la primera **sin subir la
+  segunda**: la evidencia de una clase termina mostrando la foto de otra, sin
+  ningún error. Mandando un `public_id` propio y único, eso no depende de cómo
+  quede configurado un panel que cualquiera puede tocar.
+- **Las miniaturas se piden transformando la URL**, no bajando el original: una
+  tira de seis fotos de 4 MB para mostrarlas de 80 píxeles es media pantalla de
+  espera. De un video se pide su primer cuadro; de un PDF no hay miniatura y va
+  el ícono.
+
+Y lo que hay que decir en la interfaz: **borrar la evidencia borra la
+referencia, no el archivo**. El binario queda en Cloudinary —limpiarlo exige la
+credencial secreta—, así que el diálogo lo dice en lugar de dar a entender que
+la foto dejó de existir.
 
 ---
 

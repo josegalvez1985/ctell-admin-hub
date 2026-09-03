@@ -31,6 +31,29 @@ npm run dev
 
 Vite imprime la URL local al arrancar (normalmente `http://localhost:5173`).
 
+### Variables de entorno
+
+Ninguna es obligatoria: la app arranca sin `.env`. Las únicas que existen hoy son
+las de Cloudinary, para subir las evidencias de `/reportes-actividades`. Se
+copian de [.env.example](.env.example) a `.env.local` (que `.gitignore` excluye
+por `*.local`):
+
+| Variable                        | Para qué                                            |
+| ------------------------------- | --------------------------------------------------- |
+| `VITE_CLOUDINARY_CLOUD_NAME`    | La cuenta a la que sube el navegador                |
+| `VITE_CLOUDINARY_UPLOAD_PRESET` | Un preset con **Signing Mode = Unsigned**           |
+| `VITE_CLOUDINARY_CARPETA`       | Opcional; por defecto `reportes-actividades`        |
+
+**No son secretos.** Terminan en el bundle, igual que la URL de ORDS: un preset
+unsigned está pensado para eso. Lo que no puede salir nunca de Cloudinary es la
+`api_secret` — por eso la app no puede borrar archivos ni firmar subidas. Los
+límites de tamaño y formato se configuran en el preset, que es el único lugar
+donde se hacen cumplir.
+
+Sin ellas la pantalla de reportes funciona igual, pero en vez del selector de
+archivos ofrece pegar una URL `https://` a mano. En el deploy van como
+**Variables** del repo (no secrets): ver [Workflows](#workflows).
+
 ### Comandos
 
 | Comando            | Qué hace                              |
@@ -95,6 +118,12 @@ db/                      Backend: un archivo SQL por tabla
 ├── facturas-compras-pagos.sql  Pagos a proveedores. Espejo de ventas-cobros
 ├── manuales.sql         Manuales en PDF (BLOB) por institución y grado. NO tiene
 │                        ID_EMPRESA: se aísla contra INSTITUCIONES con un JOIN
+├── reportes-actividades.sql  Qué se hizo en cada clase. Cuelga de una MARCACIÓN
+│                        (UNIQUE sobre ID_ASISTENCIA): profesor, institución y
+│                        fecha se DERIVAN de ella, no se mandan
+├── reportes-multimedia.sql   Fotos y videos del reporte. Guarda la URL de
+│                        Cloudinary, NO el binario: borrar la fila no borra el
+│                        archivo
 └── dashboard.sql        PKG_DASHBOARD: los indicadores de la home, en 1 consulta
 
 (La lista no está completa: el módulo educativo —instituciones.sql,
@@ -118,6 +147,10 @@ src/
 │   ├── _auth.asistencias.tsx    "/asistencias"   → planilla por profesor + Excel
 │   ├── _auth.manuales.tsx       "/manuales"      → manuales en PDF por
 │   │                                    institución y grado
+│   ├── _auth.reportes-actividades.tsx  "/reportes-actividades" → bitácora de
+│   │                                    clases: línea de tiempo por mes, con
+│   │                                    las marcaciones sin reporte en el
+│   │                                    mismo hilo y galería de evidencias
 │   ├── _auth.configuracion.tsx  "/configuracion" → preferencias
 │   └── _auth.<tabla>.tsx        una por cada ABM
 ├── components/
@@ -463,6 +496,26 @@ El content-type se guarda junto al binario en `LOGO_MIME` / `IMAGEN_MIME` /
 `FOTO_MIME`. Esas columnas son la **única excepción** a la regla de no tocar el
 DDL: los archivos las agregan en un paso 0 idempotente, que consulta
 `USER_TAB_COLUMNS` antes del `ALTER`.
+
+`MANUALES.ARCHIVO_PDF` sigue el mismo patrón con un PDF en vez de una imagen.
+
+#### La excepción: `REPORTES_MULTIMEDIA` guarda la URL, no el archivo
+
+Las fotos y videos de un reporte de actividades **no van a la base**: el
+navegador los sube directo a Cloudinary y la fila guarda `URL_ARCHIVO`. Un video
+de 80 MB no atraviesa ORDS y las miniaturas salen de transformar la dirección.
+
+Lo que hay que tener presente:
+
+- **Borrar la fila no borra el archivo.** Hacerlo exigiría la `api_secret`, que
+  no puede vivir en un frontend estático. El binario queda huérfano en
+  Cloudinary y limpiarlo es una tarea manual.
+- **La URL se valida contra `https://`.** Es dato de entrada y termina en un
+  `<a href>` y un `<img src>`: sin esa comprobación, un POST con `javascript:…`
+  deja guardado un enlace que ejecuta script al abrir la galería.
+- **El `public_id` lo manda la app**, no el preset: con `use_filename` y sin
+  `unique_filename`, dos `IMG_0001.jpg` distintos comparten identificador y
+  Cloudinary devuelve la URL del primero sin subir el segundo.
 
 ### Transacciones: cabecera y detalle
 
@@ -1320,6 +1373,12 @@ origen. Este proyecto lo resuelve distinto en cada entorno:
 También podés desplegar a mano desde la pestaña **Actions** →
 _Deploy to GitHub Pages_ → _Run workflow_.
 
+**No hacen falta secrets:** el workflow usa el `GITHUB_TOKEN` que Actions provee
+solo. Lo único que se carga a mano son las variables de Cloudinary, y van como
+**Variables** —no Secrets—: _Settings → Secrets and variables → Actions →
+Variables_, con los mismos nombres que en `.env.local`. Si faltan, el build sale
+igual y la pantalla de reportes ofrece pegar la URL a mano.
+
 ### Probar el build de Pages en local
 
 ```sh
@@ -1366,13 +1425,16 @@ no se borran. Para el stock está **suspendida**, porque hoy ninguna transacció
 lo mueve.
 Ver [Transacciones que mueven stock o plata](docs/GUIA-IMPLEMENTACION.md#36-transacciones-que-mueven-stock-o-plata).
 
-### Cuatro errores de PL/SQL que ya se cometieron
+### Los errores de PL/SQL que ya se cometieron
 
 `PLS-00231` (helper privado del body usado dentro de un `INSERT`/`UPDATE`),
 `PLS-00684` (`RETURNING CLOB` en una asignación suelta), `ORA-00932` (una
-función aplicada a una columna `LONG`) y `ORA-00942` (un nombre de tabla mal
-escrito, que deja el paquete `INVALID` y da un 500 mudo). Salen del estilo
-normal del código de acá, así que conviene reconocerlos:
+función aplicada a una columna `LONG`, o un `SELECT DISTINCT` sobre un CLOB),
+`ORA-00942` (un nombre de tabla mal escrito, que deja el paquete `INVALID` y da
+un 500 mudo) y `ORA-02290` (envolver `ORDS.DEFINE_PARAMETER` en un helper: el
+paquete compila y la publicación muere en el primer parámetro, dejando el módulo
+**sin ningún endpoint**). Salen del estilo normal del código de acá, así que
+conviene reconocerlos:
 [Trampas de PL/SQL](docs/GUIA-IMPLEMENTACION.md#37-trampas-de-plsql-que-se-repiten).
 
 ### Después de tocar `db/`

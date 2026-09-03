@@ -311,10 +311,20 @@ function NotificacionesPage() {
                   <Button variant="ghost" size="icon" onClick={() => setViendo(n)} title="Ver">
                     <Eye className="size-4" />
                   </Button>
-                  <Button variant="ghost" size="icon" onClick={() => abrirEdicion(n)} title="Editar">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => abrirEdicion(n)}
+                    title="Editar"
+                  >
                     <Pencil className="size-4" />
                   </Button>
-                  <Button variant="ghost" size="icon" onClick={() => setAEliminar(n)} title="Eliminar">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setAEliminar(n)}
+                    title="Eliminar"
+                  >
                     <Trash2 className="size-4 text-destructive" />
                   </Button>
                 </div>
