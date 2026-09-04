@@ -233,6 +233,28 @@ Misma forma que ventas, en espejo. `/compras-pagos` es idéntico a `/ventas-cobr
 - **El rango de fechas es un solapamiento**, no una comparación contra el inicio: `INICIO < hasta+1 AND NVL(FIN, INICIO) >= desde`. Con `BETWEEN` sobre el inicio, la licencia del 29 de marzo al 4 de abril no aparece en abril, que es cuando hay que resolverla. `FECHA_AUSENCIA_FIN` en NULL **significa un solo día**, así que ese `NVL` es la definición de la columna, no un parche.
 - **El adjunto se ofrece sólo si es `https://`.** Lo escribió otro programa y termina en un `<a href>`: un `javascript:` ahí es un enlace que ejecuta script. `tieneArchivo` va aparte para distinguir "no adjuntó nada" de "adjuntó algo que no se puede abrir" — el caso que hay que ver, no esconder.
 
+#### Fichas de traspaso de clase — `/fichas-traspaso-clase`
+
+Qué tiene que hacer el suplente de un profesor ausente: por dónde entra, con quién se presenta, qué materiales lleva, y grado por grado qué tema toca y a qué hora. **Cabecera y detalle**, como una factura.
+
+| Método   | Ruta                                                        | Qué hace                                                        |
+| -------- | ----------------------------------------------------------- | --------------------------------------------------------------- |
+| `GET`    | `/fichas-traspaso-clase/listar`                             | Paginado. **No manda los cuatro textos largos**, sólo flags      |
+| `GET`    | `/fichas-traspaso-clase/obtener/:id/:idEmpresa`             | La ficha entera con su detalle                                   |
+| `GET`    | `/fichas-traspaso-clase/por-justificacion/:idJust/:idEmp`   | La ficha de una ausencia, o `ficha: null` — **200, no 404**      |
+| `POST`   | `/fichas-traspaso-clase/crear`                              | Ficha + detalle en una transacción. **409 si la ausencia ya tiene** |
+| `PUT`    | `/fichas-traspaso-clase/actualizar/:id`                     | Reemplaza el detalle entero, y sólo si vino                      |
+| `DELETE` | `/fichas-traspaso-clase/eliminar/:id/:idEmpresa`            | Baja física — se lleva el detalle                                |
+
+- **`ID_EMPRESA` existe y no se lee.** La tabla tiene la columna, con su FK y su `NOT NULL`, y aun así el filtro va contra `PROFESORES` **encadenando el JOIN un nivel más** que en justificaciones: `FICHAS → JUSTIFICACIONES_AUSENCIA → PROFESORES`. Una ficha no puede usar un criterio de empresa distinto al de su padre, o la bandeja y el listado mostrarían conjuntos distintos de la misma realidad — una ausencia visible cuya ficha no aparece. La columna **se escribe** con la del profesor (es `NOT NULL` y hay que ponerle algo; ponerle el dato bueno cuesta lo mismo), pero el `idEmpresa` del cliente se usa para **autorizar**, nunca como valor a guardar.
+- **Una ficha por justificación, garantizada por el paquete y no por la base.** El DDL no trae `UNIQUE (ID_JUSTIFICACION)` y debería: sin esa regla una ausencia termina con tres fichas y nadie sabe cuál rige, que es justo el problema que la ficha viene a resolver. Mientras tanto lo cubre un `COUNT` antes del `INSERT` — con la limitación conocida de que **dos altas simultáneas lo pasan las dos**. El `ALTER TABLE` está escrito al pie del archivo y el paquete ya traduce el `DUP_VAL_ON_INDEX` al mismo 409, así que agregarlo no rompe nada: sólo convierte la regla en garantía.
+- **`ID_INSTITUCION` y `FECHA_AUSENCIA` se derivan de la justificación**, no se piden: el alta manda sólo `idJustificacion`. Aceptarlas del body obligaría a validar que coincidan, y el día que esa validación se afloje la ficha dice un colegio y la ausencia otro. **`MATERIA_AREA` sí se pide**, y esa es la diferencia entre un dato que se copia y uno que se aclara: la ficha puede precisarla para el suplente ("Matemática" → "Matemática - Geometría, unidad 4"). Se propone la del padre como valor inicial.
+- **Consecuencia asumida: una ausencia de varios días tiene UNA ficha**, fechada el primer día. Si hace falta una por día, el cambio es `UNIQUE (ID_JUSTIFICACION, FECHA_AUSENCIA)` y aceptar la fecha en el alta **validándola dentro del rango** de la ausencia — no aceptarla libre.
+- **`/por-justificacion` devuelve 200 con `ficha: null`**, no 404. La pantalla entra por la ausencia y al abrirla todavía no sabe si hay ficha: "esta ausencia no tiene ficha todavía" es el camino normal de una solicitud recién recibida, y un 404 obligaría a pintar una falla donde no la hay. El 404 queda para la justificación que no existe o no es de esta empresa. Devuelve además `materiaSugerida`, que es lo que el formulario propone.
+- **Las horas son `VARCHAR2(10)` sin `CHECK`, y por eso se validan y se normalizan.** Texto libre aceptaría `"8hs"` o `"a la mañana"`, dejando la ficha impresa con una columna de horario que no tiene horarios. Se guardan como `HH:MM` **con cero a la izquierda**: sin él, `'8:00'` ordena después de `'13:30'` en cualquier `ORDER BY` de texto y los grados salen desordenados. No se valida el solapamiento entre líneas: dos grados a la misma hora es raro pero puede ser real (dos secciones juntas), y rechazarlo sería decidir por el colegio.
+- **El listado no manda los cuatro textos largos**, sólo un flag por cada uno más `cantidadGrados`. Veinte filas con los cuatro llenos son 80.000 caracteres, muy por encima del techo de 4000 bytes del bind de ORDS. La trampa de `INVENTARIOS.OBSERVACIONES` acá está **impedida por estructura**: los textos ni siquiera viajan, así que no hay resumen que guardar por error.
+- **Una ficha sin grados se guarda igual.** Se puede cargar el acceso ahora y los horarios después, así que rechazarla sería impedir el uso real. Pero sin grados no le sirve al suplente: la pantalla lo avisa con `cantidadGrados` y hay una consulta de auditoría al pie del archivo.
+
 #### Dashboard — `/dashboard/resumen?idEmpresa=&idSucursal=`
 
 Los indicadores de la home en una consulta: montos del mes con su mes anterior, valor de stock, artículos bajo mínimo, últimos movimientos, stock crítico y cuotas de compra por vencer.
@@ -367,6 +389,14 @@ Las columnas `ACTIVO` son `VARCHAR2(1)` con valores `'A'` o `'I'`. **Este códig
   > **Las fechas se formatean sin `new Date`.** `new Date("2026-09-04")` es medianoche **UTC**, y en Asunción eso es el día anterior a las 21:00: una ausencia del 4 se mostraría como del 3. Con hora —`fechaEnvio`— no pasa, porque un ISO sin zona se parsea como local.
   >
   > **Quién recibió la solicitud no es un campo**, es un dato que se muestra: lo sella el backend con el usuario del token. Y el badge de estado **tiene caso por defecto**, porque la columna no tiene `CHECK` y la escribe otro programa.
+  >
+  > **La ficha de traspaso se abre desde acá** (`FichaTraspasoDialog`), no desde una pantalla propia ni una entrada de menú: existe por y para una ausencia concreta, y se entra por la solicitud que la motivó. El diálogo se abre **encima** del de gestión y no lo reemplaza — al cerrarlo se vuelve a resolver la solicitud, que es lo que se estaba haciendo. Se abre con el id de la **justificación**, no con el de la ficha: al abrirlo todavía no se sabe si existe, y de eso se encarga `/por-justificacion`.
+  >
+  > **El mismo formulario sirve para el alta y la edición:** la única diferencia es si `datos.ficha` vino, y con eso se elige a qué endpoint pega el submit. Separarlos duplicaría el formulario entero para cambiar una línea.
+  >
+  > **Los grados van con `useFieldArray` y `type="time"`.** El input nativo garantiza el `HH:MM` que el backend espera y da el selector del sistema; el `zod` lo valida igual por si llega escrito a mano. Un suplente sin asignar **no impide** cargar la ficha —se prepara antes de saber quién va— pero se avisa, porque la ficha es para alguien.
+  >
+  > **La impresión es HTML en una ventana nueva, no jsPDF.** Es un documento de texto que se firma, no una tabla de datos: el visor del navegador lo resuelve sin sumar dos librerías al bundle por una pantalla. **La ventana se abre en la primera línea del handler**, antes de cualquier trabajo — es la misma regla de bloqueadores que `abrirPdf` en `lib/exportar.ts`. Sólo se ofrece con la ficha ya guardada: imprimir un formulario a medio llenar sacaría un papel que no es el que se va a entregar.
 
 - **`_auth.manuales.tsx`:** "/manuales" → ABM de los manuales en PDF, por institución y grado. La institución y el grado se filtran desde el header de su columna; el PDF se ve y se reemplaza desde la fila.
 

@@ -3,6 +3,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tansta
 import { createFileRoute } from "@tanstack/react-router";
 import {
   ClipboardCheck,
+  ClipboardList,
   ExternalLink,
   Loader2,
   Paperclip,
@@ -16,6 +17,7 @@ import { z } from "zod";
 
 import { AppLayout } from "@/components/ctell/AppLayout";
 import { useEmpresa } from "@/components/ctell/empresa-provider";
+import { FichaTraspasoDialog } from "@/components/ctell/FichaTraspasoDialog";
 import { SelectorModal } from "@/components/ctell/SelectorModal";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -741,6 +743,11 @@ function GestionForm({
 }) {
   const queryClient = useQueryClient();
 
+  /** La ficha de traspaso se abre encima de este diálogo, no lo reemplaza: al
+   *  cerrarla se vuelve a la resolución de la solicitud, que es lo que se
+   *  estaba haciendo. */
+  const [fichaAbierta, setFichaAbierta] = useState(false);
+
   const form = useForm<FormValues>({
     values: {
       estado: ficha.estado,
@@ -871,26 +878,49 @@ function GestionForm({
             )}
           />
 
-          <DialogFooter className="gap-2">
-            <Button
-              type="submit"
-              disabled={guardar.isPending}
-              className="h-11 w-full sm:h-10 sm:w-auto"
-            >
-              {guardar.isPending && <Loader2 className="size-4 animate-spin" />}
-              {guardar.isPending ? "Guardando…" : "Guardar"}
-            </Button>
+          <DialogFooter className="gap-2 sm:justify-between">
+            {/* La ficha de traspaso vive acá y no en una pantalla propia: existe
+                por y para esta ausencia. El botón no depende de que la ficha ya
+                exista —el diálogo la crea si no está— así que no hace falta
+                consultarla desde este formulario. */}
             <Button
               type="button"
               variant="outline"
-              onClick={onClose}
-              className="h-11 w-full sm:h-10 sm:w-auto"
+              onClick={() => setFichaAbierta(true)}
+              className="h-11 sm:h-10"
             >
-              Cancelar
+              <ClipboardList className="size-4" />
+              Ficha de traspaso
             </Button>
+
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="submit"
+                disabled={guardar.isPending}
+                className="h-11 w-full sm:h-10 sm:w-auto"
+              >
+                {guardar.isPending && <Loader2 className="size-4 animate-spin" />}
+                {guardar.isPending ? "Guardando…" : "Guardar"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={onClose}
+                className="h-11 w-full sm:h-10 sm:w-auto"
+              >
+                Cancelar
+              </Button>
+            </div>
           </DialogFooter>
         </form>
       </Form>
+
+      <FichaTraspasoDialog
+        idJustificacion={fichaAbierta ? ficha.id : null}
+        idEmpresa={idEmpresa}
+        profesor={ficha.profesor}
+        onClose={() => setFichaAbierta(false)}
+      />
     </div>
   );
 }

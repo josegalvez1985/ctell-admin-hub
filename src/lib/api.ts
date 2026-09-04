@@ -566,6 +566,136 @@ export type ListaJustificacionesAusencia = {
 };
 
 /**
+ * Una línea de la ficha de traspaso: un grado, su horario y qué se da.
+ *
+ * `horaDesde`/`horaHasta` vienen **normalizadas a `HH:MM`** con cero a la
+ * izquierda. La columna es `VARCHAR2(10)` sin `CHECK` y el backend la valida:
+ * sin el cero, `'8:00'` ordena después de `'13:30'` en cualquier orden de texto
+ * y la ficha impresa sale con los grados desordenados.
+ */
+export type FichaTraspasoDetalle = {
+  /** Cambia en cada edición: el `ACTUALIZAR` reemplaza el detalle entero. */
+  id: number;
+  gradoCurso: string;
+  horaDesde: string | null;
+  horaHasta: string | null;
+  temaDesarrollar: string | null;
+  observacionesGrupo: string | null;
+};
+
+/** Lo que se manda al crear o editar una línea. Sin `id`: lo pone la base. */
+export type FichaTraspasoDetalleNuevo = {
+  gradoCurso: string;
+  horaDesde: string;
+  horaHasta: string;
+  temaDesarrollar: string;
+  observacionesGrupo: string;
+};
+
+/**
+ * Una fila del listado de fichas de traspaso.
+ *
+ * **No trae los cuatro textos largos**, sólo un flag por cada uno. Veinte filas
+ * con los cuatro llenos son 80.000 caracteres, muy por encima del techo de 4000
+ * bytes del bind de ORDS. La ficha entera sale de `obtener()` o de
+ * `porJustificacion()`.
+ */
+export type FichaTraspasoFila = {
+  id: number;
+  /**
+   * **La empresa del PROFESOR de la justificación**, no la columna `ID_EMPRESA`
+   * de la ficha — que el backend escribe pero no lee, por el mismo motivo que
+   * en las justificaciones y las marcaciones.
+   */
+  idEmpresa: number;
+  idJustificacion: number;
+  idProfesor: number;
+  profesor: string;
+  idInstitucion: number;
+  institucion: string | null;
+  /** ISO `YYYY-MM-DD`. Derivada de la justificación, no se edita. */
+  fechaAusencia: string;
+  materiaArea: string | null;
+  personaContacto: string | null;
+  /** El suplente sale de la justificación: se asigna al resolverla, no acá. */
+  suplente: string | null;
+  /**
+   * Cuántos grados tiene cargados. **Cero es un estado normal pero inútil**: la
+   * ficha se puede crear con los datos de acceso y completarse después, pero sin
+   * grados no le sirve al suplente. La pantalla lo avisa.
+   */
+  cantidadGrados: number;
+  tieneIngreso: "S" | "N";
+  tieneMateriales: "S" | "N";
+  tieneIndicaciones: "S" | "N";
+  tieneObservaciones: "S" | "N";
+  fechaCreacion: string | null;
+  fechaActualizacion: string | null;
+};
+
+/**
+ * La ficha completa: los cuatro textos enteros y el detalle de grados.
+ *
+ * **El formulario de edición carga de acá**, nunca de la fila del listado — que
+ * ni siquiera trae los textos, así que la trampa de `INVENTARIOS.OBSERVACIONES`
+ * está impedida por estructura y no por acordarse.
+ */
+export type FichaTraspaso = {
+  id: number;
+  idEmpresa: number;
+  idJustificacion: number;
+  idProfesor: number;
+  profesor: string;
+  idInstitucion: number;
+  institucion: string | null;
+  /** ISO `YYYY-MM-DD`. **Derivada** de `FECHA_AUSENCIA_INICIO` de la ausencia. */
+  fechaAusencia: string;
+  /** Las de la ausencia, para poder decir "día 1 de 3" sin pedirla aparte. */
+  fechaInicio: string | null;
+  fechaFin: string | null;
+  turno: string | null;
+  suplente: string | null;
+  estadoJustificacion: EstadoJustificacion;
+  materiaArea: string | null;
+  personaContacto: string | null;
+  ingresoRequisitos: string | null;
+  materialesRecursos: string | null;
+  otrasIndicaciones: string | null;
+  observacionesAdicionales: string | null;
+  detalle: FichaTraspasoDetalle[];
+  fechaCreacion: string | null;
+  fechaActualizacion: string | null;
+};
+
+export type ListaFichasTraspaso = {
+  items: FichaTraspasoFila[];
+  total: number;
+  pagina: number;
+  tamanio: number;
+};
+
+/**
+ * Lo que devuelve `porJustificacion()`: la ficha de una ausencia, **o el aviso
+ * de que todavía no tiene**.
+ *
+ * `ficha` en `null` es **200, no 404**: una ausencia recién recibida sin ficha
+ * es el camino normal, no un error. Los otros tres campos vienen siempre y son
+ * los que el formulario de alta usa para proponer valores.
+ */
+export type FichaTraspasoDeJustificacion = {
+  ficha: FichaTraspaso | null;
+  idJustificacion: number;
+  idInstitucion: number;
+  fechaAusencia: string;
+  /**
+   * La materia que declaró el profesor en la justificación. Es el valor inicial
+   * del campo, no un dato fijo: la ficha puede precisarla para el suplente
+   * ("Matemática" → "Matemática - Geometría, unidad 4").
+   */
+  materiaSugerida: string | null;
+};
+
+/**
  * Una marcación que todavía no tiene reporte.
  *
  * Sale de `/reportes-actividades/pendientes`, que es la resta entre las
@@ -3592,6 +3722,136 @@ export const api = {
       request<{ ok: boolean }>(`/justificaciones-ausencia/actualizar/${id}`, {
         method: "PUT",
         body: JSON.stringify(datos),
+      }),
+  },
+
+  /**
+   * Fichas de traspaso de clase: qué tiene que hacer el suplente de un profesor
+   * ausente. Cuelgan de una justificación y **hay una sola por ausencia** — el
+   * alta devuelve 409 si ya existe.
+   *
+   * **La institución y la fecha se derivan de la justificación**, no se mandan:
+   * aceptarlas del body obligaría a validar que coincidan, y el día que esa
+   * validación se afloje la ficha diría un colegio y la ausencia otro. Es el
+   * mismo criterio de `reportesActividades`.
+   *
+   * `idEmpresa` viaja en todas las llamadas y acota por la empresa **del
+   * profesor de la justificación**, encadenando el JOIN un nivel más que en
+   * `justificacionesAusencia`. La ficha tiene su propia `ID_EMPRESA`, pero el
+   * backend la escribe sin leerla nunca.
+   */
+  fichasTraspasoClase: {
+    /**
+     * El listado. `idEmpresa` es obligatorio: la consulta **no se acota sola**
+     * —el filtro vive en el JOIN— así que sin él devolvería las fichas de todo
+     * el sistema.
+     *
+     * **No trae los cuatro textos largos**, sólo flags de "tiene contenido".
+     * De a 20 por página y **50 como techo**.
+     */
+    listar: (params: {
+      idEmpresa: number;
+      desde?: string | undefined;
+      hasta?: string | undefined;
+      idProfesor?: number | undefined;
+      idInstitucion?: number | undefined;
+      busqueda?: string | undefined;
+      pagina?: number | undefined;
+      tamanio?: number | undefined;
+    }) => {
+      const q = new URLSearchParams({ idEmpresa: String(params.idEmpresa) });
+      if (params.desde) q.set("desde", params.desde);
+      if (params.hasta) q.set("hasta", params.hasta);
+      if (params.idProfesor) q.set("idProfesor", String(params.idProfesor));
+      if (params.idInstitucion) q.set("idInstitucion", String(params.idInstitucion));
+      if (params.busqueda) q.set("busqueda", params.busqueda);
+      if (params.pagina) q.set("pagina", String(params.pagina));
+      if (params.tamanio) q.set("tamanio", String(params.tamanio));
+      return request<ListaFichasTraspaso>(`/fichas-traspaso-clase/listar?${q}`);
+    },
+
+    /** La ficha entera, con los textos completos y el detalle. **El formulario
+     * de edición carga de acá**, nunca de la fila del listado. */
+    obtener: (id: number, idEmpresa: number) =>
+      request<FichaTraspaso>(`/fichas-traspaso-clase/obtener/${id}/${idEmpresa}`),
+
+    /**
+     * La ficha de una ausencia, buscada por el id de la **justificación**.
+     *
+     * Es por donde entra la pantalla: al abrir la gestión de una ausencia hay
+     * que saber si ya tiene ficha para ofrecer "Ver" o "Crear", y ahí el único
+     * id disponible es el de la justificación.
+     *
+     * **`ficha: null` es 200, no 404**: una ausencia sin ficha todavía es el
+     * camino normal. El 404 queda para la justificación que no existe o no es de
+     * esta empresa.
+     */
+    porJustificacion: (idJustificacion: number, idEmpresa: number) =>
+      request<FichaTraspasoDeJustificacion>(
+        `/fichas-traspaso-clase/por-justificacion/${idJustificacion}/${idEmpresa}`,
+      ),
+
+    /**
+     * Alta con su detalle, **en una transacción**: si una línea está mal, no
+     * queda la cabecera suelta.
+     *
+     * No lleva `idInstitucion` ni `fechaAusencia` —se derivan— ni `id`. El
+     * `detalle` puede ir vacío: la ficha se puede crear con los datos de acceso
+     * y completarse con los grados después.
+     *
+     * Todas las claves van siempre, con `""` cuando están vacías: una clave
+     * omitida deja el bind sin definir en vez de en NULL.
+     *
+     * **409 si la ausencia ya tiene ficha.**
+     */
+    crear: (datos: {
+      idEmpresa: number;
+      idJustificacion: number;
+      materiaArea: string;
+      personaContacto: string;
+      ingresoRequisitos: string;
+      materialesRecursos: string;
+      otrasIndicaciones: string;
+      observacionesAdicionales: string;
+      detalle: FichaTraspasoDetalleNuevo[];
+    }) =>
+      request<{ id: number; ok: boolean }>("/fichas-traspaso-clase/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /**
+     * Modificación. **Un campo vacío BORRA** —el formulario manda siempre todos—
+     * y el detalle **se reemplaza entero**, así que hay que mandarlo completo:
+     * omitirlo deja los grados como estaban, mandarlo con una línea menos la
+     * borra.
+     *
+     * No acepta `idJustificacion`: mover una ficha a otra ausencia es crear otra
+     * ficha, no editar esta.
+     */
+    actualizar: (
+      id: number,
+      datos: {
+        idEmpresa: number;
+        materiaArea: string;
+        personaContacto: string;
+        ingresoRequisitos: string;
+        materialesRecursos: string;
+        otrasIndicaciones: string;
+        observacionesAdicionales: string;
+        detalle: FichaTraspasoDetalleNuevo[];
+      },
+    ) =>
+      request<{ ok: boolean }>(`/fichas-traspaso-clase/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Baja física: se lleva el detalle. No hay baja lógica — la tabla no tiene
+     * `ACTIVO`. */
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/fichas-traspaso-clase/eliminar/${id}/${idEmpresa}`, {
+        method: "DELETE",
       }),
   },
 
