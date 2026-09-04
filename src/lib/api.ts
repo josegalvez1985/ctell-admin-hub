@@ -466,6 +466,106 @@ export type ListaReportesActividades = {
 };
 
 /**
+ * Los cuatro estados de una justificación de ausencia.
+ *
+ * **La columna `ESTADO_SOLICITUD` no tiene `CHECK`**: los valores viven en un
+ * `COMMENT`, y un `COMMENT` no es una restricción. Esta lista es el espejo de
+ * `ESTADO_VALIDO` en `db/justificaciones-ausencia.sql` — **si se agrega un
+ * estado, van los dos**. Es la misma trampa que `GRADOS` en manuales.
+ */
+export const ESTADOS_JUSTIFICACION = ["PENDIENTE", "EN REVISION", "APROBADA", "RECHAZADA"] as const;
+
+export type EstadoJustificacion = (typeof ESTADOS_JUSTIFICACION)[number];
+
+/**
+ * Una justificación de ausencia que mandó un profesor.
+ *
+ * **La escriben dos programas.** La solicitud la crea la app del profesor (otro
+ * proyecto); el hub sólo la resuelve: estado, suplente y observaciones. Por eso
+ * acá no hay `crear` ni `eliminar`, y el resto de los campos son de lectura.
+ */
+export type JustificacionAusencia = {
+  id: number;
+  /**
+   * **La empresa del PROFESOR**, no la columna `ID_EMPRESA` de la fila: la app
+   * la fija siempre en 1, así que el backend la ignora y filtra contra
+   * `PROFESORES`. Es el mismo criterio que las marcaciones.
+   */
+  idEmpresa: number;
+  idProfesor: number;
+  profesor: string;
+  idInstitucion: number;
+  /** `null` sólo si la institución fue borrada. */
+  institucion: string | null;
+  materia: string | null;
+  /** ISO `YYYY-MM-DD`. */
+  fechaInicio: string;
+  /** `null` significa **un solo día**, no "sin definir". */
+  fechaFin: string | null;
+  /**
+   * Días que cubre la ausencia, **derivado de las fechas** — que es lo único
+   * verificable. Puede no coincidir con `cantidadDeclarada`, y mostrar los dos
+   * es justamente el punto.
+   */
+  dias: number;
+  /** Texto libre que escribió el profesor: "2 días", "4 horas". */
+  cantidadDeclarada: string | null;
+  turno: string | null;
+  cursos: string | null;
+  /**
+   * **En el listado viene recortado a 200 caracteres** y `motivoTruncado` vale
+   * `'S'`. El diálogo de gestión carga con `obtener()`.
+   */
+  motivo: string | null;
+  motivoTruncado: "S" | "N";
+  /**
+   * El respaldo en Cloudinary, **sólo si empieza con `https://`**. Lo escribió
+   * otro programa y termina en un `<a href>`: un `javascript:` ahí sería un
+   * enlace que ejecuta script, así que el backend no lo devuelve.
+   */
+  urlArchivo: string | null;
+  /**
+   * `'S'` si la columna tiene algo, aunque `urlArchivo` sea `null`. Con los dos
+   * la pantalla distingue "no adjuntó nada" de "adjuntó algo que no se puede
+   * abrir" — que es el caso que hay que ver, no esconder.
+   */
+  tieneArchivo: "S" | "N";
+  /**
+   * Normalizado y con `NVL` a `PENDIENTE`: la columna acepta NULL y una
+   * solicitud sin estado es una pendiente.
+   *
+   * **Puede llegar un valor fuera de la unión.** No hay `CHECK` y la escribe
+   * otro programa, así que quien lo pinte necesita un caso por defecto — se
+   * muestra, aunque no se pueda filtrar.
+   */
+  estado: EstadoJustificacion;
+  /** Lo sella el backend con el usuario del token la primera vez que se
+   * gestiona. No se manda ni se edita. */
+  recibidoPor: string | null;
+  /** ISO `YYYY-MM-DD`. Sellada junto con `recibidoPor`, y nunca pisada después. */
+  fechaRecepcion: string | null;
+  suplente: string | null;
+  /** **Recortadas a 200 en el listado.** Son editables: guardar la fila del
+   * listado escribiría el resumen encima de los 1000 caracteres. */
+  observaciones: string | null;
+  observacionesTruncadas: "S" | "N";
+  /**
+   * Cuándo la mandó el profesor, **en su hora local**. `fechaCreacion` es el
+   * UTC del servidor: no son el mismo reloj y no se comparan entre sí.
+   */
+  fechaEnvio: string | null;
+  fechaCreacion: string | null;
+  fechaActualizacion: string | null;
+};
+
+export type ListaJustificacionesAusencia = {
+  items: JustificacionAusencia[];
+  total: number;
+  pagina: number;
+  tamanio: number;
+};
+
+/**
  * Una marcación que todavía no tiene reporte.
  *
  * Sale de `/reportes-actividades/pendientes`, que es la resta entre las
@@ -3420,6 +3520,78 @@ export const api = {
     eliminar: (id: number, idEmpresa: number) =>
       request<{ ok: boolean }>(`/reportes-multimedia/eliminar/${id}/${idEmpresa}`, {
         method: "DELETE",
+      }),
+  },
+
+  /**
+   * Justificaciones de ausencia de profesores.
+   *
+   * **No tiene `crear` ni `eliminar`, y no es un olvido.** La solicitud la carga
+   * el profesor desde su app; el hub la resuelve. Un ABM completo dejaría que
+   * administración cargue una ausencia a nombre de alguien que nunca la pidió, y
+   * que borre la única constancia de una que sí pidió.
+   */
+  justificacionesAusencia: {
+    /**
+     * La bandeja. `idEmpresa` es obligatorio y acota por la empresa **del
+     * profesor**, no por la columna de la fila.
+     *
+     * `desde`/`hasta` filtran por **solapamiento**: una licencia del 29 de marzo
+     * al 4 de abril sale en los dos meses, que es cuando hay que resolverla.
+     *
+     * **`motivo` y `observaciones` vienen recortados a 200 caracteres.** De a 20
+     * por página y **50 como techo**: cada fila lleva dos textos libres y una
+     * página grande choca contra el bind de 4000 bytes de ORDS.
+     */
+    listar: (params: {
+      idEmpresa: number;
+      desde?: string | undefined;
+      hasta?: string | undefined;
+      idProfesor?: number | undefined;
+      idInstitucion?: number | undefined;
+      estado?: EstadoJustificacion | undefined;
+      busqueda?: string | undefined;
+      pagina?: number | undefined;
+      tamanio?: number | undefined;
+    }) => {
+      const q = new URLSearchParams({ idEmpresa: String(params.idEmpresa) });
+      if (params.desde) q.set("desde", params.desde);
+      if (params.hasta) q.set("hasta", params.hasta);
+      if (params.idProfesor) q.set("idProfesor", String(params.idProfesor));
+      if (params.idInstitucion) q.set("idInstitucion", String(params.idInstitucion));
+      if (params.estado) q.set("estado", params.estado);
+      if (params.busqueda) q.set("busqueda", params.busqueda);
+      if (params.pagina) q.set("pagina", String(params.pagina));
+      if (params.tamanio) q.set("tamanio", String(params.tamanio));
+      return request<ListaJustificacionesAusencia>(`/justificaciones-ausencia/listar?${q}`);
+    },
+
+    /** La ficha con el motivo y las observaciones enteros. **El diálogo de
+     * gestión carga de acá**, nunca de la fila del listado. */
+    obtener: (id: number, idEmpresa: number) =>
+      request<JustificacionAusencia>(`/justificaciones-ausencia/obtener/${id}/${idEmpresa}`),
+
+    /**
+     * Resuelve la solicitud, y nada más: los campos que cargó el profesor no se
+     * tocan. `recibidoPor` y `fechaRecepcion` **no van acá** — los sella el
+     * backend con el usuario del token la primera vez.
+     *
+     * Las tres claves van siempre, con `""` cuando están vacías: una clave
+     * omitida deja el bind sin definir en vez de en NULL. Y **`""` borra**: es
+     * la única forma de sacar un suplente cargado por error.
+     */
+    actualizar: (
+      id: number,
+      datos: {
+        idEmpresa: number;
+        estado: EstadoJustificacion;
+        suplenteAsignado: string;
+        observaciones: string;
+      },
+    ) =>
+      request<{ ok: boolean }>(`/justificaciones-ausencia/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
       }),
   },
 

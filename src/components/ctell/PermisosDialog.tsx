@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, Loader2 } from "lucide-react";
+import { CheckCheck, Copy, Loader2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
@@ -565,41 +565,56 @@ function PanelPermisos({ idUsuario }: { idUsuario: number }) {
         {[...porModulo.entries()].map(([modulo, susPaginas]) => {
           const conPermiso = susPaginas.filter((p) => asignadas.has(p.id)).length;
           const todas = conPermiso === susPaginas.length;
-          // Estado del checkbox del módulo: marcado si están todas, guion si
-          // hay algunas ("indeterminate" de Radix), vacío si ninguna. Sin el
-          // intermedio, un módulo con 3 de 5 se vería igual que uno con 0.
-          const estadoModulo = todas ? true : conPermiso > 0 ? "indeterminate" : false;
 
           return (
             <div key={modulo} className="mb-3 break-inside-avoid rounded-lg border border-border">
-              {/* La cabecera del módulo es un checkbox: marca o desmarca todas
-                  sus páginas de una vez. Con módulos de ocho o diez páginas,
-                  darlas una por una son diez peticiones y diez clics.
-
-                  Al estar TODAS marcadas el clic las quita; en cualquier otro
-                  caso las da. Es lo que espera quien ve el guion del estado
-                  parcial: el primer clic completa, no vacía. */}
-              <Label className="flex cursor-pointer items-center gap-3 border-b border-border bg-muted/50 px-3 py-2 text-sm font-semibold text-foreground">
-                <Checkbox
-                  checked={estadoModulo}
-                  disabled={guardando}
-                  aria-label={`${todas ? "Quitar" : "Asignar"} todas las páginas de ${modulo}`}
-                  onCheckedChange={() =>
-                    cambiarModulo.mutate({
-                      // Sólo las que cambian: al marcar, las que faltan; al
-                      // desmarcar, las que tiene.
-                      paginas: susPaginas.filter((p) => asignadas.has(p.id) === todas),
-                      dar: !todas,
-                    })
-                  }
-                />
+              {/* Acciones por MÓDULO, no globales: cada tarjeta se completa o se
+                  vacía por su cuenta. Con módulos de ocho o diez páginas, darlas
+                  una por una son diez peticiones y diez clics. */}
+              <div className="flex items-center gap-2 border-b border-border bg-muted/50 px-3 py-2 text-sm font-semibold text-foreground">
                 <span className="min-w-0 flex-1 truncate">{modulo}</span>
                 {/* El contador dice de un vistazo cuánto falta del módulo, sin
                     tener que contar checkboxes. */}
                 <span className="shrink-0 text-xs font-normal tabular-nums text-muted-foreground">
                   {conPermiso}/{susPaginas.length}
                 </span>
-              </Label>
+                <div className="flex shrink-0 gap-1">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="size-7"
+                    title={`Asignar todas las páginas de ${modulo}`}
+                    aria-label={`Asignar todas las páginas de ${modulo}`}
+                    disabled={guardando || todas}
+                    onClick={() =>
+                      cambiarModulo.mutate({
+                        paginas: susPaginas.filter((p) => !asignadas.has(p.id)),
+                        dar: true,
+                      })
+                    }
+                  >
+                    <CheckCheck className="size-4" />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="size-7"
+                    title={`Quitar todas las páginas de ${modulo}`}
+                    aria-label={`Quitar todas las páginas de ${modulo}`}
+                    disabled={guardando || conPermiso === 0}
+                    onClick={() =>
+                      cambiarModulo.mutate({
+                        paginas: susPaginas.filter((p) => asignadas.has(p.id)),
+                        dar: false,
+                      })
+                    }
+                  >
+                    <X className="size-4" />
+                  </Button>
+                </div>
+              </div>
               <ul className="divide-y divide-border">
                 {susPaginas.map((pagina, i) => {
                   const tiene = asignadas.has(pagina.id);

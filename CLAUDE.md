@@ -217,6 +217,22 @@ Misma forma que ventas, en espejo. `/compras-pagos` es idéntico a `/ventas-cobr
 - **El pie de foto se limita a 200 aunque la columna acepte 1000**, porque viaja entero en la galería. Recortarlo en el listado —el camino de inventarios— traería su trampa de edición; para un pie no vale la pena.
 - **Nada de helpers en `PUBLICAR_ENDPOINTS`.** Envolver `ORDS.DEFINE_PARAMETER` en un procedimiento propio hace que ORDS rechace el **primer** parámetro con `ORA-02290 (REST_PARAMS_SOURCE_TYPE_CK)` sobre un `'HEADER'/'IN'` idéntico al que publican los otros cuarenta módulos; lo único distinto es pasar el valor por variable en vez de literal. El `ORA-02290` aborta la publicación a la mitad y **deja el módulo sin ningún endpoint**. Las llamadas van escritas una por una, como en `db/manuales.sql`.
 
+#### Justificaciones de ausencia — `/justificaciones-ausencia`
+
+| Método | Ruta                                            | Qué hace                                                            |
+| ------ | ----------------------------------------------- | ------------------------------------------------------------------- |
+| `GET`  | `/justificaciones-ausencia/listar`              | Paginado. `motivo` y `observaciones` **recortados a 200**            |
+| `GET`  | `/justificaciones-ausencia/obtener/:id/:idEmp`  | La ficha, con los dos textos enteros                                 |
+| `PUT`  | `/justificaciones-ausencia/actualizar/:id`      | Body: `{ idEmpresa, estado, suplenteAsignado, observaciones }`       |
+
+- **La tabla la escriben dos programas, y cada uno escribe su mitad.** La solicitud la crea la **app del profesor** (otro proyecto): profesor, institución, materia, fechas, turno, cursos, motivo, adjunto y `FECHA_ENVIO`. El hub sólo la resuelve: estado, suplente, observaciones y el sello de recepción. Por eso **no hay `/crear` ni `/eliminar`**, y no es un olvido: una justificación es un documento que mandó una persona, y un ABM completo dejaría cargar una ausencia a nombre de quien nunca la pidió, o borrar la única constancia de una que sí. El `ACTUALIZAR` no menciona ni una columna de la app — que la pantalla no las muestre no alcanza, porque al endpoint le pega cualquiera con un token.
+- **`ID_EMPRESA` es una columna que no se lee.** Su propio `COMMENT` dice que la app la fija **siempre en 1**. El filtro va contra `PROFESORES` con un JOIN, igual que en asistencias: la cédula es única en todo el sistema, así que la solicitud se lista donde está su profesor. Va en las tres consultas —listado, `COUNT` y `UPDATE`, este último como `EXISTS`—: creerle a esa columna dejaría a toda empresa que no sea la 1 con la bandeja vacía, y a la 1 viendo las de todos.
+- **`ESTADO_SOLICITUD` acepta NULL, no tiene `CHECK`, y lo escribe otro programa** — las tres cosas juntas. Se lee con `NVL(…, 'PENDIENTE')` (una solicitud sin estado es una pendiente, no una fila que ningún filtro encuentra) y **normalizado al leer**, no sólo al escribir: si la app guardó `'aprobada'`, el filtro tiene que encontrarla. Los cuatro valores viven en un `COMMENT`, así que los valida `ESTADO_VALIDO` y **la misma lista está en `ESTADOS_JUSTIFICACION` de `api.ts`**: si se agrega uno, van los dos. Un estado desconocido **se muestra pero no se filtra**, como `PROCESADO` en el reporte de inventarios.
+- **`RECIBIDO_POR` y `FECHA_RECEPCION` no viajan en el body:** los sella el paquete con el usuario del token la **primera** vez que se gestiona, y después no se pisan (`NVL` contra el valor de la fila). Aceptarlos del cliente convertiría una auditoría en una casilla de texto; reescribirlos en cada guardado haría que corregir una observación seis meses después mueva la fecha de recepción a hoy.
+- **Un campo vacío BORRA** en suplente y observaciones —el formulario manda siempre los tres, como en inventarios—, pero el estado vacío es 400: una solicitud sin estado no significa nada.
+- **El rango de fechas es un solapamiento**, no una comparación contra el inicio: `INICIO < hasta+1 AND NVL(FIN, INICIO) >= desde`. Con `BETWEEN` sobre el inicio, la licencia del 29 de marzo al 4 de abril no aparece en abril, que es cuando hay que resolverla. `FECHA_AUSENCIA_FIN` en NULL **significa un solo día**, así que ese `NVL` es la definición de la columna, no un parche.
+- **El adjunto se ofrece sólo si es `https://`.** Lo escribió otro programa y termina en un `<a href>`: un `javascript:` ahí es un enlace que ejecuta script. `tieneArchivo` va aparte para distinguir "no adjuntó nada" de "adjuntó algo que no se puede abrir" — el caso que hay que ver, no esconder.
+
 #### Dashboard — `/dashboard/resumen?idEmpresa=&idSucursal=`
 
 Los indicadores de la home en una consulta: montos del mes con su mes anterior, valor de stock, artículos bajo mínimo, últimos movimientos, stock crítico y cuotas de compra por vencer.
@@ -339,6 +355,18 @@ Las columnas `ACTIVO` son `VARCHAR2(1)` con valores `'A'` o `'I'`. **Este códig
   > **El combo de institución depende del de profesor:** elegido un profesor ofrece sólo donde marcó ese mes (`/vinculos`), con un cartel que lo dice — un colegio ausente sin explicación parece un dato perdido. Si la institución elegida no es suya, vuelve a "Todas": un filtro que ya no figura en su propio combo es invisible y deja la pantalla vacía sin motivo aparente.
   >
   > **La subida necesita `VITE_CLOUDINARY_CLOUD_NAME` y `VITE_CLOUDINARY_UPLOAD_PRESET`** (ver `.env.example`; en el deploy son _variables_ del repo, no secrets). Sin ellas la pantalla no muestra un botón que falla siempre: ofrece pegar la URL a mano. **El `public_id` lo manda la app**, no el preset: con `use_filename` y sin `unique_filename`, dos `IMG_0001.jpg` de dos celulares comparten identificador y Cloudinary devuelve 200 con la URL de la primera sin subir la segunda — la evidencia de una clase mostrando la foto de otra, sin ningún error.
+
+- **`_auth.justificaciones-ausencia.tsx`:** "/justificaciones-ausencia" → Bandeja de las solicitudes que mandaron los profesores. Se reciben y se resuelven; **no se dan de alta ni se borran**.
+
+  > **No hay botón "Nueva", y el vacío lo explica** en vez de dejar la duda: las cargan los profesores desde su app. Arriba, un aviso con cuántas quedan pendientes y un botón que **deja el filtro puesto** — informar sin ofrecer la acción es media ayuda. Ese número sale de **una consulta aparte** (`estado=PENDIENTE`, `tamanio=1`, se lee el `total`): contar las filas en pantalla diría "3 pendientes" cuando hay treinta, porque el listado está paginado y filtrado.
+  >
+  > **Todos los filtros van al servidor** —estado, profesor, institución, fechas y búsqueda— y por eso están en un panel y no en el embudo de cada columna. Con el listado paginado, filtrar u ordenar en memoria miraría sólo las páginas ya traídas: el resultado dependería de cuántas veces se tocó "Mostrar más". Por lo mismo acá **no hay orden por columna**.
+  >
+  > **El diálogo carga con `obtener()`, y el formulario ni siquiera puede ver la fila del listado**: vive en un componente aparte que sólo se monta con la ficha traída. En el listado el motivo y las observaciones vienen recortados a 200, y guardar ese resumen escribiría 200 encima de los 1000 — la trampa de `INVENTARIOS.OBSERVACIONES`, pero acá impedida por la estructura y no por acordarse.
+  >
+  > **Las fechas se formatean sin `new Date`.** `new Date("2026-09-04")` es medianoche **UTC**, y en Asunción eso es el día anterior a las 21:00: una ausencia del 4 se mostraría como del 3. Con hora —`fechaEnvio`— no pasa, porque un ISO sin zona se parsea como local.
+  >
+  > **Quién recibió la solicitud no es un campo**, es un dato que se muestra: lo sella el backend con el usuario del token. Y el badge de estado **tiene caso por defecto**, porque la columna no tiene `CHECK` y la escribe otro programa.
 
 - **`_auth.manuales.tsx`:** "/manuales" → ABM de los manuales en PDF, por institución y grado. La institución y el grado se filtran desde el header de su columna; el PDF se ve y se reemplaza desde la fila.
 

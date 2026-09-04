@@ -133,6 +133,12 @@ db/                      Backend: un archivo SQL por tabla
 ├── reportes-multimedia.sql   Fotos y videos del reporte. Guarda la URL de
 │                        Cloudinary, NO el binario: borrar la fila no borra el
 │                        archivo
+├── justificaciones-ausencia.sql  Ausencias que justifican los profesores. La
+│                        tabla la escriben DOS programas: la app del profesor la
+│                        crea, el hub sólo la resuelve (estado, suplente,
+│                        observaciones). Sin /crear ni /eliminar, y el filtro por
+│                        empresa va contra PROFESORES: su ID_EMPRESA está fija
+│                        en 1
 └── dashboard.sql        PKG_DASHBOARD: los indicadores de la home, en 1 consulta
 
 (La lista no está completa: el módulo educativo —instituciones.sql,
@@ -160,6 +166,9 @@ src/
 │   │                                    clases: línea de tiempo por mes, con
 │   │                                    las marcaciones sin reporte en el
 │   │                                    mismo hilo y galería de evidencias
+│   ├── _auth.justificaciones-ausencia.tsx  "/justificaciones-ausencia" →
+│   │                                    bandeja de ausencias justificadas: se
+│   │                                    reciben y se resuelven, no se cargan
 │   ├── _auth.configuracion.tsx  "/configuracion" → preferencias
 │   └── _auth.<tabla>.tsx        una por cada ABM
 ├── components/

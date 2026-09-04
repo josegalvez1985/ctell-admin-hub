@@ -22,6 +22,7 @@ import {
   Building2,
   CalendarCheck,
   CalendarClock,
+  CalendarOff,
   CircleDot,
   ClipboardCheck,
   ClipboardList,
@@ -215,6 +216,16 @@ const ICONOS_PAGINA: Record<string, LucideIcon> = {
   "reporte de asistencias": CalendarCheck,
   "reportes actividades": NotebookPen,
   "reportes de actividades": NotebookPen,
+  // CalendarOff y no CalendarCheck/CalendarClock: los tres son del calendario a
+  // propósito —hablan del mismo día de clase— y se distinguen por lo que pasó
+  // ese día. CalendarCheck es la asistencia (vino y marcó), CalendarClock las
+  // cuotas por vencer, y el calendario tachado es la ausencia, que es
+  // exactamente lo que justifica este módulo.
+  justificaciones: CalendarOff,
+  justificacion: CalendarOff,
+  "justificaciones de ausencia": CalendarOff,
+  "justificacion de ausencia": CalendarOff,
+  ausencias: CalendarOff,
   existencias: PackageSearch,
   existencia: PackageSearch,
   "existencia de articulos": PackageSearch,

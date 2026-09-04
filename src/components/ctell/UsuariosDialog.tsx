@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Pencil, Plus, Search, Trash2, UserCheck, UserX } from "lucide-react";
+import { KeyRound, Loader2, Pencil, Plus, Search, Trash2, UserCheck, UserX } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
@@ -132,6 +132,7 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
   const { data: yo } = useUsuarioActual();
   const [busqueda, setBusqueda] = useState("");
   const [aEliminar, setAEliminar] = useState<Usuario | null>(null);
+  const [aResetear, setAResetear] = useState<Usuario | null>(null);
 
   const { data, isPending, isError, error } = useQuery({
     queryKey: ["usuarios"],
@@ -150,6 +151,46 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
       toast.success(activar ? "Usuario activado" : "Usuario inactivado");
     },
     onError: (e) => toast.error(MENSAJE_ERROR(e, "No se pudo cambiar el estado")),
+  });
+
+  /**
+   * Manda una contraseña provisoria al correo del usuario.
+   *
+   * **Reusa el endpoint del login** (`/auth/recuperar`), que es el mismo que
+   * usa "olvidé mi contraseña": genera la clave, la guarda hasheada, **revoca
+   * todas las sesiones abiertas** de esa cuenta y manda el correo. No hay un
+   * endpoint administrativo aparte, así que acá no se inventa uno.
+   *
+   * Eso trae una limitación que hay que conocer y que el texto de la pantalla
+   * respeta: el endpoint **siempre responde 200 con el mismo mensaje**, coincida
+   * o no el par usuario/correo y salga o no el correo. Es deliberado —así no
+   * sirve para enumerar cuentas ni direcciones—, pero significa que **un `ok`
+   * acá no prueba que el mail llegó**. Por eso el toast dice "se envió a esa
+   * dirección" y no "listo, ya lo recibió", y por eso el botón se deshabilita
+   * antes en los casos que sabemos que no van a funcionar.
+   *
+   * `usuario` y `correo` salen de la fila: el admin no los tipea, así que no
+   * puede equivocarse y resetear la cuenta de otro.
+   */
+  const resetearPassword = useMutation({
+    mutationFn: (usuario: Usuario) =>
+      api.recuperarPassword({
+        usuario: usuario.usuario.toLowerCase(),
+        // El botón está deshabilitado sin correo; el `?? ""` es sólo para el
+        // tipo, no un caso que se pueda alcanzar desde la pantalla.
+        correo: usuario.correo ?? "",
+      }),
+    onSuccess: (_, usuario) => {
+      toast.success(`Se envió una contraseña provisoria a ${usuario.correo}`, {
+        description:
+          "Sus sesiones abiertas se cerraron. Al entrar con esa clave, puede cambiarla desde Configuración.",
+      });
+      setAResetear(null);
+    },
+    onError: (e) => {
+      toast.error(MENSAJE_ERROR(e, "No se pudo enviar la contraseña"));
+      setAResetear(null);
+    },
   });
 
   const eliminar = useMutation({
@@ -288,6 +329,35 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
                       <UserCheck className="size-4 text-success" />
                     )}
                   </Button>
+                  {/* Mandar la clave provisoria. Deshabilitado —con el motivo
+                      en el tooltip— en los dos casos que no pueden salir bien:
+
+                      · SIN CORREO no hay a dónde mandarla, y el endpoint igual
+                        resetearía la contraseña vigente. El usuario quedaría
+                        afuera sin enterarse y sin forma de volver a entrar.
+                      · INACTIVO: `RECUPERAR_PASSWORD` exige la cuenta activa,
+                        así que no hace nada y responde el mismo 200 de siempre.
+                        Reactivarla es el paso previo, no este botón.
+
+                      Sobre uno mismo SÍ se permite: cerrarse las sesiones y
+                      recibir una clave nueva por correo es una operación
+                      válida, no un tiro en el pie como eliminarse. */}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    title={
+                      !usuario.correo
+                        ? "No tiene correo cargado: editalo primero"
+                        : !activo
+                          ? "La cuenta está inactiva: activala primero"
+                          : "Enviar una contraseña provisoria por correo"
+                    }
+                    aria-label={`Enviar una contraseña provisoria a ${usuario.nombreApellido}`}
+                    disabled={!usuario.correo || !activo || resetearPassword.isPending}
+                    onClick={() => setAResetear(usuario)}
+                  >
+                    <KeyRound className="size-4" />
+                  </Button>
                   <Button
                     variant="ghost"
                     size="icon"
@@ -337,6 +407,41 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
             >
               {eliminar.isPending && <Loader2 className="size-4 animate-spin" />}
               Eliminar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Confirmación y no un clic directo: esto INVALIDA la contraseña vigente
+          y cierra las sesiones abiertas. Tocado por error sobre la fila
+          equivocada, deja a alguien afuera en medio de su trabajo — y no hay
+          forma de deshacerlo, sólo de volver a mandar otra clave. */}
+      <AlertDialog open={aResetear !== null} onOpenChange={(o) => !o && setAResetear(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="break-words">
+              ¿Enviar una contraseña nueva a {aResetear?.nombreApellido}?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Se genera una contraseña provisoria y se manda a{" "}
+              <strong className="break-all">{aResetear?.correo}</strong>. La contraseña actual deja
+              de servir en el momento y se cierran sus sesiones abiertas, así que va a tener que
+              entrar con la que reciba. Después puede cambiarla desde Configuración.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                // Sin esto el AlertDialog se cierra antes de que la mutación
+                // termine y el error nunca se llega a mostrar.
+                e.preventDefault();
+                if (aResetear) resetearPassword.mutate(aResetear);
+              }}
+              disabled={resetearPassword.isPending}
+            >
+              {resetearPassword.isPending && <Loader2 className="size-4 animate-spin" />}
+              {resetearPassword.isPending ? "Enviando…" : "Enviar contraseña"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

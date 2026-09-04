@@ -38,6 +38,13 @@ const SINONIMOS = [
     "reporte de asistencias",
   ],
   ["reportes actividades", "reportes de actividades"],
+  [
+    "justificaciones",
+    "justificacion",
+    "justificaciones de ausencia",
+    "justificacion de ausencia",
+    "ausencias",
+  ],
   ["marcas", "marca"],
   ["manuales", "manual"],
   ["modulos", "modulo"],
