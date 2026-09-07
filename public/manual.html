@@ -1,0 +1,421 @@
+<!doctype html>
+<!--
+  Manual de uso, versión PÚBLICA (sin iniciar sesión).
+
+  Vive en public/ porque Vite copia esa carpeta tal cual a dist/client, así que
+  queda servido en https://www.ctell.online/manual.html sin pasar por el router
+  ni por el token.
+
+  POR QUÉ EXISTE, SI YA ESTÁ /ayuda DENTRO DEL SISTEMA: /ayuda requiere sesión, y
+  el caso que más necesita el manual es justamente el de quien NO puede entrar —
+  olvidó la contraseña, no le llega el correo de recuperación, no sabe a quién
+  pedirle ayuda. Un manual que sólo se lee estando adentro no le sirve a quien
+  quedó afuera.
+
+  ES UNA COPIA REDUCIDA, no el manual entero: acá va lo que le sirve a alguien
+  sin sesión (cómo entrar, qué hacer si no puede) más un resumen de los módulos.
+  El manual completo es docs/MANUAL-DE-USO.md y la pantalla /ayuda.
+
+  SIN DEPENDENCIAS: todo el CSS va acá adentro. Un archivo suelto en public/ no
+  pasa por el build, así que no puede importar nada del proyecto.
+-->
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Manual de uso | Sistema Administrativo</title>
+    <meta
+      name="description"
+      content="Cómo usar el sistema administrativo: entrar, recuperar la contraseña y qué hace cada módulo."
+    />
+    <link rel="icon" href="/favicon.png" />
+    <style>
+      :root {
+        --fondo: #ffffff;
+        --texto: #1a1a1a;
+        --suave: #5c5c5c;
+        --borde: #e4e4e7;
+        --primario: #1362c0;
+        --aviso-fondo: #f4f7fc;
+        --alerta-fondo: #fdf3f3;
+        --alerta-borde: #e5b4b4;
+        --codigo-fondo: #f4f4f5;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --fondo: #131316;
+          --texto: #f2f2f3;
+          --suave: #a1a1aa;
+          --borde: #2a2a30;
+          --primario: #5b9bec;
+          --aviso-fondo: #1a2029;
+          --alerta-fondo: #2a1c1c;
+          --alerta-borde: #5c3232;
+          --codigo-fondo: #202024;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 0 1.25rem 4rem;
+        background: var(--fondo);
+        color: var(--texto);
+        font-family:
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+        line-height: 1.65;
+      }
+      main {
+        max-width: 46rem;
+        margin: 0 auto;
+      }
+      header {
+        padding: 2.5rem 0 1.5rem;
+        border-bottom: 1px solid var(--borde);
+        margin-bottom: 2rem;
+      }
+      h1 {
+        margin: 0 0 0.35rem;
+        font-size: 1.75rem;
+        letter-spacing: -0.02em;
+      }
+      header p {
+        margin: 0;
+        color: var(--suave);
+      }
+      h2 {
+        margin: 2.5rem 0 0.75rem;
+        font-size: 1.25rem;
+        letter-spacing: -0.01em;
+        scroll-margin-top: 1rem;
+      }
+      h3 {
+        margin: 1.75rem 0 0.5rem;
+        font-size: 1rem;
+      }
+      p,
+      li {
+        color: var(--suave);
+      }
+      strong {
+        color: var(--texto);
+      }
+      code {
+        background: var(--codigo-fondo);
+        border-radius: 4px;
+        padding: 0.1rem 0.35rem;
+        font-size: 0.85em;
+      }
+      a {
+        color: var(--primario);
+      }
+      .indice {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        padding: 0;
+        list-style: none;
+        margin: 0 0 1rem;
+      }
+      .indice a {
+        display: inline-block;
+        padding: 0.3rem 0.7rem;
+        border: 1px solid var(--borde);
+        border-radius: 999px;
+        font-size: 0.85rem;
+        text-decoration: none;
+      }
+      .aviso,
+      .alerta {
+        border-radius: 8px;
+        padding: 0.85rem 1rem;
+        margin: 1rem 0;
+        font-size: 0.925rem;
+      }
+      .aviso {
+        background: var(--aviso-fondo);
+        border: 1px solid var(--borde);
+      }
+      .alerta {
+        background: var(--alerta-fondo);
+        border: 1px solid var(--alerta-borde);
+      }
+      .aviso b,
+      .alerta b {
+        display: block;
+        margin-bottom: 0.25rem;
+        color: var(--texto);
+      }
+      .aviso p,
+      .alerta p {
+        margin: 0.4rem 0 0;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 1rem 0;
+        font-size: 0.925rem;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 0.55rem 0.6rem;
+        border-bottom: 1px solid var(--borde);
+        vertical-align: top;
+      }
+      th {
+        color: var(--texto);
+        font-size: 0.85rem;
+      }
+      td {
+        color: var(--suave);
+      }
+      .cta {
+        display: inline-block;
+        margin-top: 0.5rem;
+        padding: 0.55rem 1.1rem;
+        background: var(--primario);
+        color: #fff;
+        border-radius: 7px;
+        text-decoration: none;
+        font-weight: 500;
+      }
+      footer {
+        margin-top: 3.5rem;
+        padding-top: 1.25rem;
+        border-top: 1px solid var(--borde);
+        font-size: 0.85rem;
+        color: var(--suave);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Manual de uso</h1>
+        <p>Sistema Administrativo — cómo usar cada módulo</p>
+        <a class="cta" href="/">Ir al sistema</a>
+      </header>
+
+      <ul class="indice">
+        <li><a href="#entrar">Entrar</a></li>
+        <li><a href="#no-puedo-entrar">No puedo entrar</a></li>
+        <li><a href="#empresa">Empresa y sucursal</a></li>
+        <li><a href="#modulos">Los módulos</a></li>
+        <li><a href="#preguntas">Preguntas frecuentes</a></li>
+      </ul>
+
+      <div class="aviso">
+        <b>Esta es la versión pública y resumida</b>
+        <p>
+          El manual completo, con el detalle de cada módulo, está dentro del sistema en
+          <strong>Ayuda</strong> — hay que iniciar sesión para verlo.
+        </p>
+      </div>
+
+      <h2 id="entrar">Entrar al sistema</h2>
+      <p>
+        Se entra con <strong>usuario y contraseña</strong>, y además hay que elegir la
+        <strong>empresa</strong> con la que se va a trabajar. La empresa es obligatoria: casi todo
+        lo que se ve después depende de ella.
+      </p>
+      <p>
+        Si los datos están mal, el sistema dice sólo <em>"Usuario o contraseña incorrectos"</em>,
+        sin aclarar cuál de los dos falló. Es a propósito: si dijera "ese usuario no existe",
+        cualquiera podría ir probando nombres para averiguar qué cuentas son válidas.
+      </p>
+      <div class="aviso">
+        <b>La sesión dura 8 horas</b>
+        <p>
+          Pasado ese tiempo el sistema te devuelve al login, aunque estés trabajando. No es un
+          error: guardá antes de irte a almorzar.
+        </p>
+      </div>
+      <p>
+        El sistema se puede <strong>instalar</strong> en el celular o la computadora y queda con su
+        ícono, como cualquier app. Al entrar aparece solo el aviso que lo ofrece.
+      </p>
+
+      <h2 id="no-puedo-entrar">No puedo entrar</h2>
+
+      <h3>Olvidé mi contraseña</h3>
+      <p>
+        En la pantalla de login hay un enlace de recuperación. Pide
+        <strong>tu usuario y tu correo</strong>, y los dos tienen que coincidir con los cargados en
+        tu cuenta. Si coinciden, te llega una contraseña provisoria por mail: entrá con ella y
+        cambiala enseguida desde Configuración.
+      </p>
+
+      <div class="alerta">
+        <b>Si no te llega el correo</b>
+        <p>
+          El sistema responde siempre lo mismo —<em
+            >"Si los datos son correctos, vas a recibir un correo"</em
+          >— coincidan o no los datos. No te confirma si acertaste, por la misma protección que en
+          el login.
+        </p>
+        <p>Por eso, que no llegue nada puede significar cuatro cosas distintas:</p>
+        <ul>
+          <li>Escribiste mal tu nombre de usuario.</li>
+          <li>Escribiste mal tu correo, o no es el que está cargado en tu cuenta.</li>
+          <li>Tu cuenta <strong>no tiene correo cargado</strong>.</li>
+          <li>Tu cuenta está <strong>inactiva</strong>.</li>
+        </ul>
+        <p>
+          <strong>Qué hacer:</strong> revisá primero la carpeta de spam. Si no está, pedile a un
+          administrador que te <strong>establezca una contraseña</strong> — puede hacerlo aunque tu
+          cuenta no tenga correo, y te la dicta en el momento.
+        </p>
+      </div>
+
+      <h3>Me saca al login mientras trabajo</h3>
+      <p>
+        La sesión dura 8 horas. También pasa si un administrador te cambió la contraseña o te
+        inactivó la cuenta: las dos cosas cierran todas las sesiones abiertas.
+      </p>
+
+      <h2 id="empresa">Empresa y sucursal activas</h2>
+      <p>
+        Arriba, en la barra superior, están la empresa y la sucursal activas. No son un adorno:
+        <strong>filtran todo lo que ves</strong>. La empresa se elige al iniciar sesión y se puede
+        cambiar desde la barra; la sucursal importa sobre todo en stock.
+      </p>
+      <div class="aviso">
+        <b>¿Una pantalla aparece vacía y no debería?</b>
+        <p>
+          Esto es lo primero a revisar. El caso típico: cargaste algo en la sucursal Central y lo
+          estás buscando parado en Depósito.
+        </p>
+      </div>
+
+      <h2 id="modulos">Los módulos</h2>
+      <p>
+        El sistema se organiza en ocho módulos. Dentro de cada uno, las pantallas se agrupan en tres
+        secciones — <strong>Definiciones</strong> (lo que se carga una vez),
+        <strong>Operaciones</strong> (el trabajo de todos los días) y
+        <strong>Reportes</strong> (consultas que no modifican nada). El manual completo, en
+        <strong>Ayuda</strong>, tiene una ficha por cada pantalla.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Módulo</th>
+            <th>Sus pantallas</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Ventas</strong></td>
+            <td>
+              Punto de venta (la caja) · Ventas (los comprobantes emitidos) · Cobros. Los precios ya
+              incluyen el IVA: se carga el precio de etiqueta.
+            </td>
+          </tr>
+          <tr>
+            <td><strong>Compras</strong></td>
+            <td>Facturas de compras · Pagos. Es el espejo de ventas.</td>
+          </tr>
+          <tr>
+            <td><strong>Stock</strong></td>
+            <td>
+              Existencias · Inventarios (el conteo físico) · Reporte de inventarios · Artículos ·
+              Ubicaciones de artículos · Ubicaciones.
+            </td>
+          </tr>
+          <tr>
+            <td><strong>Tesorería</strong></td>
+            <td>
+              Bancos · Cuentas bancarias · Canales de pago · Condiciones de pago · Monedas · Listas
+              de descuentos.
+            </td>
+          </tr>
+          <tr>
+            <td><strong>Recursos humanos</strong></td>
+            <td>
+              Profesores · Instituciones · Asistencias (con su planilla para firmar) · Reportes de
+              actividades · Justificaciones de ausencia · Ficha de traspaso · Manuales.
+            </td>
+          </tr>
+          <tr>
+            <td><strong>Base</strong></td>
+            <td>
+              Empresas · Sucursales · Personas · Categorías · Marcas · Unidades de medida · IVA ·
+              Talonarios · Países, Departamentos y Ciudades.
+            </td>
+          </tr>
+          <tr>
+            <td><strong>Administración</strong></td>
+            <td>
+              Usuarios · Módulos y Páginas · Permisos · Notificaciones. Sólo para administradores.
+            </td>
+          </tr>
+          <tr>
+            <td><strong>Configuración</strong></td>
+            <td>Dashboard · Configuración · Ayuda. Fijas en el menú de todos.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="aviso">
+        <b>Puede que no veas todas</b>
+        <p>
+          El menú de cada persona depende de sus permisos. Dashboard, Ayuda y Configuración están
+          siempre.
+        </p>
+      </div>
+
+      <div class="alerta">
+        <b>El stock está en transición</b>
+        <p>
+          Hoy <strong>ninguna venta ni compra mueve el stock</strong>: vender no descuenta y comprar
+          no ingresa. El único que escribe las existencias es el cierre de un conteo físico. Es un
+          estado intermedio, conocido y en curso de resolución — mientras tanto, la cantidad
+          confiable es la del último conteo.
+        </p>
+      </div>
+
+      <h2 id="preguntas">Preguntas frecuentes</h2>
+
+      <h3>Cargué algo y no lo veo en el listado.</h3>
+      <p>
+        Puede estar filtrado. Revisá el buscador, los filtros de las columnas y —en las pantallas
+        que lo tienen— el filtro de activo/inactivo. Y mirá la empresa y sucursal activas.
+      </p>
+
+      <h3>Vendí y el stock no bajó.</h3>
+      <p>Es el comportamiento actual, no una falla. Ver el aviso de arriba.</p>
+
+      <h3>No puedo borrar una venta o una factura.</h3>
+      <p>Tiene cobros o pagos registrados. Hay que borrar primero esos movimientos.</p>
+
+      <h3>No puedo borrar un usuario.</h3>
+      <p>
+        Tiene movimientos registrados y borrarlo se llevaría ese historial. La salida es
+        <strong>inactivarlo</strong>: le corta el acceso al instante y conserva quién hizo cada
+        cosa.
+      </p>
+
+      <h3>El PDF que exporté no muestra el símbolo del guaraní.</h3>
+      <p>
+        Es esperado: en los PDF la columna dice "Gs." en el título y el número va sin símbolo,
+        porque la fuente del generador no tiene ese carácter.
+      </p>
+
+      <h3>El PDF no se abre.</h3>
+      <p>
+        Puede ser el bloqueador de ventanas emergentes. Si lo bloquea, el archivo se descarga igual.
+      </p>
+
+      <footer>
+        <p>
+          Versión resumida. El manual completo está dentro del sistema, en
+          <strong>Ayuda</strong>. — <a href="/">Ir al sistema</a>
+        </p>
+      </footer>
+    </main>
+  </body>
+</html>

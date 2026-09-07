@@ -38,11 +38,11 @@ las de Cloudinary, para subir las evidencias de `/reportes-actividades`. Se
 copian de [.env.example](.env.example) a `.env.local` (que `.gitignore` excluye
 por `*.local`):
 
-| Variable                        | Para qué                                            |
-| ------------------------------- | --------------------------------------------------- |
-| `VITE_CLOUDINARY_CLOUD_NAME`    | La cuenta a la que sube el navegador                |
-| `VITE_CLOUDINARY_UPLOAD_PRESET` | Un preset con **Signing Mode = Unsigned**           |
-| `VITE_CLOUDINARY_CARPETA`       | Opcional; por defecto `reportes-actividades`        |
+| Variable                        | Para qué                                     |
+| ------------------------------- | -------------------------------------------- |
+| `VITE_CLOUDINARY_CLOUD_NAME`    | La cuenta a la que sube el navegador         |
+| `VITE_CLOUDINARY_UPLOAD_PRESET` | Un preset con **Signing Mode = Unsigned**    |
+| `VITE_CLOUDINARY_CARPETA`       | Opcional; por defecto `reportes-actividades` |
 
 **No son secretos.** Terminan en el bundle, igual que la URL de ORDS: un preset
 unsigned está pensado para eso. Lo que no puede salir nunca de Cloudinary es la
@@ -68,9 +68,9 @@ archivos ofrece pegar una URL `https://` a mano. En el deploy van como
 `npm run lint` corre además dos chequeos propios, que también se pueden llamar
 sueltos:
 
-| Comando                          | Qué evita                                                                 |
-| -------------------------------- | ------------------------------------------------------------------------- |
-| `npm run verificar-iconos`       | Dos entradas del menú con el mismo ícono                                  |
+| Comando                          | Qué evita                                                                  |
+| -------------------------------- | -------------------------------------------------------------------------- |
+| `npm run verificar-iconos`       | Dos entradas del menú con el mismo ícono                                   |
 | `npm run verificar-convenciones` | Cuatro trampas que ya costaron horas y no se ven leyendo el código (abajo) |
 
 Los cuatro casos del segundo se cobraron su tiempo, y ninguno se ve al leer el
@@ -170,6 +170,9 @@ src/
 │   │                                    bandeja de ausencias justificadas: se
 │   │                                    reciben y se resuelven, no se cargan
 │   ├── _auth.configuracion.tsx  "/configuracion" → preferencias
+│   ├── _auth.ayuda.tsx          "/ayuda"         → manual de uso: módulo ›
+│   │                                    sección › pantalla. FIJA en el menú de
+│   │                                    todos, no se da de alta en PAGINAS
 │   └── _auth.<tabla>.tsx        una por cada ABM
 ├── components/
 │   ├── ctell/           Componentes propios del proyecto
@@ -669,11 +672,11 @@ que corresponde es **contar de nuevo** y cargar otro.
 
 Eso vale en las tres capas, y no por casualidad:
 
-| Capa       | Cómo lo impone                                                                  |
-| ---------- | ------------------------------------------------------------------------------- |
-| Triggers   | `TRG_INVENTARIOS_BIUD` rechaza todo `UPDATE`/`DELETE` sobre una fila no abierta  |
-| Paquete    | Chequea el estado antes y devuelve **409** con el texto que explica qué hacer    |
-| Pantalla   | Un conteo no abierto sólo ofrece **Ver**: no hay editar, anular ni borrar        |
+| Capa     | Cómo lo impone                                                                  |
+| -------- | ------------------------------------------------------------------------------- |
+| Triggers | `TRG_INVENTARIOS_BIUD` rechaza todo `UPDATE`/`DELETE` sobre una fila no abierta |
+| Paquete  | Chequea el estado antes y devuelve **409** con el texto que explica qué hacer   |
+| Pantalla | Un conteo no abierto sólo ofrece **Ver**: no hay editar, anular ni borrar       |
 
 La pantalla no es la que garantiza nada —esconder un botón no impide llamar al
 endpoint— pero sí evita ofrecer una acción que va a fallar. El paquete traduce, y
@@ -695,8 +698,8 @@ Las dos reglas las imponen los **triggers** de
 paquete, y ese es el punto: valen aunque alguien corrija la tabla a mano en la
 hoja SQL de APEX. El candado no puede vivir sólo en la API.
 
-| Trigger                          | Qué hace                                            |
-| -------------------------------- | --------------------------------------------------- |
+| Trigger                          | Qué hace                                             |
+| -------------------------------- | ---------------------------------------------------- |
 | `TRG_INVENTARIOS_BIUD`           | El candado: fuera de `ABIERTO` no se toca nada       |
 | `TRG_INVENTARIOS_AU_EXISTENCIAS` | Al cerrar, escribe `EXISTENCIAS.CANTIDAD_DISPONIBLE` |
 
@@ -884,6 +887,7 @@ archivo se ejecute después.
 
    > `lotes.sql` estaba acá, antes que `articulos.sql`, porque el stock se
    > sumaba de sus partidas. Ya no existe: ver "El stock, en migración".
+
 3. **`retirar-lotes-inventarios.sql` antes que `inventarios-triggers-ddl.sql`.**
 
    > El script de limpieza borra **todos** los triggers de `INVENTARIOS` sin
@@ -1006,16 +1010,16 @@ sobre el parámetro: **cada uno ve los suyos, y sólo un admin ve los de otro**.
 
 Todos requieren token.
 
-| Método   | Ruta                      | Qué hace                          |
-| -------- | ------------------------- | --------------------------------- |
-| `GET`    | `/usuarios/`              | listado paginado                  |
-| `POST`   | `/usuarios/`              | alta → 201                        |
-| `GET`    | `/usuarios/:id`           | detalle                           |
-| `PUT`    | `/usuarios/:id`           | modificación                      |
-| `DELETE` | `/usuarios/:id`           | baja física                       |
-| `POST`   | `/usuarios/:id/inactivar` | baja lógica + revoca sus sesiones |
-| `POST`   | `/usuarios/:id/activar`   | alta lógica                       |
-| `POST`   | `/usuarios/:id/password`  | cambio de clave + revoca sesiones |
+| Método   | Ruta                      | Qué hace                                    |
+| -------- | ------------------------- | ------------------------------------------- |
+| `GET`    | `/usuarios/`              | listado paginado                            |
+| `POST`   | `/usuarios/`              | alta → 201                                  |
+| `GET`    | `/usuarios/:id`           | detalle                                     |
+| `PUT`    | `/usuarios/:id`           | modificación                                |
+| `DELETE` | `/usuarios/:id`           | baja física                                 |
+| `POST`   | `/usuarios/:id/inactivar` | baja lógica + revoca sus sesiones           |
+| `POST`   | `/usuarios/:id/activar`   | alta lógica                                 |
+| `POST`   | `/usuarios/password/:id`  | el admin ESCRIBE la clave + revoca sesiones |
 
 El listado acepta `?busqueda=`, `?activo=A|I`, `?pagina=` y `?tamanio=`
 (25 por defecto, **200 como techo** — sin tope, un `?tamanio=999999` arma un
@@ -1030,6 +1034,33 @@ Tres decisiones que conviene conocer antes de tocarlo:
   queda inaccesible.
 - **Cambiar la contraseña revoca todas las sesiones**, incluida la propia. Es
   lo que se espera cuando se cambia por sospecha de robo.
+
+### `POST /usuarios/password/:id` — el admin escribe la clave
+
+Body `{ "password": "..." }`. Devuelve `{ ok: true, esPropia: true|false }`,
+400 con menos de 8 caracteres, 403 si quien llama no es admin, 404 si no existe.
+
+**Existe porque `/auth/recuperar` no alcanza.** Aquel genera una clave al azar y
+la manda por correo, así que no sirve para una cuenta **sin correo cargado** —el
+caso real que lo motivó: el usuario `admin` no tenía dirección y ninguna
+recuperación podía alcanzarlo— ni para quien llama por teléfono y necesita
+entrar ahora. Los dos conviven en la pantalla, con botones distintos.
+
+- **La contracara es que el admin pasa a conocer la clave de otra persona.** Se
+  acepta a conciencia; la mejora pendiente es marcar la cuenta como provisoria y
+  que el login exija cambiarla en el primer ingreso.
+- **Sobre uno mismo está permitido**, y **no pide la contraseña actual** — a
+  diferencia de `/auth/cambiar-password`, que sí la exige, y de `ELIMINAR`, que
+  se bloquea a sí mismo. Es una decisión explícita: implica que una sesión de
+  admin abierta y desatendida alcanza para apropiarse de esa cuenta. Revertirlo
+  es rechazar con 400 cuando `l_id = l_sesion`.
+- **`esPropia` no es decorativo:** revocar las sesiones incluye la propia cuando
+  el admin se la cambia a sí mismo, y sin ese dato el frontend no puede
+  distinguir "le cambié la clave a otro, sigo trabajando" de "me cambié la mía,
+  mi token ya no sirve" — el segundo caso caería en un 401 que se ve como error
+  en vez de como la consecuencia esperada.
+- La ruta es `password/:id` y **no** `:id/password`, para seguir el patrón del
+  resto del módulo (`actualizar/:id`, `eliminar/:id`).
 
 El alta crea un **administrador inicial** (`admin`) sólo si la tabla está
 vacía. La contraseña se genera al azar en cada corrida y se imprime una única
@@ -1078,16 +1109,45 @@ respaldo, porque nadie más conoce esa clave. Si salió, no viaja en el JSON.
 
 > **Cuando el correo no llega, el sistema es mudo.** Los envíos se tragan el
 > error a propósito y lo mandan a `APEX_DEBUG`, que no está activo por defecto:
-> el síntoma es siempre "no llegó nada", sin causa visible. Para ver el error de
-> verdad hay una función de diagnóstico que corre el mismo camino pero **lo
-> devuelve** en texto:
+> el síntoma es siempre "no llegó nada", sin causa visible.
+>
+> **Antes de sospechar del correo, mirá si hay a quién mandárselo.** Una cuenta
+> activa **sin `CORREO` cargado** hace que `/auth/recuperar` salga por su
+> `NO_DATA_FOUND` y responda el mismo 200 sin enviar nada — su `SELECT` compara
+> el correo tipeado contra `NULL`, y ninguna comparación contra `NULL` da
+> verdadero. Es la causa más frecuente y la más invisible, y fue exactamente lo
+> que le pasaba a `admin`:
 >
 > ```sql
-> SELECT PKG_AUTH.PROBAR_CORREO('destino@ejemplo.com') FROM DUAL;
+> SELECT ID_USUARIO, USUARIO FROM USUARIOS
+>  WHERE UPPER(TRIM(ACTIVO)) = 'A' AND (CORREO IS NULL OR TRIM(CORREO) IS NULL);
+> ```
+>
+> Si eso no devuelve nada, recién ahí probá el envío. `PROBAR_CORREO` corre el
+> mismo camino que producción pero **devuelve** el error en texto. Va en un
+> **bloque anónimo, NUNCA en un `SELECT`**: hace DML —encola, vacía la cola y
+> hace `COMMIT`— y Oracle lo prohíbe dentro de una consulta, así que
+> `SELECT … FROM DUAL` falla con **`ORA-14551` antes de intentar mandar nada**.
+> Ese `SELECT` estuvo documentado acá y en dos lugares más, y nunca pudo haber
+> funcionado: el síntoma despista justo cuando se está buscando el problema.
+>
+> ```sql
+> DECLARE
+>   l_resultado VARCHAR2(4000);
+> BEGIN
+>   l_resultado := PKG_AUTH.PROBAR_CORREO('destino@ejemplo.com');
+>   DBMS_OUTPUT.PUT_LINE(l_resultado);
+> END;
+> /
 > ```
 >
 > Si devuelve `OK…` y aun así no llega, el problema es de entrega: revisá
-> `APEX_MAIL_QUEUE` (con `MAIL_SEND_ERROR`) y `APEX_MAIL_LOG`.
+> `APEX_MAIL_QUEUE` y `APEX_MAIL_LOG` **con `SELECT *`** — los nombres de sus
+> columnas cambian entre versiones de APEX, y nombrarlos aborta la consulta con
+> `ORA-00904`.
+>
+> El recorrido completo, en orden y ejecutable en la hoja de trabajo de APEX,
+> está en [`db/diagnostico-correo.sql`](db/diagnostico-correo.sql).
 
 Dos límites del **APEX free tier** que conviene tener presentes: el remitente lo
 resuelve APEX con su parámetro de instancia `EMAIL_FROM` (se pasa
@@ -1452,6 +1512,17 @@ Antes de escribir código nuevo, leé la
 [Guía de implementación](docs/GUIA-IMPLEMENTACION.md): explica cómo agregar una
 tabla nueva de punta a punta — paquete PL/SQL, endpoints ORDS, cliente HTTP,
 página y formulario — siguiendo los patrones del proyecto.
+
+> **Una pantalla nueva también se documenta.** El
+> [Manual de uso](docs/MANUAL-DE-USO.md) tiene una ficha por pantalla, ordenada
+> con la jerarquía del menú (módulo › sección › pantalla), y **vive en tres
+> lugares a la vez**: ese `.md`, la pantalla `/ayuda`
+> ([`_auth.ayuda.tsx`](src/routes/_auth.ayuda.tsx), escrita en JSX) y el resumen
+> público [`public/manual.html`](public/manual.html) que enlaza el login. Son
+> copias deliberadas —renderizar el markdown pediría sumar `react-markdown` al
+> bundle, y el HTML suelto no puede importar nada del proyecto—, así que **una
+> regla que cambia se actualiza en los tres**. El HTML es un resumen: sólo
+> cambia si lo afectado está ahí.
 
 Las que más se olvidan:
 

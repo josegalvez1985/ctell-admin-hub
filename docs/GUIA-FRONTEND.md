@@ -249,6 +249,13 @@ Tres detalles que importan:
 - **`active` lleva la ruta, no el nombre.** `active="/empresas"`, no
   `active="Empresas"`. El menú compara contra `pagina.ruta`, que viene de la
   base; usar el nombre falla apenas difiere un acento (`Países` vs `Paises`).
+
+  > **Las cuatro entradas FIJAS son la excepción, y comparan por nombre:**
+  > `active="Dashboard"`, `"Ayuda"` y `"Configuración"`. No salen de `PAGINAS`
+  > sino de literales en [`AppLayout`](../src/components/ctell/AppLayout.tsx)
+  > (`active === "Ayuda"`), así que no hay `pagina.ruta` contra qué comparar.
+  > Pasarles la ruta no rompe nada visible — sólo deja el ítem sin resaltar.
+
 - **`pb-28`** deja lugar para el botón flotante del menú móvil, que si no tapa
   el final del contenido.
 - **Envolvé siempre en `<AppLayout>`** — da el sidebar, el header y el menú
@@ -281,6 +288,41 @@ Para una tabla de cruce, el ABM es **asignar y quitar**, sin edición: la fila n
 tiene datos propios, así que cambiar cualquiera de los dos ids es otra
 asignación. El alta son dos combobox (uno por cada lado del cruce) y conviene
 ofrecer sólo los pares libres — el `UNIQUE` devuelve 409 si se repite uno.
+
+### Y su ficha en el manual de uso
+
+Una pantalla que nadie sabe usar está a medio entregar. El
+[Manual de uso](MANUAL-DE-USO.md) tiene **una ficha por pantalla**, ordenada con
+la jerarquía del menú: **módulo › sección › pantalla**, donde la sección es la
+entrada `D`/`O`/`R` (Definiciones, Operaciones, Reportes) con la que se cargó en
+`PAGINAS`. Se entra por donde se abre la pantalla, no por un índice temático.
+
+La ficha lleva: una línea de resumen, cómo se usa, sus reglas, y —lo que más se
+consulta— **los avisos de lo que parece un error y no lo es**. Todo lo que en
+esta guía se justifica con un "es a propósito" es candidato: que un conteo no se
+cierre desde el listado, que no haya botón "Nueva" en justificaciones, que
+vender no descuente stock.
+
+**El contenido vive en tres archivos y hay que tocar los tres:**
+
+| Archivo                                                       | Qué es                       |
+| ------------------------------------------------------------- | ---------------------------- |
+| [`docs/MANUAL-DE-USO.md`](MANUAL-DE-USO.md)                   | La fuente completa           |
+| [`src/routes/_auth.ayuda.tsx`](../src/routes/_auth.ayuda.tsx) | La pantalla `/ayuda`, en JSX |
+| [`public/manual.html`](../public/manual.html)                 | Resumen público, sin sesión  |
+
+Son copias deliberadas: renderizar el markdown pediría sumar `react-markdown` al
+bundle para una pantalla que se abre poco, y el HTML suelto —que vive en
+`public/` justamente para no pasar por el router ni por el token— no puede
+importar nada del proyecto. El HTML es un resumen para quien **no puede entrar**,
+así que sólo cambia si lo afectado está ahí (entrar, recuperar la contraseña, el
+cuadro de módulos, las preguntas frecuentes).
+
+En `_auth.ayuda.tsx` una pantalla es un objeto con `nombre`, `entrada`, `ruta`,
+`resumen`, `buscable` y `ficha`. **`ruta: null`** es para lo que se abre desde
+otra pantalla —la ficha de traspaso, Usuarios, Permisos—: la fila lo muestra con
+su cartel en vez de una URL que no existe. Y `buscable` son las palabras que
+alguien tipearía sin que estén en el nombre ("suplente", "planilla", "carrito").
 
 ### Una página es una página, no un modal
 
@@ -337,6 +379,31 @@ Después de crear la página, desde **Administración**:
 >
 > Sigue siendo un desplegable y no texto libre: la ruta la carga una persona, y
 > un typo (`/ubicacion` por `/ubicaciones`) daba un ítem muerto sin ningún aviso.
+
+### La excepción: entradas FIJAS, fuera de los permisos
+
+Hay cuatro páginas que **no** se dan de alta en `PAGINAS` ni se asignan a nadie:
+`/home`, `/configuracion`, `/ayuda` y el botón de salir. Están escritas a mano en
+[`AppLayout.tsx`](../src/components/ctell/AppLayout.tsx) —en el sidebar, en el
+sidebar colapsado y en `mobileMenuItems`, los tres— y las ve todo el mundo.
+
+**Cuándo corresponde**, y la vara es alta: sólo cuando **ponerla detrás de un
+permiso sería contradictorio con lo que la página hace**. `/ayuda` es el caso
+claro: un manual de uso lo necesita sobre todo quien todavía no sabe usar el
+sistema, y esa persona es justamente la que puede no tener el permiso — se
+quedaría sin la pantalla que le explica cómo pedirlo. Un ABM más no califica.
+
+**Una entrada fija va también en `EXCLUIDAS` de
+[rutas-app.ts](../src/lib/rutas-app.ts)**, para que no se ofrezca en el alta de
+páginas. No es esconderla —ya está habilitada para todos—: es que si quedara
+ofrecida, alguien la daría de alta creyendo que hace falta y aparecería **dos
+veces** en el menú, una como fija y otra como página del módulo. Ese archivo
+advierte que excluir rutas es volver al problema que resuelve; esta es la única
+razón que cumple esa vara.
+
+Y el ícono va igual en [menu-iconos.ts](../src/components/ctell/menu-iconos.ts):
+`npm run lint` exige que ninguno se repita, así que si dos nombres son la misma
+entidad escrita distinto, van como sinónimos en `verificar-iconos.mjs`.
 
 ### La ruta en la base tiene que existir en el router
 
@@ -944,7 +1011,7 @@ Dos cosas que se rompen al agregar la empresa a una clave que ya existía:
   lista. Invalidá por el **prefijo solo** —`["detalle-monedas"]`— salvo que
   tengas una razón concreta para acotar.
 - **El relleno `?? 0` es una trampa.** Si la empresa todavía no hidrató, un cero
-  es *falsy*: un armador de query string escrito como
+  es _falsy_: un armador de query string escrito como
   `if (params.idEmpresa) q.set(...)` lo descarta y la petición sale sin empresa.
   Con el backend exigiéndola ahora da 400, pero el hábito correcto es `?? null`
   en la clave y un `enabled` que no deje correr la consulta.
@@ -1695,9 +1762,10 @@ alta rápida, que sólo conoce lo que acaba de crear.
 
 El conteo de inventario lo usa así: si el artículo elegido no tiene marca —o no
 tiene categoría—, el diálogo ofrece elegirla o crearla ahí mismo (`SelectorModal`
-+ `AltaRapida`) y la asigna con `api.articulos.actualizar(id, { idEmpresa, idMarca })`
-o `{ idEmpresa, idCategoria }`. Son dos avisos independientes: un artículo puede
-tener marca y no categoría, o al revés, y cada uno se resuelve por separado.
+
+- `AltaRapida`) y la asigna con `api.articulos.actualizar(id, { idEmpresa, idMarca })`
+  o `{ idEmpresa, idCategoria }`. Son dos avisos independientes: un artículo puede
+  tener marca y no categoría, o al revés, y cada uno se resuelve por separado.
 
 **El criterio, que vale para cualquier pantalla operativa:** quien cuenta tiene
 la pieza en la mano y ve de quién es; el que después abra la ficha del artículo,
@@ -1726,13 +1794,13 @@ sobre un artículo que ya tiene marca.
 El conteo lo hace con tres datos —marca, categoría y **ubicación**— y el tercero
 no se implementa igual, aunque en pantalla se vea idéntico:
 
-|                   | Marca / Categoría         | Ubicación                        |
-| ----------------- | ------------------------- | -------------------------------- |
-| Relación          | FK en `ARTICULOS`         | **cruce N:M**                    |
-| "No tiene"        | la columna en `NULL`      | **sin filas** en el cruce        |
-| Se asigna con     | `articulos.actualizar`    | `articulosUbicaciones.asignar`   |
-| Asignar…          | reemplaza                 | **suma**: el artículo queda en los dos estantes |
-| Alcance           | la empresa                | **una sucursal**                 |
+|               | Marca / Categoría      | Ubicación                                       |
+| ------------- | ---------------------- | ----------------------------------------------- |
+| Relación      | FK en `ARTICULOS`      | **cruce N:M**                                   |
+| "No tiene"    | la columna en `NULL`   | **sin filas** en el cruce                       |
+| Se asigna con | `articulos.actualizar` | `articulosUbicaciones.asignar`                  |
+| Asignar…      | reemplaza              | **suma**: el artículo queda en los dos estantes |
+| Alcance       | la empresa             | **una sucursal**                                |
 
 Tres consecuencias que hay que tener presentes:
 
@@ -1818,11 +1886,11 @@ funcionando pero con datos incompletos.
 `INVENTARIOS` es la única tabla con máquina de estados, y la pantalla la refleja
 sin repetir sus reglas:
 
-| Estado    | Qué ofrece la fila                    |
-| --------- | ------------------------------------- |
-| `ABIERTO` | Editar · Anular · Eliminar            |
-| `CERRADO` | **Ver** — nada más                    |
-| `ANULADO` | **Ver** — nada más                    |
+| Estado    | Qué ofrece la fila         |
+| --------- | -------------------------- |
+| `ABIERTO` | Editar · Anular · Eliminar |
+| `CERRADO` | **Ver** — nada más         |
+| `ANULADO` | **Ver** — nada más         |
 
 El diálogo se abre en `soloLectura`, con los campos deshabilitados y sin botón de
 guardar. Y los avisos de "completá la marca / la categoría / la ubicación"
@@ -2539,6 +2607,12 @@ Antes de dar por terminada una pantalla:
 - [ ] **El nombre de la página sumado a `ICONOS_PAGINA`** en `menu-iconos.ts`,
       con un ícono que no esté ya usado por otra entrada
 - [ ] Registrada en Administración → Páginas, y asignada en Permisos
+- [ ] **Su ficha en el [Manual de uso](MANUAL-DE-USO.md)**, en el módulo y la
+      sección (Definiciones / Operaciones / Reportes) con los que se la cargó en
+      `PAGINAS`. Va en los **tres** archivos: el `.md`, la pantalla
+      [`_auth.ayuda.tsx`](../src/routes/_auth.ayuda.tsx) y —sólo si toca algo de
+      lo que hay ahí— el resumen público [`public/manual.html`](../public/manual.html).
+      Lo más útil de una ficha es lo que **parece un error y no lo es**
 - [ ] Si es una tabla por empresa: `empresa.id` en la `queryKey`, `enabled:
 empresa !== null`, y el caso `empresa === null` contemplado en el render
 - [ ] **`empresa.id` en la `queryKey` de TODA consulta que lo mande, incluidas
@@ -2547,7 +2621,7 @@ empresa !== null`, y el caso `empresa === null` contemplado en el render
       petición mal. Y si agregás la empresa a una clave que ya existía,
       **revisá las invalidaciones**: TanStack compara elemento por elemento y
       `["x", idHijo]` deja de alcanzar a `["x", idEmpresa, idHijo]`
-- [ ] **Nada de `?? 0` como relleno de `idEmpresa`.** Un cero es *falsy* y un
+- [ ] **Nada de `?? 0` como relleno de `idEmpresa`.** Un cero es _falsy_ y un
       armador de query string lo descarta: la petición sale sin empresa. Va
       `?? null` en la clave y un `enabled` que impida correr la consulta
 - [ ] **Si la tabla es un cruce o un detalle** (sin `ID_EMPRESA` propia), el
@@ -2602,31 +2676,31 @@ empresa !== null`, y el caso `empresa === null` contemplado en el render
 
 ### Errores frecuentes
 
-| Síntoma                                                                   | Causa                                                                                                                                                                                                                                           |
-| ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| El item aparece en el menú pero el clic no navega                         | `PAGINAS.RUTA` no coincide con ninguna ruta del router                                                                                                                                                                                          |
-| El menú no muestra una página asignada                                    | El módulo o la página están inactivos, o falta el permiso                                                                                                                                                                                       |
-| Todo se ve bien pero una acción no hace nada                              | La API no devuelve un campo: llega `undefined`. Corré `npx tsc --noEmit`                                                                                                                                                                        |
-| El texto no se lee en hover en el sidebar                                 | Falta `variant="dark"`: las clases claras no contrastan sobre el navy                                                                                                                                                                           |
-| El formulario muestra datos del registro anterior                         | Se usó `defaultValues` en vez de `values` en un dialog reutilizado                                                                                                                                                                              |
-| Hay que scrollear para llegar al botón de guardar                         | El diálogo quedó en una columna con demasiados campos: subí el ancho y pasá a `sm:grid-cols-2`                                                                                                                                                  |
-| Un campo bloqueado se puede editar igual                                  | El `<fieldset disabled>` está con `display:contents` dentro de una grilla: poné `disabled` en cada `Input`                                                                                                                                      |
-| El error del backend no se ve al borrar                                   | Falta `e.preventDefault()` en el `AlertDialogAction`                                                                                                                                                                                            |
-| La lista no se actualiza tras guardar                                     | Falta `invalidateQueries` — o su clave dejó de matchear porque a la de la consulta se le agregó la empresa en el medio. TanStack compara **elemento por elemento**: invalidá por el prefijo solo                                               |
+| Síntoma                                                                   | Causa                                                                                                                                                                                                                                            |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| El item aparece en el menú pero el clic no navega                         | `PAGINAS.RUTA` no coincide con ninguna ruta del router                                                                                                                                                                                           |
+| El menú no muestra una página asignada                                    | El módulo o la página están inactivos, o falta el permiso                                                                                                                                                                                        |
+| Todo se ve bien pero una acción no hace nada                              | La API no devuelve un campo: llega `undefined`. Corré `npx tsc --noEmit`                                                                                                                                                                         |
+| El texto no se lee en hover en el sidebar                                 | Falta `variant="dark"`: las clases claras no contrastan sobre el navy                                                                                                                                                                            |
+| El formulario muestra datos del registro anterior                         | Se usó `defaultValues` en vez de `values` en un dialog reutilizado                                                                                                                                                                               |
+| Hay que scrollear para llegar al botón de guardar                         | El diálogo quedó en una columna con demasiados campos: subí el ancho y pasá a `sm:grid-cols-2`                                                                                                                                                   |
+| Un campo bloqueado se puede editar igual                                  | El `<fieldset disabled>` está con `display:contents` dentro de una grilla: poné `disabled` en cada `Input`                                                                                                                                       |
+| El error del backend no se ve al borrar                                   | Falta `e.preventDefault()` en el `AlertDialogAction`                                                                                                                                                                                             |
+| La lista no se actualiza tras guardar                                     | Falta `invalidateQueries` — o su clave dejó de matchear porque a la de la consulta se le agregó la empresa en el medio. TanStack compara **elemento por elemento**: invalidá por el prefijo solo                                                 |
 | **Veo registros de otra empresa**                                         | La `queryKey` no lleva `empresa?.id` (se sirvió la caché de la empresa anterior), o la consulta no manda `idEmpresa` y el backend lo trata como "todas". Es lo que pasó en `/articulos-ubicaciones`: `npm run lint` ahora detecta las dos formas |
-| `window is not defined`                                                   | Acceso al DOM fuera de `useEffect` (corre en el prerender de build)                                                                                                                                                                             |
-| Cambios que no aparecen por más que recargues                             | Hay más de un `npm run dev` corriendo: mirá en qué puerto estás                                                                                                                                                                                 |
-| El buscador no encuentra nada que sí está en pantalla                     | Falta agregar ese campo al array que devuelve la función de `useTablaListado`                                                                                                                                                                   |
-| El selector no filtra por lo que se ve en pantalla                        | `SelectorModal` busca contra `etiqueta` y `descripcion`, nunca contra `valor` (que es el id). Si armaste una lista a mano con `Command`, ese es el error: el `filter` de cmdk compara contra el `value`                                         |
-| **El menú quedó vacío después de entrar**                                 | El usuario no tiene permisos **en esa empresa**, o los tiene con `idEmpresa` en null (cargados antes de que existiera la columna). Reasignalos desde el ABM de permisos entrando con la empresa que corresponda                                 |
-| **Un listado por empresa trae filas de otra**                             | Falta `enabled: empresa !== null`: en el primer render `empresa` todavía es null y la petición sale sin `idEmpresa`                                                                                                                             |
-| **400 al MODIFICAR, pero el alta funciona**                               | Falta `idEmpresa` en el `actualizar`. El backend lo exige para acotar a cuál fila se aplica el cambio, y es fácil de olvidar porque no es un campo del formulario. Pasó en 7 pantallas a la vez: se copió el formulario y se arrastró el olvido |
-| **El selector no encuentra un registro que sí existe**                    | Ese endpoint pagina y se está usando `SelectorModal`, que filtra en memoria sobre la primera página. Usar un selector que consulte al servidor (ver `SelectorArticulo`)                                                                         |
-| **Dos páginas del menú tienen el mismo ícono**                            | Alguna no está en `ICONOS_PAGINA` y cae en el fallback `FileText`, que comparten todas las no mapeadas. Corré `npm run verificar-iconos`: nombra el ícono y quiénes lo comparten                                                                |
-| **Un filtro de columna ofrece pocas opciones**                            | Se está armando desde un `listar` paginado. Armalo desde las filas ya listadas (como el filtro de artículo en Lotes): además evita ofrecer valores que dejarían la tabla vacía                                                                  |
-| **Al cambiar de empresa se ven los datos de la anterior**                 | Falta `empresa.id` en la `queryKey`: TanStack Query cree que es la misma consulta                                                                                                                                                               |
-| **Un nombre largo se sale del diálogo**                                   | Falta `min-w-0` en el elemento con `truncate` (o en su contenedor flex): sin él el texto estira el contenedor y `truncate` nunca llega a activarse. Ver [Texto largo](#73-texto-largo-truncate-no-alcanza-y-en-un-diálogo-molesta)              |
-| **El texto de un botón no salta de línea aunque le pongas `break-words`** | La clase base del `<Button>` de shadcn trae `whitespace-nowrap` y `h-9`. Hay que anular las dos: `h-auto min-h-9 whitespace-normal`                                                                                                             |
-| **Dos opciones de una lista se ven idénticas**                            | Están truncadas y comparten el prefijo. Dentro de un diálogo el texto envuelve (`break-words`), no trunca                                                                                                                                       |
-| Las imágenes se ven como ícono roto                                       | Falta el `onError` que cae al respaldo. Si además es en todas, el endpoint de imagen no está publicado en APEX                                                                                                                                  |
-| Elegir el mismo archivo dos veces no hace nada                            | Falta `event.target.value = ""` en el `onChange` del input file                                                                                                                                                                                 |
+| `window is not defined`                                                   | Acceso al DOM fuera de `useEffect` (corre en el prerender de build)                                                                                                                                                                              |
+| Cambios que no aparecen por más que recargues                             | Hay más de un `npm run dev` corriendo: mirá en qué puerto estás                                                                                                                                                                                  |
+| El buscador no encuentra nada que sí está en pantalla                     | Falta agregar ese campo al array que devuelve la función de `useTablaListado`                                                                                                                                                                    |
+| El selector no filtra por lo que se ve en pantalla                        | `SelectorModal` busca contra `etiqueta` y `descripcion`, nunca contra `valor` (que es el id). Si armaste una lista a mano con `Command`, ese es el error: el `filter` de cmdk compara contra el `value`                                          |
+| **El menú quedó vacío después de entrar**                                 | El usuario no tiene permisos **en esa empresa**, o los tiene con `idEmpresa` en null (cargados antes de que existiera la columna). Reasignalos desde el ABM de permisos entrando con la empresa que corresponda                                  |
+| **Un listado por empresa trae filas de otra**                             | Falta `enabled: empresa !== null`: en el primer render `empresa` todavía es null y la petición sale sin `idEmpresa`                                                                                                                              |
+| **400 al MODIFICAR, pero el alta funciona**                               | Falta `idEmpresa` en el `actualizar`. El backend lo exige para acotar a cuál fila se aplica el cambio, y es fácil de olvidar porque no es un campo del formulario. Pasó en 7 pantallas a la vez: se copió el formulario y se arrastró el olvido  |
+| **El selector no encuentra un registro que sí existe**                    | Ese endpoint pagina y se está usando `SelectorModal`, que filtra en memoria sobre la primera página. Usar un selector que consulte al servidor (ver `SelectorArticulo`)                                                                          |
+| **Dos páginas del menú tienen el mismo ícono**                            | Alguna no está en `ICONOS_PAGINA` y cae en el fallback `FileText`, que comparten todas las no mapeadas. Corré `npm run verificar-iconos`: nombra el ícono y quiénes lo comparten                                                                 |
+| **Un filtro de columna ofrece pocas opciones**                            | Se está armando desde un `listar` paginado. Armalo desde las filas ya listadas (como el filtro de artículo en Lotes): además evita ofrecer valores que dejarían la tabla vacía                                                                   |
+| **Al cambiar de empresa se ven los datos de la anterior**                 | Falta `empresa.id` en la `queryKey`: TanStack Query cree que es la misma consulta                                                                                                                                                                |
+| **Un nombre largo se sale del diálogo**                                   | Falta `min-w-0` en el elemento con `truncate` (o en su contenedor flex): sin él el texto estira el contenedor y `truncate` nunca llega a activarse. Ver [Texto largo](#73-texto-largo-truncate-no-alcanza-y-en-un-diálogo-molesta)               |
+| **El texto de un botón no salta de línea aunque le pongas `break-words`** | La clase base del `<Button>` de shadcn trae `whitespace-nowrap` y `h-9`. Hay que anular las dos: `h-auto min-h-9 whitespace-normal`                                                                                                              |
+| **Dos opciones de una lista se ven idénticas**                            | Están truncadas y comparten el prefijo. Dentro de un diálogo el texto envuelve (`break-words`), no trunca                                                                                                                                        |
+| Las imágenes se ven como ícono roto                                       | Falta el `onError` que cae al respaldo. Si además es en todas, el endpoint de imagen no está publicado en APEX                                                                                                                                   |
+| Elegir el mismo archivo dos veces no hace nada                            | Falta `event.target.value = ""` en el `onChange` del input file                                                                                                                                                                                  |

@@ -418,10 +418,10 @@ Recordá: **cada módulo necesita su propio `SET_MODULE_ORIGINS_ALLOWED`**.
 
 CORS se resuelve **distinto en cada entorno**:
 
-| Entorno       | Cómo evita el bloqueo                                                                  | Dónde se configura                       |
-| ------------- | -------------------------------------------------------------------------------------- | ---------------------------------------- |
-| `npm run dev` | Proxy de Vite: la app pide a la ruta relativa `/ords/ctell` y Vite reenvía a APEX        | `server.proxy` en `vite.config.ts`       |
-| Producción    | CORS habilitado en ORDS: la app pega con URL absoluta a `oracleapex.com`                | `ORDS.SET_MODULE_ORIGINS_ALLOWED` (Parte 1) |
+| Entorno       | Cómo evita el bloqueo                                                             | Dónde se configura                          |
+| ------------- | --------------------------------------------------------------------------------- | ------------------------------------------- |
+| `npm run dev` | Proxy de Vite: la app pide a la ruta relativa `/ords/ctell` y Vite reenvía a APEX | `server.proxy` en `vite.config.ts`          |
+| Producción    | CORS habilitado en ORDS: la app pega con URL absoluta a `oracleapex.com`          | `ORDS.SET_MODULE_ORIGINS_ALLOWED` (Parte 1) |
 
 En dev, la petición sale al **mismo origen** que la página, así que el navegador
 ni evalúa CORS; es Vite quien reenvía a APEX servidor contra servidor, donde la
@@ -743,7 +743,12 @@ async function request<T>(
   }
 
   // Si la respuesta viene empaquetada en { resultado: "..." }, desempaquetarla.
-  if (data && typeof data === "object" && "resultado" in data && typeof data.resultado === "string") {
+  if (
+    data &&
+    typeof data === "object" &&
+    "resultado" in data &&
+    typeof data.resultado === "string"
+  ) {
     try {
       return JSON.parse(data.resultado) as T;
     } catch {
@@ -854,11 +859,11 @@ export const api = {
 Hay **tres defensas** y las tres hacen falta, porque cada una cubre un hueco que
 las otras dejan:
 
-| Defensa                  | Qué cubre                                       | Qué NO cubre                                          |
-| ------------------------ | ----------------------------------------------- | ----------------------------------------------------- |
-| `beforeLoad` del layout  | Entrar a una URL protegida sin token            | Un token que existe pero ya no sirve                  |
-| `useUsuarioActual`       | El 401 de `/auth/me`                            | Los 401 de cualquier otra petición                    |
-| `useCerrarSesionAlVencer`| **Cualquier** 401, de cualquier petición        | —                                                     |
+| Defensa                   | Qué cubre                                | Qué NO cubre                         |
+| ------------------------- | ---------------------------------------- | ------------------------------------ |
+| `beforeLoad` del layout   | Entrar a una URL protegida sin token     | Un token que existe pero ya no sirve |
+| `useUsuarioActual`        | El 401 de `/auth/me`                     | Los 401 de cualquier otra petición   |
+| `useCerrarSesionAlVencer` | **Cualquier** 401, de cualquier petición | —                                    |
 
 ### `src/hooks/use-cerrar-sesion-al-vencer.ts`
 
@@ -1016,7 +1021,9 @@ function LoginPage() {
 
       // Se guarda recién con el login exitoso: recordar credenciales que no
       // sirven solo serviría para volver a fallar igual.
-      setCredencialesRecordadas(recordar ? { usuario: usuario.trim().toLowerCase(), password } : null);
+      setCredencialesRecordadas(
+        recordar ? { usuario: usuario.trim().toLowerCase(), password } : null,
+      );
 
       await navigate({ to: "/home" });
       // `navigate` es asíncrono: sin el await, el botón queda en "Verificando…"
@@ -1182,7 +1189,8 @@ export function RecuperarPasswordDialog({
     // error, llega como el mismo 200 de siempre.
     onError: (e) =>
       form.setError("root", {
-        message: e instanceof ApiError ? e.message : "No se pudo procesar el pedido. Probá de nuevo.",
+        message:
+          e instanceof ApiError ? e.message : "No se pudo procesar el pedido. Probá de nuevo.",
       }),
   });
 
@@ -1297,7 +1305,8 @@ export function CambiarPasswordDialog({
     },
     onError: (e) =>
       form.setError("root", {
-        message: e instanceof ApiError ? e.message : "No se pudo cambiar la contraseña. Probá de nuevo.",
+        message:
+          e instanceof ApiError ? e.message : "No se pudo cambiar la contraseña. Probá de nuevo.",
       }),
   });
 
@@ -1319,7 +1328,10 @@ Cada campo maneja su propio estado de visibilidad — mostrar la actual no tiene
 por qué destapar la nueva:
 
 ```tsx
-function PasswordInput({ autoComplete, ...props }: React.ComponentProps<"input"> & { autoComplete: string }) {
+function PasswordInput({
+  autoComplete,
+  ...props
+}: React.ComponentProps<"input"> & { autoComplete: string }) {
   const [visible, setVisible] = useState(false);
   return (
     <div className="relative">
@@ -1373,7 +1385,9 @@ export function useUsuarioActual() {
       const sesion = getUsuarioSesion();
       // "A": si hay sesión, la cuenta está activa — el login rechaza a los
       // inactivos, así que un token válido implica una cuenta habilitada.
-      return sesion ? ({ ...sesion, activo: "A" } as Awaited<ReturnType<typeof api.me>>) : undefined;
+      return sesion
+        ? ({ ...sesion, activo: "A" } as Awaited<ReturnType<typeof api.me>>)
+        : undefined;
     },
     // El token dura 8 h y los datos del usuario no cambian entre pantallas.
     staleTime: 5 * 60 * 1000,
@@ -1492,19 +1506,19 @@ Probar **en este orden**. Cada punto falla distinto y el orden ahorra tiempo.
 
 ## Parte 11 — Errores conocidos y cómo se diagnostican
 
-| Síntoma                                                             | Causa                                                                    | Solución                                                                                            |
-| ------------------------------------------------------------------- | ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
-| `Service Unavailable` genérico, solo en producción                   | El dominio nuevo no está en `ORIGINS_ALLOWED` del módulo                 | Parte 1. ORDS rechaza **antes** del handler: ningún log de PL/SQL lo va a mostrar                     |
-| CORS bloqueado en `/usuarios/` pero `/auth/` anda                    | `ORIGINS_ALLOWED` es **por módulo**                                      | Repetir `SET_MODULE_ORIGINS_ALLOWED` en cada módulo que se consuma                                   |
-| `400` en el logout sin llegar al handler                             | Se mandó `Content-Type: application/json` en un POST sin body            | Mandar el header **solo** cuando hay body (ya resuelto en `request`)                                 |
-| `Unexpected token <` al parsear la respuesta                         | ORDS devolvió HTML (error previo al handler)                             | `request` ya lo tolera: cae a `mensajeSegunEstado(status)`                                           |
-| El toast de "sesión expiró" salta en cada intento de login fallido   | El 401 del login se trató como sesión caída                              | El aviso solo se dispara con `auth: true` (ver `request`)                                            |
-| `500` con `"Error al iniciar sesion"` y nada más                     | Suele ser `ORA-01722`: se comparó `ACTIVO` contra un número              | Estados como texto `'A'`/`'I'` siempre. El detalle real está en `APEX_DEBUG`                          |
-| El correo de recuperación nunca llega                                | Configuración de `APEX_MAIL` en el workspace                             | `SELECT PKG_AUTH.PROBAR_CORREO('destino@ejemplo.com') FROM DUAL;` devuelve el error en texto          |
-| El usuario entra pero `/auth/me` da 401                              | Cuenta inactivada, o token revocado por un cambio de contraseña          | Es correcto: `VALIDAR_TOKEN` exige que la cuenta siga activa                                          |
-| Todo el mundo va al login en el build, aunque tenga sesión           | El `beforeLoad` corrió en el servidor, donde `sessionStorage` no existe  | La guarda `if (typeof window === "undefined") return;` (Parte 5)                                      |
-| `ORA-00060` al reejecutar un archivo `db/`                           | El `npm run dev` mantiene tomadas filas de metadatos de ORDS             | Frenar dev **antes** de ejecutar                                                                      |
-| `PLS-00306` al definir un módulo                                     | Se pasó `p_origins_allowed` a `ORDS.DEFINE_MODULE`                       | Va en su propia llamada a `SET_MODULE_ORIGINS_ALLOWED`                                                |
+| Síntoma                                                            | Causa                                                                                                     | Solución                                                                                                                                                                                |
+| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Service Unavailable` genérico, solo en producción                 | El dominio nuevo no está en `ORIGINS_ALLOWED` del módulo                                                  | Parte 1. ORDS rechaza **antes** del handler: ningún log de PL/SQL lo va a mostrar                                                                                                       |
+| CORS bloqueado en `/usuarios/` pero `/auth/` anda                  | `ORIGINS_ALLOWED` es **por módulo**                                                                       | Repetir `SET_MODULE_ORIGINS_ALLOWED` en cada módulo que se consuma                                                                                                                      |
+| `400` en el logout sin llegar al handler                           | Se mandó `Content-Type: application/json` en un POST sin body                                             | Mandar el header **solo** cuando hay body (ya resuelto en `request`)                                                                                                                    |
+| `Unexpected token <` al parsear la respuesta                       | ORDS devolvió HTML (error previo al handler)                                                              | `request` ya lo tolera: cae a `mensajeSegunEstado(status)`                                                                                                                              |
+| El toast de "sesión expiró" salta en cada intento de login fallido | El 401 del login se trató como sesión caída                                                               | El aviso solo se dispara con `auth: true` (ver `request`)                                                                                                                               |
+| `500` con `"Error al iniciar sesion"` y nada más                   | Suele ser `ORA-01722`: se comparó `ACTIVO` contra un número                                               | Estados como texto `'A'`/`'I'` siempre. El detalle real está en `APEX_DEBUG`                                                                                                            |
+| El correo de recuperación nunca llega                              | Primero: que la cuenta TENGA `CORREO` cargado — sin él responde 200 y no manda nada. Después, `APEX_MAIL` | `PKG_AUTH.PROBAR_CORREO('destino@ejemplo.com')` **en un bloque anónimo** devuelve el error en texto. En un `SELECT … FROM DUAL` da `ORA-14551` sin llegar a enviar: la función hace DML |
+| El usuario entra pero `/auth/me` da 401                            | Cuenta inactivada, o token revocado por un cambio de contraseña                                           | Es correcto: `VALIDAR_TOKEN` exige que la cuenta siga activa                                                                                                                            |
+| Todo el mundo va al login en el build, aunque tenga sesión         | El `beforeLoad` corrió en el servidor, donde `sessionStorage` no existe                                   | La guarda `if (typeof window === "undefined") return;` (Parte 5)                                                                                                                        |
+| `ORA-00060` al reejecutar un archivo `db/`                         | El `npm run dev` mantiene tomadas filas de metadatos de ORDS                                              | Frenar dev **antes** de ejecutar                                                                                                                                                        |
+| `PLS-00306` al definir un módulo                                   | Se pasó `p_origins_allowed` a `ORDS.DEFINE_MODULE`                                                        | Va en su propia llamada a `SET_MODULE_ORIGINS_ALLOWED`                                                                                                                                  |
 
 ### Diagnóstico del lado del servidor
 

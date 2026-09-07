@@ -1,15 +1,16 @@
 --------------------------------------------------------------------------------
 -- CTELL · USUARIOS
 --
--- Un paquete (PKG_USUARIOS) con los 4 procedimientos — LISTAR, INSERTAR,
--- ACTUALIZAR, ELIMINAR — y la publicación de los endpoints ORDS. Todo vive
--- dentro del paquete: no hay procedimientos sueltos ni PL/SQL embebido como
--- texto dentro de los handlers.
+-- Un paquete (PKG_USUARIOS) con los 5 procedimientos — LISTAR, INSERTAR,
+-- ACTUALIZAR, ELIMINAR, ESTABLECER_PASSWORD — y la publicación de los endpoints
+-- ORDS. Todo vive dentro del paquete: no hay procedimientos sueltos ni PL/SQL
+-- embebido como texto dentro de los handlers.
 --
---   1. LISTAR      GET    /usuarios/listar
---   2. INSERTAR    POST   /usuarios/crear
---   3. ACTUALIZAR  PUT    /usuarios/actualizar/:id
---   4. ELIMINAR    DELETE /usuarios/eliminar/:id
+--   1. LISTAR              GET    /usuarios/listar
+--   2. INSERTAR            POST   /usuarios/crear
+--   3. ACTUALIZAR          PUT    /usuarios/actualizar/:id
+--   4. ELIMINAR            DELETE /usuarios/eliminar/:id
+--   5. ESTABLECER_PASSWORD POST   /usuarios/password/:id
 --
 -- Se ejecuta una sola vez en la hoja de trabajo SQL de APEX, conectado con el
 -- esquema del workspace. REQUIERE db/auth.sql EJECUTADO ANTES: usa PKG_AUTH
@@ -25,7 +26,7 @@
 -- código viaja en el JSON y lo consume el frontend, sin traducirse a 1/0.
 -- ES_ADMIN sigue el mismo criterio con 'S'/'N'.
 --
--- SOLO ADMINISTRADORES. Los cuatro endpoints exigen ES_ADMIN = 'S' y responden
+-- SOLO ADMINISTRADORES. Los cinco endpoints exigen ES_ADMIN = 'S' y responden
 -- 403 a cualquier otro usuario, aunque su token sea perfectamente valido.
 --
 -- No alcanzaba con esconder la pantalla de Administracion en el frontend: eso
@@ -41,6 +42,12 @@
 -- ALTA: el correo es OBLIGATORIO y la contraseña NO se recibe — la genera
 -- PKG_AUTH.GENERAR_PASSWORD y sale por correo. La respuesta sólo trae la clave
 -- en claro si el envío falló, como respaldo para no dejar la cuenta muerta.
+--
+-- CLAVE PUESTA A MANO: ESTABLECER_PASSWORD es la vía que NO depende del correo.
+-- Existe porque /auth/recuperar no puede alcanzar a una cuenta sin dirección
+-- cargada —el caso que lo motivó— ni servir a quien llama por teléfono. Las dos
+-- conviven: aquella manda una clave que el admin no conoce, ésta le deja
+-- elegirla y dictarla. Ver su especificación, que documenta la contrapartida.
 --
 -- CORS: ORIGINS_ALLOWED es POR MODULO, no a nivel de workspace. Se declara en
 -- PUBLICAR_ENDPOINTS. Ver la explicación completa en db/auth.sql.
@@ -109,7 +116,42 @@ CREATE OR REPLACE PACKAGE PKG_USUARIOS AS
     p_resultado     OUT CLOB
   );
 
-  -- Borra y republica el módulo ORDS /usuarios/ con sus 4 endpoints.
+  ------------------------------------------------------------------------------
+  -- POST /usuarios/:id/password  — el administrador ESCRIBE la clave
+  --
+  -- Body: { "password": "..." }
+  -- 200 -> { ok: true }. Revoca TODAS las sesiones del usuario afectado.
+  -- 400 -> menos de 8 caracteres.
+  -- 403 -> no sos admin.
+  -- 404 -> no existe.
+  --
+  -- ES DISTINTO DE /auth/recuperar, y por eso existe: aquel genera una clave al
+  -- azar y la manda por correo, asi que no sirve para una cuenta SIN CORREO
+  -- cargado --el caso real que lo motivo: el usuario 'admin' no tenia
+  -- direccion y ninguna recuperacion podia alcanzarlo-- ni para quien llama por
+  -- telefono y necesita entrar ahora. Aca el admin elige la clave y se la dicta.
+  --
+  -- La contracara es que el admin PASA A CONOCER la clave de otra persona. Se
+  -- acepta a conciencia; la mejora pendiente es marcar la cuenta como
+  -- provisoria y que el login exija cambiarla en el primer ingreso.
+  --
+  -- SOBRE UNO MISMO ESTA PERMITIDO, y no pide la contrasena actual. Es una
+  -- decision explicita del proyecto, distinta de la de ELIMINAR --que si se
+  -- bloquea a si mismo-- y mas floja que /auth/cambiar-password, que exige la
+  -- clave vigente. Implica que una sesion de admin abierta y desatendida
+  -- alcanza para apropiarse de esa cuenta: quien la encuentre puede fijar una
+  -- clave nueva sin conocer la anterior. Si algun dia se revierte, el cambio es
+  -- rechazar con 400 cuando l_id = l_sesion, como hace ELIMINAR.
+  ------------------------------------------------------------------------------
+  PROCEDURE ESTABLECER_PASSWORD (
+    p_authorization IN  VARCHAR2,
+    p_id            IN  VARCHAR2,
+    p_password      IN  VARCHAR2,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
+  );
+
+  -- Borra y republica el módulo ORDS /usuarios/ con sus 5 endpoints.
   -- Se llama una sola vez, al final de este archivo.
   PROCEDURE PUBLICAR_ENDPOINTS;
 
@@ -522,8 +564,86 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
       END IF;
   END ELIMINAR;
 
+  PROCEDURE ESTABLECER_PASSWORD (
+    p_authorization IN  VARCHAR2,
+    p_id            IN  VARCHAR2,
+    p_password      IN  VARCHAR2,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
+  ) IS
+    l_sesion NUMBER;
+    l_id     NUMBER;
+    l_salt   VARCHAR2(32);
+    l_hash   VARCHAR2(256);
+  BEGIN
+    -- VALIDAR_TOKEN_ADMIN y no VALIDAR_TOKEN: este ABM es solo para
+    -- administradores. Ver la nota al inicio del package body.
+    l_sesion := PKG_AUTH.VALIDAR_TOKEN_ADMIN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
+    IF l_sesion IS NULL THEN
+      p_status_code := 403;
+      p_resultado := C_ERROR_NO_AUTORIZADO;
+      RETURN;
+    END IF;
+
+    l_id := TO_NUMBER(NULLIF(p_id, ''));
+
+    -- El mismo minimo que PKG_AUTH.CAMBIAR_PASSWORD. Sin maximo ni reglas de
+    -- composicion: exigir mayuscula + numero + simbolo empuja a "Password1!" y
+    -- a que la clave termine anotada en un papel.
+    IF p_password IS NULL OR LENGTH(p_password) < 8 THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"La contrasena debe tener al menos 8 caracteres"}';
+      RETURN;
+    END IF;
+
+    -- A DIFERENCIA DE ELIMINAR, no se rechaza l_id = l_sesion: cambiarse la
+    -- propia clave por aca esta permitido a pedido, sin pedir la vigente. Ver
+    -- la advertencia en la especificacion del procedimiento.
+
+    l_salt := PKG_AUTH.GENERAR_SALT();
+    l_hash := PKG_AUTH.HASH_PASSWORD(p_password, l_salt);
+
+    UPDATE USUARIOS
+       SET CONTRASENA_HASH     = l_hash,
+           SALT                = l_salt,
+           FECHA_ACTUALIZACION = SYSTIMESTAMP
+     WHERE ID_USUARIO = l_id;
+
+    IF SQL%ROWCOUNT = 0 THEN
+      ROLLBACK;
+      p_status_code := 404;
+      p_resultado := '{"error":"Usuario no encontrado"}';
+      RETURN;
+    END IF;
+
+    -- Las sesiones abiertas siguen valiendo con la credencial vieja: si la
+    -- clave se cambia porque la cuenta esta comprometida, dejarlas vivas anula
+    -- el motivo del cambio. Incluye la propia cuando el admin se la cambia a si
+    -- mismo, asi que el frontend tiene que volver al login en ese caso.
+    PKG_AUTH.REVOCAR_TOKENS_USUARIO(l_id);
+
+    COMMIT;
+    p_status_code := 200;
+    -- 'esPropia' le dice al cliente si la sesion que hizo el pedido acaba de
+    -- quedar revocada. Sin este dato el frontend no puede distinguir "cambie la
+    -- clave de otro, sigo trabajando" de "me cambie la mia, mi token ya no
+    -- sirve", y en el segundo caso la siguiente peticion caeria en un 401 que
+    -- se ve como un error en vez de como la consecuencia esperada.
+    p_resultado := JSON_OBJECT(
+      'ok'       VALUE 'true' FORMAT JSON,
+      'esPropia' VALUE CASE WHEN l_id = l_sesion THEN 'true' ELSE 'false' END FORMAT JSON
+    );
+  EXCEPTION
+    WHEN OTHERS THEN
+      ROLLBACK;
+      p_status_code := 500;
+      APEX_DEBUG.ERROR('PKG_USUARIOS.ESTABLECER_PASSWORD: [' || SQLCODE || '] ' || SQLERRM ||
+                       ' | ' || DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
+      p_resultado := '{"error":"Error al establecer la contrasena"}';
+  END ESTABLECER_PASSWORD;
+
   ------------------------------------------------------------------------------
-  -- Publica el módulo ORDS /usuarios/ con sus 4 endpoints.
+  -- Publica el módulo ORDS /usuarios/ con sus 5 endpoints.
   --
   -- Cada handler es una sola línea: invoca al procedimiento del paquete
   -- pasando los binds de ORDS como argumentos. Nada de PL/SQL embebido.
@@ -665,6 +785,41 @@ CREATE OR REPLACE PACKAGE BODY PKG_USUARIOS AS
       p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
+    ----------------------------------------------------------------------------
+    -- POST /usuarios/:id/password  — el administrador escribe la clave
+    --
+    -- El id viaja en la RUTA y la clave en el BODY. `password` no se declara
+    -- con DEFINE_PARAMETER: ORDS crea solo un bind por cada clave de primer
+    -- nivel del JSON. Lo que nunca hay que hacer es leerlo con
+    -- JSON_VALUE(:body, ...) — `:body` es el payload CRUDO como BLOB y eso
+    -- devuelve NULL en todos los campos, con el sintoma tipico de que el GET y
+    -- el DELETE andan y solo el POST responde 400.
+    ----------------------------------------------------------------------------
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'usuarios', p_pattern => 'password/:id');
+
+    ORDS.DEFINE_HANDLER(
+      p_module_name => 'usuarios',
+      p_pattern     => 'password/:id',
+      p_method      => 'POST',
+      p_source_type => ORDS.source_type_plsql,
+      p_source      => 'BEGIN PKG_USUARIOS.ESTABLECER_PASSWORD(:authorization, :id, :password, :status_code, :resultado); END;'
+    );
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'usuarios', p_pattern => 'password/:id', p_method => 'POST',
+      p_name => 'authorization', p_bind_variable_name => 'authorization',
+      p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'usuarios', p_pattern => 'password/:id', p_method => 'POST',
+      p_name => 'resultado', p_bind_variable_name => 'resultado',
+      p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'usuarios', p_pattern => 'password/:id', p_method => 'POST',
+      p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
+      p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
+
     COMMIT;
   END PUBLICAR_ENDPOINTS;
 
@@ -700,6 +855,15 @@ SELECT NAME, LINE, POSITION, TEXT
 SELECT NAME, STATUS, ORIGINS_ALLOWED
   FROM USER_ORDS_MODULES
  WHERE NAME = 'usuarios';
+
+-- Los 5 endpoints, uno por fila. Si 'password/:id' no figura, el modulo quedo a
+-- medio publicar: un ORA-02290 aborta PUBLICAR_ENDPOINTS a la mitad y deja los
+-- templates que alcanzo a definir.
+SELECT t.URI_TEMPLATE, h.METHOD
+  FROM USER_ORDS_TEMPLATES t
+  JOIN USER_ORDS_HANDLERS  h ON h.TEMPLATE_ID = t.ID
+ WHERE t.MODULE_ID = (SELECT ID FROM USER_ORDS_MODULES WHERE NAME = 'usuarios')
+ ORDER BY t.URI_TEMPLATE;
 
 SELECT t.URI_TEMPLATE, h.METHOD
   FROM USER_ORDS_TEMPLATES t

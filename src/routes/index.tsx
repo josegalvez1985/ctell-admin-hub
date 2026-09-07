@@ -407,8 +407,18 @@ function LoginPage() {
             </Button>
           </form>
 
+          {/* El manual público, y no la pantalla /ayuda: quien está mirando el
+              login todavía no tiene sesión, y /ayuda la exige. Es justo el caso
+              de quien no puede entrar y necesita leer qué hacer. Va como <a> a
+              un archivo estático de public/, no como ruta del router. */}
           <p className="mt-8 text-center text-xs text-muted-foreground">
-            Acceso restringido a personal autorizado.
+            Acceso restringido a personal autorizado.{" "}
+            <a
+              href="/manual.html"
+              className="font-medium text-primary transition-opacity hover:opacity-80"
+            >
+              Manual de uso
+            </a>
           </p>
         </div>
       </section>

@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
   Bell,
+  CircleHelp,
   Home,
   LogOut,
   Menu,
@@ -27,6 +28,7 @@ const COLLAPSE_KEY = "ctell-sidebar-collapsed";
 
 const mobileMenuItems = [
   { label: "Inicio", icon: Home, to: "/home" },
+  { label: "Ayuda", icon: CircleHelp, to: "/ayuda" },
   { label: "Configuración", icon: Settings, to: "/configuracion" },
   { label: "Salir", icon: LogOut, to: undefined, action: "logout" },
 ];
@@ -130,6 +132,18 @@ export function AppLayout({
         </nav>
 
         <div className="space-y-1 border-t border-sidebar-border pt-4">
+          {/* Fija, como Dashboard y Configuración, y NO en el menú dinámico: el
+              manual de uso lo necesita todo el mundo, y sobre todo quien
+              todavía no sabe usar el sistema. Pasarlo por el ABM de páginas lo
+              volvería un permiso que hay que acordarse de dar, y quien no lo
+              tuviera se quedaría sin la pantalla que explica cómo pedirlo. */}
+          <SideItem
+            icon={CircleHelp}
+            label="Ayuda"
+            to="/ayuda"
+            active={active === "Ayuda"}
+            collapsed={collapsed}
+          />
           <SideItem
             icon={Settings}
             label="Configuración"

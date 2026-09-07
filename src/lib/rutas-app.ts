@@ -28,8 +28,14 @@ import { routeTree } from "@/routeTree.gen";
  * La regla es que **todo lo que sea navegable aparezca**. Agregar algo acá es
  * volver al problema que este archivo resuelve, así que sólo va lo que
  * demostrablemente no es una página.
+ *
+ * `/ayuda` es la excepción que cumple esa vara: **ya está fija en el sidebar**
+ * (ver `AppLayout`), para todos y sin permiso, porque el manual de uso lo
+ * necesita sobre todo quien todavía no sabe usar el sistema. Ofrecerla acá no
+ * la habilitaría —ya está habilitada— sino que dejaría darla de alta una
+ * segunda vez y verla DUPLICADA en el menú.
  */
-const EXCLUIDAS = new Set<string>([]);
+const EXCLUIDAS = new Set<string>(["/ayuda"]);
 
 /** Etiqueta legible a partir del segmento de la URL: "/unidades-medida" → "Unidades medida". */
 function etiquetaDesdeRuta(ruta: string): string {

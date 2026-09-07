@@ -24,6 +24,7 @@ import {
   CalendarClock,
   CalendarOff,
   CircleDot,
+  CircleHelp,
   ClipboardCheck,
   ClipboardList,
   ClipboardX,
@@ -195,6 +196,12 @@ const ICONOS_PAGINA: Record<string, LucideIcon> = {
   // que se lo lee en el menú.
   manuales: BookOpen,
   manual: BookOpen,
+  // El signo de pregunta y no el libro: "Ayuda" y "Manuales" son dos cosas
+  // distintas —el manual de uso del sistema, y los PDF que se cargan por
+  // institución y grado— y compartir el icono las volveria indistinguibles en
+  // el menu, que es donde mas hace falta separarlas.
+  ayuda: CircleHelp,
+  manualdeuso: CircleHelp,
   // Users (varias personas) y no UserCog: el padrón son las personas del
   // negocio; UserCog ya es "usuarios", que son las cuentas del sistema.
   personas: Users,

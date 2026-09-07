@@ -47,6 +47,10 @@ const SINONIMOS = [
   ],
   ["marcas", "marca"],
   ["manuales", "manual"],
+  // La pantalla del manual de uso, que en el menú puede llamarse de las dos
+  // formas. No se junta con "manuales": ésos son los PDF por institución y
+  // grado, otra cosa, y por eso tienen otro ícono.
+  ["ayuda", "manualdeuso"],
   ["modulos", "modulo"],
   ["paginas", "pagina"],
   ["permisos", "permiso"],

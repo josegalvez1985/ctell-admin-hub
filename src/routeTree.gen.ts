@@ -15,6 +15,7 @@ import { Route as AuthAdministracionRouteImport } from './routes/_auth.administr
 import { Route as AuthArticulosRouteImport } from './routes/_auth.articulos'
 import { Route as AuthArticulosUbicacionesRouteImport } from './routes/_auth.articulos-ubicaciones'
 import { Route as AuthAsistenciasRouteImport } from './routes/_auth.asistencias'
+import { Route as AuthAyudaRouteImport } from './routes/_auth.ayuda'
 import { Route as AuthBancosRouteImport } from './routes/_auth.bancos'
 import { Route as AuthCanalesPagosRouteImport } from './routes/_auth.canales-pagos'
 import { Route as AuthCategoriasRouteImport } from './routes/_auth.categorias'
@@ -79,6 +80,11 @@ const AuthArticulosUbicacionesRoute =
 const AuthAsistenciasRoute = AuthAsistenciasRouteImport.update({
   id: '/asistencias',
   path: '/asistencias',
+  getParentRoute: () => AuthRoute,
+} as any)
+const AuthAyudaRoute = AuthAyudaRouteImport.update({
+  id: '/ayuda',
+  path: '/ayuda',
   getParentRoute: () => AuthRoute,
 } as any)
 const AuthBancosRoute = AuthBancosRouteImport.update({
@@ -264,6 +270,7 @@ export interface FileRoutesByFullPath {
   '/articulos': typeof AuthArticulosRoute
   '/articulos-ubicaciones': typeof AuthArticulosUbicacionesRoute
   '/asistencias': typeof AuthAsistenciasRoute
+  '/ayuda': typeof AuthAyudaRoute
   '/bancos': typeof AuthBancosRoute
   '/canales-pagos': typeof AuthCanalesPagosRoute
   '/categorias': typeof AuthCategoriasRoute
@@ -306,6 +313,7 @@ export interface FileRoutesByTo {
   '/articulos': typeof AuthArticulosRoute
   '/articulos-ubicaciones': typeof AuthArticulosUbicacionesRoute
   '/asistencias': typeof AuthAsistenciasRoute
+  '/ayuda': typeof AuthAyudaRoute
   '/bancos': typeof AuthBancosRoute
   '/canales-pagos': typeof AuthCanalesPagosRoute
   '/categorias': typeof AuthCategoriasRoute
@@ -350,6 +358,7 @@ export interface FileRoutesById {
   '/_auth/articulos': typeof AuthArticulosRoute
   '/_auth/articulos-ubicaciones': typeof AuthArticulosUbicacionesRoute
   '/_auth/asistencias': typeof AuthAsistenciasRoute
+  '/_auth/ayuda': typeof AuthAyudaRoute
   '/_auth/bancos': typeof AuthBancosRoute
   '/_auth/canales-pagos': typeof AuthCanalesPagosRoute
   '/_auth/categorias': typeof AuthCategoriasRoute
@@ -394,6 +403,7 @@ export interface FileRouteTypes {
     | '/articulos'
     | '/articulos-ubicaciones'
     | '/asistencias'
+    | '/ayuda'
     | '/bancos'
     | '/canales-pagos'
     | '/categorias'
@@ -436,6 +446,7 @@ export interface FileRouteTypes {
     | '/articulos'
     | '/articulos-ubicaciones'
     | '/asistencias'
+    | '/ayuda'
     | '/bancos'
     | '/canales-pagos'
     | '/categorias'
@@ -479,6 +490,7 @@ export interface FileRouteTypes {
     | '/_auth/articulos'
     | '/_auth/articulos-ubicaciones'
     | '/_auth/asistencias'
+    | '/_auth/ayuda'
     | '/_auth/bancos'
     | '/_auth/canales-pagos'
     | '/_auth/categorias'
@@ -563,6 +575,13 @@ declare module '@tanstack/react-router' {
       path: '/asistencias'
       fullPath: '/asistencias'
       preLoaderRoute: typeof AuthAsistenciasRouteImport
+      parentRoute: typeof AuthRoute
+    }
+    '/_auth/ayuda': {
+      id: '/_auth/ayuda'
+      path: '/ayuda'
+      fullPath: '/ayuda'
+      preLoaderRoute: typeof AuthAyudaRouteImport
       parentRoute: typeof AuthRoute
     }
     '/_auth/bancos': {
@@ -818,6 +837,7 @@ interface AuthRouteChildren {
   AuthArticulosRoute: typeof AuthArticulosRoute
   AuthArticulosUbicacionesRoute: typeof AuthArticulosUbicacionesRoute
   AuthAsistenciasRoute: typeof AuthAsistenciasRoute
+  AuthAyudaRoute: typeof AuthAyudaRoute
   AuthBancosRoute: typeof AuthBancosRoute
   AuthCanalesPagosRoute: typeof AuthCanalesPagosRoute
   AuthCategoriasRoute: typeof AuthCategoriasRoute
@@ -860,6 +880,7 @@ const AuthRouteChildren: AuthRouteChildren = {
   AuthArticulosRoute: AuthArticulosRoute,
   AuthArticulosUbicacionesRoute: AuthArticulosUbicacionesRoute,
   AuthAsistenciasRoute: AuthAsistenciasRoute,
+  AuthAyudaRoute: AuthAyudaRoute,
   AuthBancosRoute: AuthBancosRoute,
   AuthCanalesPagosRoute: AuthCanalesPagosRoute,
   AuthCategoriasRoute: AuthCategoriasRoute,
