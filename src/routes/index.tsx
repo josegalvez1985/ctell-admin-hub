@@ -166,7 +166,7 @@ function LoginPage() {
   }
 
   return (
-    <main className="flex min-h-screen bg-background">
+    <main className="flex min-h-dvh bg-background">
       <section className="relative hidden w-[52%] overflow-hidden lg:block">
         <img
           src={loginBg}

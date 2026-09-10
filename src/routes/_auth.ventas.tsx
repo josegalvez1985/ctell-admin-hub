@@ -22,6 +22,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
   TableBody,
@@ -98,7 +99,7 @@ function VentasPage() {
 
   return (
     <AppLayout active="/ventas" title="Ventas">
-      <main className="min-h-[calc(100vh-4rem)] bg-muted/20 px-4 pb-10 pt-5 sm:px-6 lg:px-8">
+      <main className="min-h-[calc(100dvh-4rem)] bg-muted/20 px-4 pb-28 pt-5 sm:px-6 lg:px-8 lg:pb-10">
         <div className="mx-auto max-w-6xl space-y-5">
           <header>
             <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-[0.16em] text-primary">
@@ -127,117 +128,195 @@ function VentasPage() {
             </div>
           </div>
 
-          <div className="surface-card overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Comprobante</TableHead>
-                  <TableHead>Fecha</TableHead>
-                  <TableHead>Tipo</TableHead>
-                  <TableHead>Cliente</TableHead>
-                  <TableHead className="text-right">Total</TableHead>
-                  <TableHead className="text-right">Saldo</TableHead>
-                  <TableHead />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {ventas.isPending && (
-                  <TableRow>
-                    <TableCell
-                      colSpan={7}
-                      className="py-10 text-center text-sm text-muted-foreground"
+          {ventas.isPending && (
+            <div className="space-y-2">
+              {[0, 1, 2, 3, 4].map((i) => (
+                <Skeleton key={i} className="h-14 w-full" />
+              ))}
+            </div>
+          )}
+
+          {ventas.isError && (
+            <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-6 text-center text-sm text-destructive">
+              {mensajeError(ventas.error, "No se pudo cargar la lista")}
+            </p>
+          )}
+
+          {!ventas.isPending && !ventas.isError && filtradas.length === 0 && (
+            <div className="surface-card px-3 py-16 text-center">
+              <p className="text-sm text-muted-foreground">
+                {busqueda ? `Sin resultados para "${busqueda}".` : "Todavía no hay ventas."}
+              </p>
+            </div>
+          )}
+
+          {/* Móvil: tarjetas. Siete columnas obligan a arrastrar de costado en
+              360px, y el saldo —que es lo que se viene a mirar— es justamente la
+              anteúltima, del lado al que hay que arrastrar. */}
+          {filtradas.length > 0 && (
+            <ul className="space-y-3 sm:hidden">
+              {filtradas.map((v) => (
+                <li key={v.id} className="surface-card p-4">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="truncate font-semibold text-foreground">{v.numeroVenta}</p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        {v.fechaVenta.slice(0, 10)}
+                      </p>
+                    </div>
+                    <Badge variant="outline" className="shrink-0 text-xs">
+                      {v.tipoComprobante}
+                    </Badge>
+                  </div>
+
+                  <p className="mt-2 truncate text-sm">
+                    {v.cliente ?? <span className="text-muted-foreground">Ocasional</span>}
+                  </p>
+
+                  <dl className="mt-3 flex items-baseline justify-between gap-3 border-t border-border pt-3">
+                    <div className="min-w-0">
+                      <dt className="text-xs text-muted-foreground">Total</dt>
+                      <dd className="truncate text-sm font-semibold">
+                        {formatearMoneda(v.montoTotal)}
+                      </dd>
+                    </div>
+                    <div className="min-w-0 text-right">
+                      <dt className="text-xs text-muted-foreground">Saldo</dt>
+                      <dd className="truncate text-sm">
+                        {v.saldoPendiente > 0 ? (
+                          <span className="font-semibold text-primary">
+                            {formatearMoneda(v.saldoPendiente)}
+                          </span>
+                        ) : (
+                          <Badge variant="secondary" className="text-xs">
+                            Cobrada
+                          </Badge>
+                        )}
+                      </dd>
+                    </div>
+                  </dl>
+
+                  <div className="mt-3 flex gap-2 border-t border-border pt-3">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="flex-1"
+                      aria-label={`Ver la venta ${v.numeroVenta}`}
+                      onClick={() => setViendo(v)}
                     >
-                      Cargando ventas…
-                    </TableCell>
-                  </TableRow>
-                )}
-                {ventas.isError && (
-                  <TableRow>
-                    <TableCell colSpan={7} className="py-10 text-center text-sm text-destructive">
-                      {mensajeError(ventas.error, "No se pudo cargar la lista")}
-                    </TableCell>
-                  </TableRow>
-                )}
-                {!ventas.isPending && !ventas.isError && filtradas.length === 0 && (
-                  <TableRow>
-                    <TableCell
-                      colSpan={7}
-                      className="py-10 text-center text-sm text-muted-foreground"
+                      <Eye className="size-4" />
+                      Ver
+                    </Button>
+                    {/* Con cobros el backend responde 409: se deshabilita acá
+                        para explicar el porqué antes del error. */}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="flex-1 text-destructive hover:text-destructive"
+                      disabled={v.montoCobrado > 0}
+                      title={
+                        v.montoCobrado > 0
+                          ? "Tiene cobros registrados: anulalos primero desde Cobros"
+                          : "Eliminar venta"
+                      }
+                      aria-label={`Eliminar la venta ${v.numeroVenta}`}
+                      onClick={() => setAEliminar(v)}
                     >
-                      {busqueda ? `Sin resultados para "${busqueda}".` : "Todavía no hay ventas."}
-                    </TableCell>
+                      <Trash2 className="size-4" />
+                      Eliminar
+                    </Button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {filtradas.length > 0 && (
+            <div className="surface-card hidden overflow-x-auto sm:block">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Comprobante</TableHead>
+                    <TableHead>Fecha</TableHead>
+                    <TableHead>Tipo</TableHead>
+                    <TableHead>Cliente</TableHead>
+                    <TableHead className="text-right">Total</TableHead>
+                    <TableHead className="text-right">Saldo</TableHead>
+                    <TableHead />
                   </TableRow>
-                )}
-                {filtradas.map((v) => (
-                  <TableRow key={v.id}>
-                    <TableCell className="font-medium">{v.numeroVenta}</TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      {v.fechaVenta.slice(0, 10)}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="outline" className="text-xs">
-                        {v.tipoComprobante}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-sm">
-                      {v.cliente ?? <span className="text-muted-foreground">Ocasional</span>}
-                    </TableCell>
-                    <TableCell className="text-right text-sm font-semibold">
-                      {formatearMoneda(v.montoTotal)}
-                    </TableCell>
-                    <TableCell className="text-right text-sm">
-                      {v.saldoPendiente > 0 ? (
-                        <span className="font-semibold text-primary">
-                          {formatearMoneda(v.saldoPendiente)}
-                        </span>
-                      ) : (
-                        <Badge variant="secondary" className="text-xs">
-                          Cobrada
+                </TableHeader>
+                <TableBody>
+                  {filtradas.map((v) => (
+                    <TableRow key={v.id}>
+                      <TableCell className="font-medium">{v.numeroVenta}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {v.fechaVenta.slice(0, 10)}
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className="text-xs">
+                          {v.tipoComprobante}
                         </Badge>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex justify-end gap-1">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="size-8"
-                          title="Ver detalle"
-                          aria-label={`Ver la venta ${v.numeroVenta}`}
-                          onClick={() => setViendo(v)}
-                        >
-                          <Eye className="size-4" />
-                        </Button>
-                        {/* Con cobros el backend responde 409: se deshabilita
+                      </TableCell>
+                      <TableCell className="text-sm">
+                        {v.cliente ?? <span className="text-muted-foreground">Ocasional</span>}
+                      </TableCell>
+                      <TableCell className="text-right text-sm font-semibold">
+                        {formatearMoneda(v.montoTotal)}
+                      </TableCell>
+                      <TableCell className="text-right text-sm">
+                        {v.saldoPendiente > 0 ? (
+                          <span className="font-semibold text-primary">
+                            {formatearMoneda(v.saldoPendiente)}
+                          </span>
+                        ) : (
+                          <Badge variant="secondary" className="text-xs">
+                            Cobrada
+                          </Badge>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex justify-end gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="size-8"
+                            title="Ver detalle"
+                            aria-label={`Ver la venta ${v.numeroVenta}`}
+                            onClick={() => setViendo(v)}
+                          >
+                            <Eye className="size-4" />
+                          </Button>
+                          {/* Con cobros el backend responde 409: se deshabilita
                             acá para explicar el porqué antes del error. */}
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="size-8"
-                          disabled={v.montoCobrado > 0}
-                          title={
-                            v.montoCobrado > 0
-                              ? "Tiene cobros registrados: anulalos primero desde Cobros"
-                              : "Eliminar venta"
-                          }
-                          aria-label={`Eliminar la venta ${v.numeroVenta}`}
-                          onClick={() => setAEliminar(v)}
-                        >
-                          <Trash2 className="size-4 text-destructive" />
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="size-8"
+                            disabled={v.montoCobrado > 0}
+                            title={
+                              v.montoCobrado > 0
+                                ? "Tiene cobros registrados: anulalos primero desde Cobros"
+                                : "Eliminar venta"
+                            }
+                            aria-label={`Eliminar la venta ${v.numeroVenta}`}
+                            onClick={() => setAEliminar(v)}
+                          >
+                            <Trash2 className="size-4 text-destructive" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
         </div>
       </main>
 
       {/* Detalle de sólo lectura: una venta emitida no se edita. */}
       <Dialog open={viendo !== null} onOpenChange={(open) => !open && setViendo(null)}>
-        <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
+        <DialogContent className="max-h-[90dvh] max-w-3xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Venta {viendo?.numeroVenta}</DialogTitle>
             <p className="text-sm text-muted-foreground">

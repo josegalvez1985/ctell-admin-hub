@@ -1105,9 +1105,9 @@ function ArticuloFormDialog({
           un sistema de gestión no debe pedir.
 
           A dos columnas entran todos de una en un portátil (~768px de alto).
-          `max-h-[92vh]` queda como red de seguridad para pantallas muy bajas o
+          `max-h-[92dvh]` queda como red de seguridad para pantallas muy bajas o
           zoom alto: sigue existiendo, pero deja de ser el caso normal. */}
-      <DialogContent className="scrollbar-fino max-h-[92vh] overflow-y-auto sm:max-w-3xl">
+      <DialogContent className="scrollbar-fino max-h-[92dvh] overflow-y-auto sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>{esEdicion ? "Editar artículo" : "Nuevo artículo"}</DialogTitle>
           <DialogDescription>

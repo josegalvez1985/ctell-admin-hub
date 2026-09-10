@@ -758,7 +758,7 @@ function ManualFormDialog({
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="scrollbar-fino max-h-[92vh] max-w-[95vw] overflow-y-auto sm:max-w-lg">
+      <DialogContent className="scrollbar-fino max-h-[92dvh] max-w-[95vw] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{esEdicion ? "Editar manual" : "Nuevo manual"}</DialogTitle>
           <DialogDescription>

@@ -684,7 +684,7 @@ function GestionDialog({
 
   return (
     <Dialog open={abierto} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="scrollbar-fino max-h-[92vh] max-w-[95vw] overflow-y-auto sm:max-w-2xl">
+      <DialogContent className="scrollbar-fino max-h-[92dvh] max-w-[95vw] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle className="break-words">
             {justificacion ? `Solicitud de ${justificacion.profesor}` : "Solicitud"}

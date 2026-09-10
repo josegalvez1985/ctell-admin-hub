@@ -32,6 +32,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select,
   SelectContent,
@@ -189,7 +190,7 @@ function CobrosPage() {
 
   return (
     <AppLayout active="/cobros" title="Cobros">
-      <main className="min-h-[calc(100vh-4rem)] bg-muted/20 px-4 pb-10 pt-5 sm:px-6 lg:px-8">
+      <main className="min-h-[calc(100dvh-4rem)] bg-muted/20 px-4 pb-28 pt-5 sm:px-6 lg:px-8 lg:pb-10">
         <div className="mx-auto max-w-5xl space-y-5">
           <header className="flex flex-wrap items-end justify-between gap-3">
             <div>
@@ -220,106 +221,178 @@ function CobrosPage() {
             </div>
           </div>
 
-          <div className="surface-card overflow-hidden">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead># Venta</TableHead>
-                  <TableHead>Fecha</TableHead>
-                  <TableHead>Tipo</TableHead>
-                  <TableHead>Cliente</TableHead>
-                  <TableHead className="text-right">Total</TableHead>
-                  <TableHead className="text-right">Saldo</TableHead>
-                  <TableHead />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {ventas.isPending && (
-                  <TableRow>
-                    <TableCell
-                      colSpan={7}
-                      className="py-10 text-center text-sm text-muted-foreground"
+          {ventas.isPending && (
+            <div className="space-y-2">
+              {[0, 1, 2, 3, 4].map((i) => (
+                <Skeleton key={i} className="h-14 w-full" />
+              ))}
+            </div>
+          )}
+
+          {!ventas.isPending && ventasFiltradas.length === 0 && (
+            <div className="surface-card px-3 py-16 text-center">
+              <p className="text-sm text-muted-foreground">No hay ventas</p>
+            </div>
+          )}
+
+          {/* Móvil: tarjetas. Las dos acciones son botones con texto, así que en
+              la tabla ya venían apretadas contra el borde derecho; acá van a lo
+              ancho de la tarjeta y dejan de competir con las seis columnas. */}
+          {ventasFiltradas.length > 0 && (
+            <ul className="space-y-3 sm:hidden">
+              {ventasFiltradas.map((v) => (
+                <li key={v.id} className="surface-card p-4">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="truncate font-semibold text-foreground">{v.numeroVenta}</p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        {v.fechaVenta.slice(0, 10)}
+                      </p>
+                    </div>
+                    <Badge variant="outline" className="shrink-0 text-xs">
+                      {v.tipoComprobante}
+                    </Badge>
+                  </div>
+
+                  <p className="mt-2 truncate text-sm">
+                    {v.cliente ?? <span className="text-muted-foreground">Ocasional</span>}
+                  </p>
+
+                  <dl className="mt-3 flex items-baseline justify-between gap-3 border-t border-border pt-3">
+                    <div className="min-w-0">
+                      <dt className="text-xs text-muted-foreground">Total</dt>
+                      <dd className="truncate text-sm font-semibold">
+                        {formatearMoneda(v.montoTotal)}
+                      </dd>
+                    </div>
+                    <div className="min-w-0 text-right">
+                      <dt className="text-xs text-muted-foreground">Saldo</dt>
+                      <dd className="truncate text-sm">
+                        {v.saldoPendiente > 0 ? (
+                          <span className="font-semibold text-primary">
+                            {formatearMoneda(v.saldoPendiente)}
+                          </span>
+                        ) : (
+                          <Badge variant="secondary" className="text-xs">
+                            Cobrada
+                          </Badge>
+                        )}
+                      </dd>
+                    </div>
+                  </dl>
+
+                  <div className="mt-3 flex gap-2 border-t border-border pt-3">
+                    {/* La venta saldada no se puede cobrar pero SÍ se puede
+                        auditar: es justo cuando más se pregunta cómo se pagó. */}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="flex-1"
+                      disabled={v.montoCobrado <= 0}
+                      onClick={() => setIdVentaHistorial(v.id)}
                     >
-                      Cargando ventas…
-                    </TableCell>
-                  </TableRow>
-                )}
-                {!ventas.isPending && ventasFiltradas.length === 0 && (
-                  <TableRow>
-                    <TableCell
-                      colSpan={7}
-                      className="py-10 text-center text-sm text-muted-foreground"
+                      <Receipt className="size-4" />
+                      Ver cobros
+                    </Button>
+                    {/* Sin saldo no hay nada que cobrar: el backend lo rechaza
+                        con 409, así que ofrecer el botón sólo serviría para
+                        llevar al cajero a un error. */}
+                    <Button
+                      size="sm"
+                      className="flex-1"
+                      disabled={v.saldoPendiente <= 0}
+                      onClick={() => abrirDialog(v)}
                     >
-                      No hay ventas
-                    </TableCell>
+                      Cobrar
+                    </Button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {ventasFiltradas.length > 0 && (
+            <div className="surface-card hidden overflow-x-auto sm:block">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead># Venta</TableHead>
+                    <TableHead>Fecha</TableHead>
+                    <TableHead>Tipo</TableHead>
+                    <TableHead>Cliente</TableHead>
+                    <TableHead className="text-right">Total</TableHead>
+                    <TableHead className="text-right">Saldo</TableHead>
+                    <TableHead />
                   </TableRow>
-                )}
-                {ventasFiltradas.map((v) => (
-                  <TableRow key={v.id}>
-                    <TableCell className="font-medium">{v.numeroVenta}</TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      {v.fechaVenta.slice(0, 10)}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="outline" className="text-xs">
-                        {v.tipoComprobante}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-sm">
-                      {v.cliente ?? <span className="text-muted-foreground">Ocasional</span>}
-                    </TableCell>
-                    <TableCell className="text-right text-sm font-semibold">
-                      {formatearMoneda(v.montoTotal)}
-                    </TableCell>
-                    <TableCell className="text-right text-sm">
-                      {v.saldoPendiente > 0 ? (
-                        <span className="font-semibold text-primary">
-                          {formatearMoneda(v.saldoPendiente)}
-                        </span>
-                      ) : (
-                        <Badge variant="secondary" className="text-xs">
-                          Cobrada
+                </TableHeader>
+                <TableBody>
+                  {ventasFiltradas.map((v) => (
+                    <TableRow key={v.id}>
+                      <TableCell className="font-medium">{v.numeroVenta}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {v.fechaVenta.slice(0, 10)}
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className="text-xs">
+                          {v.tipoComprobante}
                         </Badge>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex justify-end gap-2">
-                        {/* La venta saldada no se puede cobrar pero SÍ se
+                      </TableCell>
+                      <TableCell className="text-sm">
+                        {v.cliente ?? <span className="text-muted-foreground">Ocasional</span>}
+                      </TableCell>
+                      <TableCell className="text-right text-sm font-semibold">
+                        {formatearMoneda(v.montoTotal)}
+                      </TableCell>
+                      <TableCell className="text-right text-sm">
+                        {v.saldoPendiente > 0 ? (
+                          <span className="font-semibold text-primary">
+                            {formatearMoneda(v.saldoPendiente)}
+                          </span>
+                        ) : (
+                          <Badge variant="secondary" className="text-xs">
+                            Cobrada
+                          </Badge>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex justify-end gap-2">
+                          {/* La venta saldada no se puede cobrar pero SÍ se
                             puede auditar: es justo cuando más se pregunta
                             cómo se pagó. */}
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          disabled={v.montoCobrado <= 0}
-                          onClick={() => setIdVentaHistorial(v.id)}
-                          title="Ver cómo se cobró"
-                        >
-                          <Receipt className="size-4" />
-                          <span className="hidden sm:inline">Ver cobros</span>
-                        </Button>
-                        {/* Sin saldo no hay nada que cobrar: el backend lo
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={v.montoCobrado <= 0}
+                            onClick={() => setIdVentaHistorial(v.id)}
+                            title="Ver cómo se cobró"
+                          >
+                            <Receipt className="size-4" />
+                            <span className="hidden sm:inline">Ver cobros</span>
+                          </Button>
+                          {/* Sin saldo no hay nada que cobrar: el backend lo
                             rechaza con 409, así que ofrecer el botón sólo
                             serviría para llevar al cajero a un error. */}
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={v.saldoPendiente <= 0}
-                          onClick={() => abrirDialog(v)}
-                        >
-                          Registrar cobro
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={v.saldoPendiente <= 0}
+                            onClick={() => abrirDialog(v)}
+                          >
+                            Registrar cobro
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
         </div>
       </main>
 
       <Dialog open={ventaSeleccionada !== null} onOpenChange={(open) => !open && cerrarDialog()}>
-        <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto">
+        <DialogContent className="max-h-[90dvh] max-w-lg overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Cobro — Venta {ventaSeleccionada?.numeroVenta}</DialogTitle>
             <p className="text-sm text-muted-foreground">
@@ -463,7 +536,7 @@ function CobrosPage() {
         open={idVentaHistorial !== null}
         onOpenChange={(open) => !open && setIdVentaHistorial(null)}
       >
-        <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+        <DialogContent className="max-h-[90dvh] max-w-2xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Cobros — Venta {ventaHistorial?.numeroVenta}</DialogTitle>
             <p className="text-sm text-muted-foreground">

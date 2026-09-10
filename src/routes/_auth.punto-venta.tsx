@@ -329,7 +329,7 @@ function PuntoVentaPage() {
 
   return (
     <AppLayout active="/punto-venta" title="Punto de venta">
-      <main className="min-h-[calc(100vh-4rem)] bg-muted/20 px-4 pb-28 pt-5 sm:px-6 lg:px-8">
+      <main className="min-h-[calc(100dvh-4rem)] bg-muted/20 px-4 pb-28 pt-5 sm:px-6 lg:px-8">
         <div className="mx-auto max-w-7xl space-y-5">
           <header className="flex flex-wrap items-end justify-between gap-3">
             <div>
@@ -363,7 +363,7 @@ function PuntoVentaPage() {
                   />
                 </div>
               </div>
-              <div className="surface-card max-h-[calc(100vh-13rem)] divide-y divide-border overflow-y-auto">
+              <div className="surface-card max-h-[calc(100dvh-13rem)] divide-y divide-border overflow-y-auto">
                 {articulosDisponibles.map((articulo) => (
                   <article
                     key={articulo.id}
@@ -448,7 +448,7 @@ function PuntoVentaPage() {
                 </div>
               )}
             </section>
-            <aside className="surface-card max-h-[calc(100vh-6rem)] overflow-y-auto lg:sticky lg:top-5">
+            <aside className="surface-card max-h-[calc(100dvh-6rem)] overflow-y-auto lg:sticky lg:top-5">
               <div className="border-b border-border bg-card px-5 py-4">
                 <h2 className="font-semibold text-foreground">Venta actual</h2>
                 <p className="mt-1 text-xs text-muted-foreground">

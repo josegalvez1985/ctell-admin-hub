@@ -127,7 +127,7 @@ export function PaginasDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
+      <DialogContent className="max-h-[85dvh] max-w-3xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{titulo}</DialogTitle>
           <DialogDescription>{descripcion}</DialogDescription>
@@ -253,7 +253,7 @@ function PanelLista({ onCambiarVista }: { onCambiarVista: (v: Vista) => void }) 
           la rueda del mouse actúa sobre las filas y no sobre toda la pantalla.
           `scrollbar-fino` porque es un contenedor con scroll propio. */}
       {paginas.length > 0 && (
-        <ul className="scrollbar-fino max-h-[45vh] divide-y divide-border overflow-y-auto rounded-lg border border-border">
+        <ul className="scrollbar-fino max-h-[45dvh] divide-y divide-border overflow-y-auto rounded-lg border border-border">
           {paginas.map((pagina) => {
             const activo = esActivo(pagina.activo);
             // A cuántos usuarios se la habría que quitar antes de poder borrarla.

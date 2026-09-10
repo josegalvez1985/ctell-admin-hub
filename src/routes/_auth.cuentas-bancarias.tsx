@@ -432,7 +432,7 @@ function CuentaFormDialog({
   });
   return (
     <Dialog open={open} onOpenChange={(value) => !value && onClose()}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-h-[90dvh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>
             {esEdicion ? "Editar cuenta bancaria" : "Nueva cuenta bancaria"}

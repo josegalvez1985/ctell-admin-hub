@@ -417,7 +417,7 @@ export function ListaEnModal({
       {/* `max-w-lg` y no `max-w-md`: las opciones suelen ser nombres de
           artículo, que con 28rem se cortaban a mitad de palabra. `max-w-[95vw]`
           lo mantiene dentro de la pantalla en móvil. */}
-      <DialogContent className="flex max-h-[85vh] max-w-[95vw] flex-col sm:max-w-lg">
+      <DialogContent className="flex max-h-[85dvh] max-w-[95vw] flex-col sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{titulo}</DialogTitle>
           {descripcion && <DialogDescription>{descripcion}</DialogDescription>}

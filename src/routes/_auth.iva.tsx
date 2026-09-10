@@ -213,115 +213,194 @@ function IvaPage() {
             </Button>
           </div>
         ) : (
-          <div className="surface-card overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHeadOrdenable
-                    direccion={orden?.campo === "descripcion" ? orden.direccion : null}
-                    onClick={() => alternarOrden("descripcion")}
-                  >
-                    Descripción
-                  </TableHeadOrdenable>
-                  <TableHeadOrdenable
-                    direccion={orden?.campo === "porcentaje" ? orden.direccion : null}
-                    onClick={() => alternarOrden("porcentaje")}
-                  >
-                    Porcentaje
-                  </TableHeadOrdenable>
-                  <TableHead className="text-right">Div. IVA</TableHead>
-                  <TableHead className="text-right">Div. gravada</TableHead>
-                  {/* Filtrable y no un simple header: con varias tasas, aislar
+          <>
+            {/* Móvil: tarjetas. Los dos divisores son la razón de la pantalla y en
+              una tabla de seis columnas quedan fuera de los 360px. El orden y el
+              filtro viven en los headers, así que acá no están: en móvil son
+              tres o cuatro tasas y se ven todas de una. */}
+            <ul className="space-y-3 sm:hidden">
+              {resultado.map((tasa) => {
+                const enUso = tasa.usos > 0;
+
+                return (
+                  <li key={tasa.id} className="surface-card p-4">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <p className="truncate font-semibold text-foreground">{tasa.descripcion}</p>
+                      <span className="shrink-0 tabular-nums text-sm">{tasa.porcentaje}%</span>
+                    </div>
+
+                    <dl className="mt-3 flex gap-6 border-t border-border pt-3 text-sm">
+                      <div>
+                        <dt className="text-xs text-muted-foreground">Div. IVA</dt>
+                        <dd className="tabular-nums">
+                          {tasa.ivaDivision === 0 ? "—" : tasa.ivaDivision}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-xs text-muted-foreground">Div. gravada</dt>
+                        <dd className="tabular-nums">
+                          {tasa.gravadaDivision === null ? (
+                            <span className="text-xs text-warning">Sin cargar</span>
+                          ) : (
+                            tasa.gravadaDivision
+                          )}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-xs text-muted-foreground">En uso</dt>
+                        <dd>
+                          {enUso ? (
+                            <Badge variant="secondary">
+                              {tasa.usos} línea{tasa.usos === 1 ? "" : "s"}
+                            </Badge>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">Sin usar</span>
+                          )}
+                        </dd>
+                      </div>
+                    </dl>
+
+                    <div className="mt-3 flex gap-2 border-t border-border pt-3">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1"
+                        onClick={() => setEditando(tasa)}
+                      >
+                        <Pencil className="size-4" />
+                        Editar
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 text-destructive hover:text-destructive"
+                        disabled={enUso}
+                        title={
+                          enUso
+                            ? `No se puede eliminar: la usan ${tasa.usos} línea(s) de factura`
+                            : "Eliminar"
+                        }
+                        onClick={() => setAEliminar(tasa)}
+                      >
+                        <Trash2 className="size-4" />
+                        Eliminar
+                      </Button>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+
+            <div className="surface-card hidden overflow-x-auto sm:block">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHeadOrdenable
+                      direccion={orden?.campo === "descripcion" ? orden.direccion : null}
+                      onClick={() => alternarOrden("descripcion")}
+                    >
+                      Descripción
+                    </TableHeadOrdenable>
+                    <TableHeadOrdenable
+                      direccion={orden?.campo === "porcentaje" ? orden.direccion : null}
+                      onClick={() => alternarOrden("porcentaje")}
+                    >
+                      Porcentaje
+                    </TableHeadOrdenable>
+                    <TableHead className="text-right">Div. IVA</TableHead>
+                    <TableHead className="text-right">Div. gravada</TableHead>
+                    {/* Filtrable y no un simple header: con varias tasas, aislar
                       las que no usó nadie es la forma de ver cuáles se pueden
                       borrar sin abrir cada una. */}
-                  <TableHeadFiltrable
-                    direccion={orden?.campo === "usos" ? orden.direccion : null}
-                    onOrdenar={() => alternarOrden("usos")}
-                    opciones={OPCIONES_USO}
-                    valor={filtroUso}
-                    onFiltrar={setFiltroUso}
-                    buscarPlaceholder="Buscar…"
-                    className="text-right"
-                  >
-                    En uso
-                  </TableHeadFiltrable>
-                  <TableHead className="text-right">Acciones</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {resultado.map((tasa) => {
-                  // Una tasa que no usó nadie se puede tocar sin consecuencias;
-                  // una en uso arrastra facturas.
-                  const enUso = tasa.usos > 0;
+                    <TableHeadFiltrable
+                      direccion={orden?.campo === "usos" ? orden.direccion : null}
+                      onOrdenar={() => alternarOrden("usos")}
+                      opciones={OPCIONES_USO}
+                      valor={filtroUso}
+                      onFiltrar={setFiltroUso}
+                      buscarPlaceholder="Buscar…"
+                      className="text-right"
+                    >
+                      En uso
+                    </TableHeadFiltrable>
+                    <TableHead className="text-right">Acciones</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {resultado.map((tasa) => {
+                    // Una tasa que no usó nadie se puede tocar sin consecuencias;
+                    // una en uso arrastra facturas.
+                    const enUso = tasa.usos > 0;
 
-                  return (
-                    <TableRow key={tasa.id}>
-                      <TableCell className="font-medium text-foreground">
-                        {tasa.descripcion}
-                      </TableCell>
-                      <TableCell className="tabular-nums">{tasa.porcentaje}%</TableCell>
-                      <TableCell className="text-right tabular-nums text-muted-foreground">
-                        {/* La exenta lleva 0 y no divide nada: mostrar "0" a
+                    return (
+                      <TableRow key={tasa.id}>
+                        <TableCell className="font-medium text-foreground">
+                          {tasa.descripcion}
+                        </TableCell>
+                        <TableCell className="tabular-nums">{tasa.porcentaje}%</TableCell>
+                        <TableCell className="text-right tabular-nums text-muted-foreground">
+                          {/* La exenta lleva 0 y no divide nada: mostrar "0" a
                             secas se leería como un divisor válido. */}
-                        {tasa.ivaDivision === 0 ? "—" : tasa.ivaDivision}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums text-muted-foreground">
-                        {/* Null es distinto de "—": la tasa es anterior a esta
+                          {tasa.ivaDivision === 0 ? "—" : tasa.ivaDivision}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums text-muted-foreground">
+                          {/* Null es distinto de "—": la tasa es anterior a esta
                             columna y usa el cálculo viejo. Se marca para que se
                             note que hay algo que completar — editarla y guardar
                             la migra sola. */}
-                        {tasa.gravadaDivision === null ? (
-                          <span className="text-xs text-warning">Sin cargar</span>
-                        ) : (
-                          tasa.gravadaDivision
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {enUso ? (
-                          <Badge variant="secondary">
-                            {tasa.usos} línea{tasa.usos === 1 ? "" : "s"}
-                          </Badge>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">Sin usar</span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex justify-end gap-1">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            title="Editar"
-                            aria-label={`Editar ${tasa.descripcion}`}
-                            onClick={() => setEditando(tasa)}
-                          >
-                            <Pencil className="size-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            // El botón de borrar se deshabilita cuando la tasa
-                            // está en uso: el backend igual lo rechaza con 409,
-                            // pero enterarse después de confirmar es peor que no
-                            // poder apretarlo. El title explica por qué.
-                            title={
-                              enUso
-                                ? `No se puede eliminar: la usan ${tasa.usos} línea(s) de factura`
-                                : "Eliminar"
-                            }
-                            aria-label={`Eliminar ${tasa.descripcion}`}
-                            disabled={enUso}
-                            onClick={() => setAEliminar(tasa)}
-                          >
-                            <Trash2 className="size-4 text-destructive" />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </div>
+                          {tasa.gravadaDivision === null ? (
+                            <span className="text-xs text-warning">Sin cargar</span>
+                          ) : (
+                            tasa.gravadaDivision
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {enUso ? (
+                            <Badge variant="secondary">
+                              {tasa.usos} línea{tasa.usos === 1 ? "" : "s"}
+                            </Badge>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">Sin usar</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-1">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              title="Editar"
+                              aria-label={`Editar ${tasa.descripcion}`}
+                              onClick={() => setEditando(tasa)}
+                            >
+                              <Pencil className="size-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              // El botón de borrar se deshabilita cuando la tasa
+                              // está en uso: el backend igual lo rechaza con 409,
+                              // pero enterarse después de confirmar es peor que no
+                              // poder apretarlo. El title explica por qué.
+                              title={
+                                enUso
+                                  ? `No se puede eliminar: la usan ${tasa.usos} línea(s) de factura`
+                                  : "Eliminar"
+                              }
+                              aria-label={`Eliminar ${tasa.descripcion}`}
+                              disabled={enUso}
+                              onClick={() => setAEliminar(tasa)}
+                            >
+                              <Trash2 className="size-4 text-destructive" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          </>
         )}
 
         {/* QUÉ ES EL DIVISOR: la columna no se explica sola, y es justo el número
@@ -442,7 +521,7 @@ function IvaFormDialog({
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="scrollbar-fino max-h-[92vh] overflow-y-auto">
+      <DialogContent className="scrollbar-fino max-h-[92dvh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{esEdicion ? "Editar tasa" : "Nueva tasa de IVA"}</DialogTitle>
           <DialogDescription>

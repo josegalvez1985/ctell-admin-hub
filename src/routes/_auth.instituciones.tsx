@@ -607,7 +607,7 @@ function InstitucionFormDialog({
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       {/* Más ancho que el `max-w-lg` por defecto: son diez campos y los nombres
           de institución son largos. */}
-      <DialogContent className="scrollbar-fino max-h-[92vh] max-w-[95vw] overflow-y-auto sm:max-w-2xl">
+      <DialogContent className="scrollbar-fino max-h-[92dvh] max-w-[95vw] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{esEdicion ? "Editar institución" : "Nueva institución"}</DialogTitle>
           <DialogDescription>

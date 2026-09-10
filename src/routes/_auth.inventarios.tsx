@@ -1296,7 +1296,7 @@ function InventarioDialog({
           sumados a los campos, el contenido pasa la altura de la pantalla y sin
           esto el diálogo se corta contra el borde de la ventana sin forma de
           bajar hasta "Guardar". */}
-      <DialogContent className="scrollbar-fino max-h-[92vh] overflow-y-auto sm:max-w-lg">
+      <DialogContent className="scrollbar-fino max-h-[92dvh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{titulo}</DialogTitle>
           <DialogDescription>

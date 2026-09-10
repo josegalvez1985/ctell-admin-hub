@@ -46,7 +46,7 @@ export function PermisosDialog({
           Antes, con el scroll en el contenedor, elegir un usuario y bajar a
           tildar dejaba el combobox fuera de vista y no se sabía sobre quién se
           estaba trabajando. */}
-      <DialogContent className="flex max-h-[90vh] max-w-4xl flex-col overflow-hidden">
+      <DialogContent className="flex max-h-[90dvh] max-w-4xl flex-col overflow-hidden">
         <DialogHeader>
           <DialogTitle>Permisos</DialogTitle>
           <DialogDescription>

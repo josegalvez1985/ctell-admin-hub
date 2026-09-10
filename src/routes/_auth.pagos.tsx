@@ -32,6 +32,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select,
   SelectContent,
@@ -193,7 +194,7 @@ function PagosPage() {
 
   return (
     <AppLayout active="/pagos" title="Pagos a proveedores">
-      <main className="min-h-[calc(100vh-4rem)] bg-muted/20 px-4 pb-10 pt-5 sm:px-6 lg:px-8">
+      <main className="min-h-[calc(100dvh-4rem)] bg-muted/20 px-4 pb-28 pt-5 sm:px-6 lg:px-8 lg:pb-10">
         <div className="mx-auto max-w-5xl space-y-5">
           <header>
             <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-[0.16em] text-primary">
@@ -222,94 +223,147 @@ function PagosPage() {
             </div>
           </div>
 
-          <div className="surface-card overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Factura</TableHead>
-                  <TableHead>Fecha</TableHead>
-                  <TableHead>Proveedor</TableHead>
-                  <TableHead className="text-right">Total</TableHead>
-                  <TableHead className="text-right">Saldo</TableHead>
-                  <TableHead />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {facturas.isPending && (
-                  <TableRow>
-                    <TableCell
-                      colSpan={6}
-                      className="py-10 text-center text-sm text-muted-foreground"
+          {facturas.isPending && (
+            <div className="space-y-2">
+              {[0, 1, 2, 3, 4].map((i) => (
+                <Skeleton key={i} className="h-14 w-full" />
+              ))}
+            </div>
+          )}
+
+          {!facturas.isPending && filtradas.length === 0 && (
+            <div className="surface-card px-3 py-16 text-center">
+              <p className="text-sm text-muted-foreground">No hay facturas de compra</p>
+            </div>
+          )}
+
+          {/* Móvil: tarjetas, espejo de cobros. */}
+          {filtradas.length > 0 && (
+            <ul className="space-y-3 sm:hidden">
+              {filtradas.map((f) => (
+                <li key={f.id} className="surface-card p-4">
+                  <p className="truncate font-semibold text-foreground">{f.numeroFactura}</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">{f.fechaFactura}</p>
+                  <p className="mt-2 truncate text-sm">{f.proveedor}</p>
+
+                  <dl className="mt-3 flex items-baseline justify-between gap-3 border-t border-border pt-3">
+                    <div className="min-w-0">
+                      <dt className="text-xs text-muted-foreground">Total</dt>
+                      <dd className="truncate text-sm font-semibold">{formatearMoneda(f.total)}</dd>
+                    </div>
+                    <div className="min-w-0 text-right">
+                      <dt className="text-xs text-muted-foreground">Saldo</dt>
+                      <dd className="truncate text-sm">
+                        {f.saldoPendiente > 0 ? (
+                          <span className="font-semibold text-primary">
+                            {formatearMoneda(f.saldoPendiente)}
+                          </span>
+                        ) : (
+                          <Badge variant="secondary" className="text-xs">
+                            Pagada
+                          </Badge>
+                        )}
+                      </dd>
+                    </div>
+                  </dl>
+
+                  <div className="mt-3 flex gap-2 border-t border-border pt-3">
+                    {/* La factura saldada no se puede pagar pero SÍ auditar: es
+                        cuando más se pregunta cómo se pagó. */}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="flex-1"
+                      disabled={f.montoPagado <= 0}
+                      onClick={() => setIdFacturaHistorial(f.id)}
                     >
-                      Cargando facturas…
-                    </TableCell>
-                  </TableRow>
-                )}
-                {!facturas.isPending && filtradas.length === 0 && (
-                  <TableRow>
-                    <TableCell
-                      colSpan={6}
-                      className="py-10 text-center text-sm text-muted-foreground"
+                      <Receipt className="size-4" />
+                      Ver pagos
+                    </Button>
+                    <Button
+                      size="sm"
+                      className="flex-1"
+                      disabled={f.saldoPendiente <= 0}
+                      onClick={() => abrirDialog(f)}
                     >
-                      No hay facturas de compra
-                    </TableCell>
+                      Pagar
+                    </Button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {filtradas.length > 0 && (
+            <div className="surface-card hidden overflow-x-auto sm:block">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Factura</TableHead>
+                    <TableHead>Fecha</TableHead>
+                    <TableHead>Proveedor</TableHead>
+                    <TableHead className="text-right">Total</TableHead>
+                    <TableHead className="text-right">Saldo</TableHead>
+                    <TableHead />
                   </TableRow>
-                )}
-                {filtradas.map((f) => (
-                  <TableRow key={f.id}>
-                    <TableCell className="font-medium">{f.numeroFactura}</TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      {f.fechaFactura}
-                    </TableCell>
-                    <TableCell className="text-sm">{f.proveedor}</TableCell>
-                    <TableCell className="text-right text-sm font-semibold">
-                      {formatearMoneda(f.total)}
-                    </TableCell>
-                    <TableCell className="text-right text-sm">
-                      {f.saldoPendiente > 0 ? (
-                        <span className="font-semibold text-primary">
-                          {formatearMoneda(f.saldoPendiente)}
-                        </span>
-                      ) : (
-                        <Badge variant="secondary" className="text-xs">
-                          Pagada
-                        </Badge>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex justify-end gap-2">
-                        {/* La factura saldada no se puede pagar pero SÍ auditar:
+                </TableHeader>
+                <TableBody>
+                  {filtradas.map((f) => (
+                    <TableRow key={f.id}>
+                      <TableCell className="font-medium">{f.numeroFactura}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {f.fechaFactura}
+                      </TableCell>
+                      <TableCell className="text-sm">{f.proveedor}</TableCell>
+                      <TableCell className="text-right text-sm font-semibold">
+                        {formatearMoneda(f.total)}
+                      </TableCell>
+                      <TableCell className="text-right text-sm">
+                        {f.saldoPendiente > 0 ? (
+                          <span className="font-semibold text-primary">
+                            {formatearMoneda(f.saldoPendiente)}
+                          </span>
+                        ) : (
+                          <Badge variant="secondary" className="text-xs">
+                            Pagada
+                          </Badge>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex justify-end gap-2">
+                          {/* La factura saldada no se puede pagar pero SÍ auditar:
                             es cuando más se pregunta cómo se pagó. */}
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          disabled={f.montoPagado <= 0}
-                          onClick={() => setIdFacturaHistorial(f.id)}
-                          title="Ver cómo se pagó"
-                        >
-                          <Receipt className="size-4" />
-                          <span className="hidden sm:inline">Ver pagos</span>
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={f.saldoPendiente <= 0}
-                          onClick={() => abrirDialog(f)}
-                        >
-                          Registrar pago
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={f.montoPagado <= 0}
+                            onClick={() => setIdFacturaHistorial(f.id)}
+                            title="Ver cómo se pagó"
+                          >
+                            <Receipt className="size-4" />
+                            <span className="hidden sm:inline">Ver pagos</span>
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={f.saldoPendiente <= 0}
+                            onClick={() => abrirDialog(f)}
+                          >
+                            Registrar pago
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
         </div>
       </main>
 
       <Dialog open={facturaSeleccionada !== null} onOpenChange={(open) => !open && cerrarDialog()}>
-        <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto">
+        <DialogContent className="max-h-[90dvh] max-w-lg overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Pago — Factura {facturaSeleccionada?.numeroFactura}</DialogTitle>
             <p className="text-sm text-muted-foreground">
@@ -451,7 +505,7 @@ function PagosPage() {
         open={idFacturaHistorial !== null}
         onOpenChange={(open) => !open && setIdFacturaHistorial(null)}
       >
-        <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+        <DialogContent className="max-h-[90dvh] max-w-2xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Pagos — Factura {facturaHistorial?.numeroFactura}</DialogTitle>
             <p className="text-sm text-muted-foreground">

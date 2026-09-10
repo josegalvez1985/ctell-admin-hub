@@ -534,7 +534,7 @@ function PersonaFormDialog({
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="scrollbar-fino max-h-[92vh] overflow-y-auto sm:max-w-2xl">
+      <DialogContent className="scrollbar-fino max-h-[92dvh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{esEdicion ? "Editar persona" : "Nueva persona"}</DialogTitle>
           <DialogDescription>

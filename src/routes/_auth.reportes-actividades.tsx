@@ -933,7 +933,7 @@ function FichaReporte({
   return (
     <>
       <Dialog open onOpenChange={(abierto) => !abierto && onCerrar()}>
-        <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+        <DialogContent className="max-h-[90dvh] max-w-2xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{ficha.data?.profesor ?? "Reporte"}</DialogTitle>
             <DialogDescription>
@@ -1318,7 +1318,7 @@ function Visor({
 
   return (
     <Dialog open onOpenChange={(abierto) => !abierto && onCerrar()}>
-      <DialogContent className="max-h-[92vh] max-w-3xl overflow-y-auto">
+      <DialogContent className="max-h-[92dvh] max-w-3xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base">
             <IconoTipo tipo={archivo.tipoArchivo} className="size-4 text-primary" />
@@ -1337,11 +1337,11 @@ function Visor({
             <img
               src={archivo.urlArchivo}
               alt={archivo.descripcionTexto ?? ""}
-              className="mx-auto max-h-[55vh] w-auto object-contain"
+              className="mx-auto max-h-[55dvh] w-auto object-contain"
             />
           )}
           {archivo.tipoArchivo === "video" && (
-            <video src={archivo.urlArchivo} controls className="mx-auto max-h-[55vh] w-full" />
+            <video src={archivo.urlArchivo} controls className="mx-auto max-h-[55dvh] w-full" />
           )}
           {archivo.tipoArchivo === "documento" && (
             <div className="p-8 text-center">

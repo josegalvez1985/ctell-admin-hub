@@ -263,7 +263,7 @@ function DialogoArticulos({
     <Dialog open onOpenChange={(a) => !a && onCerrar()}>
       {/* Mismas medidas que SelectorModal: los dos son "elegir un valor de una
           lista" y tienen que verse iguales aunque uno consulte paginado. */}
-      <DialogContent className="flex max-h-[85vh] max-w-[95vw] flex-col sm:max-w-lg">
+      <DialogContent className="flex max-h-[85dvh] max-w-[95vw] flex-col sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Elegí un artículo</DialogTitle>
           <DialogDescription>

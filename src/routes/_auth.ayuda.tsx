@@ -1384,7 +1384,7 @@ function AyudaPage() {
 
   return (
     <AppLayout active="Ayuda" title="Manual de uso">
-      <div className="mx-auto max-w-4xl space-y-6">
+      <main className="mx-auto w-full max-w-4xl space-y-6 px-4 pb-28 pt-6 sm:px-6 lg:pb-10">
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -1531,7 +1531,7 @@ function AyudaPage() {
           El menú de cada persona depende de sus permisos: puede que no veas todas las pantallas de
           este manual. ¿Falta algo o algo cambió? Avisale a quien administra el sistema.
         </p>
-      </div>
+      </main>
     </AppLayout>
   );
 }

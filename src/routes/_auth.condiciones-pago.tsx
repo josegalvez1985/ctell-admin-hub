@@ -206,107 +206,177 @@ function CondicionesPagoPage() {
             </Button>
           </div>
         ) : (
-          <div className="surface-card overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHeadOrdenable
-                    direccion={orden?.campo === "nombreCondicion" ? orden.direccion : null}
-                    onClick={() => alternarOrden("nombreCondicion")}
-                  >
-                    Condición
-                  </TableHeadOrdenable>
-                  <TableHeadOrdenable
-                    direccion={orden?.campo === "diasPago" ? orden.direccion : null}
-                    onClick={() => alternarOrden("diasPago")}
-                  >
-                    Días
-                  </TableHeadOrdenable>
-                  <TableHead className="text-right">Cuotas</TableHead>
-                  {/* Filtrable: aislar las que no usó nadie responde "cuáles
-                      puedo borrar" sin abrir una por una. */}
-                  <TableHeadFiltrable
-                    direccion={orden?.campo === "usos" ? orden.direccion : null}
-                    onOrdenar={() => alternarOrden("usos")}
-                    opciones={OPCIONES_USO}
-                    valor={filtroUso}
-                    onFiltrar={setFiltroUso}
-                    buscarPlaceholder="Buscar…"
-                    className="text-right"
-                  >
-                    En uso
-                  </TableHeadFiltrable>
-                  <TableHead className="text-right">Acciones</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {resultado.map((condicion) => {
-                  // Una condición sin uso se puede borrar; una en uso arrastra
-                  // facturas y la FK lo impide.
-                  const enUso = condicion.usos > 0;
+          <>
+            {/* Móvil: tarjetas. La frase en claro pasa a ser el subtítulo de la
+              tarjeta y los dos números sueltos quedan abajo, que es como se leen
+              sin las cabeceras de columna al lado. */}
+            <ul className="space-y-3 sm:hidden">
+              {resultado.map((condicion) => {
+                const enUso = condicion.usos > 0;
 
-                  return (
-                    <TableRow key={condicion.id}>
-                      <TableCell className="font-medium text-foreground">
-                        {condicion.nombreCondicion}
-                        {/* La frase en claro debajo del nombre: los dos números
+                return (
+                  <li key={condicion.id} className="surface-card p-4">
+                    <p className="truncate font-semibold text-foreground">
+                      {condicion.nombreCondicion}
+                    </p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">{describir(condicion)}</p>
+
+                    <dl className="mt-3 flex gap-6 border-t border-border pt-3 text-sm">
+                      <div>
+                        <dt className="text-xs text-muted-foreground">Días</dt>
+                        <dd className="tabular-nums">{condicion.diasPago}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-xs text-muted-foreground">Cuotas</dt>
+                        <dd className="tabular-nums">{condicion.cantidadCuotas}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-xs text-muted-foreground">En uso</dt>
+                        <dd>
+                          {enUso ? (
+                            <Badge variant="secondary">
+                              {condicion.usos} factura{condicion.usos === 1 ? "" : "s"}
+                            </Badge>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">Sin usar</span>
+                          )}
+                        </dd>
+                      </div>
+                    </dl>
+
+                    <div className="mt-3 flex gap-2 border-t border-border pt-3">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1"
+                        onClick={() => setEditando(condicion)}
+                      >
+                        <Pencil className="size-4" />
+                        Editar
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 text-destructive hover:text-destructive"
+                        disabled={enUso}
+                        title={
+                          enUso
+                            ? `No se puede eliminar: la usan ${condicion.usos} factura(s)`
+                            : "Eliminar"
+                        }
+                        onClick={() => setAEliminar(condicion)}
+                      >
+                        <Trash2 className="size-4" />
+                        Eliminar
+                      </Button>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+
+            <div className="surface-card hidden overflow-x-auto sm:block">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHeadOrdenable
+                      direccion={orden?.campo === "nombreCondicion" ? orden.direccion : null}
+                      onClick={() => alternarOrden("nombreCondicion")}
+                    >
+                      Condición
+                    </TableHeadOrdenable>
+                    <TableHeadOrdenable
+                      direccion={orden?.campo === "diasPago" ? orden.direccion : null}
+                      onClick={() => alternarOrden("diasPago")}
+                    >
+                      Días
+                    </TableHeadOrdenable>
+                    <TableHead className="text-right">Cuotas</TableHead>
+                    {/* Filtrable: aislar las que no usó nadie responde "cuáles
+                      puedo borrar" sin abrir una por una. */}
+                    <TableHeadFiltrable
+                      direccion={orden?.campo === "usos" ? orden.direccion : null}
+                      onOrdenar={() => alternarOrden("usos")}
+                      opciones={OPCIONES_USO}
+                      valor={filtroUso}
+                      onFiltrar={setFiltroUso}
+                      buscarPlaceholder="Buscar…"
+                      className="text-right"
+                    >
+                      En uso
+                    </TableHeadFiltrable>
+                    <TableHead className="text-right">Acciones</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {resultado.map((condicion) => {
+                    // Una condición sin uso se puede borrar; una en uso arrastra
+                    // facturas y la FK lo impide.
+                    const enUso = condicion.usos > 0;
+
+                    return (
+                      <TableRow key={condicion.id}>
+                        <TableCell className="font-medium text-foreground">
+                          {condicion.nombreCondicion}
+                          {/* La frase en claro debajo del nombre: los dos números
                             sueltos de las columnas de al lado no se leen como
                             una forma de pago hasta que se los junta. */}
-                        <span className="block text-xs font-normal text-muted-foreground">
-                          {describir(condicion)}
-                        </span>
-                      </TableCell>
-                      <TableCell className="tabular-nums text-muted-foreground">
-                        {condicion.diasPago}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums text-muted-foreground">
-                        {condicion.cantidadCuotas}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {enUso ? (
-                          <Badge variant="secondary">
-                            {condicion.usos} factura{condicion.usos === 1 ? "" : "s"}
-                          </Badge>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">Sin usar</span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex justify-end gap-1">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            title="Editar"
-                            aria-label={`Editar ${condicion.nombreCondicion}`}
-                            onClick={() => setEditando(condicion)}
-                          >
-                            <Pencil className="size-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            // Deshabilitado cuando está en uso: el backend igual
-                            // lo rechaza con 409, pero enterarse después de
-                            // confirmar es peor que no poder apretarlo.
-                            title={
-                              enUso
-                                ? `No se puede eliminar: la usan ${condicion.usos} factura(s)`
-                                : "Eliminar"
-                            }
-                            aria-label={`Eliminar ${condicion.nombreCondicion}`}
-                            disabled={enUso}
-                            onClick={() => setAEliminar(condicion)}
-                          >
-                            <Trash2 className="size-4 text-destructive" />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </div>
+                          <span className="block text-xs font-normal text-muted-foreground">
+                            {describir(condicion)}
+                          </span>
+                        </TableCell>
+                        <TableCell className="tabular-nums text-muted-foreground">
+                          {condicion.diasPago}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums text-muted-foreground">
+                          {condicion.cantidadCuotas}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {enUso ? (
+                            <Badge variant="secondary">
+                              {condicion.usos} factura{condicion.usos === 1 ? "" : "s"}
+                            </Badge>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">Sin usar</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-1">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              title="Editar"
+                              aria-label={`Editar ${condicion.nombreCondicion}`}
+                              onClick={() => setEditando(condicion)}
+                            >
+                              <Pencil className="size-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              // Deshabilitado cuando está en uso: el backend igual
+                              // lo rechaza con 409, pero enterarse después de
+                              // confirmar es peor que no poder apretarlo.
+                              title={
+                                enUso
+                                  ? `No se puede eliminar: la usan ${condicion.usos} factura(s)`
+                                  : "Eliminar"
+                              }
+                              aria-label={`Eliminar ${condicion.nombreCondicion}`}
+                              disabled={enUso}
+                              onClick={() => setAEliminar(condicion)}
+                            >
+                              <Trash2 className="size-4 text-destructive" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          </>
         )}
 
         <p className="text-xs text-muted-foreground">

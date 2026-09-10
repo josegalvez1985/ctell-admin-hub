@@ -1777,7 +1777,7 @@ function MarcacionesDelDia({
         ) : (
           // Con muchas marcaciones en un día el modal no puede crecer sin
           // límite: la lista scrollea y el pie con las acciones queda fijo.
-          <ul className="max-h-[50vh] space-y-2 overflow-y-auto">
+          <ul className="max-h-[50dvh] space-y-2 overflow-y-auto">
             {marcas.map((m) => {
               const horasFila =
                 m.minutos === null ? null : aHorasCatedra(m.minutos, catedraDe(m.idProfesor));

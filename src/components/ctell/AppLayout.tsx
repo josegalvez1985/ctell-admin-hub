@@ -94,7 +94,7 @@ export function AppLayout({
   }
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-dvh bg-background">
       <aside
         className={cn(
           "gradient-navy fixed inset-y-0 left-0 z-30 hidden flex-col py-6 transition-[width] duration-200 lg:flex",
@@ -267,7 +267,7 @@ export function AppLayout({
             className="fixed inset-0 z-20 bg-black/40 backdrop-blur-sm transition-opacity lg:hidden"
             onClick={() => setMenuAbierto(false)}
           />
-          <div className="scrollbar-fino fixed inset-x-0 bottom-0 z-30 max-h-[85vh] overflow-y-auto rounded-t-3xl border-t border-border bg-card shadow-2xl lg:hidden">
+          <div className="scrollbar-fino fixed inset-x-0 bottom-0 z-30 max-h-[85dvh] overflow-y-auto rounded-t-3xl border-t border-border bg-card shadow-2xl lg:hidden">
             <div className="sticky top-0 flex items-center justify-between border-b border-border bg-card px-6 py-4">
               <h2 className="text-xl font-bold text-foreground">Menú</h2>
               <button

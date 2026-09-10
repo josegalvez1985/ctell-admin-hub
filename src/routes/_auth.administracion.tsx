@@ -101,9 +101,9 @@ function AdministracionPage() {
 
   return (
     <AppLayout active="Administración" title="Administración">
-      <div className="space-y-6 p-6">
+      <main className="space-y-6 px-4 pb-28 pt-6 sm:px-6 lg:pb-10">
         <div>
-          <h1 className="text-3xl font-bold text-foreground">Administración</h1>
+          <h1 className="text-2xl font-bold text-foreground sm:text-3xl">Administración</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Cuentas y permisos de acceso, y la estructura del menú.
           </p>
@@ -161,7 +161,7 @@ function AdministracionPage() {
           open={seccionAbierta === "permisos"}
           onOpenChange={(open) => !open && setSeccionAbierta(null)}
         />
-      </div>
+      </main>
     </AppLayout>
   );
 }

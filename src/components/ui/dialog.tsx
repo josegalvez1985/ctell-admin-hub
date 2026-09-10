@@ -51,7 +51,13 @@ const DialogContent = React.forwardRef<
         //
         // 90 y no 100 para que el overlay siga asomando arriba y abajo: es lo
         // que muestra que hay una pantalla detrás y que esto se cierra.
-        "fixed left-[50%] top-[50%] z-50 grid max-h-[90dvh] w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 overflow-y-auto border bg-background p-6 shadow-lg duration-200 scrollbar-fino data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 sm:rounded-lg",
+        // `w-[calc(100%-2rem)]` es el margen lateral del celular: con `w-full`
+        // el diálogo medía exactamente el ancho de la pantalla y quedaba pegado
+        // a los dos bordes, sin nada del overlay a los costados. Es el mismo
+        // criterio del 90dvh de arriba —que asome el fondo para que se vea que
+        // hay una pantalla detrás y que esto se cierra—, aplicado al ancho.
+        // Desde `sm` vuelve a `w-full`, donde manda `max-w-*`.
+        "fixed left-[50%] top-[50%] z-50 grid max-h-[90dvh] w-[calc(100%-2rem)] max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 overflow-y-auto rounded-lg border bg-background p-6 shadow-lg duration-200 scrollbar-fino data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 sm:w-full",
         className,
       )}
       {...props}

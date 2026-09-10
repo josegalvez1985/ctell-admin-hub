@@ -666,7 +666,7 @@ function FacturaVerDialog({
 
   return (
     <Dialog open={factura !== null} onOpenChange={onOpenChange}>
-      <DialogContent className="scrollbar-fino max-h-[92vh] overflow-y-auto sm:max-w-3xl">
+      <DialogContent className="scrollbar-fino max-h-[92dvh] overflow-y-auto sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>Factura {factura?.numeroFactura}</DialogTitle>
           <DialogDescription>
@@ -1020,7 +1020,7 @@ function FacturaFormDialog({
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       {/* ANCHO DE ERP: el detalle es una tabla de cinco columnas, y en un
           diálogo angosto cada línea se apila y deja de leerse como una fila. */}
-      <DialogContent className="scrollbar-fino max-h-[92vh] overflow-y-auto sm:max-w-4xl">
+      <DialogContent className="scrollbar-fino max-h-[92dvh] overflow-y-auto sm:max-w-4xl">
         <DialogHeader>
           <DialogTitle>{esEdicion ? "Editar factura" : "Nueva factura de compra"}</DialogTitle>
           <DialogDescription>
