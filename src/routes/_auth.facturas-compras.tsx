@@ -50,6 +50,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { tituloPagina } from "@/lib/marca";
 import { formatearMoneda, numeroMoneda } from "@/lib/moneda";
+import { invalidarStock } from "@/lib/stock";
 import {
   Table,
   TableBody,
@@ -112,15 +113,18 @@ type LineaDetalle = {
 /**
  * Por qué una factura no se puede eliminar, o `undefined` si sí se puede.
  *
- * Quedó **un solo motivo: los pagos**. Borrarlos en cascada haría desaparecer
- * plata que salió de la caja, así que el backend rechaza con 409 y esto lo
- * explica antes, en el `title` del botón deshabilitado.
+ * **Sólo detecta uno de los dos motivos**, y eso es a propósito:
  *
- * El otro motivo —"ya se vendió mercadería de esta factura"— se fue con los
- * lotes: cargar una compra ya no mueve stock, así que rehacer sus líneas o
- * borrarla no deshace nada. Cuando exista el libro de movimientos vuelve una
- * regla equivalente: una compra con movimientos posteriores del artículo no se
- * toca.
+ * 1. **Los pagos** — se ven en el listado (`montoPagado`), así que se avisan
+ *    acá, en el `title` del botón deshabilitado, sin gastar un viaje a la red.
+ * 2. **La mercadería ya vendida** — borrar la factura saca del stock lo que
+ *    había ingresado, y si eso ya salió el disponible no alcanza. **No se puede
+ *    saber desde acá**: haría falta el stock actual de cada artículo del
+ *    detalle, que el listado no trae. Lo resuelve el backend con un 409 cuyo
+ *    mensaje nombra el artículo.
+ *
+ * Adivinarlo con `cantidadStock` sería peor que no intentarlo: bloquearía
+ * facturas que sí se pueden borrar y dejaría pasar otras igual.
  */
 function motivoCongelada(factura: FacturaCompra): string | undefined {
   if (factura.montoPagado > 0) return "Tiene pagos registrados: anulalos primero desde Pagos";
@@ -291,6 +295,10 @@ function FacturasComprasPage() {
       api.facturasCompras.eliminar(factura.id, factura.idEmpresa),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["facturas-compras"] });
+      // BORRAR LA FACTURA SACÓ DEL STOCK lo que había ingresado, así que los
+      // listados que muestran existencia quedaron viejos. Si la mercadería ya
+      // se había vendido esto no llega acá: el backend rechaza con 409.
+      invalidarStock(queryClient);
       toast.success("Factura eliminada");
       setAEliminar(null);
     },
@@ -988,6 +996,9 @@ function FacturaFormDialog({
       // También el detalle: si se editó, el diálogo de ver tiene la versión
       // vieja en caché.
       queryClient.invalidateQueries({ queryKey: ["factura-compra"] });
+      // LA COMPRA INGRESÓ STOCK (y una edición lo rehizo: sacó lo viejo y
+      // metió lo nuevo), así que todo lo que muestra existencia quedó viejo.
+      invalidarStock(queryClient);
       toast.success(esEdicion ? "Factura actualizada" : "Factura registrada");
       onClose();
     },

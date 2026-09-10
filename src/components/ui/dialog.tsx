@@ -38,7 +38,20 @@ const DialogContent = React.forwardRef<
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
-        "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 sm:rounded-lg",
+        // max-h + overflow: SIN ESTO UN FORMULARIO ALTO NO SE PUEDE GUARDAR.
+        // El diálogo está centrado con translate-y-[-50%], así que uno más alto
+        // que la ventana se sale por arriba Y por abajo a la vez, y el body no
+        // scrollea detrás del overlay: el botón de guardar queda fuera de
+        // alcance, sin forma de llegar. En 1080p casi no se nota; en 1366x768
+        // quedan ~584px útiles y un alta de siete campos ya los pasa.
+        //
+        // `dvh` y no `vh` porque en el navegador del celular `vh` cuenta la
+        // pantalla entera, barra de direcciones incluida, y el diálogo termina
+        // más alto que lo que se ve.
+        //
+        // 90 y no 100 para que el overlay siga asomando arriba y abajo: es lo
+        // que muestra que hay una pantalla detrás y que esto se cierra.
+        "fixed left-[50%] top-[50%] z-50 grid max-h-[90dvh] w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 overflow-y-auto border bg-background p-6 shadow-lg duration-200 scrollbar-fino data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 sm:rounded-lg",
         className,
       )}
       {...props}

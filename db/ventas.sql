@@ -67,33 +67,39 @@
 -- exenta va en 1, NO en 0 — los dos divisores usan criterios opuestos.
 --
 --------------------------------------------------------------------------------
--- LA VENTA NO DESCUENTA STOCK
+-- LA VENTA DESCUENTA STOCK, Y NO SE VENDE SIN EXISTENCIA
 --
--- VENTAS_DETALLES.ID_LOTE ya no existe en el DDL: el stock por lotes se
--- discontinuo. Hasta hace poco el cajero elegia de que lote salia CADA linea,
--- INSERTAR bloqueaba ese lote con FOR UPDATE, validaba su disponible y lo
--- descontaba; ELIMINAR devolvia las unidades al lote del que habian salido.
--- Nada de eso queda.
+-- REQUIERE db/stock.sql EJECUTADO ANTES. Sin PKG_STOCK este paquete compila
+-- INVALID con PLS-00201 y todo el modulo devuelve 500 mudo.
 --
--- HOY VENDER NO CAMBIA NINGUNA EXISTENCIA, y esto se nota:
+-- El stock por lotes se discontinuo —VENTAS_DETALLES.ID_LOTE ya no existe— y lo
+-- reemplaza una cantidad unica por articulo y sucursal en EXISTENCIAS. El cajero
+-- ya no elige de que partida sale cada linea: elige el articulo, y el descuento
+-- va contra la fila de SU sucursal.
 --
---   * SE PUEDE VENDER SIN STOCK. La validacion "no se vende sin existencia"
---     colgaba del lote y se fue con el. No se reemplaza por una equivalente
---     sobre el stock del articulo porque ese stock —hoy suma de lotes que ya no
---     se mueven— tampoco significa nada mientras dure esta etapa.
---   * ELIMINAR una venta no repone nada, y por eso ya no devuelve
---     'unidadesRepuestas'.
+--   * INSERTAR llama a PKG_STOCK.SALIDA por cada linea que no sea un gasto. La
+--     salida bloquea la fila con FOR UPDATE, valida el disponible y resta.
+--   * ELIMINAR llama a PKG_STOCK.ENTRADA leyendo el detalle ANTES de borrarlo, y
+--     vuelve a devolver 'unidadesRepuestas'.
 --
--- ES UN ESTADO INTERMEDIO, no una decision definitiva. El reemplazo es una
--- cantidad unica por articulo y sucursal con costo promedio ponderado y su libro
--- de movimientos. Cuando ese paquete exista, ESTE archivo vuelve a mover stock:
--- INSERTAR llama a la salida —con el FOR UPDATE ahora sobre la fila de
--- existencias, que es donde vuelve a estar la carrera entre dos cajas— y
--- ELIMINAR al movimiento inverso.
+-- SI NO ALCANZA, LA VENTA ENTERA SE RECHAZA CON 409. No se vende parcial ni se
+-- deja el stock negativo. La contracara hay que saberla: UNA EXISTENCIA MAL
+-- CARGADA TRABA LA CAJA —si el sistema dice 0 y en el estante hay 12, no se
+-- puede vender hasta cargar la compra que falta o hacer un conteo fisico—. Por
+-- eso el mensaje nombra el articulo y da los dos numeros.
 --
--- ES_GASTO sigue leyendose al insertar, aunque hoy no decida nada: valida que el
--- articulo exista, y vuelve a hacer falta apenas se descuente stock —un servicio
--- no tiene existencia que mover—.
+-- ES_GASTO DECIDE SI LA LINEA MUEVE STOCK. Un servicio —un flete, una comision—
+-- no tiene existencia que descontar, y restarsela dejaria una fila en -40 que no
+-- significa nada. El filtro esta aca y no en PKG_STOCK: ponerlo en los dos lados
+-- invita a que se desincronicen.
+--
+-- LA CARRERA ENTRE DOS CAJAS VOLVIO, y esta cubierta: el FOR UPDATE de
+-- PKG_STOCK.SALIDA es lo que impide que dos ventas simultaneas se lleven la
+-- misma ultima unidad. Es el mismo bloqueo que ya se toma sobre el talonario
+-- para que no compartan numero de comprobante.
+--
+-- LO QUE TODAVIA NO HAY: costo (el valor de stock del dashboard sigue en cero) y
+-- libro de movimientos. Ver la cabecera de db/stock.sql.
 
 --------------------------------------------------------------------------------
 -- Tablas (no las crea ni las altera; el DDL se administra aparte):
@@ -247,6 +253,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_VENTAS AS
     l_fecha TIMESTAMP; l_porcentaje NUMBER := 0; l_dias NUMBER := 0; l_cuotas NUMBER := 1; l_es_gasto VARCHAR2(1);
     l_bruto NUMBER; l_desc NUMBER; l_neto NUMBER; l_gravado NUMBER; l_iva_linea NUMBER; l_total NUMBER := 0;
     l_nro NUMBER; l_final_talonario NUMBER; l_tipo VARCHAR2(3); l_timbrado VARCHAR2(20); l_establecimiento VARCHAR2(3); l_punto VARCHAR2(3); l_numero VARCHAR2(50);
+    -- El error que devuelve PKG_STOCK. Viene por parametro y no por excepcion
+    -- para que el ROLLBACK y el texto que ve el cajero se decidan aca.
+    l_error_stock VARCHAR2(4000);
   BEGIN
     l_sesion    := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     l_empresa   := TO_NUMBER(NULLIF(p_id_empresa, ''));
@@ -318,18 +327,35 @@ CREATE OR REPLACE PACKAGE BODY PKG_VENTAS AS
         ROLLBACK; p_status_code := 400; p_resultado := '{"error":"Los datos de una linea son invalidos"}'; RETURN;
       END IF;
 
-      -- Este SELECT quedo SOLO para validar que el articulo exista: hoy nada se
-      -- decide con ES_GASTO. Vuelve a decidir apenas la venta descuente stock —un
-      -- servicio no tiene existencia que mover—, y por eso se lee igual.
+      -- ES_GASTO decide si esta linea mueve stock: un servicio —un flete, una
+      -- comision, una hora de trabajo— no tiene existencia que descontar, y
+      -- restarsela dejaria una fila en -40 que no significa nada y ensuciaria el
+      -- reporte de stock critico. El SELECT valida ademas que el articulo exista.
       BEGIN SELECT NVL(ES_GASTO, 'N') INTO l_es_gasto FROM ARTICULOS WHERE ID_ARTICULO = linea.idArticulo;
       EXCEPTION WHEN NO_DATA_FOUND THEN ROLLBACK; p_status_code := 400; p_resultado := '{"error":"Un articulo del detalle no existe"}'; RETURN; END;
 
-      -- ACA IBA EL DESCUENTO DE STOCK, y no hay nada que lo reemplace todavia:
-      -- se bloqueaba el lote con FOR UPDATE, se comparaba su disponible contra la
-      -- cantidad y se restaba. SE PUEDE VENDER SIN EXISTENCIA hasta que exista el
-      -- paquete de stock, que es donde vuelve —con el FOR UPDATE sobre la fila de
-      -- existencias del articulo, que es donde queda la carrera entre dos cajas
-      -- vendiendo lo mismo a la vez—.
+      -- EL DESCUENTO DE STOCK. PKG_STOCK.SALIDA bloquea la fila de EXISTENCIAS
+      -- con FOR UPDATE, valida que el disponible alcance y resta. El bloqueo es
+      -- lo que impide que dos cajas vendan la misma ultima unidad a la vez.
+      --
+      -- SI NO ALCANZA, LA VENTA ENTERA SE RECHAZA con 409 —no se vende parcial ni
+      -- se deja negativo—, y el mensaje de PKG_STOCK nombra el articulo y da los
+      -- dos numeros. La contracara conocida: una existencia mal cargada traba la
+      -- caja hasta que se cargue la compra que falta o se haga un conteo.
+      --
+      -- Va DESPUES de validar la linea y ANTES del desglose: si esto falla, no
+      -- tiene sentido calcular el IVA de una linea que no se va a guardar.
+      IF l_es_gasto <> 'S' THEN
+        PKG_STOCK.SALIDA(l_empresa, l_sucursal, linea.idArticulo, linea.cantidad, l_error_stock);
+        IF l_error_stock IS NOT NULL THEN
+          -- El ROLLBACK se lleva la cabecera, el numero de talonario y las lineas
+          -- ya insertadas, incluidas SUS salidas de stock: todo esta en la misma
+          -- transaccion, que es justamente por lo que PKG_STOCK no hace COMMIT.
+          ROLLBACK; p_status_code := 409;
+          p_resultado := JSON_OBJECT('error' VALUE l_error_stock);
+          RETURN;
+        END IF;
+      END IF;
 
       -- El desglose sale del NETO (ya descontado), que es lo que se cobra.
       -- Sin tasa asignada el impuesto es 0 y todo el neto es gravado.
@@ -384,12 +410,16 @@ CREATE OR REPLACE PACKAGE BODY PKG_VENTAS AS
   -- ultimo, que funcionaba solo porque la cabecera se borraba al final.
   PROCEDURE ELIMINAR (p_authorization IN VARCHAR2, p_id IN VARCHAR2, p_id_empresa IN VARCHAR2, p_status_code OUT NUMBER, p_resultado OUT CLOB) IS
     l_sesion NUMBER; l_id NUMBER; l_empresa NUMBER; l_existe NUMBER; l_cobros NUMBER;
+    -- La sucursal a la que vuelven las unidades. Sale de la cabecera y no del
+    -- cliente: la venta salio de ese deposito y ahi tiene que volver, aunque
+    -- quien la borre este parado en otra sucursal.
+    l_sucursal NUMBER; l_error_stock VARCHAR2(4000); l_repuestas NUMBER := 0;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization)); l_id := TO_NUMBER(NULLIF(p_id, '')); l_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
     IF l_sesion IS NULL THEN p_status_code := 401; p_resultado := '{"error":"Sesion invalida o vencida"}'; RETURN; END IF;
     IF l_id IS NULL OR l_empresa IS NULL THEN p_status_code := 400; p_resultado := '{"error":"id e idEmpresa son obligatorios"}'; RETURN; END IF;
     BEGIN
-      SELECT ID_VENTA INTO l_existe FROM VENTAS_CABECERAS WHERE ID_VENTA = l_id AND ID_EMPRESA = l_empresa FOR UPDATE;
+      SELECT ID_VENTA, ID_SUCURSAL INTO l_existe, l_sucursal FROM VENTAS_CABECERAS WHERE ID_VENTA = l_id AND ID_EMPRESA = l_empresa FOR UPDATE;
     EXCEPTION WHEN NO_DATA_FOUND THEN
       ROLLBACK; p_status_code := 404; p_resultado := '{"error":"La venta no existe"}'; RETURN;
     END;
@@ -402,18 +432,41 @@ CREATE OR REPLACE PACKAGE BODY PKG_VENTAS AS
     IF l_cobros > 0 THEN
       ROLLBACK; p_status_code := 409; p_resultado := '{"error":"La venta tiene cobros registrados: anulalos antes de eliminarla"}'; RETURN;
     END IF;
-    -- ACA IBA LA REPOSICION AL LOTE del que habia salido cada linea. Borrar una
-    -- venta ya no devuelve nada al stock, simplemente porque venderla tampoco lo
-    -- descontó. Vuelve junto con el paquete de stock, como movimiento inverso.
+    -- LA REPOSICION AL STOCK, ANTES DE BORRAR EL DETALLE: despues de los DELETE
+    -- ya no habria de donde leer que se habia vendido.
+    --
+    -- Se recorre el detalle salteando los gastos, igual que al vender: si la
+    -- linea no descontó nada, reponer le sumaria unidades a un servicio que nunca
+    -- las tuvo. La sucursal sale de la CABECERA —la venta salio de ese deposito y
+    -- ahi vuelve—, no del cliente que borra.
+    --
+    -- La ENTRADA no exige saldo y no puede fallar por falta de stock. Si igual
+    -- devuelve error (la fila de existencias desaparecio, un dato invalido), se
+    -- aborta el borrado entero: dejar la venta borrada y las unidades sin volver
+    -- es peor que no borrarla.
+    FOR linea IN (SELECT d.ID_ARTICULO, d.CANTIDAD
+                    FROM VENTAS_DETALLES d
+                    JOIN ARTICULOS       a ON a.ID_ARTICULO = d.ID_ARTICULO
+                   WHERE d.ID_VENTA = l_id
+                     AND NVL(a.ES_GASTO, 'N') <> 'S') LOOP
+      PKG_STOCK.ENTRADA(l_empresa, l_sucursal, linea.ID_ARTICULO, linea.CANTIDAD, l_error_stock);
+      IF l_error_stock IS NOT NULL THEN
+        ROLLBACK; p_status_code := 409;
+        p_resultado := JSON_OBJECT('error' VALUE l_error_stock);
+        RETURN;
+      END IF;
+      l_repuestas := l_repuestas + linea.CANTIDAD;
+    END LOOP;
     DELETE FROM VENTAS_COBROS   WHERE ID_VENTA = l_id;
     DELETE FROM VENTAS_CUOTAS   WHERE ID_VENTA = l_id;
     DELETE FROM VENTAS_DETALLES WHERE ID_VENTA = l_id;
     DELETE FROM VENTAS_CABECERAS WHERE ID_VENTA = l_id AND ID_EMPRESA = l_empresa;
     COMMIT;
     p_status_code := 200;
-    -- SIN 'unidadesRepuestas': siempre seria 0, y un campo que informa algo que
-    -- nunca pasa se lee como que el sistema repuso nada esta vez.
-    p_resultado := '{"ok":true}';
+    -- 'unidadesRepuestas' VOLVIO: borrar una venta vuelve a mover stock, y quien
+    -- lo hace tiene que ver cuanto volvio al deposito. En una venta de puros
+    -- servicios es 0, y ahi el 0 significa algo real.
+    p_resultado := JSON_OBJECT('ok' VALUE 'true' FORMAT JSON, 'unidadesRepuestas' VALUE l_repuestas);
   EXCEPTION WHEN OTHERS THEN ROLLBACK; p_status_code := 500; APEX_DEBUG.ERROR('PKG_VENTAS.ELIMINAR: ' || SQLERRM); p_resultado := '{"error":"Error al eliminar la venta"}';
   END ELIMINAR;
 

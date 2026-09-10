@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/table";
 import { tituloPagina } from "@/lib/marca";
 import { formatearMoneda } from "@/lib/moneda";
+import { invalidarStock } from "@/lib/stock";
 
 const mensajeError = (error: unknown, fallback: string) =>
   error instanceof ApiError ? error.message : fallback;
@@ -68,11 +69,20 @@ function VentasPage() {
 
   const eliminar = useMutation({
     mutationFn: (venta: Venta) => api.ventas.eliminar(venta.id, empresa!.id),
-    onSuccess: () => {
-      toast.success("Venta eliminada");
+    onSuccess: (data) => {
+      // Se dice CUÁNTAS unidades volvieron, no sólo que se borró: borrar una
+      // venta mueve stock, y quien lo hace tiene que ver el efecto. En una
+      // venta de puros servicios es 0, y ahí el 0 es correcto.
+      toast.success(
+        data.unidadesRepuestas > 0
+          ? `Venta eliminada · ${formatearMoneda(data.unidadesRepuestas)} unidades repuestas`
+          : "Venta eliminada",
+      );
       setAEliminar(null);
       queryClient.invalidateQueries({ queryKey: ["ventas"] });
       queryClient.invalidateQueries({ queryKey: ["cobros-ventas"] });
+      // El stock volvió al depósito: todo lo que lo muestra quedó viejo.
+      invalidarStock(queryClient);
     },
     onError: (error) => {
       setAEliminar(null);

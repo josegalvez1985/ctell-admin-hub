@@ -34,34 +34,37 @@
 -- deshacerlo hay que contar de nuevo, que es lo correcto.
 --
 --------------------------------------------------------------------------------
--- EL CONTEO FIJA LA CANTIDAD, NO LA AJUSTA
+-- EL CONTEO AJUSTA POR DIFERENCIA, NO FIJA LA CANTIDAD
 --
---   EXISTENCIAS.CANTIDAD_DISPONIBLE := INVENTARIOS.CANTIDAD_FISICA
+--   EXISTENCIAS.CANTIDAD_DISPONIBLE += (CANTIDAD_FISICA - CANTIDAD_SISTEMA)
 --
--- Lo que hay en el estante manda. La alternativa —sumar la diferencia contra
--- CANTIDAD_SISTEMA— sobrevive a los movimientos ocurridos entre el conteo y el
--- cierre, pero hoy NINGUNA transaccion mueve stock (comprar no ingresa, vender
--- no descuenta), asi que no hay nada que sobrevivir y la diferencia seria una
--- indireccion sin efecto.
+-- ESTO CAMBIO CUANDO APARECIO PKG_STOCK, y el motivo esta escrito completo al
+-- pie, sobre el trigger que lo hace. En resumen: mientras el conteo era el unico
+-- escritor de la tabla, fijar la cantidad estaba bien —nada mas se movia entre
+-- el conteo y el cierre—. Con ventas y compras moviendo existencias, fijarla
+-- BORRA todo lo que paso en el medio: un cierre tardio hace reaparecer en el
+-- deposito la mercaderia vendida despues del conteo.
 --
--- CUANDO EXISTA PKG_STOCK HAY QUE VOLVER SOBRE ESTO. Con compras y ventas
--- moviendo la existencia, un cierre tardio pisaria las ventas posteriores al
--- conteo. Ahi el ajuste pasa a ser por diferencia, o el trigger delega en
--- PKG_STOCK para que el movimiento quede asentado en el libro.
+-- LO QUE NO CAMBIO: lo que hay en el estante sigue mandando. Si el conteo y el
+-- cierre son del mismo momento —el caso normal— el resultado es identico al de
+-- antes, porque la diferencia se aplica sobre el mismo numero que se conto.
 --
 -- CANTIDAD_SISTEMA se sella EN EL CIERRE, con lo que EXISTENCIAS decia justo
--- antes de que este trigger la pisara. No es lo que el formulario haya cargado
--- al abrir el conteo: el numero que explica el ajuste es el que el ajuste
--- reemplazo. Sin el, la fila no deja rastro de cuanto se corrigio.
+-- antes del ajuste. No es lo que el formulario haya cargado al abrir el conteo.
+-- Ahora cumple DOS funciones: deja el rastro de cuanto se corrigio, y es el
+-- numero contra el que se calcula la diferencia a aplicar.
 --
 --------------------------------------------------------------------------------
--- ESTE ES EL PRIMER ESCRITOR DE EXISTENCIAS
+-- ES UNO DE LOS DOS ESCRITORES DE EXISTENCIAS
 --
--- Hasta hoy la tabla era de solo lectura (ver db/existencias.sql) y esta escrito
--- que PKG_STOCK iba a ser su unico escritor. Un conteo fisico es la excepcion
--- razonable —no es una transaccion, es la correccion de las transacciones— pero
--- conviene saberlo: cuando PKG_STOCK exista van a ser dos, y hay que decidir si
--- el cierre pasa a llamarlo en vez de escribir la tabla de frente.
+-- El otro es PKG_STOCK (db/stock.sql), por donde pasan ventas y compras. Un
+-- conteo fisico no va por ahi a proposito: no es una transaccion, es la
+-- CORRECCION de las transacciones, y no tiene un documento del cual colgar.
+--
+-- CUANDO EXISTA EL LIBRO DE MOVIMIENTOS hay que volver sobre esto: ahi el conteo
+-- deberia delegar en PKG_STOCK —como un ajuste de inventario— para que la
+-- correccion tambien quede asentada. Hoy el ajuste del conteo es el unico
+-- cambio de existencia que no deja mas rastro que esta fila.
 --
 -- La fila de EXISTENCIAS PUEDE NO EXISTIR: un articulo que nunca tuvo
 -- movimiento en esa sucursal no tiene fila, y eso no es lo mismo que tener 0.
@@ -279,8 +282,10 @@ BEGIN
         '): es lo que se conto en el estante.');
     END IF;
 
-    -- Se sella lo que EXISTENCIAS dice AHORA, un instante antes de que el
-    -- AFTER la pise. Es el unico rastro de cuanto corrigio este conteo.
+    -- Se sella lo que EXISTENCIAS dice AHORA, un instante antes de que el AFTER
+    -- la ajuste. Es el unico rastro de cuanto corrigio este conteo, Y ADEMAS es
+    -- contra este numero que el AFTER calcula la diferencia a aplicar: si esto
+    -- se sellara mal, el ajuste seria el equivocado.
     BEGIN
       SELECT NVL(CANTIDAD_DISPONIBLE, 0)
         INTO :NEW.CANTIDAD_SISTEMA
@@ -318,16 +323,48 @@ END;
 -- se salva del ORA-00001 cuando dos sesiones insertan el mismo articulo a la
 -- vez. El DUP_VAL_ON_INDEX se captura y se resuelve con el UPDATE que ahora si
 -- encuentra la fila.
+--
+--------------------------------------------------------------------------------
+-- AJUSTA POR DIFERENCIA, NO FIJA LA CANTIDAD. ESTO CAMBIO.
+--
+-- Hasta que existio PKG_STOCK este trigger escribia
+--
+--     CANTIDAD_DISPONIBLE := CANTIDAD_FISICA
+--
+-- y estaba bien, porque era el UNICO escritor de la tabla: nada mas se movia
+-- entre el conteo y el cierre. Con ventas y compras moviendo stock eso ya no es
+-- cierto, y fijar la cantidad BORRA todo lo que paso en el medio.
+--
+-- El caso concreto: se cuenta el lunes y hay 100. El martes se venden 30, asi
+-- que EXISTENCIAS dice 70. El miercoles alguien cierra el conteo del lunes. Con
+-- la version anterior la tabla vuelve a 100 y las 30 vendidas reaparecen en el
+-- deposito. Con el ajuste por diferencia se aplica (100 - 100) = 0 y queda en
+-- 70, que es lo correcto: el conteo del lunes no encontro ninguna diferencia, y
+-- las ventas del martes son reales.
+--
+-- LA DIFERENCIA ES CONTRA CANTIDAD_SISTEMA, que el otro trigger sello con lo que
+-- EXISTENCIAS decia EN EL MOMENTO DEL CIERRE. Restar contra la existencia actual
+-- daria cero siempre —seria comparar el numero consigo mismo— y contra la del
+-- momento del conteo exigiria una columna que no existe.
+--
+-- SI CANTIDAD_SISTEMA VINIERA NULL el ajuste seria la cantidad fisica entera:
+-- para un articulo sin fila de existencia eso es correcto (arranca de cero), y
+-- el otro trigger garantiza que nunca es NULL en un cierre porque la sella con
+-- NVL(..., 0). El NVL de aca es defensivo, no decorativo.
 --------------------------------------------------------------------------------
 
 CREATE OR REPLACE TRIGGER TRG_INVENTARIOS_AU_EXISTENCIAS
   AFTER UPDATE ON INVENTARIOS
   FOR EACH ROW
   WHEN (NEW.ESTADO = 'CERRADO' AND NVL(OLD.ESTADO, 'ABIERTO') = 'ABIERTO')
+DECLARE
+  -- Lo que el conteo corrige: cuanto habia de mas o de menos en el estante
+  -- respecto de lo que el sistema creia en el instante del cierre.
+  l_ajuste NUMBER := NVL(:NEW.CANTIDAD_FISICA, 0) - NVL(:NEW.CANTIDAD_SISTEMA, 0);
 BEGIN
 
   UPDATE EXISTENCIAS
-     SET CANTIDAD_DISPONIBLE     = :NEW.CANTIDAD_FISICA,
+     SET CANTIDAD_DISPONIBLE     = NVL(CANTIDAD_DISPONIBLE, 0) + l_ajuste,
          FECHA_ULTIMO_MOVIMIENTO = SYSTIMESTAMP,
          FECHA_ACTUALIZACION     = SYSTIMESTAMP
    WHERE ID_EMPRESA  = :NEW.ID_EMPRESA
@@ -336,6 +373,8 @@ BEGIN
 
   IF SQL%ROWCOUNT = 0 THEN
     BEGIN
+      -- Sin fila previa, el disponible parte de cero y el ajuste ES la cantidad
+      -- contada (CANTIDAD_SISTEMA se sello en 0 justamente porque no habia fila).
       INSERT INTO EXISTENCIAS (
         ID_EMPRESA,
         ID_SUCURSAL,
@@ -348,7 +387,7 @@ BEGIN
         :NEW.ID_EMPRESA,
         :NEW.ID_SUCURSAL,
         :NEW.ID_ARTICULO,
-        :NEW.CANTIDAD_FISICA,
+        l_ajuste,
         SYSTIMESTAMP,
         SYSTIMESTAMP,
         SYSTIMESTAMP
@@ -357,7 +396,7 @@ BEGIN
       -- Otra sesion creo la fila entre el UPDATE y el INSERT.
       WHEN DUP_VAL_ON_INDEX THEN
         UPDATE EXISTENCIAS
-           SET CANTIDAD_DISPONIBLE     = :NEW.CANTIDAD_FISICA,
+           SET CANTIDAD_DISPONIBLE     = NVL(CANTIDAD_DISPONIBLE, 0) + l_ajuste,
                FECHA_ULTIMO_MOVIMIENTO = SYSTIMESTAMP,
                FECHA_ACTUALIZACION     = SYSTIMESTAMP
          WHERE ID_EMPRESA  = :NEW.ID_EMPRESA

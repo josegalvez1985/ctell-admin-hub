@@ -22,6 +22,7 @@ import {
   api,
   ApiError,
   esActivo,
+  esGasto,
   requiereCuentaBancaria,
   type Articulo,
   type CanalPago,
@@ -43,14 +44,14 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { tituloPagina } from "@/lib/marca";
 import { formatearMoneda, numeroMoneda } from "@/lib/moneda";
+import { invalidarStock } from "@/lib/stock";
 
 /**
  * Una línea del carrito.
  *
- * **Ya no lleva lote.** El cajero elegía de qué partida salía cada línea, y eso
- * se fue con el stock por lotes: `VENTAS_DETALLES.ID_LOTE` no existe más.
- * Mientras dure la migración a existencias por artículo, la venta **no descuenta
- * stock** y la pantalla no puede avisar si alcanza.
+ * **No lleva lote:** el cajero ya no elige de qué partida sale cada línea. El
+ * descuento va contra la existencia única del artículo en esta sucursal, y por
+ * eso `cantidadStock` —que viene en `Articulo`— alcanza como techo.
  */
 type Linea = Articulo & {
   cantidadVenta: number;
@@ -241,10 +242,16 @@ function PuntoVentaPage() {
     onSuccess: (data) => {
       toast.success(`Venta #${data.id} registrada`);
       setMontoCobro(formatearMoneda(data.total));
-      // La venta no movió stock, pero los listados se refrescan igual: es una
-      // sola consulta y evita que queden viejos el día que vuelva a moverlo.
-      queryClient.invalidateQueries({ queryKey: ["pos-articulos"] });
-      queryClient.invalidateQueries({ queryKey: ["articulos"] });
+      // LA VENTA ACABA DE DESCONTAR STOCK, así que hay que invalidar TODO lo
+      // que muestra ese número, no sólo el listado de la caja: el catálogo, la
+      // consulta de existencias y los indicadores de la home (unidades en
+      // depósito, artículos bajo mínimo, stock crítico) quedaron viejos en el
+      // mismo instante.
+      //
+      // `pos-articulos` es el más urgente: es la grilla que el cajero tiene
+      // enfrente, y sin esto la siguiente venta se decidiría contra el stock de
+      // antes — mostrando disponible lo que ya se vendió.
+      invalidarStock(queryClient);
     },
     onError: (error) => toast.error(errorTexto(error)),
   });
@@ -258,13 +265,17 @@ function PuntoVentaPage() {
       // Exigir la tasa: sin ella el backend guardaría la venta con IVA 0 y el
       // libro de ventas quedaría mal sin que nadie vea un error.
       //
-      // YA NO SE EXIGE LOTE NI EXISTENCIA: no hay lote que elegir, y el backend
-      // dejó de validar el stock porque la venta no lo descuenta.
+      // Y EXIGIR LA EXISTENCIA, salvo en los gastos —un servicio no tiene
+      // stock—. El backend rechaza la venta entera con 409 si no alcanza, así
+      // que habilitar el botón sería prometer un cobro que va a fallar recién
+      // al confirmar, con el cliente enfrente. Es orientativo en un solo
+      // sentido: puede alcanzar acá y no allá si otra caja vendió en el medio.
       return (
         linea.precio.trim() !== "" &&
         Number.isFinite(precio) &&
         precio >= 0 &&
-        ivaDeLinea(linea) !== ""
+        ivaDeLinea(linea) !== "" &&
+        (esGasto(linea.esGasto) || linea.cantidadVenta <= linea.cantidadStock)
       );
     }) &&
     // idLista NO se exige: una venta sin lista es una venta a precio de
@@ -384,16 +395,28 @@ function PuntoVentaPage() {
                         </p>
                       )}
                     </div>
+                    {/* UN GASTO NO TIENE EXISTENCIA, y mostrarle "0 disp." lo
+                        haría parecer agotado: un flete o una comisión se
+                        venden siempre. Por eso lleva su propia etiqueta y no
+                        se bloquea. */}
                     <Badge
                       className="shrink-0"
-                      variant={articulo.cantidadStock > 0 ? "outline" : "destructive"}
+                      variant={
+                        esGasto(articulo.esGasto)
+                          ? "secondary"
+                          : articulo.cantidadStock > 0
+                            ? "outline"
+                            : "destructive"
+                      }
                     >
-                      {formatearMoneda(articulo.cantidadStock)} disp.
+                      {esGasto(articulo.esGasto)
+                        ? "Servicio"
+                        : `${formatearMoneda(articulo.cantidadStock)} disp.`}
                     </Badge>
                     <Button
                       className="shrink-0"
                       variant="secondary"
-                      disabled={articulo.cantidadStock <= 0}
+                      disabled={!esGasto(articulo.esGasto) && articulo.cantidadStock <= 0}
                       onClick={() => agregar(articulo)}
                     >
                       <Plus className="size-4" />
@@ -477,14 +500,23 @@ function PuntoVentaPage() {
                             className="size-8"
                             onClick={() =>
                               actualizar(linea.id, {
-                                // El techo vuelve a ser el stock del artículo,
-                                // como antes de que existieran los lotes. Es
-                                // orientativo: el backend ya no valida
-                                // existencia, así que no frena la venta.
-                                cantidadVenta: Math.min(
-                                  linea.cantidadStock,
-                                  linea.cantidadVenta + 1,
-                                ),
+                                // El techo es el stock del artículo en ESTA
+                                // sucursal. No es orientativo: el backend
+                                // rechaza la venta entera con 409 si no
+                                // alcanza, así que dejar pasar un número mayor
+                                // sería ofrecer un botón que falla al final.
+                                //
+                                // Puede quedar corto igual —otra caja pudo
+                                // vender entre que cargó el listado y esto—, y
+                                // por eso el backend valida de nuevo con la
+                                // fila bloqueada. Acá se avisa antes; allá se
+                                // garantiza.
+                                //
+                                // Un gasto no tiene techo: no hay existencia
+                                // que se pueda agotar.
+                                cantidadVenta: esGasto(linea.esGasto)
+                                  ? linea.cantidadVenta + 1
+                                  : Math.min(linea.cantidadStock, linea.cantidadVenta + 1),
                               })
                             }
                           >

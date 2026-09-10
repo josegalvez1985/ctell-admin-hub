@@ -16,17 +16,18 @@
 -- el stock en un campo editable y deja de haber forma de explicar por que dice
 -- lo que dice — que es exactamente el problema que el modelo nuevo resuelve.
 --
--- QUIEN SI ESCRIBE LA TABLA. Una sola cosa, por ahora: el cierre de un conteo
--- fisico. TRG_INVENTARIOS_AU_EXISTENCIAS (db/inventarios-triggers-ddl.sql) fija
--- CANTIDAD_DISPONIBLE = INVENTARIOS.CANTIDAD_FISICA cuando el conteo pasa a
--- CERRADO. Un conteo no es una transaccion, es la correccion de las
--- transacciones, y por eso puede fijar la cantidad de frente.
+-- QUIEN SI ESCRIBE LA TABLA. Dos cosas, y ninguna es un endpoint:
 --
--- Comprar y vender siguen sin tocarla. Cuando se implemente PKG_STOCK —con
--- SELECT ... FOR UPDATE sobre la fila antes de moverla, porque entre leer una
--- cantidad y grabar la nueva puede entrar otra caja vendiendo lo mismo— van a
--- ser DOS escritores, y hay que decidir si el cierre del conteo pasa a llamarlo
--- en vez de escribir la tabla directamente.
+--   1. PKG_STOCK (db/stock.sql), por donde pasan ventas y compras. Bloquea la
+--      fila con SELECT ... FOR UPDATE antes de moverla, porque entre leer una
+--      cantidad y grabar la nueva puede entrar otra caja vendiendo lo mismo.
+--   2. El cierre de un conteo fisico —TRG_INVENTARIOS_AU_EXISTENCIAS, en
+--      db/inventarios-triggers-ddl.sql—, que AJUSTA POR DIFERENCIA contra
+--      CANTIDAD_SISTEMA. No fija la cantidad: fijarla borraria las ventas
+--      ocurridas entre el conteo y el cierre.
+--
+-- Un conteo no pasa por PKG_STOCK a proposito: no es una transaccion, es la
+-- correccion de las transacciones, y no tiene un documento del cual colgar.
 --
 --------------------------------------------------------------------------------
 -- UNA FILA POR (EMPRESA, SUCURSAL, ARTICULO)

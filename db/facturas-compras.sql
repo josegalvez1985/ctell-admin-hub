@@ -40,25 +40,34 @@
 --                           FECHA_ACTUALIZACION
 --
 --------------------------------------------------------------------------------
--- LA COMPRA NO MUEVE STOCK
+-- LA COMPRA INGRESA STOCK
 --
--- Cargar una factura de compra guarda el DOCUMENTO y nada mas: no crea lotes ni
--- toca ninguna existencia. Hasta hace poco cada linea insertaba su propio lote
--- con el precio unitario como costo; el stock por lotes se discontinuo —no se
--- puede hacer un conteo fisico por partida, y el punto de venta obligaba a
--- elegir de cual salia cada linea— y FACTURAS_COMPRAS_DET.ID_LOTE ya no existe
--- en el DDL.
+-- REQUIERE db/stock.sql EJECUTADO ANTES. Sin PKG_STOCK este paquete compila
+-- INVALID con PLS-00201 y todo el modulo devuelve 500 mudo.
 --
--- EL COSTO DE CADA COMPRA NO SE PIERDE: sigue en PRECIO_UNITARIO, linea por
--- linea, con su proveedor y su fecha. Nunca vivio en el lote — el lote lo
--- copiaba.
+-- Ya no crea lotes —el stock por lotes se discontinuo y ID_LOTE no existe en el
+-- DDL—: cada linea suma a la fila unica de EXISTENCIAS de la sucursal de la
+-- CABECERA, via PKG_STOCK.ENTRADA. Los gastos (ES_GASTO = 'S') se saltean: un
+-- flete no tiene existencia que aumentar.
 --
--- ES UN ESTADO INTERMEDIO. El reemplazo es una cantidad unica por articulo y
--- sucursal con costo promedio ponderado, mas su libro de movimientos. Cuando
--- ese paquete exista, ESTE archivo vuelve a mover stock: GUARDAR_DETALLE llama
--- a la entrada, y ACTUALIZAR y ELIMINAR recuperan una regla equivalente a la
--- que hoy se saca —una compra con movimientos posteriores no se toca—. Mientras
--- tanto, comprar no cambia ninguna existencia.
+-- LOS TRES CAMINOS QUEDAN CUBIERTOS POR CONSTRUCCION, porque el movimiento vive
+-- en los dos privados y no en cada procedimiento:
+--
+--   * GUARDAR_DETALLE ingresa   → lo llaman INSERTAR y ACTUALIZAR
+--   * BORRAR_DETALLE  reversa   → lo llaman ACTUALIZAR y ELIMINAR
+--
+-- VOLVIO LA REGLA DE "MERCADERIA VENDIDA", por otro camino. Antes se detectaba
+-- con CANTIDAD_DISPON < CANTIDAD del lote; hoy cae sola: el reverso de
+-- BORRAR_DETALLE es una SALIDA, y si esas unidades ya se vendieron el disponible
+-- no alcanza y la operacion se rechaza con 409. No es identica —no se puede
+-- saber si salio "esta" unidad— pero cubre lo que importa: que editar o borrar
+-- una compra no deje el stock en negativo.
+--
+-- EL COSTO DE CADA COMPRA sigue en PRECIO_UNITARIO, linea por linea, con su
+-- proveedor y su fecha. Nunca vivio en el lote — el lote lo copiaba. EXISTENCIAS
+-- todavia no guarda costo, asi que el VALOR de stock del dashboard sigue en
+-- cero: es de aca de donde va a salir el promedio ponderado. Ver la cabecera de
+-- db/stock.sql.
 
 --------------------------------------------------------------------------------
 -- ES LA PRIMERA TRANSACCION DEL PROYECTO, Y ESO CAMBIA VARIAS COSAS
@@ -407,24 +416,62 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
   -- NO HACE COMMIT NI ROLLBACK: la transaccion la maneja quien lo llama, que es
   -- justamente el punto de que cabecera y detalle entren juntos.
   ------------------------------------------------------------------------------
-  -- SIN "TIENE_SALIDAS". La compra ya no crea lotes, asi que no hay forma —ni
-  -- necesidad— de saber si "algo de esta factura ya se vendio": editarla o
-  -- borrarla no deshace ningun movimiento de stock, porque no lo hizo.
+  -- SIGUE SIN HABER UN "TIENE_SALIDAS", y ya no hace falta: la regla la aplica
+  -- BORRAR_DETALLE al reversar. Si lo que ingreso esta factura ya se vendio, la
+  -- salida no encuentra disponible y la operacion se rechaza. Un chequeo aparte
+  -- seria una segunda fuente de verdad sobre el mismo numero.
   --
-  -- CUANDO EXISTA EL KARDEX HAY QUE VOLVER A PONER UNA REGLA EQUIVALENTE, y no
-  -- es la misma: no se puede saber si "esta unidad" salio. La que corresponde es
-  -- por movimiento —una compra no se edita ni se borra si hay movimientos
-  -- posteriores de ese articulo—, porque el costo promedio ya se recalculo sobre
-  -- ella y no vuelve solo.
+  -- CUANDO EXISTA EL LIBRO DE MOVIMIENTOS habra que endurecerla: la regla que
+  -- corresponde entonces es por movimiento —una compra no se edita ni se borra si
+  -- hay movimientos posteriores de ese articulo—, porque el costo promedio se va
+  -- a haber recalculado sobre ella y no vuelve solo.
 
-  -- Privado: borra las lineas de la factura.
+  -- Privado: borra las lineas de la factura Y DEVUELVE SU STOCK.
   --
-  -- Antes borraba tambien los lotes que esas lineas habian creado, y de ahi el
-  -- nombre viejo (BORRAR_DETALLE_Y_LOTES). Sigue siendo un procedimiento y no un
-  -- DELETE suelto porque ACTUALIZAR y ELIMINAR lo llaman por igual: el dia que
-  -- borrar tenga que revertir stock, hay UN solo lugar donde agregarlo.
-  PROCEDURE BORRAR_DETALLE (p_id_factura IN NUMBER) IS
+  -- El dia que borrar tuviera que revertir stock habia UN solo lugar donde
+  -- agregarlo, y este es ese lugar. Lo llaman ACTUALIZAR (que rehace el detalle)
+  -- y ELIMINAR, asi que los dos revierten sin que ninguno tenga que acordarse.
+  --
+  -- LA REVERSA ES UNA SALIDA, no una entrada: comprar ingreso las unidades, y
+  -- borrar la compra tiene que sacarlas. Por eso PUEDE FALLAR —si esas unidades
+  -- ya se vendieron, el disponible no alcanza— y devuelve p_error en vez de
+  -- lanzar, igual que GUARDAR_DETALLE.
+  --
+  -- Y ES LA REGLA QUE FALTABA: una compra cuya mercaderia ya salio no se borra ni
+  -- se edita. Antes se detectaba con CANTIDAD_DISPON < CANTIDAD del lote; ahora
+  -- cae sola del disponible del articulo. No es exactamente la misma —no se puede
+  -- saber si salio "esta" unidad—, pero cubre el caso que importa: que borrar una
+  -- compra no deje el stock en negativo.
+  --
+  -- La sucursal viene por parametro y no se relee de la cabecera porque ELIMINAR
+  -- ya la tiene bloqueada: releerla seria un SELECT de mas sobre una fila propia.
+  PROCEDURE BORRAR_DETALLE (
+    p_id_factura  IN  NUMBER,
+    p_id_empresa  IN  NUMBER,
+    p_id_sucursal IN  NUMBER,
+    p_error       OUT VARCHAR2
+  ) IS
   BEGIN
+    p_error := NULL;
+
+    -- Se recorre ANTES de borrar: despues no habria de donde leer que se habia
+    -- comprado. Los gastos se saltean, igual que al ingresar.
+    FOR linea IN (SELECT d.ID_ARTICULO, d.CANTIDAD
+                    FROM FACTURAS_COMPRAS_DET d
+                    JOIN ARTICULOS            a ON a.ID_ARTICULO = d.ID_ARTICULO
+                   WHERE d.ID_FACTURA = p_id_factura
+                     AND NVL(a.ES_GASTO, 'N') <> 'S') LOOP
+      PKG_STOCK.SALIDA(p_id_empresa, p_id_sucursal, linea.ID_ARTICULO, linea.CANTIDAD, p_error);
+      IF p_error IS NOT NULL THEN
+        -- El mensaje de PKG_STOCK habla de vender; aca el caso es otro y hay que
+        -- decirlo, o quien borra una compra lee "no hay stock suficiente" sin
+        -- entender que le esta pidiendo el sistema.
+        p_error := 'No se puede quitar la mercaderia de esta factura: ' || p_error ||
+                   '. Probablemente ya se vendio.';
+        RETURN;
+      END IF;
+    END LOOP;
+
     DELETE FROM FACTURAS_COMPRAS_DET WHERE ID_FACTURA = p_id_factura;
   END BORRAR_DETALLE;
 
@@ -454,12 +501,14 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
     END LOOP;
   END REGENERAR_CUOTAS;
 
-  -- p_id_sucursal DEJO DE HACER FALTA: era para el lote que creaba cada linea.
-  -- El detalle es el documento, y el documento no sabe de sucursal — esa esta en
-  -- la cabecera, que es la unica que la necesita.
+  -- p_id_sucursal VOLVIO A HACER FALTA. Se habia sacado cuando la compra dejo de
+  -- crear lotes; ahora la linea ingresa stock, y una existencia es de una
+  -- sucursal concreta. Sale de la cabecera —el deposito al que entro la
+  -- mercaderia—, no de donde este parado quien carga la factura.
   PROCEDURE GUARDAR_DETALLE (
     p_id_factura  IN  NUMBER,
     p_id_empresa  IN  NUMBER,
+    p_id_sucursal IN  NUMBER,
     p_detalle     IN  CLOB,
     p_lineas      OUT NUMBER,
     p_error       OUT VARCHAR2
@@ -536,14 +585,31 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
         END IF;
       END;
 
-      -- LA LINEA NO CREA NINGUN LOTE NI MUEVE STOCK. Antes cada una insertaba
-      -- su propio lote con el precio como costo; el stock por lotes se
-      -- discontinuo y la columna ID_LOTE ya no existe en el DDL, asi que
-      -- mencionarla aca daria ORA-00904.
+      -- LA LINEA INGRESA STOCK. Ya no crea lotes —el modelo por lotes se
+      -- discontinuo y ID_LOTE no existe en el DDL—: suma a la fila unica de
+      -- EXISTENCIAS de esa sucursal, via PKG_STOCK.ENTRADA.
       --
-      -- El costo de esta compra queda igual en PRECIO_UNITARIO: es de donde va a
-      -- salir el promedio ponderado cuando exista el paquete de stock.
+      -- Los gastos se saltean: un flete o una comision no tienen existencia que
+      -- aumentar. Es el mismo ES_GASTO que filtra en ventas.
       --
+      -- Una ENTRADA no puede fallar por falta de saldo —sumar siempre se puede—,
+      -- pero si por un dato invalido, y entonces la factura entera se rechaza.
+      --
+      -- EL COSTO NO SE GUARDA TODAVIA: queda en PRECIO_UNITARIO, que es de donde
+      -- va a salir el promedio ponderado cuando EXISTENCIAS tenga su columna de
+      -- costo. Ver la cabecera de db/stock.sql.
+      DECLARE
+        l_es_gasto VARCHAR2(1);
+      BEGIN
+        SELECT NVL(ES_GASTO, 'N') INTO l_es_gasto
+          FROM ARTICULOS WHERE ID_ARTICULO = linea.idArticulo;
+
+        IF l_es_gasto <> 'S' THEN
+          PKG_STOCK.ENTRADA(p_id_empresa, p_id_sucursal, linea.idArticulo, linea.cantidad, p_error);
+          IF p_error IS NOT NULL THEN RETURN; END IF;
+        END IF;
+      END;
+
       -- SUBTOTAL NO SE MENCIONA: es una columna virtual y mencionarla da
       -- ORA-54013. La calcula la base como CANTIDAD*PRECIO_UNITARIO.
       INSERT INTO FACTURAS_COMPRAS_DET (
@@ -969,7 +1035,10 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
     l_existe       PLS_INTEGER;
     l_id           NUMBER;
     l_lineas       NUMBER;
-    l_error        VARCHAR2(500);
+    -- 1000 y no 500: al mensaje de PKG_STOCK (que nombra el articulo y da dos
+    -- numeros) BORRAR_DETALLE le antepone su propia explicacion, y un ORA-06502
+    -- por truncamiento convertiria un 409 legible en un 500 mudo.
+    l_error        VARCHAR2(1000);
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -1093,7 +1162,10 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
 
     -- SIN COMMIT ENTRE MEDIO: si el detalle falla, el ROLLBACK deshace tambien
     -- la cabecera. Es todo el punto de recibir el detalle en el mismo request.
-    GUARDAR_DETALLE(l_id, l_id_empresa, p_detalle, l_lineas, l_error);
+    -- La sucursal va porque cada linea ahora ingresa stock, y una existencia es
+    -- de un deposito concreto. Es la misma que se acaba de insertar en la
+    -- cabecera.
+    GUARDAR_DETALLE(l_id, l_id_empresa, l_id_sucursal, p_detalle, l_lineas, l_error);
 
     IF l_error IS NOT NULL THEN
       ROLLBACK;
@@ -1171,7 +1243,10 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
     l_fecha        DATE;
     l_existe       PLS_INTEGER;
     l_lineas       NUMBER;
-    l_error        VARCHAR2(500);
+    -- 1000 y no 500: al mensaje de PKG_STOCK (que nombra el articulo y da dos
+    -- numeros) BORRAR_DETALLE le antepone su propia explicacion, y un ORA-06502
+    -- por truncamiento convertiria un 409 legible en un 500 mudo.
+    l_error        VARCHAR2(1000);
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -1285,16 +1360,33 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
     -- actualizacion es solo de la cabecera y las lineas quedan como estaban —
     -- que es lo que espera un PUT que cambia unicamente la observacion.
     IF p_detalle IS NOT NULL AND DBMS_LOB.GETLENGTH(p_detalle) > 0 THEN
-      -- SIN CHEQUEO DE SALIDAS: rehacer el detalle ya no rehace ningun lote, asi
-      -- que no hay stock que pueda quedar por debajo del fisico. Cuando exista el
-      -- kardex vuelve la regla equivalente —no se edita una compra con
-      -- movimientos posteriores del articulo— y este es el lugar.
+      -- HAY QUE RELEER ID_SUCURSAL DE LA CABECERA, no usar l_id_sucursal: el PUT
+      -- conserva lo que no vino, asi que con la sucursal ausente esa variable
+      -- queda NULL y el stock se moveria contra una sucursal que no existe. Se
+      -- lee DESPUES del UPDATE, para tomar la sucursal ya efectiva si el PUT la
+      -- cambio.
       --
-      -- Tampoco hace falta ya releer ID_SUCURSAL de la cabecera: era para el
-      -- lote que creaba cada linea.
-      BORRAR_DETALLE(l_id);
+      -- Y si la cambio, el reverso sale de la sucursal NUEVA y el ingreso entra
+      -- en la nueva tambien: mover una factura de deposito no traslada la
+      -- mercaderia sola. Es una limitacion conocida, y no se resuelve aca a
+      -- medias — cuando haga falta, es un movimiento entre sucursales explicito.
+      SELECT ID_SUCURSAL INTO l_id_sucursal
+        FROM FACTURAS_COMPRAS_CAB WHERE ID_FACTURA = l_id;
 
-      GUARDAR_DETALLE(l_id, l_id_empresa, p_detalle, l_lineas, l_error);
+      -- BORRAR_DETALLE ahora SACA del stock lo que la factura habia ingresado, y
+      -- puede fallar: si esas unidades ya se vendieron, el disponible no alcanza
+      -- y la factura no se puede reeditar. Es la regla que reemplaza al viejo
+      -- chequeo de "mercaderia vendida" que se detectaba sobre el lote.
+      BORRAR_DETALLE(l_id, l_id_empresa, l_id_sucursal, l_error);
+
+      IF l_error IS NOT NULL THEN
+        ROLLBACK;
+        p_status_code := 409;
+        p_resultado := JSON_OBJECT('error' VALUE l_error);
+        RETURN;
+      END IF;
+
+      GUARDAR_DETALLE(l_id, l_id_empresa, l_id_sucursal, p_detalle, l_lineas, l_error);
 
       IF l_error IS NOT NULL THEN
         -- El ROLLBACK devuelve tambien el DELETE: la factura queda con su
@@ -1352,6 +1444,11 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
     l_id         NUMBER;
     l_id_empresa NUMBER;
     l_existe     NUMBER;
+    -- La sucursal de la que hay que sacar la mercaderia: la de la CABECERA, el
+    -- deposito al que entro. No viaja en la ruta —el DELETE solo lleva id y
+    -- empresa— y no tiene por que coincidir con donde este parado quien borra.
+    l_id_sucursal NUMBER;
+    l_error       VARCHAR2(1000);
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -1379,7 +1476,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
     -- Antes los DELETE salian a ciegas y el 404 se deducia del SQL%ROWCOUNT del
     -- ultimo; con los pagos de por medio eso ya no alcanza.
     BEGIN
-      SELECT ID_FACTURA INTO l_existe
+      SELECT ID_FACTURA, ID_SUCURSAL INTO l_existe, l_id_sucursal
         FROM FACTURAS_COMPRAS_CAB
        WHERE ID_FACTURA = l_id AND ID_EMPRESA = l_id_empresa
          FOR UPDATE;
@@ -1390,11 +1487,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
       RETURN;
     END;
 
-    -- SIN CHEQUEO DE SALIDAS: borrar la factura ya no saca nada del stock,
-    -- porque cargarla tampoco lo movio. Lo unico que la congela son los pagos.
+    -- DOS COSAS CONGELAN UNA FACTURA, y son distintas: los pagos (plata que
+    -- salio de la caja, se chequea aca) y la mercaderia que ya se vendio (se
+    -- chequea sola dentro de BORRAR_DETALLE, cuando el reverso no encuentra
+    -- disponible).
     --
     -- Mismo criterio que en ventas con los cobros: el DELETE en cascada se
-    -- llevaria plata que salio de la caja sin dejar rastro.
+    -- llevaria plata sin dejar rastro.
     SELECT COUNT(*) INTO l_existe FROM FACTURAS_COMPRAS_PAGOS WHERE ID_FACTURA = l_id;
     IF l_existe > 0 THEN
       ROLLBACK;
@@ -1405,7 +1504,18 @@ CREATE OR REPLACE PACKAGE BODY PKG_FACTURAS_COMPRAS AS
 
     DELETE FROM FACTURAS_COMPRAS_CUOTAS WHERE ID_FACTURA = l_id;
 
-    BORRAR_DETALLE(l_id);
+    -- Saca del stock lo que esta factura habia ingresado. Si ya se vendio, falla
+    -- con 409 y la factura NO se borra: borrarla igual dejaria el stock en
+    -- negativo y una venta apoyada en mercaderia que el sistema dice que nunca
+    -- entro.
+    BORRAR_DETALLE(l_id, l_id_empresa, l_id_sucursal, l_error);
+
+    IF l_error IS NOT NULL THEN
+      ROLLBACK;
+      p_status_code := 409;
+      p_resultado := JSON_OBJECT('error' VALUE l_error);
+      RETURN;
+    END IF;
 
     DELETE FROM FACTURAS_COMPRAS_CAB
      WHERE ID_FACTURA = l_id

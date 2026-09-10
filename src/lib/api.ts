@@ -1813,12 +1813,17 @@ export type Articulo = {
    * ese depósito. Un artículo sin ninguna fila de existencia llega en 0, no en
    * null: nunca tuvo movimiento, que para quien mira es lo mismo que no tener.
    *
-   * Ojo: **nada lo mueve todavía**. Comprar y vender no tocan existencias
-   * mientras no exista `PKG_STOCK`, así que el número es el que se haya cargado
-   * en la tabla.
+   * **Lo mueven tres cosas, todas por `PKG_STOCK`:** vender resta, comprar
+   * suma, y borrar cualquiera de las dos revierte. La cuarta es el cierre de un
+   * conteo físico, que lo fija.
+   *
+   * **Sirve para mostrar, no para decidir si alcanza.** Entre que este listado
+   * llegó y el cajero confirma, otra caja pudo llevarse la última unidad — quien
+   * decide es el backend, con la fila bloqueada. La pantalla lo usa para avisar
+   * antes, no para garantizar.
    *
    * Es de sólo lectura y no aparece en `crear` ni en `actualizar`: se mueve
-   * cargando o consumiendo lotes, no editando la ficha del artículo.
+   * vendiendo y comprando, no editando la ficha del artículo.
    */
   cantidadStock: number;
   /**
@@ -5000,6 +5005,13 @@ export const api = {
       fechaVenta: string;
       idTalonario: number;
       observacion?: string;
+      /**
+       * **Descuenta stock.** Cada línea que no sea un gasto (`esGasto === "S"`)
+       * resta de `EXISTENCIAS` en `idSucursal`. Si a alguna no le alcanza el
+       * disponible, la venta **entera** se rechaza con **409** y el mensaje
+       * nombra el artículo y da los dos números — no se vende parcial ni queda
+       * stock negativo.
+       */
       detalle: Array<{
         idArticulo: number;
         cantidad: number;
@@ -5019,14 +5031,24 @@ export const api = {
         body: JSON.stringify({ ...datos, detalle: JSON.stringify(datos.detalle) }),
       }),
     /**
-     * Borra la venta con sus cuotas y su detalle.
+     * Borra la venta con sus cuotas y su detalle, y **repone el stock** de cada
+     * línea que no sea un gasto, en la sucursal de la que salió.
      *
-     * **No repone stock**, porque vender tampoco lo descuenta mientras dure la
-     * migración a existencias por artículo. Una venta con cobros se rechaza con
-     * 409: hay que anularlos primero.
+     * Una venta con cobros se rechaza con 409: hay que anularlos primero.
+     *
+     * Quien la llama tiene que invalidar `["existencias"]`, `["articulos"]`,
+     * `["pos-articulos"]` y `["dashboard"]`: los cuatro muestran el número que
+     * esto acaba de cambiar.
      */
     eliminar: (id: number, idEmpresa: number) =>
-      request<{ ok: boolean }>(`/ventas/eliminar/${id}/${idEmpresa}`, {
+      request<{
+        ok: boolean;
+        /**
+         * Cuántas unidades volvieron al depósito. En una venta de puros
+         * servicios es 0, y ahí el 0 es un dato real, no un "no se hizo nada".
+         */
+        unidadesRepuestas: number;
+      }>(`/ventas/eliminar/${id}/${idEmpresa}`, {
         method: "DELETE",
       }),
   },

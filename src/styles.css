@@ -257,3 +257,118 @@
     background: transparent;
   }
 }
+
+/**
+ * DENSIDAD SEGUN EL ALTO DE LA VENTANA
+ *
+ * Las pantallas se diseñaron en 1920x1080 y en un monitor de 1366x768 se veian
+ * infladas: campos enormes, mucho aire entre cosas y formularios que no
+ * entraban. Esto lo corrige solo, sin tocar ninguna pantalla.
+ *
+ * EL PROBLEMA ES EL ALTO, NO EL ANCHO. 1366 de ancho entra comodo —el contenido
+ * llega a 1152px (max-w-6xl) y el layout es responsive hasta 400px—. Lo que
+ * aprieta es 768 de alto:
+ *
+ *     768   la pantalla
+ *   − 120   barra de pestañas y direcciones del navegador
+ *   −  64   el header de la app (h-16, sticky)
+ *   = 584   px reales para trabajar
+ *
+ * Un dialogo de alta con seis campos mide unos 570. Entra por doce pixeles; con
+ * siete campos ya no entra.
+ *
+ * POR ESO SE CONSULTA `max-height` Y NO `max-width`, ni la resolucion del
+ * monitor. Una ventana de 1920 abierta a media altura tiene exactamente el mismo
+ * problema que un 1366 maximizado, y un 1366 en pantalla completa (F11) no lo
+ * tiene: recupera los 120px del navegador. El dato que decide es cuanto alto
+ * queda para trabajar, y eso es `max-height`. Ademas se reajusta solo al
+ * redimensionar la ventana o al conectar un proyector.
+ *
+ * POR QUE ALCANZA CON DOS VARIABLES. Tailwind v4 compila TODO el espaciado
+ * contra una sola:
+ *
+ *     .h-9   { height:  calc(var(--spacing) * 9) }
+ *     .p-4   { padding: calc(var(--spacing) * 4) }
+ *     .gap-3 { gap:     calc(var(--spacing) * 3) }
+ *
+ * asi que redefinirla reescala los 43 archivos de rutas de una vez, sin editar
+ * ninguno y sin que nada pueda quedar a medio ajustar: todo se mueve junto y en
+ * proporcion. Los tamaños de texto salen de sus propias variables (--text-3xl y
+ * compañia), que se tocan aparte y con criterio distinto (ver abajo).
+ *
+ * SE RECORTA EL AIRE, NO LA LETRA. Es la decision de fondo. Achicar la fuente es
+ * lo que vuelve ilegible una aplicacion —a 14px de raiz, `text-xs` queda en
+ * 10,5px—; achicar el espacio en blanco es lo que la vuelve densa, que es
+ * justamente lo que se busca en una pantalla de mostrador. De los textos se baja
+ * solo el titulo de pagina, que a 30px se come el alto sin aportar nada.
+ *
+ * NO SE TOCA `html { font-size }` por la misma razon, y ademas porque --spacing
+ * esta en `rem`: las dos palancas se multiplicarian y el resultado seria
+ * imposible de predecir. Una sola a la vez.
+ *
+ * LAS LINE-HEIGHTS NO HACE FALTA AJUSTARLAS: Tailwind las define como ratios sin
+ * unidad —`--text-3xl--line-height: calc(2.25 / 1.875)`—, asi que siguen a la
+ * fuente solas. Fijarlas en rem seria el error clasico acá: la letra baja a 24px
+ * y la linea se queda en 36, y no se gana un solo pixel.
+ *
+ * VA SIN @layer A PROPOSITO. Tailwind declara --spacing dentro de `@layer theme`,
+ * y en la cascada el CSS sin capa le gana a cualquier capa sin importar el orden
+ * del archivo. Metido en un @layer, este bloque dependeria de quedar despues.
+ *
+ * EL SIDEBAR NO ENTRA EN LA CUENTA: son 16rem fijos, no cuelga de --spacing.
+ * Es deliberado —achicarlo recortaria los nombres del menu, que es donde menos
+ * conviene ahorrar—, y en 1366 deja 1110px libres, de sobra.
+ *
+ * SI HAY QUE CALIBRARLO, el numero a mover es --spacing. Cada 0.01rem son ~4% de
+ * aire. No bajar de 0.2rem: ahi el campo queda en 28,8px de alto y empieza a
+ * costar acertarle con el mouse.
+ */
+
+/*
+ * `pointer: fine` ES LO QUE DEJA AFUERA AL CELULAR, y no es un detalle: sin esa
+ * condicion esto se aplicaba al reves de como tiene que ser.
+ *
+ * Un celular tiene el viewport BAJO —un iPhone vertical ronda los 745px, un
+ * Android medio 700, y CUALQUIERA acostado queda en ~330—, asi que entraba por
+ * `max-height` y le achicaba los campos. Pero en una pantalla tactil el objetivo
+ * tiene que ser MAS GRANDE, no mas chico: Apple pide 44px y Material 48. Los
+ * 36px de fabrica ya estan por debajo; bajarlos a 29 en el telefono donde se
+ * carga una venta en el mostrador es empeorar justo donde mas se nota.
+ *
+ * `fine` es mouse, trackpad o lapiz; `coarse` es el dedo. La consulta mira el
+ * puntero PRIMARIO, asi que una notebook con pantalla tactil sigue contando como
+ * `fine` —su trackpad manda— y recibe la densidad, que es lo correcto.
+ *
+ * La app es PWA y el modo movil es real (ver use-mobile.tsx y el panel inferior
+ * de AppLayout), asi que esto no es un caso hipotetico.
+ */
+
+/* 1366x768 maximizado, y cualquier ventana de escritorio igual de baja. 12%
+   menos de aire: el campo pasa de 36 a 32px —comodo todavia para el mouse— y el
+   dialogo de seis campos baja de 570 a ~505px, que entra con lugar de sobra. */
+@media (max-height: 800px) and (pointer: fine) {
+  :root {
+    --spacing: 0.22rem;
+    /* 30px → 24px. El titulo se lee igual y devuelve casi una fila de tabla. */
+    --text-3xl: 1.5rem;
+  }
+}
+
+/* Ventanas de verdad chicas: media pantalla, o un navegador con tres barras de
+   extensiones. 20% menos que el original.
+ *
+ * EL UMBRAL ES 560 Y NO 660 POR UNA CUENTA CONCRETA. Un 1366x768 maximizado no
+ * deja 768px de viewport: la barra de tareas de Windows se lleva 48 y el
+ * navegador otros 84 (mas 34 si esta la barra de favoritos), asi que quedan
+ * entre 602 y 636. Con el umbral en 660 ese monitor —que es justamente el que
+ * hay que atender— caia en el escalon mas apretado en vez del intermedio, y los
+ * campos quedaban en 28,8px cuando la idea era 32.
+ *
+ * En 560 la cuenta cierra: 1366x768 y 1280x720 (588) van al intermedio, y este
+ * escalon queda para lo que de verdad es chico. */
+@media (max-height: 560px) and (pointer: fine) {
+  :root {
+    --spacing: 0.2rem;
+    --text-3xl: 1.375rem;
+  }
+}

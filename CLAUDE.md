@@ -26,9 +26,10 @@ ctell-admin-hub/
 │   ├── usuarios.sql          PKG_USUARIOS: ABM de usuarios
 │   ├── ventas.sql            PKG_VENTAS: punto de venta (cabecera+detalle+cuotas)
 │   ├── ventas-cobros.sql     PKG_VENTAS_COBROS: cobros contra ventas
-│   ├── facturas-compras.sql  PKG_FACTURAS_COMPRAS: compras (hoy no mueven stock)
+│   ├── facturas-compras.sql  PKG_FACTURAS_COMPRAS: compras (ingresan stock)
 │   ├── facturas-compras-pagos.sql  PKG_FACTURAS_COMPRAS_PAGOS: pagos a proveedores
 │   ├── dashboard.sql         PKG_DASHBOARD: los indicadores de la home
+│   ├── stock.sql             PKG_STOCK: el único que mueve EXISTENCIAS (interno, sin ORDS)
 │   └── [table].sql           Cada tabla nueva va aquí
 ├── src/
 │   ├── routes/               Rutas por archivo (TanStack Router)
@@ -54,6 +55,7 @@ ctell-admin-hub/
 │   │   ├── api.ts            Cliente HTTP contra ORDS
 │   │   ├── moneda.ts         Formato y parseo es-PY, en un solo lugar
 │   │   ├── exportar.ts       Excel y PDF de un listado, con las mismas columnas
+│   │   ├── stock.ts          invalidarStock(): las 4 queryKey que muestran existencia
 │   │   └── uso-paginas.ts    Conteo de uso por página (localStorage)
 │   ├── router.tsx            Configuración del router
 │   └── styles.css            Design system: variables de color en oklch
@@ -144,7 +146,7 @@ El alta de usuarios y `/auth/recuperar` mandan la contraseña por mail vía
 | -------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `GET`    | `/ventas/listar`                         | Listado con totales y saldo derivados                                                                      |
 | `GET`    | `/ventas/obtener/:id/:idEmpresa`         | Cabecera, detalle, cuotas                                                                                  |
-| `POST`   | `/ventas/crear`                          | Venta completa en una transacción. `idListaDescuentos` es **opcional**: sin lista, precio de etiqueta y 0% |
+| `POST`   | `/ventas/crear`                          | Venta completa en una transacción. **Descuenta stock**: 409 si no alcanza. `idListaDescuentos` es **opcional** |
 | `DELETE` | `/ventas/eliminar/:id/:idEmpresa`        | Borra y **repone el stock**                                                                                |
 | `GET`    | `/ventas-cobros/listar/:idVenta/:idEmp`  | Historial de cobros                                                                                        |
 | `POST`   | `/ventas-cobros/crear`                   | Cobro, validado contra el saldo                                                                            |
@@ -287,31 +289,42 @@ donde `neto = cantidad * precio - descuento`. Con una línea de 110.000 al 10%: 
 - Toda división va con `NULLIF(..., 0)`: la exenta tiene `IVA_DIVISION = 0`. Ojo que en `GRAVADA_DIVISION` la exenta va en **1**, no en 0 — los dos divisores usan criterios opuestos.
 - **La columna virtual `TOTAL` no debe sumar `MONTO_IVA`.** El DDL original lo hacía y no se notaba porque `MONTO_IVA` se guardaba siempre en 0.
 
-### El stock está en migración: hoy ninguna transacción lo mueve
+### El stock: `EXISTENCIAS` y `PKG_STOCK`
 
-**El stock por lotes se discontinuó.** `VENTAS_DETALLES.ID_LOTE` y `FACTURAS_COMPRAS_DET.ID_LOTE` ya no existen en el DDL, y con ellas se fueron el descuento al vender, la reposición al borrar y el ingreso al comprar.
+**Una cantidad única por empresa, sucursal y artículo** (`EXISTENCIAS.CANTIDAD_DISPONIBLE`, con su `UNIQUE`). No hay lotes, no hay partidas, no hay costo.
 
-**Por qué se abandonó.** Los lotes se habían implementado sólo para registrar el costo de cada compra — dato que en realidad vive en `FACTURAS_COMPRAS_DET.PRECIO_UNITARIO`, con su proveedor y su fecha; el lote lo copiaba. A cambio cobraban caro: el cajero tenía que elegir de qué partida salía cada línea (40 unidades en cuatro lotes de 10 no permitían vender 12), y **el conteo físico era imposible**: en el estante las unidades son idénticas, nadie sabe de qué compra vino cada una. Contar un lote *fijaba* su cantidad y dejaba el stock del artículo peor que antes.
+**Todo lo que la mueve pasa por `PKG_STOCK`** (`db/stock.sql`), con dos operaciones: `SALIDA` (resta, exige saldo) y `ENTRADA` (suma, crea la fila si no existe). Es un paquete **interno**: no publica módulo ORDS ni valida token — quien lo llama ya validó el suyo. Rompe la regla de "un archivo por tabla" a propósito, como `auth.sql`.
 
-**Qué implica hoy, y hay que saberlo:**
+**Orden de ejecución en APEX:** `stock.sql` → `ventas.sql` → `facturas-compras.sql`. Al revés, los dos últimos compilan `INVALID` con `PLS-00201` y devuelven 500 mudo.
 
-- **Se puede vender sin existencia.** La validación colgaba del lote. No se reemplazó por una sobre el stock del artículo porque ese número —suma de lotes que ya nadie mueve— dejó de significar algo.
-- **Borrar una venta no repone nada**, y por eso `/ventas/eliminar` ya no devuelve `unidadesRepuestas`.
-- **Una compra ya no se congela por "mercadería vendida"**: esa regla se detectaba con `CANTIDAD_DISPON < CANTIDAD`. Lo único que sigue bloqueando una factura son sus pagos, y una venta sus cobros (409).
+**Quién escribe la tabla, y son dos:**
 
-**A dónde va.** Una cantidad única por artículo y sucursal (`EXISTENCIAS`) con **costo promedio ponderado móvil**, más un libro de movimientos (`MOVIMIENTOS_STOCK`) que hace auditable cada cambio. Un solo paquete —`PKG_STOCK`— será el único que escriba esa cantidad, con `FOR UPDATE` sobre la fila: ahí vuelve la carrera entre dos cajas que hoy no existe porque no se toca nada.
+| Quién | Qué hace |
+| ----- | -------- |
+| `PKG_STOCK` | Vender resta, comprar suma, borrar cualquiera de las dos revierte |
+| `TRG_INVENTARIOS_AU_EXISTENCIAS` | El cierre de un conteo **ajusta por diferencia** contra `CANTIDAD_SISTEMA` |
 
-**La tabla `LOTES` se eliminó**, y con ella los módulos de Lotes y de Inventarios: sus archivos `db/`, sus pantallas, su lugar en el menú y sus tipos en `api.ts`. `db/retirar-lotes-inventarios.sql` hace la limpieza que el `DROP` no se lleva —los módulos ORDS, los paquetes, los triggers de `INVENTARIOS` y las páginas del menú—; se ejecuta una vez y se puede borrar.
+El conteo no pasa por `PKG_STOCK` a propósito: no es una transacción, es la **corrección** de las transacciones, y no tiene un documento del cual colgar.
 
-**`EXISTENCIAS` ya existe, en modo lectura.** Una fila por empresa, sucursal y artículo, con `CANTIDAD_DISPONIBLE`: de ahí vuelven a salir `cantidadStock` del listado de artículos, las unidades en depósito, los artículos bajo mínimo y el stock crítico de la home. `db/existencias.sql` publica `GET /existencias/listar` para verlo abierto por sucursal.
+**`FOR UPDATE` sobre la fila, siempre.** Sin él, dos cajas vendiendo la última unidad leen 1 las dos, las dos concluyen que alcanza, y la fila queda en −1. El bloqueo se toma **antes de decidir**, no antes de escribir. Es la misma carrera que ya se cubría sobre el talonario para que dos ventas no compartan número.
 
-**La escribe una sola cosa: el cierre de un conteo físico.** `db/inventarios-triggers-ddl.sql` pone dos triggers sobre `INVENTARIOS` — uno congela el conteo fuera de `ABIERTO`, otro fija `CANTIDAD_DISPONIBLE = CANTIDAD_FISICA` al pasar a `CERRADO`. Un conteo no es una transacción, es la corrección de las transacciones.
+**No se vende sin existencia: 409.** Si a una línea no le alcanza, la venta **entera** se rechaza — no se vende parcial ni queda negativo. El mensaje nombra el artículo y da los dos números. La contracara hay que saberla: **una existencia mal cargada traba la caja** hasta que se cargue la compra que falta o se haga un conteo.
+
+**`ES_GASTO = 'S'` no mueve stock.** Un flete o una comisión no tienen existencia; restársela dejaría filas en −40 que ensucian el reporte de stock crítico. El filtro está en **quien llama** (ventas y compras), no en `PKG_STOCK`: ponerlo en los dos lados invita a que se desincronicen.
+
+**En compras el movimiento vive en los dos privados**, no en cada procedimiento: `GUARDAR_DETALLE` ingresa (lo llaman `INSERTAR` y `ACTUALIZAR`) y `BORRAR_DETALLE` reversa (lo llaman `ACTUALIZAR` y `ELIMINAR`). Así los tres caminos quedan cubiertos por construcción.
+
+**Volvió la regla de "mercadería vendida", por otro camino.** Antes se detectaba con `CANTIDAD_DISPON < CANTIDAD` del lote; hoy cae sola: el reverso de `BORRAR_DETALLE` es una **salida**, y si esas unidades ya se vendieron el disponible no alcanza y la operación se rechaza con 409. La pantalla **no puede anticiparlo** —necesitaría el stock de cada artículo del detalle, que el listado no trae—, así que sólo avisa del otro motivo (los pagos).
+
+**El ajuste del conteo es por diferencia y eso no es un detalle.** Fijando la cantidad, un cierre tardío borra lo vendido en el medio: se cuenta el lunes y hay 100, el martes se venden 30, el miércoles se cierra el conteo → fijar devuelve la tabla a 100 y las 30 vendidas reaparecen. Con la diferencia `(100 − 100) = 0` queda en 70, que es lo correcto.
+
+**En el frontend, `invalidarStock(queryClient)`** (`src/lib/stock.ts`) invalida las cuatro claves que muestran stock: `articulos`, `pos-articulos`, `existencias` y `dashboard`. Está centralizado porque **son cuatro y se olvida una**, y el síntoma no es un error: es una pantalla que sigue diciendo 12 disponibles después de vender los 12.
+
+**Lo que falta es el costo y el libro de movimientos.** `EXISTENCIAS` guarda la cantidad, no a cuánto entró, así que el **valor** de stock del dashboard sigue en cero. Y ningún cambio deja asiento: un `CANTIDAD_DISPONIBLE` en 3 que debería ser 5 no se puede explicar. Cuando exista `MOVIMIENTOS_STOCK`, el asiento va **dentro de `MOVER`** —un solo lugar— y no en cada llamador.
+
+**Por qué se abandonaron los lotes.** Se habían implementado sólo para registrar el costo de cada compra — dato que en realidad vive en `FACTURAS_COMPRAS_DET.PRECIO_UNITARIO`, con su proveedor y su fecha; el lote lo copiaba. A cambio cobraban caro: el cajero tenía que elegir de qué partida salía cada línea (40 unidades en cuatro lotes de 10 no permitían vender 12), y **el conteo físico era imposible**: en el estante las unidades son idénticas. La tabla `LOTES` se eliminó; `db/retirar-lotes-inventarios.sql` hace la limpieza que el `DROP` no se lleva y se ejecuta una vez.
 
 **El conteo se carga desde la app:** `db/inventarios.sql` publica `/inventarios/` y `/inventarios` es su pantalla. El paquete **no repite las reglas de los triggers**: las chequea antes para devolver 404/409/400 con el mismo texto, porque un `ORA-20102` sin traducir sale como un 500 mudo. Los códigos y su traducción viven en `ERROR_DE_NEGOCIO`; si se agrega una regla al trigger, su código va también ahí.
-
-**Comprar y vender siguen sin tocarla** hasta que exista `PKG_STOCK`. Cuando exista van a ser dos escritores, y hay que decidir ahí si el cierre pasa a llamarlo —con `SELECT … FOR UPDATE` sobre la fila y su asiento en el libro de movimientos— en vez de escribir la tabla de frente. También ahí el ajuste del conteo debe pasar a ser **por diferencia** contra `CANTIDAD_SISTEMA`: fijando la cantidad, un cierre tardío borra las ventas ocurridas después del conteo.
-
-**Lo que falta es el costo.** La tabla guarda la cantidad, no a cuánto entró, así que el **valor** de stock del dashboard sigue en cero: multiplicar unidades por un costo que no existe no se puede, y mostrar unidades como si fueran guaraníes sería peor que un cero. Necesita una columna de costo promedio ponderado móvil, o la tabla de movimientos de la que se derive.
 
 ### El DDL manda, no los comentarios
 
@@ -351,7 +364,9 @@ Las columnas `ACTIVO` son `VARCHAR2(1)` con valores `'A'` o `'I'`. **Este códig
 - **`index.tsx`:** "/" → Login (público).
 - **`_auth.tsx`:** Layout protegido (requiere token). Las rutas bajo `_auth` heredan este layout.
 - **`_auth.home.tsx`:** "/home" → Dashboard. Los KPIs, movimientos y stock crítico salen de `/dashboard/resumen`; arriba va `<AccesosRapidos />`.
-- **`_auth.punto-venta.tsx`:** "/punto-venta" → Caja. Carrito con IVA por línea; al guardar abre el modal de cobro. **Ya no se elige lote** ni hay techo por partida: la venta no descuenta stock (ver arriba).
+- **`_auth.punto-venta.tsx`:** "/punto-venta" → Caja. Carrito con IVA por línea; al guardar abre el modal de cobro. **Ya no se elige lote**: el techo de cada línea es la existencia del artículo **en esta sucursal**, y sin ella el botón de confirmar no se habilita. Un artículo con `esGasto = "S"` no tiene techo y muestra "Servicio" en vez de "0 disp." — mostrarle stock lo haría parecer agotado.
+
+  > **El techo de la pantalla no es la garantía, es el aviso.** Entre que cargó el listado y el cajero confirma, otra caja pudo llevarse la última unidad: quien decide es el backend, con la fila bloqueada. Dejar pasar un número mayor sería prometer un cobro que falla recién al confirmar, con el cliente enfrente.
 - **`_auth.ventas.tsx`:** "/ventas" → Comprobantes emitidos: ver detalle y eliminar. **No** se editan.
 - **`_auth.cobros.tsx`:** "/cobros" → Cobros de ventas, historial y baja.
 - **`_auth.pagos.tsx`:** "/pagos" → Pagos a proveedores. Espejo de cobros.
@@ -635,7 +650,7 @@ Las tres están explicadas con ejemplos en [GUIA-IMPLEMENTACION.md](docs/GUIA-IM
 7. **Reejecutar `db/`:** frena dev primero (evita `ORA-00060`).
 8. **Los totales se derivan**, no se guardan en la cabecera.
 9. **El precio incluye IVA:** se desglosa, nunca se suma.
-10. **Ninguna transacción mueve stock hoy** — es un estado intermedio, mientras se migra a existencias por artículo. Lo que sí sigue: una venta con cobros o una compra con pagos no se borran (409).
+10. **Todo el stock pasa por `PKG_STOCK`**, con `FOR UPDATE` sobre la fila. Vender resta y **no se vende sin existencia** (409); comprar suma; borrar cualquiera de las dos revierte. `db/stock.sql` se ejecuta **antes** que ventas y compras. Y sigue vigente: una venta con cobros o una compra con pagos no se borran (409).
 11. **Mirá la salida al ejecutar en APEX.** Cada archivo termina con un bloque que consulta `USER_OBJECTS`/`USER_ERRORS`. Un paquete `INVALID` da un 500 mudo: el `WHEN OTHERS` no captura errores de compilación.
 12. **El techo de 4000 bytes pega en tres lugares** (agregado anidado, CLOB final, bind de ORDS). Si desanidaste y paginaste y sigue el 500, bajá el tamaño de página — no busques más en el SQL.
 13. **Filtrar por empresa incluye las subconsultas**, no sólo el `WHERE` principal. Y **`idEmpresa` se exige con un 400 — nunca vale "todas"**: un `WHERE l_empresa IS NULL OR ID_EMPRESA = l_empresa` convierte un olvido del cliente en una fuga silenciosa, porque la pantalla no muestra un error sino filas de más. Una tabla **sin** `ID_EMPRESA` (cruces como `ARTICULOS_UBICACIONES`, detalles como `DETALLE_MONEDAS`) **no lleva la columna**: se filtra con un JOIN contra el padre que sí la tiene. Y a una `ID_EMPRESA` **copiada** tampoco se le cree: la empresa de una marcación es la del profesor (`UNIQUE (NUMERO_CI)` global ⇒ un profesor, una empresa), y nada en el DDL obliga a que la columna coincida — se filtra por `p.ID_EMPRESA`. `npm run lint` chequea las dos formas del error — el filtro opcional en `db/` y la `queryKey` sin empresa en el frontend.
