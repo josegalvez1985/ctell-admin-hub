@@ -38,6 +38,12 @@ Si buscás cómo agregar una tabla o una pantalla nueva, eso está en
 >
 > **Si cambia una regla del sistema, hay que actualizar los tres.** El HTML
 > público es un resumen, así que sólo cambia si lo afectado está ahí.
+>
+> **El asistente con IA lee este mismo archivo** (`src/lib/asistente.ts`, desde
+> "Primeros pasos" hasta antes del anexo), así que lo que se documente acá lo
+> sabe con el deploy. Por eso, fuera del anexo, **ni nombres de tablas ni de
+> archivos**: el asistente tiene prohibido contarlos, y tenerlos a mano sólo le
+> complica cumplirlo.
 
 > **El menú de cada persona depende de sus permisos.** Este manual describe
 > todas las pantallas; puede que un usuario no vea algunas.

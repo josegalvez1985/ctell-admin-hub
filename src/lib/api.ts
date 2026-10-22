@@ -5082,4 +5082,27 @@ export const api = {
         method: "DELETE",
       }),
   },
+
+  /**
+   * El asistente con IA (`db/asistente.sql`). La conversación y el manual los
+   * arma `lib/asistente.ts`; esto es sólo el pedido.
+   *
+   * El usuario no viaja: el backend lo deriva del token. La respuesta no trae
+   * el SQL que corrió la IA —queda en `IA_CONSULTAS`—, y el backend le borra
+   * cualquier nombre de tabla o columna antes de devolverla.
+   */
+  asistente: {
+    preguntar: (datos: {
+      pregunta: string;
+      historial: { rol: "usuario" | "asistente"; texto: string }[];
+      manual: string;
+      pantalla: string;
+      idEmpresa: number;
+      idSucursal: number | null;
+    }) =>
+      request<{ respuesta: string; usadasHoy: number; limite: number }>("/asistente/preguntar", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+  },
 };

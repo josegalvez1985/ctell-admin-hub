@@ -30,6 +30,8 @@ ctell-admin-hub/
 │   ├── facturas-compras-pagos.sql  PKG_FACTURAS_COMPRAS_PAGOS: pagos a proveedores
 │   ├── dashboard.sql         PKG_DASHBOARD: los indicadores de la home
 │   ├── stock.sql             PKG_STOCK: el único que mueve EXISTENCIAS (interno, sin ORDS)
+│   ├── asistente-ddl.sql     IA_CONFIG, IA_CONSULTAS, V_IA_USUARIOS (se corre una vez)
+│   ├── asistente.sql         PKG_ASISTENTE: el chat con IA (llama a la API de Claude)
 │   └── [table].sql           Cada tabla nueva va aquí
 ├── src/
 │   ├── routes/               Rutas por archivo (TanStack Router)
@@ -42,6 +44,8 @@ ctell-admin-hub/
 │   │   ├── ctell/            Componentes propios del proyecto
 │   │   │   ├── AppLayout.tsx
 │   │   │   ├── AccesosRapidos.tsx   Botonera de la home, ordenada por uso
+│   │   ├── Asistente.tsx        Botón flotante y chat con IA (lo monta AppLayout)
+│   │   ├── Markdown.tsx         Renderer de las respuestas, sin HTML crudo
 │   │   │   ├── InputMoneda.tsx      Campo de monto con separador en vivo
 │   │   │   ├── UsuariosDialog.tsx
 │   │   │   ├── ThemeToggle.tsx
@@ -266,6 +270,18 @@ De los indicadores de stock, **sólo el valor sigue en cero**: unidades en depó
 Un endpoint propio y no sumar en el frontend porque los listados están paginados: sumarlos en el cliente daría el total de la página, no del mes.
 
 **"Últimos movimientos" une ventas, compras e inventarios** con `UNION ALL`, ocho de cada uno. El monto de un inventario es la **diferencia** del conteo y viaja con `enUnidades: 'S'`, porque son unidades y no guaraníes. Contra qué se resta **depende del estado**: un conteo `ABIERTO` va contra `EXISTENCIAS` en vivo —`CANTIDAD_SISTEMA` es `NULL` hasta el cierre, y restar 0 mostraría lo contado como si fuera la diferencia— y uno `CERRADO` contra `CANTIDAD_SISTEMA`, que el trigger congeló. Es el mismo criterio que `sistemaDe()` en `_auth.inventarios.tsx`: **si cambia uno, cambia el otro**.
+
+#### Asistente con IA — `/asistente/preguntar`
+
+`POST` con token. Body `{ pregunta, historial, manual, pantalla, idEmpresa, idSucursal }` → `{ respuesta, usadasHoy, limite }`. Un chat en un botón flotante de `AppLayout`, para todo el que tenga sesión: explica cómo se usa el sistema (con `docs/MANUAL-DE-USO.md`, que manda el sitio) y responde sobre los datos corriendo `SELECT`s de solo lectura. La IA corre **en Oracle**: `PKG_ASISTENTE` llama a la API de Claude con `APEX_WEB_SERVICE`, y la clave vive en `IA_CONFIG`, nunca en el repo ni en el navegador.
+
+- **Orden:** `auth.sql` → `asistente-ddl.sql` (una vez) → `asistente.sql`. Después, a mano: `PKG_ASISTENTE.FIJAR_CLAVE('sk-ant-…')` y `PKG_ASISTENTE.PROBAR`. Sin clave, 503.
+- **La estructura de la base es secreta para el usuario.** Ninguna respuesta nombra tablas, columnas, paquetes ni muestra SQL, aunque se lo pidan. Son tres capas: las instrucciones lo prohíben, `OCULTAR_ESTRUCTURA` reemplaza en la respuesta todo identificador del esquema con guión bajo, y los errores que ve el usuario son genéricos. El detalle técnico y el SQL que corrió quedan **sólo** en `IA_CONSULTAS`.
+- **Privadas:** `IA_*`, `TOKENS` y `USUARIOS` (hash y sal) no se describen ni se pueden consultar; los usuarios se leen por `V_IA_USUARIOS`. Una tabla nueva con secretos va en `ES_PRIVADA`.
+- **La empresa se filtra por instrucción, no por garantía.** `idEmpresa` es obligatorio (400) y viaja al contexto con la sucursal y las reglas de filtrado del proyecto. Si cambia una de esas reglas (como "la empresa de una marcación es la del profesor"), va también en `INSTRUCCIONES`.
+- **Rompe dos convenciones a propósito:** lee el body crudo con **`:body_text`** (un CLOB, no el BLOB `:body`), porque `historial` es un array y `manual` pasa los 32K; y responde con **`HTP`** en vez de `:resultado`, porque una respuesta con una tabla pasa los 4000 bytes del parámetro.
+- **El manual es `MANUAL-DE-USO.md` desde "Primeros pasos" hasta el anexo**, importado con `?raw` en un chunk aparte. Documentar una pantalla ahí alcanza para que el asistente la conozca con el deploy.
+- **Gasto:** 30 preguntas por usuario y por día (`LIMITE_DIARIO`). La clave es la misma de ethos, y el tope de la organización es compartido. La consulta del costo por mes está en el encabezado de `asistente.sql`.
 
 ### Los totales no se guardan: se calculan
 

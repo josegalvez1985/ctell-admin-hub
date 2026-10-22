@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
+import { Asistente } from "@/components/ctell/Asistente";
 import { Logo } from "@/components/ctell/Logo";
 import { MenuDinamico, MenuDinamicoIconos } from "@/components/ctell/MenuDinamico";
 import { ThemeToggle } from "@/components/ctell/ThemeToggle";
@@ -22,6 +23,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { api, getUsuarioSesion } from "@/lib/api";
+import { useAsistente } from "@/lib/asistente";
 import { cn } from "@/lib/utils";
 
 const COLLAPSE_KEY = "ctell-sidebar-collapsed";
@@ -59,6 +61,7 @@ export function AppLayout({
   const [collapsed, setCollapsed] = useState(false);
   const [saliendo, setSaliendo] = useState(false);
   const [menuAbierto, setMenuAbierto] = useState(false);
+  const { abierto: asistenteAbierto } = useAsistente();
 
   // La preferencia se lee tras montar para no romper la hidratación SSR.
   useEffect(() => {
@@ -179,7 +182,15 @@ export function AppLayout({
         </div>
       </aside>
 
-      <div className={cn("transition-[padding] duration-200", collapsed ? "lg:pl-20" : "lg:pl-64")}>
+      {/* Con el asistente abierto en la computadora, el contenido se corre en
+          vez de quedar tapado: se pregunta por la pantalla mirándola. */}
+      <div
+        className={cn(
+          "transition-[padding] duration-200",
+          collapsed ? "lg:pl-20" : "lg:pl-64",
+          asistenteAbierto && "lg:pr-[420px]",
+        )}
+      >
         <header className="sticky top-0 z-20 border-b border-border bg-card/85 backdrop-blur-md">
           <div className="flex h-16 items-center gap-3 px-4 sm:px-6">
             <div className="lg:hidden">
@@ -352,6 +363,13 @@ export function AppLayout({
           </div>
         </>
       )}
+
+      {/* El Dashboard no pasa `title`, pero su `active` es el nombre y no una
+          ruta como en las demás. */}
+      <Asistente
+        pantalla={title ?? (active?.startsWith("/") ? undefined : active)}
+        ocultarBoton={menuAbierto}
+      />
     </div>
   );
 }
