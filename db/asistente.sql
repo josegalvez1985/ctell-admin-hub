@@ -412,7 +412,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ASISTENTE AS
   FUNCTION ES_PRIVADA (p_nombre IN VARCHAR2) RETURN BOOLEAN IS
   BEGIN
     RETURN p_nombre LIKE 'IA\_%' ESCAPE '\'
-        OR p_nombre IN ('TOKENS', 'USUARIOS');
+        OR p_nombre IN ('TOKENS', 'USUARIOS', 'CLOUDINARY_CONFIG');
   END ES_PRIVADA;
 
   -- Un nombre que no puede llegar al usuario. Sólo los que tienen guión bajo:

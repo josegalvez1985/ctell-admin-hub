@@ -1355,6 +1355,13 @@ El `COUNT` no es adorno: sin él, la segunda ejecución del archivo muere con
 
 ### La otra opción: guardar la URL en vez del binario
 
+> **`ARTICULOS.IMAGEN` ya migró a este camino** (`IMAGEN_URL`,
+> `PUT /articulos/imagen-url/:id`) porque los BLOB llenaron la cuota de 25 MB del
+> esquema (`ORA-01536`). Los ejemplos de arriba con `IMAGEN`/`IMAGEN_MIME`
+> describen el mecanismo, que sigue vigente en logo, foto de profesor,
+> denominaciones y manuales — no el estado actual de artículos. Para una tabla
+> nueva con imágenes, **empezá por la URL**.
+
 Todo lo anterior asume que el archivo vive en la base. `REPORTES_MULTIMEDIA` es
 el primer caso donde **no**: el navegador sube directo a Cloudinary y en Oracle
 queda `URL_ARCHIVO`. Conviene cuando los archivos son muchos, pesados o hay que
@@ -1363,11 +1370,14 @@ nunca atraviesa ORDS y las miniaturas salen de transformar la dirección.
 
 Lo que cambia, y hay que aceptarlo entero:
 
-- **Borrar la fila no borra el archivo.** Hacerlo exigiría la credencial secreta
-  del proveedor, y en un frontend estático no hay dónde guardarla: cualquier
-  cosa que entre al bundle se puede leer. El binario queda huérfano, y limpiarlo
-  es una tarea manual contra la consola del proveedor. Si eso no es aceptable
-  para el caso, el archivo va a la base.
+- **El archivo lo borra Oracle, no el navegador.** Hacerlo exige la credencial
+  secreta del proveedor, y en un frontend estático no hay dónde guardarla:
+  cualquier cosa que entre al bundle se puede leer. Va en `CLOUDINARY_CONFIG`
+  y la usa `PKG_CLOUDINARY.BORRAR(url)` (`db/cloudinary.sql`). Llamalo
+  **después del `COMMIT`**, con la URL tomada por `RETURNING` o leída antes
+  con `FOR UPDATE`: es _best effort_ y nunca lanza, así que un Cloudinary caído
+  deja un archivo huérfano pero no traba la baja. El paquete que lo llame tiene
+  que ejecutarse después de `cloudinary.sql`.
 - **La URL es dato de entrada.** Termina en un `<a href>` y un `<img src>`, así
   que el paquete valida que empiece con `https://`. Sin esa comprobación, un
   POST con `javascript:…` deja guardado un enlace que ejecuta script en el

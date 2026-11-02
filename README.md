@@ -34,7 +34,9 @@ Vite imprime la URL local al arrancar (normalmente `http://localhost:5173`).
 ### Variables de entorno
 
 Ninguna es obligatoria: la app arranca sin `.env`. Las únicas que existen hoy son
-las de Cloudinary, para subir las evidencias de `/reportes-actividades`. Se
+las de Cloudinary, para subir las evidencias de `/reportes-actividades` y las
+fotos de `/articulos` (éstas van siempre a la carpeta `articulos`; sin las
+variables, el botón de subir foto no aparece). Se
 copian de [.env.example](.env.example) a `.env.local` (que `.gitignore` excluye
 por `*.local`):
 
@@ -131,8 +133,11 @@ db/                      Backend: un archivo SQL por tabla
 │                        (UNIQUE sobre ID_ASISTENCIA): profesor, institución y
 │                        fecha se DERIVAN de ella, no se mandan
 ├── reportes-multimedia.sql   Fotos y videos del reporte. Guarda la URL de
-│                        Cloudinary, NO el binario: borrar la fila no borra el
-│                        archivo
+│                        Cloudinary, NO el binario; borrar la fila borra el
+│                        archivo (con PKG_CLOUDINARY)
+├── cloudinary-ddl.sql   CLOUDINARY_CONFIG: la cuenta y la api_secret (una vez)
+├── cloudinary.sql       PKG_CLOUDINARY: borra archivos de Cloudinary (interno,
+│                        sin ORDS). Lo llaman artículos y reportes
 ├── justificaciones-ausencia.sql  Ausencias que justifican los profesores. La
 │                        tabla la escriben DOS programas: la app del profesor la
 │                        crea, el hub sólo la resuelve (estado, suplente,
@@ -546,16 +551,17 @@ sale con la ubicación en `null`.
 
 ### Imágenes (BLOB)
 
-`EMPRESAS.LOGO`, `ARTICULOS.IMAGEN` y `DETALLE_MONEDAS.FOTO` son BLOB y **no
-viajan en el JSON** — un binario no entra en un `JSON_OBJECT`. Cada uno tiene dos
-endpoints propios:
+`EMPRESAS.LOGO` y `DETALLE_MONEDAS.FOTO` son BLOB y **no viajan en el JSON** —
+un binario no entra en un `JSON_OBJECT`. Cada uno tiene dos endpoints propios.
+La foto de un artículo **ya no**: va a Cloudinary (ver más abajo), y de su BLOB
+queda sólo el `GET`, para las imágenes cargadas antes del cambio:
 
 | Método | Ruta                        | Auth  | Qué hace                   |
 | ------ | --------------------------- | ----- | -------------------------- |
 | `GET`  | `/empresas/logo/:id`        | —     | Devuelve la imagen cruda   |
 | `PUT`  | `/empresas/logo/:id`        | token | Guarda el binario del body |
-| `GET`  | `/articulos/imagen/:id`     | —     | Devuelve la imagen cruda   |
-| `PUT`  | `/articulos/imagen/:id`     | token | Guarda el binario del body |
+| `GET`  | `/articulos/imagen/:id`     | —     | Sólo las imágenes viejas   |
+| `PUT`  | `/articulos/imagen-url/:id` | token | Guarda la URL (Cloudinary) |
 | `GET`  | `/detalle-monedas/foto/:id` | —     | Devuelve la imagen cruda   |
 | `PUT`  | `/detalle-monedas/foto/:id` | token | Guarda el binario del body |
 
@@ -586,7 +592,19 @@ DDL: los archivos las agregan en un paso 0 idempotente, que consulta
 
 `MANUALES.ARCHIVO_PDF` sigue el mismo patrón con un PDF en vez de una imagen.
 
-#### La excepción: `REPORTES_MULTIMEDIA` guarda la URL, no el archivo
+#### La excepción: `REPORTES_MULTIMEDIA` y `ARTICULOS` guardan la URL, no el archivo
+
+**La foto de un artículo también va a Cloudinary** (carpeta `articulos`, recortada cuadrada), por la
+cuota: el esquema tiene 25 MB compartidos con otro proyecto y los BLOB lo
+llenaron — todo `INSERT` fallaba con `ORA-01536`. El navegador la achica a
+800 px, la sube y guarda la URL en `ARTICULOS.IMAGEN_URL` con
+`PUT /articulos/imagen-url/:id` (`{ idEmpresa, imagenUrl }`). Ese `PUT` **vacía
+el BLOB viejo** del artículo, así que migrar es volver a subir cada foto desde
+la ficha. El listado devuelve `imagenUrl` y `tieneImagen` (true con cualquiera de
+las dos); sin URL y con `tieneImagen`, `<ImagenArticulo>` cae al `GET` viejo. El
+`PUT` del binario **se retiró**: mientras existiera, un cliente viejo podía
+volver a llenar la base. Vaciar BLOB no devuelve cuota por sí solo: el `SHRINK`
+está al pie de `db/articulos.sql`.
 
 Las fotos y videos de un reporte de actividades **no van a la base**: el
 navegador los sube directo a Cloudinary y la fila guarda `URL_ARCHIVO`. Un video
@@ -594,9 +612,17 @@ de 80 MB no atraviesa ORDS y las miniaturas salen de transformar la dirección.
 
 Lo que hay que tener presente:
 
-- **Borrar la fila no borra el archivo.** Hacerlo exigiría la `api_secret`, que
-  no puede vivir en un frontend estático. El binario queda huérfano en
-  Cloudinary y limpiarlo es una tarea manual.
+- **Borrar la fila borra el archivo**, pero lo hace **Oracle**, no el navegador:
+  firmar el borrado exige la `api_secret`, que no puede vivir en un frontend
+  estático. `PKG_CLOUDINARY` (`db/cloudinary.sql`) la lee de
+  `CLOUDINARY_CONFIG` —cargada a mano con `FIJAR_CREDENCIALES`, nunca en el
+  repo— y llama a `/destroy` con `APEX_WEB_SERVICE`. Va **después del
+  `COMMIT`** y es _best effort_: si Cloudinary falla, la fila igual se borró y
+  el archivo queda huérfano (lo que pasaba siempre); al revés quedaría una fila
+  apuntando a una foto inexistente. Sólo toca URLs de la propia cuenta. Lo usan
+  borrar una evidencia, borrar un reporte, y reemplazar, quitar o eliminar la
+  foto de un artículo. **La app del profesor no**: su propio
+  `ELIMINAR_MULTIMEDIA` sigue dejando el archivo.
 - **La URL se valida contra `https://`.** Es dato de entrada y termina en un
   `<a href>` y un `<img src>`: sin esa comprobación, un POST con `javascript:…`
   deja guardado un enlace que ejecuta script al abrir la galería.
@@ -977,6 +1003,13 @@ archivo se ejecute después.
    **`FACTURAS_COMPRAS_CAB` antes que `condiciones-pago.sql`**: los dos paquetes
    cuentan cuántas facturas usan cada fila para poder explicar por qué no se
    puede borrar. Es sólo el DDL de esas tablas, no el paquete.
+6. **`cloudinary-ddl.sql` → `cloudinary.sql` antes que `articulos.sql`,
+   `reportes-multimedia.sql` y `reportes-actividades.sql`**: los tres llaman a
+   `PKG_CLOUDINARY.BORRAR`, y sin él compilan `INVALID`. Después, a mano:
+   `PKG_CLOUDINARY.FIJAR_CREDENCIALES('cayve9bx', '<api_key>', '<api_secret>')`
+   y `PKG_CLOUDINARY.PROBAR`. Sin credenciales nada falla: los archivos quedan
+   en Cloudinary como antes. Y reejecutar `asistente.sql`, que suma
+   `CLOUDINARY_CONFIG` a sus tablas privadas.
 
 ```
 1.  db/auth.sql                  13. db/monedas.sql

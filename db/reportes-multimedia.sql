@@ -9,7 +9,8 @@
 --   3. ACTUALIZAR  PUT    /reportes-multimedia/actualizar/:id
 --   4. ELIMINAR    DELETE /reportes-multimedia/eliminar/:id/:idEmpresa
 --
--- REQUIERE db/auth.sql y db/reportes-actividades.sql ejecutados antes.
+-- REQUIERE db/auth.sql, db/cloudinary.sql y db/reportes-actividades.sql
+-- ejecutados antes.
 --
 -- Base de los endpoints: https://oracleapex.com/ords/ctell/reportes-multimedia/
 --
@@ -30,10 +31,11 @@
 -- dos veces, y las miniaturas las genera Cloudinary transformando la URL. Lo
 -- que cuesta, y hay que tenerlo presente:
 --
---   · BORRAR LA FILA NO BORRA EL ARCHIVO. Este paquete no habla con Cloudinary
---     —hacerlo necesitaria la api_secret, que no puede vivir en un frontend
---     estatico—. El binario queda alla, huerfano. Limpiarlos es una tarea
---     aparte contra la consola de Cloudinary.
+--   · BORRAR LA FILA BORRA EL ARCHIVO, con PKG_CLOUDINARY.BORRAR despues del
+--     COMMIT. Lo hace Oracle y no el navegador porque necesita la api_secret,
+--     que no puede vivir en un frontend estatico. Es best effort: si Cloudinary
+--     no responde la fila se borra igual y el binario queda huerfano. Una URL
+--     que no es de la cuenta (pegada a mano) no se toca. Ver db/cloudinary.sql.
 --
 --   · LA URL ES DATO DE ENTRADA, NO ALGO QUE ESTE PAQUETE FABRIQUE. Y la
 --     pantalla la mete en un <a href> y en un <img src>. Por eso se valida que
@@ -124,7 +126,7 @@ CREATE OR REPLACE PACKAGE PKG_REPORTES_MULTIMEDIA AS
     p_resultado         OUT CLOB
   );
 
-  -- Baja fisica de la fila. El archivo sigue en Cloudinary (ver cabecera).
+  -- Baja fisica de la fila y de su archivo en Cloudinary (ver cabecera).
   PROCEDURE ELIMINAR (
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
@@ -505,6 +507,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_REPORTES_MULTIMEDIA AS
     l_sesion  NUMBER;
     l_id      NUMBER;
     l_empresa NUMBER;
+    l_url     REPORTES_MULTIMEDIA.URL_ARCHIVO%TYPE;
   BEGIN
     l_sesion := SESION(p_authorization);
     IF l_sesion IS NULL THEN
@@ -527,7 +530,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_REPORTES_MULTIMEDIA AS
        AND EXISTS (SELECT 1
                      FROM REPORTES_ACTIVIDADES r
                     WHERE r.ID_REPORTE = m.ID_REPORTE
-                      AND r.ID_EMPRESA = l_empresa);
+                      AND r.ID_EMPRESA = l_empresa)
+    RETURNING m.URL_ARCHIVO INTO l_url;
 
     IF SQL%ROWCOUNT = 0 THEN
       ROLLBACK;
@@ -537,6 +541,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_REPORTES_MULTIMEDIA AS
     END IF;
 
     COMMIT;
+    -- Despues del COMMIT y nunca antes: ver el encabezado de db/cloudinary.sql.
+    PKG_CLOUDINARY.BORRAR(l_url);
+
     p_status_code := 200;
     p_resultado   := '{"ok":true}';
 

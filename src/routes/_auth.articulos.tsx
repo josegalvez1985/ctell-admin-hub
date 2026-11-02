@@ -1,7 +1,18 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { createFileRoute } from "@tanstack/react-router";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Barcode, ImageUp, Loader2, MapPin, Pencil, Plus, Search, Trash2, X } from "lucide-react";
+import {
+  Barcode,
+  Camera,
+  ImageUp,
+  Loader2,
+  MapPin,
+  Pencil,
+  Plus,
+  Search,
+  Trash2,
+  X,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
@@ -16,6 +27,8 @@ import { CodigosEquivalentesDialog } from "@/components/ctell/CodigosEquivalente
 import { ImagenArticulo } from "@/components/ctell/ImagenArticulo";
 import { SIN_FILTRO, TableHeadFiltrable } from "@/components/ctell/TableHeadFiltrable";
 import { TableHeadOrdenable } from "@/components/ctell/TableHeadOrdenable";
+import { subidaDirectaDisponible, subirACloudinary } from "@/lib/cloudinary";
+import { optimizarImagen } from "@/lib/imagen";
 // El helper entra con alias: `esGasto` a secas chocaría con el campo del
 // formulario y con la variable de cada fila, que se llaman igual que la columna.
 import {
@@ -110,8 +123,15 @@ type FormValues = z.infer<typeof schema>;
 const MENSAJE_ERROR = (error: unknown, fallback: string) =>
   error instanceof ApiError ? error.message : fallback;
 
-/** Tamaño máximo de la imagen. El BLOB viaja entero en cada petición. */
-const IMAGEN_MAX_BYTES = 1024 * 1024;
+/**
+ * Tamaño máximo del archivo ELEGIDO. No es lo que se sube: antes se achica a
+ * 800px (`optimizarImagen`). Es sólo un techo para no decodificar en el
+ * navegador algo que no es una foto razonable.
+ */
+const IMAGEN_MAX_BYTES = 20 * 1024 * 1024;
+
+/** Carpeta de Cloudinary de las fotos de artículos (las evidencias van aparte). */
+const CARPETA_IMAGENES = "articulos";
 
 /**
  * Cuántas filas trae cada página, y cuántas suma cada "Mostrar más".
@@ -507,7 +527,15 @@ function ArticulosPage() {
               return (
                 <li key={articulo.id} className="surface-card p-4">
                   <div className="flex items-start gap-3">
-                    <ImagenArticulo id={articulo.id} tieneImagen={articulo.tieneImagen} />
+                    <ImagenArticulo
+                      id={articulo.id}
+                      imagenUrl={articulo.imagenUrl}
+                      tieneImagen={articulo.tieneImagen}
+                      ampliar={{
+                        titulo: articulo.nombreArticulo,
+                        subtitulo: articulo.codigoArticulo,
+                      }}
+                    />
                     <div className="min-w-0 flex-1">
                       <p className="truncate font-semibold text-foreground">
                         {articulo.nombreArticulo}
@@ -649,7 +677,15 @@ function ArticulosPage() {
                   return (
                     <TableRow key={articulo.id}>
                       <TableCell>
-                        <ImagenArticulo id={articulo.id} tieneImagen={articulo.tieneImagen} />
+                        <ImagenArticulo
+                          id={articulo.id}
+                          imagenUrl={articulo.imagenUrl}
+                          tieneImagen={articulo.tieneImagen}
+                          ampliar={{
+                            titulo: articulo.nombreArticulo,
+                            subtitulo: articulo.codigoArticulo,
+                          }}
+                        />
                       </TableCell>
                       <TableCell className="font-medium text-foreground">
                         <span className="flex items-center gap-2">
@@ -795,7 +831,11 @@ function ArticulosPage() {
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>¿Eliminar {aEliminar?.nombreArticulo}?</AlertDialogTitle>
-              <AlertDialogDescription>Esta acción no se puede deshacer.</AlertDialogDescription>
+              <AlertDialogDescription>
+                {aEliminar?.tieneImagen
+                  ? "Se borra también su foto. Esta acción no se puede deshacer."
+                  : "Esta acción no se puede deshacer."}
+              </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel>Cancelar</AlertDialogCancel>
@@ -827,32 +867,92 @@ function ArticulosPage() {
 /**
  * Carga de la imagen de un artículo.
  *
- * Va por su propio endpoint (`PUT /articulos/imagen/:id`) y no por el
- * formulario: el binario no entra en el JSON del CRUD. Por eso se sube al
- * elegir el archivo en vez de esperar al submit — son dos peticiones distintas,
- * y encadenarlas haría que un error al guardar el artículo perdiera también la
- * imagen.
+ * **La foto va a Cloudinary, no a la base.** El navegador la recorta cuadrada,
+ * la achica, la sube directo y recién después guarda la URL
+ * (`PUT /articulos/imagen-url/:id`). El esquema de Oracle tiene 25 MB
+ * compartidos y los BLOB ya lo llenaron una vez.
+ *
+ * **Cuadrada** porque así se muestra en todos lados —la miniatura de la tabla,
+ * la ficha— y recortarla al subir hace que lo que se ve en el modal sea lo
+ * mismo que en la fila, en vez de descubrir ahí la mitad que el recorte
+ * escondía.
+ *
+ * **Reemplazarla o quitarla borra la anterior de Cloudinary**, y lo hace el
+ * backend (`PKG_CLOUDINARY`): firmar el borrado necesita la `api_secret`, que no
+ * puede estar en el bundle.
+ *
+ * Se sube al elegir el archivo en vez de esperar al submit — son peticiones
+ * distintas, y encadenarlas haría que un error al guardar el artículo perdiera
+ * también la imagen. Si la subida anda y el guardado de la URL falla, el
+ * archivo queda huérfano en Cloudinary: es preferible a guardar una URL que
+ * todavía no existe.
+ *
+ * **Dos entradas de archivo, no una.** La de la cámara lleva `capture`, que en
+ * el celular abre la cámara directo en vez del selector; en la computadora se
+ * ignora y abriría el mismo selector que la otra, así que su botón sólo se
+ * ofrece en pantallas táctiles.
  *
  * Solo aparece en edición: sin id todavía no hay a qué artículo asociarla.
  */
-function CargarImagen({ articulo }: { articulo: Articulo }) {
+function CargarImagen({ articulo, idEmpresa }: { articulo: Articulo; idEmpresa: number }) {
   const queryClient = useQueryClient();
-  const inputRef = useRef<HTMLInputElement>(null);
+  const galeriaRef = useRef<HTMLInputElement>(null);
+  const camaraRef = useRef<HTMLInputElement>(null);
+  const [confirmarQuitar, setConfirmarQuitar] = useState(false);
 
-  // Fuerza al <img> a repetir la petición tras subir: la URL es la misma, así
-  // que sin remontar el componente el navegador sirve la imagen cacheada y
-  // parecería que la subida no hizo nada.
-  const [version, setVersion] = useState(0);
+  // `pointer: coarse` = el dedo es el puntero: celular o tableta. Es lo que
+  // importa acá, no el ancho de la pantalla.
+  const [esTactil] = useState(
+    () => typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches,
+  );
+
+  // Lo último que se hizo acá, para mostrarlo sin esperar al refetch del
+  // listado: `{ url }` tras subir, `{ url: null }` tras quitar. Cada subida
+  // tiene su propio public_id, así que no hay caché vieja que esquivar.
+  const [local, setLocal] = useState<{ url: string | null } | null>(null);
+  const imagenUrl = local ? local.url : articulo.imagenUrl;
+  const tieneImagen = local ? local.url !== null : articulo.tieneImagen;
 
   const subir = useMutation({
-    mutationFn: (archivo: File) => api.articulos.subirImagen(articulo.id, archivo),
-    onSuccess: () => {
+    mutationFn: async (archivo: File) => {
+      // 800px alcanzan para una foto de producto, y la tabla igual pide la
+      // miniatura: subir los 4000px de la cámara es pagar ancho de banda y
+      // almacenamiento por píxeles que nadie mira. Una foto de celular de 4 MB
+      // queda en 100-200 KB.
+      const optimizada = await optimizarImagen(archivo, {
+        maxLado: 800,
+        maxBytes: 300 * 1024,
+        cuadrada: true,
+      });
+      const { url } = await subirACloudinary(optimizada, {
+        carpeta: CARPETA_IMAGENES,
+        // El código identifica el artículo en el panel de Cloudinary; el
+        // nombre del archivo (`IMG_0001`) no dice nada.
+        prefijo: articulo.codigoArticulo || articulo.nombreArticulo,
+      });
+      await api.articulos.guardarImagen(articulo.id, { idEmpresa, imagenUrl: url });
+      return url;
+    },
+    onSuccess: (url) => {
       queryClient.invalidateQueries({ queryKey: ["articulos"] });
-      setVersion((v) => v + 1);
+      setLocal({ url });
       toast.success("Imagen actualizada");
     },
-    onError: (e) => toast.error(MENSAJE_ERROR(e, "No se pudo subir la imagen")),
+    onError: (e) => toast.error(e instanceof Error ? e.message : "No se pudo subir la imagen"),
   });
+
+  const quitar = useMutation({
+    mutationFn: () => api.articulos.quitarImagen(articulo.id, idEmpresa),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["articulos"] });
+      setLocal({ url: null });
+      setConfirmarQuitar(false);
+      toast.success("Imagen quitada");
+    },
+    onError: (e) => toast.error(MENSAJE_ERROR(e, "No se pudo quitar la imagen")),
+  });
+
+  const ocupado = subir.isPending || quitar.isPending;
 
   function alElegir(event: React.ChangeEvent<HTMLInputElement>) {
     const archivo = event.target.files?.[0];
@@ -866,7 +966,7 @@ function CargarImagen({ articulo }: { articulo: Articulo }) {
       return;
     }
     if (archivo.size > IMAGEN_MAX_BYTES) {
-      toast.error("La imagen no puede pesar más de 1 MB.");
+      toast.error("La imagen no puede pesar más de 20 MB.");
       return;
     }
 
@@ -874,38 +974,114 @@ function CargarImagen({ articulo }: { articulo: Articulo }) {
   }
 
   return (
-    <div className="flex items-center gap-3 rounded-lg border border-border p-3">
-      <ImagenArticulo
-        key={version}
-        id={articulo.id}
-        tieneImagen={articulo.tieneImagen || version > 0}
-        className="size-14"
-      />
-      <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium text-foreground">Imagen</p>
-        <p className="text-xs text-muted-foreground">PNG o JPG, hasta 1 MB.</p>
+    <div className="flex shrink-0 flex-col items-center gap-2 rounded-lg border border-border p-3 sm:w-40">
+      <div className="relative">
+        <ImagenArticulo
+          id={articulo.id}
+          imagenUrl={imagenUrl}
+          tieneImagen={tieneImagen}
+          lado={320}
+          ampliar={{ titulo: articulo.nombreArticulo, subtitulo: articulo.codigoArticulo }}
+          className="size-28"
+        />
+        {subir.isPending && (
+          <span className="absolute inset-0 flex items-center justify-center rounded-lg bg-background/70">
+            <Loader2 className="size-5 animate-spin text-muted-foreground" />
+          </span>
+        )}
       </div>
+
+      <p className="text-center text-xs text-muted-foreground">
+        {subidaDirectaDisponible
+          ? "Se recorta cuadrada y se achica sola."
+          : "La subida de imágenes no está configurada."}
+      </p>
+
       <input
-        ref={inputRef}
+        ref={galeriaRef}
         type="file"
-        accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml"
+        accept="image/png,image/jpeg,image/webp"
         className="hidden"
         onChange={alElegir}
       />
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        disabled={subir.isPending}
-        onClick={() => inputRef.current?.click()}
-      >
-        {subir.isPending ? (
-          <Loader2 className="size-4 animate-spin" />
-        ) : (
-          <ImageUp className="size-4" />
+      <input
+        ref={camaraRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        capture="environment"
+        className="hidden"
+        onChange={alElegir}
+      />
+
+      <div className="flex w-full flex-wrap justify-center gap-1.5 sm:flex-col">
+        {/* Sin cuenta de Cloudinary no hay a dónde subir: los botones no se
+            ofrecen en vez de fallar siempre. */}
+        {subidaDirectaDisponible && esTactil && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={ocupado}
+            onClick={() => camaraRef.current?.click()}
+          >
+            <Camera className="size-4" />
+            Sacar foto
+          </Button>
         )}
-        {articulo.tieneImagen || version > 0 ? "Cambiar" : "Subir"}
-      </Button>
+        {subidaDirectaDisponible && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={ocupado}
+            onClick={() => galeriaRef.current?.click()}
+          >
+            <ImageUp className="size-4" />
+            {tieneImagen ? "Cambiar" : "Elegir"}
+          </Button>
+        )}
+        {/* Quitar no depende de Cloudinary: también saca una imagen vieja en BLOB. */}
+        {tieneImagen && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={ocupado}
+            onClick={() => setConfirmarQuitar(true)}
+            className="text-destructive hover:text-destructive"
+          >
+            <Trash2 className="size-4" />
+            Quitar
+          </Button>
+        )}
+      </div>
+
+      <AlertDialog open={confirmarQuitar} onOpenChange={setConfirmarQuitar}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Quitar la imagen</AlertDialogTitle>
+            <AlertDialogDescription>
+              El artículo queda sin foto y el archivo se borra del servidor de imágenes. No se puede
+              deshacer.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={quitar.isPending}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={quitar.isPending}
+              onClick={(e) => {
+                // Sin esto el AlertDialog se cierra antes de saber si anduvo.
+                e.preventDefault();
+                quitar.mutate();
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {quitar.isPending && <Loader2 className="size-4 animate-spin" />}
+              Quitar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -1130,8 +1306,8 @@ function ArticuloFormDialog({
             <section className="space-y-3">
               <h3 className="text-sm font-semibold text-foreground">Identificación</h3>
 
-              <div className={esEdicion ? "flex gap-4" : undefined}>
-                {esEdicion && <CargarImagen articulo={articulo} />}
+              <div className={esEdicion ? "flex flex-col gap-4 sm:flex-row" : undefined}>
+                {esEdicion && <CargarImagen articulo={articulo} idEmpresa={idEmpresa} />}
 
                 <div className="grid flex-1 gap-4 sm:grid-cols-2">
                   <FormField

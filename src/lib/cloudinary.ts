@@ -1,10 +1,12 @@
 /**
- * Subida de evidencias a Cloudinary, desde el navegador.
+ * Subida de archivos a Cloudinary, desde el navegador: las evidencias de
+ * `/reportes-actividades` y las fotos de los artículos.
  *
  * **El archivo NO pasa por ORDS.** Es la diferencia con los otros binarios del
  * proyecto —la foto del profesor, el logo, el PDF de un manual—, que viajan
  * como BLOB a la base: acá el navegador sube directo a Cloudinary y en Oracle
- * queda sólo la URL. Un video de 80 MB no tiene por qué atravesar el backend
+ * queda sólo la URL. El esquema tiene una cuota de 25 MB compartida, y los BLOB
+ * ya la llenaron una vez (`ORA-01536`). Un video de 80 MB no tiene por qué atravesar el backend
  * dos veces, y las miniaturas las genera Cloudinary transformando la dirección.
  *
  * Lo que hay que saber, porque no se ve:
@@ -20,9 +22,9 @@
  *   igual que la URL de ORDS. No son secretos y no hace falta tratarlos como
  *   tales; lo que no puede salir nunca de Cloudinary es la `api_secret`.
  *
- * - **Borrar la fila del reporte no borra el archivo.** Eso necesitaría la
- *   `api_secret`, así que el binario queda en Cloudinary. Limpiarlos es una
- *   tarea aparte contra su consola.
+ * - **Borrar no se hace desde acá.** Necesita la `api_secret`, así que lo hace
+ *   el backend (`PKG_CLOUDINARY` en `db/cloudinary.sql`) cuando se borra la
+ *   fila que referenciaba el archivo.
  */
 
 /** Se leen del entorno para no clavar la cuenta en el código: ver `.env.example`. */
@@ -90,14 +92,25 @@ export function tipoDeArchivo(mime: string): TipoArchivo {
  * nombre original se conserva igual en la fila (`NOMBRE_ARCHIVO`), así que no
  * se pierde nada por no usarlo como identificador.
  */
-function nombrePublico(archivo: File): string {
-  const base = sanear(archivo.name.replace(/\.[^./]+$/, ""), 60);
+function nombrePublico(archivo: File, prefijo?: string): string {
+  const base = sanear(prefijo ?? archivo.name.replace(/\.[^./]+$/, ""), 60);
 
   const sello = Date.now().toString(36);
   const azar = Math.random().toString(36).slice(2, 8);
 
   return `${base || "evidencia"}-${sello}${azar}`;
 }
+
+export type OpcionesSubida = {
+  /** Carpeta de destino. Por defecto la de las evidencias (`VITE_CLOUDINARY_CARPETA`). */
+  carpeta?: string;
+  /**
+   * Con qué empieza el `public_id`, en vez del nombre del archivo. Sirve cuando
+   * el nombre original no dice nada (`IMG_0001`) y hay algo mejor a mano, como
+   * el código del artículo. El sello único se agrega igual.
+   */
+  prefijo?: string;
+};
 
 /**
  * Texto apto para una URL de Cloudinary y para un nombre de archivo.
@@ -128,18 +141,23 @@ export function sanear(texto: string, largo = 120): string {
  * Elegirlo desde acá obligaría a mantener dos listas de MIME —la nuestra y la
  * suya— y un desacuerdo entre ambas termina en un 400 sin explicación.
  */
-export async function subirACloudinary(archivo: File): Promise<ArchivoSubido> {
+export async function subirACloudinary(
+  archivo: File,
+  opciones: OpcionesSubida = {},
+): Promise<ArchivoSubido> {
   if (!subidaDirectaDisponible) {
     throw new Error("La subida directa no está configurada. Pegá la URL del archivo.");
   }
+
+  const carpeta = opciones.carpeta ?? CARPETA;
 
   const datos = new FormData();
   datos.append("file", archivo);
   datos.append("upload_preset", UPLOAD_PRESET);
   // `public_id` es uno de los pocos parámetros que una subida unsigned acepta,
   // y le gana al `use_filename` del preset.
-  datos.append("public_id", nombrePublico(archivo));
-  if (CARPETA) datos.append("folder", CARPETA);
+  datos.append("public_id", nombrePublico(archivo, opciones.prefijo));
+  if (carpeta) datos.append("folder", carpeta);
 
   const respuesta = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/auto/upload`, {
     method: "POST",
@@ -208,6 +226,21 @@ export function miniatura(url: string, tipo: TipoArchivo, lado = 320): string | 
   }
 
   return `${antes}c_fill,w_${lado},h_${lado},q_auto,f_auto/${despues}`;
+}
+
+/**
+ * La misma imagen, entera y sin recortar, con el lado mayor a lo sumo `lado`.
+ *
+ * Para verla en grande: `c_limit` achica sin deformar ni recortar, y nunca
+ * agranda una foto que ya es más chica. Una URL que no es de Cloudinary se
+ * devuelve intacta.
+ */
+export function imagenAjustada(url: string, lado = 1200): string {
+  const marca = "/upload/";
+  const corte = url.indexOf(marca);
+  if (corte === -1) return url;
+
+  return `${url.slice(0, corte + marca.length)}c_limit,w_${lado},h_${lado},q_auto,f_auto/${url.slice(corte + marca.length)}`;
 }
 
 /**

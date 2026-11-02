@@ -14,12 +14,16 @@
 --   2. INSERTAR    POST   /articulos/crear
 --   3. ACTUALIZAR  PUT    /articulos/actualizar/:id
 --   4. ELIMINAR    DELETE /articulos/eliminar/:id/:idEmpresa
---   5. (sin PL/SQL) GET   /articulos/imagen/:id    (SIN TOKEN, media)
---   6. GUARDAR_IMAGEN PUT /articulos/imagen/:id    (con token)
+--   5. (sin PL/SQL) GET   /articulos/imagen/:id    (SIN TOKEN, media; solo
+--                                                   las imagenes VIEJAS en BLOB)
+--   6. GUARDAR_IMAGEN PUT /articulos/imagen-url/:id (con token; guarda la URL
+--                                                   de Cloudinary)
+--   7. QUITAR_IMAGEN DELETE /articulos/imagen-url/:id/:idEmpresa (con token)
 --
 -- Se ejecuta una sola vez en la hoja de trabajo SQL de APEX, conectado con el
 -- esquema del workspace. REQUIERE db/auth.sql EJECUTADO ANTES: usa PKG_AUTH
--- para validar el token.
+-- para validar el token. Y db/cloudinary.sql: reemplazar, quitar la foto o
+-- eliminar el artículo borran el archivo de Cloudinary con PKG_CLOUDINARY.
 --
 -- Base de los endpoints: https://oracleapex.com/ords/ctell/articulos/
 --
@@ -28,7 +32,7 @@
 --              ID_UNIDAD_MEDIDA, CODIGO_ARTICULO, NOMBRE_ARTICULO,
 --              DESCRIPCION, CANTIDAD_MINIMA, ACTIVO,
 --              FECHA_CREACION, FECHA_ACTUALIZACION, IMAGEN,
---              IMAGEN_MIME, FEC_ULTIMO_INVENTARIO, ES_GASTO
+--              IMAGEN_MIME, IMAGEN_URL, FEC_ULTIMO_INVENTARIO, ES_GASTO
 --
 -- LA BUSQUEDA (?busqueda=) MIRA CINCO COSAS: nombre, codigo propio (el OEM),
 -- descripcion, MARCA y CODIGOS EQUIVALENTES. Un repuesto casi nunca se pide por
@@ -129,30 +133,48 @@
 -- artículos de la misma empresa pueden compartir código. El DUP_VAL_ON_INDEX
 -- queda contemplado igual en INSERTAR y ACTUALIZAR por si se agrega uno.
 --
--- IMAGEN (BLOB) NO viaja en el JSON del CRUD —un binario no entra en un
--- JSON_OBJECT— sino por dos endpoints propios, igual que el logo en
--- db/empresas.sql:
+-- LA IMAGEN VIVE EN CLOUDINARY, NO EN LA BASE. El navegador la sube directo
+-- (src/lib/cloudinary.ts) y aca se guarda solo la URL, en IMAGEN_URL — el mismo
+-- camino que las evidencias de db/reportes-multimedia.sql.
 --
---   GET /articulos/imagen/:id  devuelve la imagen cruda con su content-type.
---     Es PÚBLICO: lo consume un <img>, y el navegador no manda el header
---     Authorization al descargar una imagen. Ver la nota de seguridad abajo.
+-- Antes era un BLOB (IMAGEN + IMAGEN_MIME) que subia por un PUT con el binario
+-- crudo. Se abandono porque el esquema tiene una cuota de 25 MB COMPARTIDA con
+-- otro proyecto, y se lleno: todo INSERT de cualquier tabla fallaba con
+-- ORA-01536 -> 500. Una foto de producto de 1 MB por articulo es exactamente lo
+-- que no entra ahi.
 --
---   PUT /articulos/imagen/:id  recibe el binario en el body. Este SÍ pide
---     token: escribir nunca es público.
+--   PUT /articulos/imagen-url/:id  Body { idEmpresa, imagenUrl }. Con token y
+--     aislado por empresa. Guarda la URL Y VACIA EL BLOB VIEJO: un articulo
+--     tiene una sola imagen, y dejar el binario seria pagar cuota por una foto
+--     que ya nadie muestra.
 --
--- OJO CON EL GET PUBLICO: a diferencia del logo de una empresa —material de
--- marca—, la foto de un artículo es dato de negocio. Cualquiera que adivine un
--- id puede verla sin credenciales. Se acepta porque un <img> no puede mandar
--- el token, y porque una foto de producto no revela precios ni stock. Si eso
--- deja de ser aceptable, la salida es servir la imagen con una URL firmada.
+--   GET /articulos/imagen/:id  SIGUE PUBLICADO, solo para las imagenes cargadas
+--     antes del cambio. Desaparece cuando la consulta del pie de este archivo
+--     diga que no queda ningun BLOB. Es PUBLICO porque lo consume un <img>, que
+--     no puede mandar el header Authorization.
 --
--- El listado devuelve `tieneImagen` (true/false) en vez del binario, así el
--- frontend sabe si pedir la imagen o dibujar un marcador, sin traerse los BLOB
--- de todos los artículos.
+-- NO HAY PUT DEL BINARIO: se retiro a proposito. Mientras existiera, la base
+-- podia volver a llenarse con un cliente viejo (una PWA cacheada) subiendo
+-- fotos a Oracle sin que nadie lo notara.
 --
--- CONTENT-TYPE: se guarda junto al BLOB en IMAGEN_MIME. Sin eso habría que
--- adivinar el formato al servirlo, y un PNG servido como image/jpeg no lo
--- renderiza ningún navegador. Ver el ALTER TABLE del paso 0 más abajo.
+-- LA URL SE VALIDA CONTRA https:// (URL_VALIDA). Es dato de entrada y termina en
+-- un <img src>: sin esa comprobacion se guarda un "javascript:..." igual. No se
+-- valida que sea de Cloudinary: ataria el modulo a un proveedor en el peor lugar
+-- posible.
+--
+-- REEMPLAZAR LA FOTO, QUITARLA O BORRAR EL ARTICULO BORRA EL ARCHIVO EN
+-- CLOUDINARY, con PKG_CLOUDINARY.BORRAR despues del COMMIT. Lo hace Oracle
+-- porque necesita la api_secret, que no puede vivir en un frontend estatico.
+-- Es best effort: si Cloudinary falla, la operacion igual queda hecha y el
+-- archivo queda huerfano (ver db/cloudinary.sql).
+--
+-- El listado devuelve `imagenUrl` (o null) y `tieneImagen`, que es true con
+-- CUALQUIERA de las dos: con URL el frontend usa la URL; sin URL y con
+-- tieneImagen, es una imagen vieja y la pide a /articulos/imagen/:id.
+--
+-- OJO CON LO PUBLICO: la URL de Cloudinary, igual que el GET viejo, la ve
+-- cualquiera que la tenga. Se acepta porque una foto de producto no revela
+-- precios ni stock.
 --
 -- PRECIOS Y CANTIDADES llegan como VARCHAR2 y se convierten con TO_NUMBER acá
 -- adentro, igual que los ids: ORDS entrega los binds como texto, y declarar el
@@ -194,6 +216,24 @@ BEGIN
 
   IF l_existe = 0 THEN
     EXECUTE IMMEDIATE 'ALTER TABLE ARTICULOS ADD (IMAGEN_MIME VARCHAR2(100))';
+  END IF;
+END;
+/
+
+-- IMAGEN_URL: la direccion en Cloudinary. Mismo criterio que la de arriba —una
+-- columna nueva y opcional sin la cual el paquete no compila— y el mismo largo
+-- que REPORTES_MULTIMEDIA.URL_ARCHIVO.
+DECLARE
+  l_existe PLS_INTEGER;
+BEGIN
+  SELECT COUNT(*)
+    INTO l_existe
+    FROM USER_TAB_COLUMNS
+   WHERE TABLE_NAME = 'ARTICULOS'
+     AND COLUMN_NAME = 'IMAGEN_URL';
+
+  IF l_existe = 0 THEN
+    EXECUTE IMMEDIATE 'ALTER TABLE ARTICULOS ADD (IMAGEN_URL VARCHAR2(500))';
   END IF;
 END;
 /
@@ -308,13 +348,23 @@ CREATE OR REPLACE PACKAGE PKG_ARTICULOS AS
   -- publica con ORDS.source_type_media, que arma la respuesta binaria desde una
   -- consulta sin pasar por PL/SQL. Ver el detalle en PUBLICAR_ENDPOINTS.
 
-  -- Guarda la imagen. CON token: escribir nunca es público.
-  -- p_imagen llega como el cuerpo crudo del PUT; p_content_type, del header.
+  -- Guarda la URL de la imagen, que el navegador ya subio a Cloudinary, y vacia
+  -- el BLOB viejo si lo habia. CON token: escribir nunca es público.
   PROCEDURE GUARDAR_IMAGEN (
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
-    p_imagen        IN  BLOB,
-    p_content_type  IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
+    p_imagen_url    IN  VARCHAR2,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
+  );
+
+  -- Deja el artículo sin imagen: vacía la URL y el BLOB viejo, y borra el
+  -- archivo de Cloudinary. CON token.
+  PROCEDURE QUITAR_IMAGEN (
+    p_authorization IN  VARCHAR2,
+    p_id            IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   );
@@ -327,6 +377,9 @@ END PKG_ARTICULOS;
 /
 
 CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
+
+  -- El largo de ARTICULOS.IMAGEN_URL (ver el paso 0).
+  C_MAX_URL CONSTANT PLS_INTEGER := 500;
 
   ------------------------------------------------------------------------------
   -- Privado: borra el módulo ORDS si existe, reintentando ante un interbloqueo.
@@ -534,8 +587,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     -- Se devuelven los ids Y los nombres: el formulario necesita los ids para
     -- precargar los combobox, y la tabla los nombres para mostrarlos.
     --
-    -- IMAGEN no se selecciona: es un BLOB y no entra en el JSON. Va
-    -- `tieneImagen` en su lugar.
+    -- IMAGEN no se selecciona: es un BLOB y no entra en el JSON. Van
+    -- `imagenUrl` y `tieneImagen` en su lugar.
     --
     -- El JSON_OBJECT se arma en una subconsulta y el JSON_ARRAYAGG agrega esa
     -- columna, que ya viene tipada como CLOB. Anidado, el resultado intermedio
@@ -665,8 +718,16 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
                  -- Mismo formato ISO que usa db/usuarios.sql.
                  'fechaUltimoInventario' VALUE TO_CHAR(a.FEC_ULTIMO_INVENTARIO,
                                                        'YYYY-MM-DD"T"HH24:MI:SS'),
-                 -- El BLOB no entra en el JSON, pero el frontend necesita saber
-                 -- si pedir /articulos/imagen/:id o dibujar el marcador.
+                 -- La URL de Cloudinary, SOLO si empieza con https://. La valida
+                 -- GUARDAR_IMAGEN, pero la columna se puede escribir por fuera de
+                 -- la app, y termina en un <img src>.
+                 'imagenUrl'            VALUE CASE
+                                                WHEN LOWER(SUBSTR(a.IMAGEN_URL, 1, 8)) = 'https://'
+                                                THEN a.IMAGEN_URL
+                                              END,
+                 -- true con URL o con un BLOB viejo. El frontend usa la URL si
+                 -- vino; si no, la imagen es de antes de Cloudinary y la pide a
+                 -- /articulos/imagen/:id.
                  --
                  -- IS NOT NULL y no DBMS_LOB.GETLENGTH(a.IMAGEN) > 0: GETLENGTH
                  -- es una llamada PL/SQL que ABRE EL BLOB de cada fila para
@@ -680,7 +741,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
                  -- /articulos/imagen/:id filtra los vacios y devuelve 404, y
                  -- <ImagenArticulo> ya cae al marcador ante un error de carga.
                  'tieneImagen'          VALUE CASE
-                                                WHEN a.IMAGEN IS NOT NULL
+                                                WHEN LOWER(SUBSTR(a.IMAGEN_URL, 1, 8)) = 'https://'
+                                                  OR a.IMAGEN IS NOT NULL
                                                 THEN 'true' ELSE 'false'
                                               END FORMAT JSON,
                  -- 'S' gasto, 'N' articulo de stock. El ELSE cubre dos casos con
@@ -1060,6 +1122,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     l_sesion     NUMBER;
     l_id         NUMBER;
     l_id_empresa NUMBER;
+    l_url_imagen ARTICULOS.IMAGEN_URL%TYPE;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -1080,9 +1143,12 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
 
     -- AISLAMIENTO POR EMPRESA: las dos condiciones. Con solo el id, un DELETE
     -- con el id de una fila de otra empresa la borraba.
+    -- RETURNING: la foto se borra de Cloudinary recién después del COMMIT, y
+    -- para entonces la fila ya no está para preguntarle.
     DELETE FROM ARTICULOS
      WHERE ID_ARTICULO = l_id
-       AND ID_EMPRESA = l_id_empresa;
+       AND ID_EMPRESA = l_id_empresa
+    RETURNING IMAGEN_URL INTO l_url_imagen;
 
     IF SQL%ROWCOUNT = 0 THEN
       ROLLBACK;
@@ -1092,6 +1158,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     END IF;
 
     COMMIT;
+    PKG_CLOUDINARY.BORRAR(l_url_imagen);
+
     p_status_code := 200;
     p_resultado := '{"ok":true}';
   EXCEPTION
@@ -1112,24 +1180,33 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
   END ELIMINAR;
 
   ------------------------------------------------------------------------------
-  -- Guarda la imagen de un artículo. CON token: escribir nunca es público.
+  -- Guarda la URL de la imagen de un artículo. CON token: escribir nunca es
+  -- público.
   --
-  -- El binario llega como el cuerpo crudo del PUT (ORDS lo mapea a un BLOB) y
-  -- el formato, del header Content-Type. Se acepta solo image/*: sin ese
-  -- control, cualquier archivo quedaría guardado y después se serviría de
-  -- vuelta con su content-type a quien abra el listado.
+  -- El archivo ya está en Cloudinary: lo subió el navegador antes de llamar
+  -- acá. Este procedimiento solo anota dónde quedó.
+  --
+  -- VACÍA EL BLOB VIEJO en el mismo UPDATE. Así cada foto que se vuelve a subir
+  -- libera su lugar en la base, y migrar es simplemente recargarlas. Ojo: el
+  -- espacio vuelve al segmento, NO a la cuota — para eso hace falta el SHRINK
+  -- que está al pie del archivo.
+  --
+  -- Aislado por empresa como ELIMINAR: con solo el id, un PUT con el id de un
+  -- artículo ajeno le cambiaba la foto.
   ------------------------------------------------------------------------------
   PROCEDURE GUARDAR_IMAGEN (
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
-    p_imagen        IN  BLOB,
-    p_content_type  IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
+    p_imagen_url    IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
-    l_sesion NUMBER;
-    l_id     NUMBER;
-    l_mime   VARCHAR2(100);
+    l_sesion     NUMBER;
+    l_id         NUMBER;
+    l_id_empresa NUMBER;
+    l_url        VARCHAR2(4000);
+    l_anterior   ARTICULOS.IMAGEN_URL%TYPE;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -1138,38 +1215,58 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
       RETURN;
     END IF;
 
-    l_id := TO_NUMBER(NULLIF(p_id, ''));
+    l_id         := TO_NUMBER(NULLIF(p_id, ''));
+    l_id_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
+    l_url        := NULLIF(TRIM(p_imagen_url), '');
 
-    IF p_imagen IS NULL OR DBMS_LOB.GETLENGTH(p_imagen) = 0 THEN
+    IF l_id_empresa IS NULL THEN
       p_status_code := 400;
-      p_resultado := '{"error":"No se recibio ninguna imagen"}';
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
       RETURN;
     END IF;
 
-    -- El header puede venir con parámetros ("image/png; charset=..."), así que
-    -- se corta en el punto y coma antes de guardarlo.
-    l_mime := LOWER(TRIM(REGEXP_SUBSTR(p_content_type, '^[^;]+')));
-
-    IF l_mime IS NULL OR l_mime NOT LIKE 'image/%' THEN
+    -- La URL termina en un <img src>. Sin esto, "javascript:..." se guarda
+    -- igual. El largo es el de la columna: pasarlo daria ORA-12899 -> 500.
+    IF l_url IS NULL
+       OR LENGTH(l_url) > C_MAX_URL
+       OR LOWER(SUBSTR(l_url, 1, 8)) != 'https://' THEN
       p_status_code := 400;
-      p_resultado := '{"error":"El archivo debe ser una imagen"}';
+      p_resultado := '{"error":"La URL de la imagen debe empezar con https:// y no pasar de 500 caracteres"}';
       RETURN;
     END IF;
+
+    -- La URL anterior, para borrar su archivo después. FOR UPDATE: dos subidas
+    -- simultáneas leerían la misma anterior y la segunda dejaría huérfana la
+    -- foto de la primera.
+    BEGIN
+      SELECT IMAGEN_URL
+        INTO l_anterior
+        FROM ARTICULOS
+       WHERE ID_ARTICULO = l_id
+         AND ID_EMPRESA  = l_id_empresa
+         FOR UPDATE;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        p_status_code := 404;
+        p_resultado := '{"error":"El articulo no existe"}';
+        RETURN;
+    END;
 
     UPDATE ARTICULOS
-       SET IMAGEN              = p_imagen,
-           IMAGEN_MIME         = l_mime,
+       SET IMAGEN_URL          = l_url,
+           IMAGEN              = NULL,
+           IMAGEN_MIME         = NULL,
            FECHA_ACTUALIZACION = SYSTIMESTAMP
-     WHERE ID_ARTICULO = l_id;
-
-    IF SQL%ROWCOUNT = 0 THEN
-      ROLLBACK;
-      p_status_code := 404;
-      p_resultado := '{"error":"El articulo no existe"}';
-      RETURN;
-    END IF;
+     WHERE ID_ARTICULO = l_id
+       AND ID_EMPRESA  = l_id_empresa;
 
     COMMIT;
+
+    -- Después del COMMIT y nunca antes: ver el encabezado de db/cloudinary.sql.
+    IF l_anterior IS NOT NULL AND l_anterior != l_url THEN
+      PKG_CLOUDINARY.BORRAR(l_anterior);
+    END IF;
+
     p_status_code := 200;
     p_resultado := '{"ok":true}';
   EXCEPTION
@@ -1180,6 +1277,77 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
                        DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
       p_resultado := '{"error":"Error al guardar la imagen"}';
   END GUARDAR_IMAGEN;
+
+  ------------------------------------------------------------------------------
+  -- Deja un artículo sin imagen. CON token, aislado por empresa.
+  --
+  -- Limpia las dos columnas: sirve también para quitar una imagen vieja en
+  -- BLOB, que no tiene archivo en Cloudinary (BORRAR recibe NULL y no hace
+  -- nada).
+  ------------------------------------------------------------------------------
+  PROCEDURE QUITAR_IMAGEN (
+    p_authorization IN  VARCHAR2,
+    p_id            IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
+  ) IS
+    l_sesion     NUMBER;
+    l_id         NUMBER;
+    l_id_empresa NUMBER;
+    l_anterior   ARTICULOS.IMAGEN_URL%TYPE;
+  BEGIN
+    l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
+    IF l_sesion IS NULL THEN
+      p_status_code := 401;
+      p_resultado := '{"error":"Sesion invalida o vencida"}';
+      RETURN;
+    END IF;
+
+    l_id         := TO_NUMBER(NULLIF(p_id, ''));
+    l_id_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
+
+    IF l_id_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
+      RETURN;
+    END IF;
+
+    BEGIN
+      SELECT IMAGEN_URL
+        INTO l_anterior
+        FROM ARTICULOS
+       WHERE ID_ARTICULO = l_id
+         AND ID_EMPRESA  = l_id_empresa
+         FOR UPDATE;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        p_status_code := 404;
+        p_resultado := '{"error":"El articulo no existe"}';
+        RETURN;
+    END;
+
+    UPDATE ARTICULOS
+       SET IMAGEN_URL          = NULL,
+           IMAGEN              = NULL,
+           IMAGEN_MIME         = NULL,
+           FECHA_ACTUALIZACION = SYSTIMESTAMP
+     WHERE ID_ARTICULO = l_id
+       AND ID_EMPRESA  = l_id_empresa;
+
+    COMMIT;
+    PKG_CLOUDINARY.BORRAR(l_anterior);
+
+    p_status_code := 200;
+    p_resultado := '{"ok":true}';
+  EXCEPTION
+    WHEN OTHERS THEN
+      ROLLBACK;
+      p_status_code := 500;
+      APEX_DEBUG.ERROR('PKG_ARTICULOS.QUITAR_IMAGEN: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
+                       DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
+      p_resultado := '{"error":"Error al quitar la imagen"}';
+  END QUITAR_IMAGEN;
 
   ------------------------------------------------------------------------------
   -- Publica el módulo ORDS /articulos/ con sus endpoints.
@@ -1356,7 +1524,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     -- ORDS responde 404 sin que haya que manejar un status code a mano. Por eso
     -- el WHERE filtra los BLOB vacíos en vez de devolverlos.
     --
-    -- El mismo template lleva también el PUT que guarda la imagen, más abajo.
+    -- SOLO SIRVE LAS IMÁGENES DE ANTES DE CLOUDINARY. Ya no tiene PUT: las
+    -- nuevas se guardan como URL (imagen-url/:id, más abajo). Retirarlo cuando
+    -- no quede ningún BLOB (consulta al pie del archivo).
     ----------------------------------------------------------------------------
     ORDS.DEFINE_TEMPLATE(p_module_name => 'articulos', p_pattern => 'imagen/:id');
 
@@ -1373,36 +1543,64 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS AS
     );
 
     ----------------------------------------------------------------------------
-    -- PUT /articulos/imagen/:id — con token
-    -- Body: la imagen cruda. Content-Type: image/png, image/jpeg, etc.
+    -- PUT /articulos/imagen-url/:id — con token
+    -- Body: { idEmpresa, imagenUrl }. La imagen ya está en Cloudinary.
+    --
+    -- Template propio y no un PUT en imagen/:id: ahí un cliente viejo mandaría
+    -- el binario crudo a un handler que espera JSON. En una ruta nueva recibe
+    -- un 404 claro, y la foto no termina en la base por la puerta de atrás.
     ----------------------------------------------------------------------------
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'articulos', p_pattern => 'imagen-url/:id');
+
     ORDS.DEFINE_HANDLER(
-      p_module_name   => 'articulos',
-      p_pattern       => 'imagen/:id',
-      p_method        => 'PUT',
-      p_source_type   => ORDS.source_type_plsql,
-      p_mimes_allowed => 'image/png,image/jpeg,image/gif,image/webp,image/svg+xml',
-      p_source        => 'BEGIN PKG_ARTICULOS.GUARDAR_IMAGEN(:authorization, :id, :body, :content_type, :status_code, :resultado); END;'
+      p_module_name => 'articulos',
+      p_pattern     => 'imagen-url/:id',
+      p_method      => 'PUT',
+      p_source_type => ORDS.source_type_plsql,
+      p_source      => 'BEGIN PKG_ARTICULOS.GUARDAR_IMAGEN(:authorization, :id, :idEmpresa, :imagenUrl, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'articulos', p_pattern => 'imagen/:id', p_method => 'PUT',
+      p_module_name => 'articulos', p_pattern => 'imagen-url/:id', p_method => 'PUT',
       p_name => 'authorization', p_bind_variable_name => 'authorization',
       p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
 
-    -- El Content-Type de entrada: de ahí sale el formato que se guarda.
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'articulos', p_pattern => 'imagen/:id', p_method => 'PUT',
-      p_name => 'Content-Type', p_bind_variable_name => 'content_type',
-      p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
-
-    ORDS.DEFINE_PARAMETER(
-      p_module_name => 'articulos', p_pattern => 'imagen/:id', p_method => 'PUT',
+      p_module_name => 'articulos', p_pattern => 'imagen-url/:id', p_method => 'PUT',
       p_name => 'resultado', p_bind_variable_name => 'resultado',
       p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'articulos', p_pattern => 'imagen/:id', p_method => 'PUT',
+      p_module_name => 'articulos', p_pattern => 'imagen-url/:id', p_method => 'PUT',
+      p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
+      p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
+
+    ----------------------------------------------------------------------------
+    -- DELETE /articulos/imagen-url/:id/:idEmpresa — con token
+    -- Deja el artículo sin imagen y borra el archivo de Cloudinary.
+    ----------------------------------------------------------------------------
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'articulos', p_pattern => 'imagen-url/:id/:idEmpresa');
+
+    ORDS.DEFINE_HANDLER(
+      p_module_name => 'articulos',
+      p_pattern     => 'imagen-url/:id/:idEmpresa',
+      p_method      => 'DELETE',
+      p_source_type => ORDS.source_type_plsql,
+      p_source      => 'BEGIN PKG_ARTICULOS.QUITAR_IMAGEN(:authorization, :id, :idEmpresa, :status_code, :resultado); END;'
+    );
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'articulos', p_pattern => 'imagen-url/:id/:idEmpresa', p_method => 'DELETE',
+      p_name => 'authorization', p_bind_variable_name => 'authorization',
+      p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'articulos', p_pattern => 'imagen-url/:id/:idEmpresa', p_method => 'DELETE',
+      p_name => 'resultado', p_bind_variable_name => 'resultado',
+      p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'articulos', p_pattern => 'imagen-url/:id/:idEmpresa', p_method => 'DELETE',
       p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
@@ -1492,8 +1690,8 @@ SELECT NAME, STATUS, ORIGINS_ALLOWED
   FROM USER_ORDS_MODULES
  WHERE NAME = 'articulos';
 
--- Deben aparecer 6 filas: listar GET, crear POST, actualizar PUT,
--- eliminar DELETE, imagen GET e imagen PUT.
+-- Deben aparecer 7 filas: listar GET, crear POST, actualizar PUT,
+-- eliminar DELETE, imagen GET, imagen-url PUT e imagen-url DELETE.
 SELECT t.URI_TEMPLATE, h.METHOD
   FROM USER_ORDS_TEMPLATES t
   JOIN USER_ORDS_HANDLERS  h ON h.TEMPLATE_ID = t.ID
@@ -1513,16 +1711,32 @@ SELECT a.ID_ARTICULO, a.CODIGO_ARTICULO, a.NOMBRE_ARTICULO,
   LEFT JOIN UNIDADES_MEDIDA u ON u.ID_UNIDAD_MEDIDA = a.ID_UNIDAD_MEDIDA
  ORDER BY e.NOMBRE_EMPRESA, a.NOMBRE_ARTICULO;
 
--- Qué artículos tienen imagen cargada. Los que digan 'NO' se ven con el
--- marcador, que es el comportamiento esperado, no un error.
+-- Dónde está la imagen de cada artículo. 'BASE' son las de antes de Cloudinary:
+-- se migran volviendo a subirlas desde la ficha, y cada una que se sube vacía
+-- su BLOB. Cuando esta consulta no devuelva ninguna 'BASE', el GET
+-- /articulos/imagen/:id se puede retirar.
 SELECT ID_ARTICULO,
        NOMBRE_ARTICULO,
-       CASE WHEN IMAGEN IS NOT NULL AND DBMS_LOB.GETLENGTH(IMAGEN) > 0
-            THEN 'SI' ELSE 'NO' END AS TIENE_IMAGEN,
-       IMAGEN_MIME,
-       DBMS_LOB.GETLENGTH(IMAGEN) AS BYTES
+       CASE WHEN IMAGEN_URL IS NOT NULL THEN 'CLOUDINARY'
+            WHEN IMAGEN IS NOT NULL AND DBMS_LOB.GETLENGTH(IMAGEN) > 0 THEN 'BASE'
+            ELSE 'SIN IMAGEN' END AS IMAGEN_EN,
+       DBMS_LOB.GETLENGTH(IMAGEN) AS BYTES_EN_BASE
   FROM ARTICULOS
- ORDER BY NOMBRE_ARTICULO;
+ ORDER BY IMAGEN_EN, NOMBRE_ARTICULO;
+
+-- DEVOLVER LA CUOTA. Vaciar un BLOB libera el espacio dentro del segmento, pero
+-- no lo devuelve a la cuota de 25 MB del esquema. Después de migrar las fotos,
+-- a mano (y con `npm run dev` frenado):
+--
+--   ALTER TABLE ARTICULOS ENABLE ROW MOVEMENT;
+--   ALTER TABLE ARTICULOS MODIFY LOB (IMAGEN) (SHRINK SPACE);
+--   ALTER TABLE ARTICULOS SHRINK SPACE;
+--
+--   SELECT SEGMENT_NAME, ROUND(BYTES / 1024 / 1024, 2) AS MB
+--     FROM USER_SEGMENTS
+--    WHERE SEGMENT_NAME IN ('ARTICULOS',
+--                           (SELECT SEGMENT_NAME FROM USER_LOBS
+--                             WHERE TABLE_NAME = 'ARTICULOS' AND COLUMN_NAME = 'IMAGEN'));
 
 -- SIN CONSULTAS DE STOCK. Las dos que habia aca —el stock por articulo y los
 -- que estan bajo su minimo— sumaban LOTES, tabla que ya no existe. No se

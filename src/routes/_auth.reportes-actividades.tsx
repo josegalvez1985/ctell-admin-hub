@@ -1309,9 +1309,8 @@ function Visor({
     onSuccess: () => {
       onCambio();
       onCerrar();
-      // El archivo sigue en Cloudinary: lo que se borra es la referencia. Se
-      // dice, para que nadie cuente con que la foto dejó de existir.
-      toast.success("Evidencia quitada del reporte");
+      // El backend borra también el archivo de Cloudinary (PKG_CLOUDINARY).
+      toast.success("Evidencia eliminada");
     },
     onError: (error) => toast.error(mensajeError(error, "No se pudo quitar la evidencia")),
   });
@@ -1406,8 +1405,7 @@ function Visor({
               <DialogHeader>
                 <DialogTitle>Quitar la evidencia</DialogTitle>
                 <DialogDescription>
-                  Se saca del reporte. El archivo en sí queda guardado en Cloudinary: esto borra la
-                  referencia, no el original.
+                  Se saca del reporte y se borra el archivo. No se puede deshacer.
                 </DialogDescription>
               </DialogHeader>
               <DialogFooter>

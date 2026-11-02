@@ -2292,9 +2292,12 @@ navegación. No lo pongas en `useState` dentro de algo que `AppLayout` monte.
 
 ## 7.1 Imágenes: siempre con respaldo
 
-Los binarios (logo de empresa, imagen de artículo) no vienen en el JSON: se
-piden a su propio endpoint público con `urlLogoEmpresa(id)` /
-`urlImagenArticulo(id)`. Ya están resueltos en dos componentes:
+Los binarios (logo de empresa) no vienen en el JSON: se piden a su propio
+endpoint público con `urlLogoEmpresa(id)`. **La imagen de un artículo vive en
+Cloudinary** y viene como `imagenUrl` en el listado; `urlImagenArticulo(id)`
+queda sólo para las guardadas como BLOB antes del cambio. `<ImagenArticulo>`
+elige sola entre las dos y a la de Cloudinary la pide recortada con
+`miniatura()`. Ya están resueltos en dos componentes:
 
 | Componente                                                       | Respaldo cuando no hay imagen  |
 | ---------------------------------------------------------------- | ------------------------------ |
@@ -2403,10 +2406,10 @@ cinco fotos de la misma clase comparten todo lo demás. Hay que sanearlo: la com
 y la barra **separan componentes de la transformación**, así que un nombre con
 cualquiera de las dos no ensucia el archivo, rompe la URL.
 
-Y lo que hay que decir en la interfaz: **borrar la evidencia borra la
-referencia, no el archivo**. El binario queda en Cloudinary —limpiarlo exige la
-credencial secreta—, así que el diálogo lo dice en lugar de dar a entender que
-la foto dejó de existir.
+Y lo que hay que decir en la interfaz: **borrar la evidencia borra también el
+archivo**, y no se deshace. Lo borra el backend (`PKG_CLOUDINARY`), porque
+firmar el borrado exige la credencial secreta, que no puede estar en el bundle.
+El frontend no tiene que hacer nada más que llamar al `DELETE` de la fila.
 
 ---
 

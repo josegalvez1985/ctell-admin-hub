@@ -15,7 +15,7 @@
 --
 -- Se ejecuta una sola vez en la hoja de trabajo SQL de APEX, conectado con el
 -- esquema del workspace. REQUIERE db/auth.sql EJECUTADO ANTES: usa PKG_AUTH
--- para validar el token.
+-- para validar el token. Y db/cloudinary.sql: la baja borra los archivos.
 --
 -- Base de los endpoints: https://oracleapex.com/ords/ctell/reportes-actividades/
 --
@@ -100,8 +100,8 @@
 -- ELIMINAR SI LOS BORRA, y en la misma transaccion: la FK de
 -- REPORTES_MULTIMEDIA no tiene ON DELETE CASCADE, asi que borrar solo el padre
 -- falla con ORA-02292 en cuanto el reporte tenga una foto. Se borran las filas
--- primero. Lo que NO se borra es el archivo en Cloudinary —este paquete no
--- habla con Cloudinary—: la baja se lleva la referencia y el binario queda alla.
+-- primero. Y despues del COMMIT se borran sus archivos de Cloudinary con
+-- PKG_CLOUDINARY.BORRAR, uno por fila (best effort: ver db/cloudinary.sql).
 --
 --------------------------------------------------------------------------------
 -- FILTRO POR EMPRESA
@@ -224,8 +224,8 @@ CREATE OR REPLACE PACKAGE PKG_REPORTES_ACTIVIDADES AS
     p_resultado     OUT CLOB
   );
 
-  -- Baja fisica. Se lleva las filas de REPORTES_MULTIMEDIA (no los archivos de
-  -- Cloudinary).
+  -- Baja fisica. Se lleva las filas de REPORTES_MULTIMEDIA y sus archivos de
+  -- Cloudinary.
   PROCEDURE ELIMINAR (
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
@@ -961,6 +961,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_REPORTES_ACTIVIDADES AS
     l_id       NUMBER;
     l_empresa  NUMBER;
     l_archivos PLS_INTEGER;
+    l_urls     SYS.ODCIVARCHAR2LIST;
   BEGIN
     l_sesion := SESION(p_authorization);
     IF l_sesion IS NULL THEN
@@ -979,13 +980,15 @@ CREATE OR REPLACE PACKAGE BODY PKG_REPORTES_ACTIVIDADES AS
     END IF;
 
     -- Los hijos primero: la FK no tiene ON DELETE CASCADE y borrar el padre con
-    -- fotos cargadas moriria con ORA-02292.
+    -- fotos cargadas moriria con ORA-02292. RETURNING BULK COLLECT: los
+    -- archivos se borran despues del COMMIT, cuando las filas ya no estan.
     DELETE FROM REPORTES_MULTIMEDIA m
      WHERE m.ID_REPORTE = l_id
        AND EXISTS (SELECT 1
                      FROM REPORTES_ACTIVIDADES r
                     WHERE r.ID_REPORTE = m.ID_REPORTE
-                      AND r.ID_EMPRESA = l_empresa);
+                      AND r.ID_EMPRESA = l_empresa)
+    RETURNING m.URL_ARCHIVO BULK COLLECT INTO l_urls;
 
     l_archivos := SQL%ROWCOUNT;
 
@@ -1001,9 +1004,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_REPORTES_ACTIVIDADES AS
     END IF;
 
     COMMIT;
+
+    FOR i IN 1 .. l_urls.COUNT LOOP
+      PKG_CLOUDINARY.BORRAR(l_urls(i));
+    END LOOP;
+
     p_status_code := 200;
-    -- `archivosEliminados` para que la pantalla pueda decir que se llevo: los
-    -- binarios siguen en Cloudinary y quien quiera limpiarlos necesita saberlo.
+    -- `archivosEliminados` para que la pantalla pueda decir que se llevo.
     p_resultado := '{"ok":true,"archivosEliminados":' || TO_CHAR(l_archivos) || '}';
 
   EXCEPTION

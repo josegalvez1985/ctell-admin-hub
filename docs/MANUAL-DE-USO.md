@@ -261,6 +261,15 @@ está al lado del buscador.
 > vacíos, y ofrecerlos sería ofrecer búsquedas que ya se sabe que no devuelven
 > nada.
 
+**La foto.** Se carga desde la ficha del artículo (al editarlo). Desde el
+celular, **Sacar foto** abre la cámara directo; **Elegir** busca una que ya
+esté en el teléfono o la computadora. La foto se achica sola antes de subirse,
+así que no importa que sea pesada. **Tocando la foto se ve en grande.**
+**Quitar** la deja sin imagen.
+
+> **Cambiar o quitar la foto borra la anterior del servidor de imágenes**, y
+> eliminar el artículo se lleva la suya. No se puede deshacer.
+
 ### Ubicaciones de artículos
 
 `/articulos-ubicaciones` — en qué estante está cada artículo.
@@ -526,8 +535,8 @@ Cada día con clase muestra su reporte, y se le cargan fotos.
 - El combo de institución **depende del profesor elegido**: ofrece sólo donde ese
   profesor marcó ese mes.
 
-> **Borrar una foto no la borra del servidor de imágenes.** La referencia
-> desaparece de la galería, pero el archivo queda allá.
+> **Borrar una foto la borra también del servidor de imágenes**, y no se puede
+> deshacer. Lo mismo al borrar un reporte entero: se lleva todas sus fotos.
 
 ### Justificaciones de ausencia
 

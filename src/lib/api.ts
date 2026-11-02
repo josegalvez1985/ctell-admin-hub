@@ -1912,8 +1912,14 @@ export type Articulo = {
    */
   cantidadMinima: number;
   /**
-   * Si tiene imagen cargada. El binario no viaja en el JSON: se pide aparte
-   * con `urlImagenArticulo(id)`.
+   * La foto en Cloudinary, o `null`. El backend sólo la manda si empieza con
+   * `https://`.
+   */
+  imagenUrl: string | null;
+  /**
+   * Si tiene imagen, en Cloudinary o en la base. Con `imagenUrl` se usa esa;
+   * sin ella y con esto en true, es una imagen de antes de Cloudinary y se pide
+   * a `urlImagenArticulo(id)`.
    */
   tieneImagen: boolean;
   /**
@@ -2147,7 +2153,9 @@ export function urlLogoEmpresa(id: number): string {
 }
 
 /**
- * URL de la imagen de un artículo, para usar directo en `<img src>`.
+ * URL de la imagen VIEJA de un artículo —la guardada como BLOB antes de pasar
+ * a Cloudinary—, para usar directo en `<img src>`. Las nuevas vienen en
+ * `Articulo.imagenUrl`.
  *
  * Mismo criterio que `urlLogoEmpresa`: el navegador descarga la imagen con su
  * propia petición y ahí no hay forma de mandar el header Authorization, así que
@@ -3705,8 +3713,8 @@ export const api = {
         body: JSON.stringify(datos),
       }),
 
-    /** Se lleva las filas de multimedia. Los archivos siguen en Cloudinary:
-     * `archivosEliminados` dice cuántas referencias se borraron. */
+    /** Se lleva las filas de multimedia y sus archivos de Cloudinary (los
+     * borra el backend). `archivosEliminados` dice cuántos eran. */
     eliminar: (id: number, idEmpresa: number) =>
       request<{ ok: boolean; archivosEliminados: number }>(
         `/reportes-actividades/eliminar/${id}/${idEmpresa}`,
@@ -3716,8 +3724,8 @@ export const api = {
 
   /**
    * Evidencias de un reporte. **Acá viaja la URL, no el binario**: el archivo lo
-   * sube el navegador directo a Cloudinary y esto guarda su dirección. Por eso
-   * borrar una fila no borra el archivo.
+   * sube el navegador directo a Cloudinary y esto guarda su dirección. Borrar
+   * una fila borra también el archivo: lo hace el backend.
    */
   reportesMultimedia: {
     listar: (params: {
@@ -4794,16 +4802,22 @@ export const api = {
       request<{ ok: boolean }>(`/articulos/eliminar/${id}/${idEmpresa}`, { method: "DELETE" }),
 
     /**
-     * Sube la imagen del artículo. El archivo va como cuerpo crudo del PUT y su
-     * tipo en el Content-Type — no es multipart. Mismo mecanismo que
-     * `empresas.subirLogo`.
+     * Guarda la URL de la foto, que el navegador ya subió con
+     * `subirACloudinary`. El archivo no pasa por acá. Si el artículo tenía una
+     * imagen vieja en la base, el backend la vacía.
      */
-    subirImagen: (id: number, archivo: File) =>
-      request<{ ok: boolean }>(`/articulos/imagen/${id}`, {
+    guardarImagen: (id: number, datos: { idEmpresa: number; imagenUrl: string }) =>
+      request<{ ok: boolean }>(`/articulos/imagen-url/${id}`, {
         method: "PUT",
-        headers: { "Content-Type": archivo.type },
-        body: archivo,
+        body: JSON.stringify(datos),
       }),
+
+    /**
+     * Deja el artículo sin imagen. El backend borra también el archivo de
+     * Cloudinary (y la imagen vieja en BLOB, si era de antes del cambio).
+     */
+    quitarImagen: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/articulos/imagen-url/${id}/${idEmpresa}`, { method: "DELETE" }),
   },
 
   /**
