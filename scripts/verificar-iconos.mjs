@@ -94,6 +94,12 @@ const SINONIMOS = [
     "inventarios reporte",
     "diferencias de inventario",
   ],
+  [
+    "reporte de ubicaciones",
+    "reporte de articulos por ubicacion",
+    "ubicaciones reporte",
+    "articulos sin ubicacion",
+  ],
   ["ordenes", "ordenes de compra"],
   ["facturas de compra", "facturas compras"],
   ["iva", "tasas de iva"],

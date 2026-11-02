@@ -23,6 +23,29 @@ function mensajeError(e: unknown, respaldo: string): string {
 }
 
 /**
+ * El código en mayúsculas MIENTRAS se escribe, no recién al guardar.
+ *
+ * El backend ya lo guarda así (es lo que hace valer el UNIQUE), pero si el
+ * campo mostrara "w-712" y la lista "W-712", quien carga no sabría si son el
+ * mismo código. Los números y los guiones no cambian.
+ *
+ * Se escribe en el DOM antes de devolver el valor, y se restaura la posición del
+ * cursor: si sólo se pasara el texto en mayúsculas al estado, React vería un
+ * valor distinto al del campo, lo reescribiría y el cursor saltaría al final —
+ * corregir una letra en el medio del código lo mandaría al final en cada tecla.
+ */
+function enMayusculas(e: React.ChangeEvent<HTMLInputElement>): string {
+  const campo = e.target;
+  const { selectionStart, selectionEnd } = campo;
+  const valor = campo.value.toUpperCase();
+  if (valor !== campo.value) {
+    campo.value = valor;
+    campo.setSelectionRange(selectionStart, selectionEnd);
+  }
+  return valor;
+}
+
+/**
  * Códigos equivalentes de un artículo: los alias con los que se lo pide.
  *
  * Un repuesto casi nunca se busca por el código interno, sino por el del
@@ -77,9 +100,11 @@ export function CodigosEquivalentesDialog({
         idEmpresa: empresa!.id,
         idArticulo: idArticulo!,
         codigoEquivalente: codigoNuevo,
-        // Se omite si está vacía: la columna es nullable y una cadena vacía
-        // guardaría un dato que nadie cargó.
-        ...(descripcionNueva.trim() ? { descripcion: descripcionNueva } : {}),
+        // SIEMPRE, aunque esté vacía. Omitirla dejaba el bind :descripcion de
+        // ORDS sin definir y el POST moría con un 500 antes de llegar al
+        // paquete — cargar un código sin descripción fallaba siempre. Vacía no
+        // guarda nada: en Oracle '' es NULL.
+        descripcion: descripcionNueva,
       }),
     onSuccess: () => {
       toast.success("Código agregado");
@@ -99,7 +124,9 @@ export function CodigosEquivalentesDialog({
       api.codigosEquivalentes.actualizar(codigo.id, {
         idEmpresa: empresa!.id,
         codigoEquivalente: codigoEditado,
-        ...(descripcionEditada.trim() ? { descripcion: descripcionEditada } : {}),
+        // Siempre, por lo mismo que en el alta. Acá además vacía BORRA: el
+        // ACTUALIZAR escribe TRIM(p_descripcion) sin NVL.
+        descripcion: descripcionEditada,
       }),
     onSuccess: () => {
       toast.success("Código actualizado");
@@ -147,9 +174,10 @@ export function CodigosEquivalentesDialog({
                 <Input
                   id="codigo-nuevo"
                   value={codigoNuevo}
-                  onChange={(e) => setCodigoNuevo(e.target.value)}
+                  onChange={(e) => setCodigoNuevo(enMayusculas(e))}
                   placeholder="W-712/75"
                   autoComplete="off"
+                  autoCapitalize="characters"
                   // Enter agrega. NO es un <form>: este diálogo se abre desde la
                   // ficha del artículo, que ya es un formulario, y un form
                   // anidado no es HTML válido — el submit de adentro dispararía
@@ -219,9 +247,10 @@ export function CodigosEquivalentesDialog({
                     <div className="grid gap-2 sm:grid-cols-[1fr_1.4fr]">
                       <Input
                         value={codigoEditado}
-                        onChange={(e) => setCodigoEditado(e.target.value)}
+                        onChange={(e) => setCodigoEditado(enMayusculas(e))}
                         placeholder="Código"
                         autoComplete="off"
+                        autoCapitalize="characters"
                         autoFocus
                       />
                       <Input

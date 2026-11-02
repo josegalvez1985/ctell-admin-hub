@@ -14,6 +14,7 @@ import { Route as AuthRouteImport } from './routes/_auth'
 import { Route as AuthAdministracionRouteImport } from './routes/_auth.administracion'
 import { Route as AuthArticulosRouteImport } from './routes/_auth.articulos'
 import { Route as AuthArticulosUbicacionesRouteImport } from './routes/_auth.articulos-ubicaciones'
+import { Route as AuthArticulosUbicacionesReporteRouteImport } from './routes/_auth.articulos-ubicaciones-reporte'
 import { Route as AuthAsistenciasRouteImport } from './routes/_auth.asistencias'
 import { Route as AuthAyudaRouteImport } from './routes/_auth.ayuda'
 import { Route as AuthBancosRouteImport } from './routes/_auth.bancos'
@@ -75,6 +76,12 @@ const AuthArticulosUbicacionesRoute =
   AuthArticulosUbicacionesRouteImport.update({
     id: '/articulos-ubicaciones',
     path: '/articulos-ubicaciones',
+    getParentRoute: () => AuthRoute,
+  } as any)
+const AuthArticulosUbicacionesReporteRoute =
+  AuthArticulosUbicacionesReporteRouteImport.update({
+    id: '/articulos-ubicaciones-reporte',
+    path: '/articulos-ubicaciones-reporte',
     getParentRoute: () => AuthRoute,
   } as any)
 const AuthAsistenciasRoute = AuthAsistenciasRouteImport.update({
@@ -269,6 +276,7 @@ export interface FileRoutesByFullPath {
   '/administracion': typeof AuthAdministracionRoute
   '/articulos': typeof AuthArticulosRoute
   '/articulos-ubicaciones': typeof AuthArticulosUbicacionesRoute
+  '/articulos-ubicaciones-reporte': typeof AuthArticulosUbicacionesReporteRoute
   '/asistencias': typeof AuthAsistenciasRoute
   '/ayuda': typeof AuthAyudaRoute
   '/bancos': typeof AuthBancosRoute
@@ -312,6 +320,7 @@ export interface FileRoutesByTo {
   '/administracion': typeof AuthAdministracionRoute
   '/articulos': typeof AuthArticulosRoute
   '/articulos-ubicaciones': typeof AuthArticulosUbicacionesRoute
+  '/articulos-ubicaciones-reporte': typeof AuthArticulosUbicacionesReporteRoute
   '/asistencias': typeof AuthAsistenciasRoute
   '/ayuda': typeof AuthAyudaRoute
   '/bancos': typeof AuthBancosRoute
@@ -357,6 +366,7 @@ export interface FileRoutesById {
   '/_auth/administracion': typeof AuthAdministracionRoute
   '/_auth/articulos': typeof AuthArticulosRoute
   '/_auth/articulos-ubicaciones': typeof AuthArticulosUbicacionesRoute
+  '/_auth/articulos-ubicaciones-reporte': typeof AuthArticulosUbicacionesReporteRoute
   '/_auth/asistencias': typeof AuthAsistenciasRoute
   '/_auth/ayuda': typeof AuthAyudaRoute
   '/_auth/bancos': typeof AuthBancosRoute
@@ -402,6 +412,7 @@ export interface FileRouteTypes {
     | '/administracion'
     | '/articulos'
     | '/articulos-ubicaciones'
+    | '/articulos-ubicaciones-reporte'
     | '/asistencias'
     | '/ayuda'
     | '/bancos'
@@ -445,6 +456,7 @@ export interface FileRouteTypes {
     | '/administracion'
     | '/articulos'
     | '/articulos-ubicaciones'
+    | '/articulos-ubicaciones-reporte'
     | '/asistencias'
     | '/ayuda'
     | '/bancos'
@@ -489,6 +501,7 @@ export interface FileRouteTypes {
     | '/_auth/administracion'
     | '/_auth/articulos'
     | '/_auth/articulos-ubicaciones'
+    | '/_auth/articulos-ubicaciones-reporte'
     | '/_auth/asistencias'
     | '/_auth/ayuda'
     | '/_auth/bancos'
@@ -568,6 +581,13 @@ declare module '@tanstack/react-router' {
       path: '/articulos-ubicaciones'
       fullPath: '/articulos-ubicaciones'
       preLoaderRoute: typeof AuthArticulosUbicacionesRouteImport
+      parentRoute: typeof AuthRoute
+    }
+    '/_auth/articulos-ubicaciones-reporte': {
+      id: '/_auth/articulos-ubicaciones-reporte'
+      path: '/articulos-ubicaciones-reporte'
+      fullPath: '/articulos-ubicaciones-reporte'
+      preLoaderRoute: typeof AuthArticulosUbicacionesReporteRouteImport
       parentRoute: typeof AuthRoute
     }
     '/_auth/asistencias': {
@@ -836,6 +856,7 @@ interface AuthRouteChildren {
   AuthAdministracionRoute: typeof AuthAdministracionRoute
   AuthArticulosRoute: typeof AuthArticulosRoute
   AuthArticulosUbicacionesRoute: typeof AuthArticulosUbicacionesRoute
+  AuthArticulosUbicacionesReporteRoute: typeof AuthArticulosUbicacionesReporteRoute
   AuthAsistenciasRoute: typeof AuthAsistenciasRoute
   AuthAyudaRoute: typeof AuthAyudaRoute
   AuthBancosRoute: typeof AuthBancosRoute
@@ -879,6 +900,7 @@ const AuthRouteChildren: AuthRouteChildren = {
   AuthAdministracionRoute: AuthAdministracionRoute,
   AuthArticulosRoute: AuthArticulosRoute,
   AuthArticulosUbicacionesRoute: AuthArticulosUbicacionesRoute,
+  AuthArticulosUbicacionesReporteRoute: AuthArticulosUbicacionesReporteRoute,
   AuthAsistenciasRoute: AuthAsistenciasRoute,
   AuthAyudaRoute: AuthAyudaRoute,
   AuthBancosRoute: AuthBancosRoute,

@@ -11,6 +11,7 @@
 --   4. ELIMINAR      DELETE /profesores/eliminar/:id/:idEmpresa
 --   5. (sin PL/SQL)  GET    /profesores/foto/:id   (SIN TOKEN, media)
 --   6. GUARDAR_FOTO  PUT    /profesores/foto/:id   (con token)
+--   7. QUITAR_FOTO   DELETE /profesores/foto/:id/:idEmpresa  (con token)
 --
 -- Se ejecuta una sola vez en la hoja de trabajo SQL de APEX, conectado con el
 -- esquema del workspace. REQUIERE db/auth.sql EJECUTADO ANTES: usa PKG_AUTH
@@ -284,7 +285,20 @@ CREATE OR REPLACE PACKAGE PKG_PROFESORES AS
     p_resultado     OUT CLOB
   );
 
-  -- Borra y republica el modulo ORDS /profesores/ con sus 6 endpoints.
+  -- Quita la foto: el profesor vuelve a mostrarse con sus iniciales.
+  --
+  -- A DIFERENCIA DE GUARDAR_FOTO, SI filtra por empresa: aca no hay un binario
+  -- en el cuerpo que impida mandar el idEmpresa, asi que va en la ruta como en
+  -- ELIMINAR. Quitarle la foto a un profesor ajeno no se puede ni adivinando el id.
+  PROCEDURE QUITAR_FOTO (
+    p_authorization IN  VARCHAR2,
+    p_id            IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
+  );
+
+  -- Borra y republica el modulo ORDS /profesores/ con sus 7 endpoints.
   -- Se llama una sola vez, al final de este archivo.
   PROCEDURE PUBLICAR_ENDPOINTS;
 
@@ -1033,7 +1047,75 @@ CREATE OR REPLACE PACKAGE BODY PKG_PROFESORES AS
   END GUARDAR_FOTO;
 
   ------------------------------------------------------------------------------
-  -- Publica el modulo ORDS /profesores/ con sus 6 endpoints.
+  -- Quita la foto de un profesor. Con token y acotado a la empresa.
+  --
+  -- FOTO y FOTO_MIME van a NULL juntas: un MIME sin foto no significa nada, y
+  -- el GET publico ya responde 404 cuando FOTO es NULL, que es lo que hace que
+  -- la pantalla vuelva a las iniciales.
+  --
+  -- Sin foto que quitar no es un error: el resultado pedido —que no tenga foto—
+  -- ya se cumple. Se responde 200 igual; el 404 queda para el profesor que no
+  -- existe o es de otra empresa.
+  --
+  -- OJO CON LA CUOTA: poner el BLOB en NULL libera el espacio para que lo
+  -- reuse la misma columna (la proxima foto que se suba), no para el resto del
+  -- esquema. Devolverselo a la cuota necesita un SHRINK SPACE sobre el LOB.
+  ------------------------------------------------------------------------------
+  PROCEDURE QUITAR_FOTO (
+    p_authorization IN  VARCHAR2,
+    p_id            IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
+  ) IS
+    l_sesion  NUMBER;
+    l_id      NUMBER;
+    l_empresa NUMBER;
+  BEGIN
+    l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
+    IF l_sesion IS NULL THEN
+      p_status_code := 401;
+      p_resultado := '{"error":"Sesion invalida o vencida"}';
+      RETURN;
+    END IF;
+
+    l_id      := A_NUMERO(p_id);
+    l_empresa := A_NUMERO(p_id_empresa);
+
+    IF l_id IS NULL OR l_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"id e idEmpresa son obligatorios"}';
+      RETURN;
+    END IF;
+
+    UPDATE PROFESORES
+       SET FOTO                = NULL,
+           FOTO_MIME           = NULL,
+           FECHA_ACTUALIZACION = SYSTIMESTAMP
+     WHERE ID_PROFESOR = l_id
+       AND ID_EMPRESA  = l_empresa;
+
+    IF SQL%ROWCOUNT = 0 THEN
+      ROLLBACK;
+      p_status_code := 404;
+      p_resultado := '{"error":"El profesor no existe"}';
+      RETURN;
+    END IF;
+
+    COMMIT;
+    p_status_code := 200;
+    p_resultado := '{"ok":true}';
+  EXCEPTION
+    WHEN OTHERS THEN
+      ROLLBACK;
+      p_status_code := 500;
+      APEX_DEBUG.ERROR('PKG_PROFESORES.QUITAR_FOTO: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
+                       DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
+      p_resultado := '{"error":"Error al quitar la foto"}';
+  END QUITAR_FOTO;
+
+  ------------------------------------------------------------------------------
+  -- Publica el modulo ORDS /profesores/ con sus 7 endpoints.
   --
   -- Cada handler PL/SQL es una sola linea: invoca al procedimiento del paquete
   -- pasando los binds de ORDS como argumentos. Nada de PL/SQL embebido. La
@@ -1255,6 +1337,39 @@ CREATE OR REPLACE PACKAGE BODY PKG_PROFESORES AS
 
     ORDS.DEFINE_PARAMETER(
       p_module_name => 'profesores', p_pattern => 'foto/:id', p_method => 'PUT',
+      p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
+      p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
+
+    ----------------------------------------------------------------------------
+    -- DELETE /profesores/foto/:id/:idEmpresa — con token
+    --
+    -- TEMPLATE PROPIO y no un DELETE sobre foto/:id: ese template es el del GET
+    -- publico que arma el <img>, y agregarle la empresa a la ruta romperia todas
+    -- las fotos. Con la empresa en la ruta, el borrado se acota igual que en
+    -- eliminar/:id/:idEmpresa.
+    ----------------------------------------------------------------------------
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'profesores', p_pattern => 'foto/:id/:idEmpresa');
+
+    ORDS.DEFINE_HANDLER(
+      p_module_name => 'profesores',
+      p_pattern     => 'foto/:id/:idEmpresa',
+      p_method      => 'DELETE',
+      p_source_type => ORDS.source_type_plsql,
+      p_source      => 'BEGIN PKG_PROFESORES.QUITAR_FOTO(:authorization, :id, :idEmpresa, :status_code, :resultado); END;'
+    );
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'profesores', p_pattern => 'foto/:id/:idEmpresa', p_method => 'DELETE',
+      p_name => 'authorization', p_bind_variable_name => 'authorization',
+      p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'profesores', p_pattern => 'foto/:id/:idEmpresa', p_method => 'DELETE',
+      p_name => 'resultado', p_bind_variable_name => 'resultado',
+      p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'profesores', p_pattern => 'foto/:id/:idEmpresa', p_method => 'DELETE',
       p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 

@@ -17,7 +17,7 @@
 >   por `HTP` porque el parámetro `:resultado` tiene techo de 4000 bytes.
 > - **El frontend:** `src/lib/asistente.ts`, `src/components/ctell/Asistente.tsx` y
 >   `Markdown.tsx`, montado en `AppLayout`. El manual es `docs/MANUAL-DE-USO.md` sin la
->   introducción ni el anexo. Tope de 30 preguntas por día.
+>   introducción ni el anexo. Tope de 50 preguntas por día.
 >
 > El resto de este archivo es la guía original de ethos, como referencia.
 

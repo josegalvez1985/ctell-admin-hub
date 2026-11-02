@@ -474,6 +474,7 @@ function AsignarDialog({
   const asignar = useMutation({
     mutationFn: () =>
       api.articulosUbicaciones.asignar({
+        idEmpresa,
         idArticulo: Number(idArticulo),
         idUbicacion: Number(idUbicacion),
       }),

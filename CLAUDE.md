@@ -177,6 +177,7 @@ Misma forma que ventas, en espejo. `/compras-pagos` es idéntico a `/ventas-cobr
 - **`ACTUALIZAR` rompe el criterio del resto del proyecto a propósito:** un campo vacío **borra**, no conserva. La cantidad puede volver a quedar sin cargar, y con el `NVL` habitual quien escribió 12 por error se quedaría con ese 12 para siempre — y cerrar lo aplicaría al stock. El cliente manda siempre los tres campos.
 - **El listado devuelve dos números de "sistema", y no son intercambiables:** `existenciaActual` (en vivo, contra el que se compara mientras se cuenta) y `cantidadSistema` (sellado por el trigger al cerrar, contra el que se mide la diferencia de un conteo ya aplicado). Usar el primero en un cerrado daría cero siempre, porque el cierre las igualó.
 - **`observaciones` no viaja entera en el listado** (1000 caracteres × 20 filas pasan el techo de 4000 bytes del bind de ORDS). El formulario de edición **tiene que** usar `/obtener`: guardar el resumen escribiría 150 caracteres encima de los 1000.
+- **El conteo se carga por ubicación, y es obligatorio.** `crear` y `actualizar` reciben `ubicaciones: [{ idUbicacion, cantidad }]` (tabla `INVENTARIOS_UBICACIONES`, de `db/inventarios-ubicaciones-ddl.sql`, que se corre **antes** que `inventarios.sql`) y ya **no** `cantidadFisica`: esa es la suma de las líneas, la escribe el paquete y `CERRAR` la recalcula antes de aplicar. Sigue siendo **un conteo por artículo y sucursal** —un conteo por estante ajustaría cada uno contra el total del sistema— y **no es stock por ubicación**: `EXISTENCIAS` no cambia, las líneas son evidencia del día del conteo. Una línea sin cantidad es un estante sin contar (no se cierra); el cero va explícito. **Contar en un estante asigna el artículo ahí**; un asignado que dio 0 conserva la asignación y sólo se avisa. La FK de las líneas **no** tiene `ON DELETE CASCADE`: su trigger lee `INVENTARIOS` y con cascada daría `ORA-04091`.
 
 #### Manuales — `/manuales`
 
@@ -281,7 +282,7 @@ Un endpoint propio y no sumar en el frontend porque los listados están paginado
 - **La empresa se filtra por instrucción, no por garantía.** `idEmpresa` es obligatorio (400) y viaja al contexto con la sucursal y las reglas de filtrado del proyecto. Si cambia una de esas reglas (como "la empresa de una marcación es la del profesor"), va también en `INSTRUCCIONES`.
 - **Rompe dos convenciones a propósito:** lee el body crudo con **`:body_text`** (un CLOB, no el BLOB `:body`), porque `historial` es un array y `manual` pasa los 32K; y responde con **`HTP`** en vez de `:resultado`, porque una respuesta con una tabla pasa los 4000 bytes del parámetro.
 - **El manual es `MANUAL-DE-USO.md` desde "Primeros pasos" hasta el anexo**, importado con `?raw` en un chunk aparte. Documentar una pantalla ahí alcanza para que el asistente la conozca con el deploy.
-- **Gasto:** 30 preguntas por usuario y por día (`LIMITE_DIARIO`). La clave es la misma de ethos, y el tope de la organización es compartido. La consulta del costo por mes está en el encabezado de `asistente.sql`.
+- **Gasto:** 50 preguntas por usuario y por día (`LIMITE_DIARIO`). La clave es la misma de ethos, y el tope de la organización es compartido. La consulta del costo por mes está en el encabezado de `asistente.sql`.
 
 ### Los totales no se guardan: se calculan
 
@@ -443,7 +444,9 @@ Las columnas `ACTIVO` son `VARCHAR2(1)` con valores `'A'` o `'I'`. **Este códig
 
   > **Acá NO se cierra, a propósito.** Cargar el conteo y aplicarlo son dos actos distintos: el primero se corrige cuantas veces haga falta, el segundo escribe `EXISTENCIAS` y no se deshace. Una acción así no va como un ícono más en la fila de un listado, al lado de editar y borrar, donde se toca de paso. Anular sí está, porque no mueve stock. `POST /inventarios/cerrar/:id` existe y funciona: lo va a consumir la pantalla que se haga para eso, que además tendrá que invalidar `["existencias"]`, `["articulos"]` y `["dashboard"]` — los tres muestran el número que el cierre acaba de cambiar.
 
-  El diálogo de alta ofrece completar la ficha del artículo si le falta **marca, categoría o ubicación**, y un filtro por estante arriba del selector para contar recorriendo el depósito.
+  El diálogo de alta ofrece completar la ficha del artículo si le falta **marca o categoría**, y un filtro por estante arriba del selector para contar recorriendo el depósito. **Lo contado se carga por ubicación** (`useFieldArray`): al elegir el artículo se precargan sus estantes de esta sucursal —el del filtro primero— con la cantidad en blanco, y el total es la suma. La ubicación ya no se "asigna" con un botón aparte: la que se cuenta queda asignada al guardar.
+
+  > **`api.articulosUbicaciones.asignar` no mandaba `idEmpresa`** y el backend la exige: asignar una ubicación fallaba con 400 en las tres pantallas que lo usaban. Hoy el tipo la pide.
 - **`_auth.inventarios-reporte.tsx`:** "/inventarios-reporte" → Los conteos de la sucursal activa por período, con exportación a Excel y PDF. Es una CONSULTA: no da de alta, no edita, no cierra. Filtros de **fechas** (desde/hasta sobre `FECHA_INVENTARIO`, con atajos), **estado** y **diferencia** (Con / Sin), a la vista en un panel y también en el embudo de su columna.
 
   > **`PROCESADO` no se ofrece como filtro** —ninguna transición lo produce—, pero sigue en `EstadoInventario` y en la traducción: si quedó una fila vieja con ese valor, el reporte tiene que poder pintarla. Se ve, no se filtra.
@@ -451,6 +454,11 @@ Las columnas `ACTIVO` son `VARCHAR2(1)` con valores `'A'` o `'I'`. **Este códig
   > La diferencia se calcula con `sistemaDe()`, **copiada de `_auth.inventarios.tsx`**: `ABIERTO` contra `existenciaActual`, `CERRADO` contra `cantidadSistema`. Está en tres lugares —las dos pantallas y el `UNION ALL` de `PKG_DASHBOARD`— y **si cambia uno, cambian los tres**.
   >
   > Fechas y diferencias se filtran **en memoria**, no en el SQL: la diferencia no es una columna sino una resta que cambia según el estado, y llevarla al backend obligaría a duplicar ese `CASE` en el `COUNT` y en el `SELECT` — desincronizados, el total dice una cosa y las filas otra. Trae el historial completo paginando de a 50, como `/existencias`, para que **lo que sale en el archivo sea exactamente lo que se ve**.
+- **`_auth.articulos-ubicaciones-reporte.tsx`:** "/articulos-ubicaciones-reporte" → Los artículos de cada ubicación **de la sucursal activa** y los que no tienen ninguna, en el mismo reporte, con exportación a Excel y PDF. Es una CONSULTA. La situación (**Todos / Con / Sin**) es un parámetro del servidor (`situacion` en `GET /articulos-ubicaciones/reporte`); zona, categoría y marca se filtran en memoria.
+
+  > **No sale de `/articulos-ubicaciones/listar`:** aquél recorre el cruce y nunca ve un artículo sin asignar. `PKG_ARTICULOS_UBICACIONES.REPORTE` recorre el catálogo con `LEFT JOIN` a una vista (cruce + ubicación de la sucursal), así que ubicado en otra sucursal = sin ubicar acá. **"Sin ubicación" es activo y no gasto**; lo ubicado sale siempre, inactivos incluidos. El resumen de arriba no mira `situacion`: son los números de la sucursal entera. La `queryKey` cuelga de `["articulos-ubicaciones"]` para que asignar o quitar lo refresque.
+  >
+  > En el menú, cargarla como **"Reporte de ubicaciones"**: "Artículos por ubicación" ya resuelve al ícono del ABM del cruce en `menu-iconos.ts`.
 - **`_auth.sucursales.tsx`:** "/sucursales" → Sucursales **de la empresa activa**. El recorte lo hace el backend (`?idEmpresa=`), con la misma queryKey que `sucursal-provider` para compartir caché. No hay selector de empresa: el alta va a la activa.
 - **`_auth.configuracion.tsx`:** "/configuracion" → Preferencias (tema, acento).
 

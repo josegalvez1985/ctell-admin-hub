@@ -1622,10 +1622,17 @@ export type Inventario = {
    */
   categoria: string | null;
   /**
-   * Lo contado en el estante. `null` mientras la planilla esté abierta y nadie
-   * haya ido al depósito todavía — por eso no se puede cerrar así.
+   * Lo contado: **la suma de lo contado en cada ubicación**, que calcula el
+   * backend. `null` mientras quede un estante sin contar — por eso no se puede
+   * cerrar así.
    */
   cantidadFisica: number | null;
+  /**
+   * En cuántas ubicaciones se contó. Las líneas en sí vienen con `obtener()`.
+   * `0` es un conteo anterior a la carga por ubicación: se ve igual, pero para
+   * cerrarlo hay que cargarle dónde se contó.
+   */
+  cantidadUbicaciones: number;
   /**
    * Lo que el sistema decía **al cerrar**, sellado por el trigger. `null` en
    * los abiertos: todavía no hay ajuste que explicar.
@@ -1673,6 +1680,32 @@ export type ListaInventarios = {
  */
 export type InventarioDetalle = Omit<Inventario, "observacionesResumen"> & {
   observaciones: string | null;
+  /** Dónde se contó y cuánto en cada lugar, en el orden del depósito. */
+  ubicaciones: InventarioUbicacion[];
+};
+
+/**
+ * Lo contado en una ubicación dentro de un conteo.
+ *
+ * **Es evidencia del día del conteo, no stock por ubicación.** La existencia
+ * sigue siendo una por artículo y sucursal —una venta no dice de qué estante
+ * sale—, así que esto dice dónde estaban las unidades cuando se contó.
+ */
+export type InventarioUbicacion = {
+  idUbicacion: number;
+  zona: string;
+  estante: number;
+  nivel: number;
+  descripcion: string | null;
+  /** `null` = ese estante todavía no se contó. No es cero. */
+  cantidad: number | null;
+};
+
+/** Una línea tal como la manda el formulario. */
+export type InventarioUbicacionNueva = {
+  idUbicacion: number;
+  /** `null` = todavía sin contar. El cero va explícito. */
+  cantidad: number | null;
 };
 
 /** Lo que devuelve cerrar un conteo: cuánto se corrigió, sin volver a consultar. */
@@ -1716,6 +1749,52 @@ export type ArticuloUbicacion = {
 export type ListaArticulosUbicaciones = {
   items: ArticuloUbicacion[];
   total: number;
+};
+
+/** `CON`: las asignaciones. `SIN`: los artículos sin ninguna en la sucursal. */
+export type SituacionUbicacion = "CON" | "SIN";
+
+/**
+ * Una fila del reporte de artículos por ubicación.
+ *
+ * Es **una por asignación**: un artículo en tres estantes sale tres veces. Un
+ * artículo sin ubicación en la sucursal sale una vez, con `idUbicacion`,
+ * `zona`, `estante` y `nivel` en `null` — esa es la marca, no un dato perdido.
+ */
+export type FilaReporteUbicaciones = {
+  idArticulo: number;
+  codigoArticulo: string | null;
+  nombreArticulo: string;
+  idCategoria: number | null;
+  categoria: string | null;
+  idMarca: number | null;
+  marca: string | null;
+  idUbicacion: number | null;
+  zona: string | null;
+  estante: number | null;
+  nivel: number | null;
+  descripcionUbicacion: string | null;
+  /** En la sucursal del reporte. Nunca `null`: sin fila de existencia es 0. */
+  cantidadStock: number;
+  esGasto: "S" | "N";
+  activo: "A" | "I";
+};
+
+export type ReporteUbicaciones = {
+  items: FilaReporteUbicaciones[];
+  /** Las filas de la `situacion` pedida, no las de esta página. */
+  total: number;
+  pagina: number;
+  tamanio: number;
+  /*
+   * El resumen de la sucursal, SIN mirar `situacion`: con el filtro en "Sin
+   * ubicación" la pantalla igual sabe cuántos están ubicados.
+   */
+  asignaciones: number;
+  ubicacionesOcupadas: number;
+  articulosUbicados: number;
+  /** Activos y que no son gasto: un flete no va en un estante. */
+  sinUbicacion: number;
 };
 
 export type UnidadMedida = {
@@ -2814,18 +2893,23 @@ export const api = {
        * entre sí por ella.
        */
       fechaInventario?: string | undefined;
-      cantidadFisica?: number | undefined;
       observaciones?: string | undefined;
+      /**
+       * **Obligatorio, al menos una.** La cantidad contada es la suma de estas
+       * líneas: ya no se manda suelta. Cada ubicación donde el artículo no
+       * estaba asignado **se le asigna** al guardar.
+       */
+      ubicaciones: InventarioUbicacionNueva[];
     }) =>
-      request<{ id: number; ok: boolean }>("/inventarios/crear", {
+      request<{ id: number; ok: boolean; ubicacionesAsignadas: number }>("/inventarios/crear", {
         method: "POST",
         body: JSON.stringify({
           idEmpresa: datos.idEmpresa,
           idSucursal: datos.idSucursal,
           idArticulo: datos.idArticulo,
           fechaInventario: datos.fechaInventario ?? "",
-          cantidadFisica: datos.cantidadFisica ?? "",
           observaciones: datos.observaciones ?? "",
+          ubicaciones: datos.ubicaciones,
         }),
       }),
 
@@ -2834,10 +2918,13 @@ export const api = {
      * modifican: contar otra cosa es cargar otro inventario.
      *
      * **ACÁ UN CAMPO VACÍO BORRA, no conserva** — al revés que el resto del
-     * proyecto. Es deliberado: la cantidad puede volver a quedar sin cargar, y
-     * con la regla habitual quien escribió 12 por error se quedaría con ese 12
-     * para siempre… y cerrar lo aplicaría al stock. Mandá siempre los tres
-     * campos con lo que tenga el formulario.
+     * proyecto. Es deliberado: la cantidad de un estante puede volver a quedar
+     * sin cargar, y con la regla habitual quien escribió 12 por error se
+     * quedaría con ese 12 para siempre… y cerrar lo aplicaría al stock. Mandá
+     * siempre todos los campos con lo que tenga el formulario.
+     *
+     * **Las ubicaciones se reemplazan enteras**: una que no venga se borra del
+     * conteo (no del artículo: la asignación queda).
      *
      * `fechaInventario` es la excepción: vacía conserva la que ya tenía. Un
      * conteo sin fecha no significa nada.
@@ -2847,17 +2934,17 @@ export const api = {
       datos: {
         idEmpresa: number;
         fechaInventario?: string | undefined;
-        cantidadFisica?: number | undefined;
         observaciones?: string | undefined;
+        ubicaciones: InventarioUbicacionNueva[];
       },
     ) =>
-      request<{ ok: boolean }>(`/inventarios/actualizar/${id}`, {
+      request<{ ok: boolean; ubicacionesAsignadas: number }>(`/inventarios/actualizar/${id}`, {
         method: "PUT",
         body: JSON.stringify({
           idEmpresa: datos.idEmpresa,
           fechaInventario: datos.fechaInventario ?? "",
-          cantidadFisica: datos.cantidadFisica ?? "",
           observaciones: datos.observaciones ?? "",
+          ubicaciones: datos.ubicaciones,
         }),
       }),
 
@@ -2865,8 +2952,9 @@ export const api = {
      * Aplica el conteo: `EXISTENCIAS.CANTIDAD_DISPONIBLE` pasa a valer
      * `cantidadFisica`, y la fila queda congelada.
      *
-     * **No se deshace.** Da 400 si el conteo no tiene cantidad cargada, y 409
-     * si ya estaba cerrado o anulado.
+     * **No se deshace.** Da 400 si el conteo no tiene ubicaciones o le queda
+     * alguna sin contar, y 409 si ya estaba cerrado o anulado. La suma se
+     * vuelve a calcular en el backend justo antes de aplicarla.
      *
      * Invalidá también `["existencias"]` y `["articulos"]` al volver: los
      * números que muestran acaban de cambiar.
@@ -2988,12 +3076,18 @@ export const api = {
       return request<ListaCodigosEquivalentes>(`/codigos-equivalentes/listar?${q}`);
     },
 
-    /** El backend sube el código a mayúsculas y recorta los espacios. */
+    /**
+     * El backend sube el código a mayúsculas y recorta los espacios.
+     *
+     * `descripcion` es obligatoria **como clave**, aunque vaya `""`: una clave
+     * omitida deja el bind de ORDS sin definir y el POST da 500 antes de llegar
+     * al paquete. Vacía se guarda como NULL.
+     */
     crear: (datos: {
       idEmpresa: number;
       idArticulo: number;
       codigoEquivalente: string;
-      descripcion?: string;
+      descripcion: string;
     }) =>
       request<{ id: number; ok: boolean }>("/codigos-equivalentes/crear", {
         method: "POST",
@@ -3008,7 +3102,7 @@ export const api = {
      */
     actualizar: (
       id: number,
-      datos: { idEmpresa: number; codigoEquivalente: string; descripcion?: string },
+      datos: { idEmpresa: number; codigoEquivalente: string; descripcion: string },
     ) =>
       request<{ ok: boolean }>(`/codigos-equivalentes/actualizar/${id}`, {
         method: "PUT",
@@ -3301,6 +3395,18 @@ export const api = {
         method: "PUT",
         headers: { "Content-Type": archivo.type },
         body: archivo,
+      }),
+
+    /**
+     * Quita la foto: el profesor vuelve a mostrarse con el ícono de "subir".
+     *
+     * Ruta propia con la empresa (`foto/:id/:idEmpresa`) y no un DELETE sobre
+     * `foto/:id`: ésa es la URL pública del `<img>`, y el borrado tiene que ir
+     * acotado a la empresa de la sesión. Sin foto que quitar responde 200 igual.
+     */
+    quitarFoto: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/profesores/foto/${id}/${idEmpresa}`, {
+        method: "DELETE",
       }),
   },
 
@@ -4225,13 +4331,44 @@ export const api = {
     },
 
     /**
+     * Los artículos por ubicación de una sucursal **y** los que no tienen
+     * ninguna, en el mismo listado. Recorre el catálogo, no el cruce: por eso
+     * puede devolver lo que `listar` nunca ve.
+     *
+     * `idSucursal` es obligatorio: "sin ubicación" es siempre en un depósito.
+     * Sin `situacion` trae las dos mitades. Paginado, **50 de techo**.
+     */
+    reporte: (params: {
+      idEmpresa: number;
+      idSucursal: number;
+      situacion?: SituacionUbicacion | undefined;
+      pagina?: number | undefined;
+      tamanio?: number | undefined;
+    }) => {
+      const q = new URLSearchParams({
+        idEmpresa: String(params.idEmpresa),
+        idSucursal: String(params.idSucursal),
+      });
+      if (params.situacion) q.set("situacion", params.situacion);
+      if (params.pagina) q.set("pagina", String(params.pagina));
+      if (params.tamanio) q.set("tamanio", String(params.tamanio));
+      return request<ReporteUbicaciones>(`/articulos-ubicaciones/reporte?${q}`);
+    },
+
+    /**
      * Asigna un artículo a una ubicación.
      *
      * 409 si ya estaba asignado, y **400 si el artículo y la ubicación son de
      * empresas distintas**: el DDL lo permite (las dos FK no miran la empresa) y
      * sólo el paquete lo evita.
      */
-    asignar: (datos: { idArticulo: number; idUbicacion: number }) =>
+    /*
+     * `idEmpresa` es obligatorio: el backend exige que el artículo Y la
+     * ubicación sean de la empresa del que llama, y sin ella responde 400. El
+     * tipo no la pedía, y ninguna de las tres pantallas que asignan la mandaba:
+     * asignar una ubicación fallaba siempre.
+     */
+    asignar: (datos: { idEmpresa: number; idArticulo: number; idUbicacion: number }) =>
       request<{ id: number; ok: boolean }>("/articulos-ubicaciones/crear", {
         method: "POST",
         body: JSON.stringify(datos),

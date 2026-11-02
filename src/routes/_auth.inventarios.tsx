@@ -3,7 +3,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Ban, Eye, Loader2, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useForm } from "react-hook-form";
+import { useFieldArray, useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 
@@ -230,6 +230,27 @@ function Cantidad({ valor, conSigno = false }: { valor: number | null; conSigno?
   );
 }
 
+/**
+ * En cuántas ubicaciones se contó, debajo del número.
+ *
+ * Un conteo ABIERTO sin ninguna es uno cargado antes de la carga por ubicación:
+ * así no se puede cerrar, y se marca para que se vea antes de intentarlo. Los
+ * cerrados viejos no se marcan: ya se aplicaron y no hay nada que hacer.
+ */
+function UbicacionesDeFila({ inventario }: { inventario: Inventario }) {
+  const n = inventario.cantidadUbicaciones;
+  if (n === 0) {
+    return inventario.estado === "ABIERTO" ? (
+      <span className="block text-xs text-warning">Falta la ubicación</span>
+    ) : null;
+  }
+  return (
+    <span className="block text-xs text-muted-foreground">
+      en {n} ubicaci{n === 1 ? "ón" : "ones"}
+    </span>
+  );
+}
+
 function InventariosPage() {
   const queryClient = useQueryClient();
   const { empresa } = useEmpresa();
@@ -450,6 +471,7 @@ function InventariosPage() {
                     <dt className="text-xs text-muted-foreground">Contado</dt>
                     <dd>
                       <Cantidad valor={inv.cantidadFisica} />
+                      <UbicacionesDeFila inventario={inv} />
                     </dd>
                   </div>
                   <div>
@@ -547,6 +569,7 @@ function InventariosPage() {
                     </TableCell>
                     <TableCell className="text-right">
                       <Cantidad valor={inv.cantidadFisica} />
+                      <UbicacionesDeFila inventario={inv} />
                     </TableCell>
                     <TableCell className="text-right">
                       <Cantidad valor={diferenciaDe(inv)} conSigno />
@@ -717,17 +740,67 @@ const cantidad = z
   .string()
   .trim()
   .refine((v) => v === "" || (!Number.isNaN(Number(v)) && Number(v) >= 0), {
-    message: "La cantidad contada debe ser un número mayor o igual a 0",
+    message: "Un número mayor o igual a 0",
   });
+
+/**
+ * Una línea del conteo: un estante y lo que se encontró ahí.
+ *
+ * La cantidad vacía es "este estante todavía no se contó", no cero: el conteo
+ * se puede guardar así, pero no cerrar. El cero se carga explícito.
+ */
+const lineaUbicacion = z.object({
+  idUbicacion: z.string().min(1, "Elegí la ubicación"),
+  cantidad,
+});
 
 const schema = z.object({
   idArticulo: z.string().min(1, "Elegí el artículo que se contó"),
   fechaInventario: z.string().min(1, "Obligatorio"),
-  cantidadFisica: cantidad,
+  // SIEMPRE AL MENOS UNA: un número sin el lugar donde se lo encontró es lo
+  // que esta carga vino a evitar. El backend lo exige igual.
+  ubicaciones: z
+    .array(lineaUbicacion)
+    .min(1, "Cargá al menos una ubicación: en qué estante se encontró el artículo")
+    // El mismo estante en dos líneas son dos números para el mismo lugar, y la
+    // suma lo contaría dos veces. El backend lo rechaza; acá se marca la línea.
+    .superRefine((lineas, ctx) => {
+      const vistas = new Set<string>();
+      lineas.forEach((l, i) => {
+        if (l.idUbicacion && vistas.has(l.idUbicacion)) {
+          ctx.addIssue({
+            code: "custom",
+            message: "Ya está en otra línea: sumá lo de ese estante en una sola",
+            path: [i, "idUbicacion"],
+          });
+        }
+        vistas.add(l.idUbicacion);
+      });
+    }),
   observaciones: z.string().trim().max(1000, "Máximo 1000 caracteres"),
 });
 
 type FormValues = z.infer<typeof schema>;
+
+const LINEA_VACIA = { idUbicacion: "", cantidad: "" };
+
+/**
+ * Lo contado: la suma de las líneas, o `null` si a alguna le falta el número.
+ *
+ * Con un estante sin contar el total no existe todavía. Sumar sólo los que
+ * tienen número mostraría como "contaste 7" un conteo al que le falta la
+ * mitad del depósito — es la misma regla que aplica el backend.
+ */
+function sumaLineas(lineas: { cantidad: string }[]): number | null {
+  if (lineas.length === 0) return null;
+  let total = 0;
+  for (const l of lineas) {
+    const texto = l.cantidad.trim();
+    if (texto === "" || Number.isNaN(Number(texto))) return null;
+    total += Number(texto);
+  }
+  return total;
+}
 
 /**
  * Alta, edición y vista del conteo. `inventario` en `null` es un alta.
@@ -792,19 +865,23 @@ function InventarioDialog({
   const [categoriaYaAsignada, setCategoriaYaAsignada] = useState(false);
 
   /**
-   * La ubicación que se está por asignar. Misma idea que las otras dos, pero la
-   * relación NO es la misma — ver `faltaUbicacion`.
-   */
-  const [idUbicacionAAsignar, setIdUbicacionAAsignar] = useState("");
-
-  /**
    * Estante por el que se está filtrando la lista de artículos.
    *
-   * NO ES UN CAMPO DEL CONTEO: no viaja al backend ni se guarda. El conteo ya
-   * queda ubicado por su artículo — esto sólo acorta la lista para el que está
-   * parado delante del estante contando lo que hay.
+   * No es un campo del conteo: acorta la lista para el que está parado delante
+   * del estante. Lo que sí hace es aparecer PRIMERO en las ubicaciones del
+   * conteo al elegir el artículo — si se lo eligió desde ese estante, es ahí
+   * donde se lo está contando.
    */
   const [filtroUbicacion, setFiltroUbicacion] = useState(TODAS_UBICACIONES);
+
+  /**
+   * El artículo cuyas ubicaciones hay que precargar en cuanto lleguen.
+   *
+   * Se precarga UNA vez, al elegir el artículo, y no cada vez que cambia la
+   * consulta: si después de tipear las cantidades se invalidara la caché del
+   * cruce, un efecto que precargara siempre se llevaría puesto lo cargado.
+   */
+  const [precargarPara, setPrecargarPara] = useState<number | null>(null);
 
   /** El id que se le pasa al selector de artículo, o nada si es "todo el depósito". */
   const ubicacionFiltrada =
@@ -815,10 +892,12 @@ function InventarioDialog({
     defaultValues: {
       idArticulo: "",
       fechaInventario: ahora(),
-      cantidadFisica: "",
+      ubicaciones: [],
       observaciones: "",
     },
   });
+
+  const lineas = useFieldArray({ control: form.control, name: "ubicaciones" });
 
   /**
    * EL DETALLE SE PIDE APARTE, y no se usa la fila del listado.
@@ -906,9 +985,10 @@ function InventarioDialog({
   // tiene fila. Para quien cuenta es lo mismo, y se muestra como 0.
   const sistema = existencia?.items[0]?.cantidadDisponible ?? 0;
 
-  const contadoTexto = form.watch("cantidadFisica");
-  const contado = contadoTexto.trim() === "" ? null : Number(contadoTexto);
-  const diferencia = contado === null || Number.isNaN(contado) ? null : contado - sistema;
+  const lineasCargadas = form.watch("ubicaciones");
+  const contado = sumaLineas(lineasCargadas);
+  const sinContar = lineasCargadas.filter((l) => l.cantidad.trim() === "").length;
+  const diferencia = contado === null ? null : contado - sistema;
 
   /**
    * La marca del artículo elegido, y si se sabe cuál es.
@@ -985,6 +1065,9 @@ function InventarioDialog({
     (u) => u.idSucursal === idSucursal,
   );
 
+  /** Los ids de las ubicaciones ya asignadas acá, para marcar las líneas nuevas y los ceros. */
+  const asignadasAca = new Set(ubicacionesAca.map((u) => String(u.idUbicacion)));
+
   /**
    * El artículo no está ubicado en este depósito.
    *
@@ -995,6 +1078,42 @@ function InventarioDialog({
    */
   const faltaUbicacion =
     !soloLectura && idArticuloElegido > 0 && !cargandoAsignaciones && ubicacionesAca.length === 0;
+
+  /**
+   * LA PRECARGA: una línea por cada estante donde el artículo ya está asignado
+   * en esta sucursal, con la cantidad en blanco. Es la lista de lugares a los
+   * que hay que ir a mirar.
+   *
+   * Si se lo eligió filtrando por un estante, ése va primero aunque no esté
+   * asignado: es donde se lo está contando. Sin ninguna asignación, una línea
+   * vacía para elegir dónde se lo encontró.
+   */
+  const { replace: reemplazarLineas } = lineas;
+  useEffect(() => {
+    if (precargarPara === null || precargarPara !== idArticuloElegido) return;
+    if (ubicacionesDelArticulo === undefined) return;
+
+    const ids = ubicacionesDelArticulo.items
+      .filter((u) => u.idSucursal === idSucursal)
+      .map((u) => String(u.idUbicacion));
+    if (filtroUbicacion !== TODAS_UBICACIONES) {
+      const i = ids.indexOf(filtroUbicacion);
+      if (i >= 0) ids.splice(i, 1);
+      ids.unshift(filtroUbicacion);
+    }
+
+    reemplazarLineas(
+      ids.length > 0 ? ids.map((id) => ({ idUbicacion: id, cantidad: "" })) : [LINEA_VACIA],
+    );
+    setPrecargarPara(null);
+  }, [
+    precargarPara,
+    idArticuloElegido,
+    ubicacionesDelArticulo,
+    idSucursal,
+    filtroUbicacion,
+    reemplazarLineas,
+  ]);
 
   // El catálogo entero: MARCAS no está paginado y es acotado. Misma queryKey que
   // /marcas y que la pantalla de Artículos, así se comparte la respuesta.
@@ -1122,24 +1241,47 @@ function InventarioDialog({
   });
 
   /**
-   * Las ubicaciones DE ESTA SUCURSAL, para elegir una.
+   * Las ubicaciones DE ESTA SUCURSAL, para las líneas del conteo.
    *
-   * `idSucursal` no es opcional acá: el catálogo de ubicaciones es de toda la
-   * empresa, y ofrecer un estante del otro depósito sería dejar asignar el
-   * artículo a un lugar donde no está. El backend no lo impide —sólo rechaza el
-   * cruce entre empresas— así que el recorte tiene que hacerlo la pantalla.
+   * Todas, no sólo las que tienen artículos: el artículo pudo aparecer en un
+   * estante vacío, y contarlo ahí es justamente lo que lo asigna. Sólo esta
+   * sucursal: se cuenta lo que hay en ESTE depósito, y el backend rechaza una
+   * ubicación de otro.
    */
   const { data: ubicaciones, isPending: cargandoUbicaciones } = useQuery({
     queryKey: ["ubicaciones", idEmpresa, idSucursal],
     queryFn: () => api.ubicaciones.listar({ idEmpresa, idSucursal }),
-    enabled: abierto && faltaUbicacion,
+    enabled: abierto && !soloLectura,
   });
 
-  const ubicacionesOpciones = (ubicaciones?.items ?? []).map((u) => ({
-    valor: String(u.id),
-    etiqueta: etiquetaUbicacion(u.zona, u.estante, u.nivel),
-    ...(u.descripcion ? { descripcion: u.descripcion } : {}),
-  }));
+  /**
+   * Las opciones de cada línea. Las asignadas al artículo lo dicen, para que
+   * se vea cuáles son "sus" estantes y cuáles uno nuevo.
+   *
+   * Se suman las del detalle del conteo: al reabrirlo —y en sólo lectura, donde
+   * el catálogo ni se pide— la línea tiene que poder mostrar su estante sin
+   * esperar a otra consulta.
+   */
+  const ubicacionesOpciones = (() => {
+    const opciones = (ubicaciones?.items ?? []).map((u) => ({
+      valor: String(u.id),
+      etiqueta: etiquetaUbicacion(u.zona, u.estante, u.nivel),
+      ...(asignadasAca.has(String(u.id))
+        ? { descripcion: "Asignada a este artículo" }
+        : u.descripcion
+          ? { descripcion: u.descripcion }
+          : {}),
+    }));
+    for (const u of detalle?.ubicaciones ?? []) {
+      if (!opciones.some((o) => o.valor === String(u.idUbicacion))) {
+        opciones.push({
+          valor: String(u.idUbicacion),
+          etiqueta: etiquetaUbicacion(u.zona, u.estante, u.nivel),
+        });
+      }
+    }
+    return opciones;
+  })();
 
   /**
    * Crear el estante que falta sin salir del conteo.
@@ -1172,29 +1314,6 @@ function InventarioDialog({
     },
   };
 
-  /**
-   * ASIGNA, no reemplaza. La tabla es un cruce: el artículo queda en el estante
-   * nuevo *además* de donde ya estuviera. Mover uno de lugar es quitar la
-   * asignación vieja desde `/articulos-ubicaciones`, que es la pantalla que
-   * tiene esa operación.
-   *
-   * Acá no hace falta el flag "ya asigné" que sí tienen la marca y la categoría:
-   * el aviso se apaga solo, porque `faltaUbicacion` sale de una CONSULTA que se
-   * invalida al terminar. Es la ventaja de que el dato no viva en el artículo.
-   */
-  const asignarUbicacion = useMutation({
-    mutationFn: (idUbicacion: number) =>
-      api.articulosUbicaciones.asignar({ idArticulo: idArticuloElegido, idUbicacion }),
-    onSuccess: (_resultado, idUbicacion) => {
-      const donde = ubicacionesOpciones.find((u) => u.valor === String(idUbicacion))?.etiqueta;
-      setIdUbicacionAAsignar("");
-      queryClient.invalidateQueries({ queryKey: ["articulos-ubicaciones"] });
-      toast.success(donde ? `Artículo ubicado en ${donde}` : "Ubicación asignada");
-    },
-    // El 409 de "ya estaba asignado" llega con su mensaje del backend.
-    onError: (e) => toast.error(MENSAJE_ERROR(e, "No se pudo asignar la ubicación")),
-  });
-
   // Se rellena al abrir: el diálogo se monta una vez y se reusa, así que sin
   // esto el segundo conteo que se abriera mostraría los datos del primero.
   useEffect(() => {
@@ -1210,9 +1329,8 @@ function InventarioDialog({
     setCategoriaAsignada(null);
     setCategoriaYaAsignada(false);
     setIdCategoriaAAsignar("");
-    // La ubicación no tiene "asignada"/"ya asignada": su aviso sale de una
-    // consulta, no de estado local. Sólo hay que limpiar lo elegido a medias.
-    setIdUbicacionAAsignar("");
+    // Una precarga pendiente del conteo anterior no puede caer sobre éste.
+    setPrecargarPara(null);
     // El filtro de arriba también: es de la sesión de carga anterior, y dejarlo
     // haría que el próximo conteo arranque con la lista acotada a un estante que
     // nadie eligió esta vez.
@@ -1222,7 +1340,7 @@ function InventarioDialog({
       form.reset({
         idArticulo: "",
         fechaInventario: ahora(),
-        cantidadFisica: "",
+        ubicaciones: [],
         observaciones: "",
       });
       setNombreArticulo("");
@@ -1245,40 +1363,70 @@ function InventarioDialog({
     form.reset({
       idArticulo: String(detalle.idArticulo),
       fechaInventario: paraInput(detalle.fechaInventario) || ahora(),
-      cantidadFisica: detalle.cantidadFisica === null ? "" : String(detalle.cantidadFisica),
+      ubicaciones:
+        detalle.ubicaciones.length > 0
+          ? detalle.ubicaciones.map((u) => ({
+              idUbicacion: String(u.idUbicacion),
+              cantidad: u.cantidad === null ? "" : String(u.cantidad),
+            }))
+          : // UN CONTEO ANTERIOR A LA CARGA POR UBICACIÓN: tiene número pero no
+            // lugar. Se le arma una línea con ese número para que sólo haya que
+            // elegir el estante — sin ella no se puede guardar ni cerrar.
+            [
+              {
+                idUbicacion: "",
+                cantidad: detalle.cantidadFisica === null ? "" : String(detalle.cantidadFisica),
+              },
+            ],
       observaciones: detalle.observaciones ?? "",
     });
   }, [abierto, inventario, detalle, form]);
 
   const guardar = useMutation({
     mutationFn: (valores: FormValues) => {
-      // El campo vacío se manda como `undefined`, que el cliente traduce a "" y
-      // el backend interpreta como BORRAR. Es deliberado: sin eso, quien cargó
-      // 12 por error no podría volver a dejar la planilla sin contar, y cerrar
-      // aplicaría ese 12 al stock.
-      const cantidadFisica =
-        valores.cantidadFisica.trim() === "" ? undefined : Number(valores.cantidadFisica);
+      // La cantidad vacía va como `null`: el backend la guarda como "sin contar"
+      // y no como cero. Es deliberado: sin eso, quien cargó 12 por error no
+      // podría volver a dejar el estante sin contar, y cerrar aplicaría ese 12.
+      const ubicaciones = valores.ubicaciones.map((l) => ({
+        idUbicacion: Number(l.idUbicacion),
+        cantidad: l.cantidad.trim() === "" ? null : Number(l.cantidad),
+      }));
 
       return inventario
         ? api.inventarios.actualizar(inventario.id, {
             idEmpresa,
             fechaInventario: valores.fechaInventario,
-            cantidadFisica,
             observaciones: valores.observaciones,
+            ubicaciones,
           })
         : api.inventarios.crear({
             idEmpresa,
             idSucursal,
             idArticulo: Number(valores.idArticulo),
             fechaInventario: valores.fechaInventario,
-            cantidadFisica,
             observaciones: valores.observaciones,
+            ubicaciones,
           });
     },
-    onSuccess: () => {
+    onSuccess: ({ ubicacionesAsignadas }) => {
       queryClient.invalidateQueries({ queryKey: ["inventarios"] });
       queryClient.invalidateQueries({ queryKey: ["inventario"] });
-      toast.success(editando ? "Conteo actualizado" : "Conteo cargado");
+      // El conteo pudo asignarle estantes al artículo: cambian el cruce, los
+      // contadores de "estantes con artículos" y el reporte de ubicaciones.
+      if (ubicacionesAsignadas > 0) {
+        queryClient.invalidateQueries({ queryKey: ["articulos-ubicaciones"] });
+        queryClient.invalidateQueries({ queryKey: ["ubicaciones"] });
+      }
+      const base = editando ? "Conteo actualizado" : "Conteo cargado";
+      toast.success(
+        ubicacionesAsignadas > 0
+          ? `${base}. El artículo quedó asignado a ${
+              ubicacionesAsignadas === 1
+                ? "1 ubicación nueva"
+                : `${ubicacionesAsignadas} ubicaciones nuevas`
+            }.`
+          : base,
+      );
       onCerrar();
     },
     onError: (e) => {
@@ -1342,6 +1490,8 @@ function InventarioDialog({
                     form.setValue("idArticulo", "");
                     setNombreArticulo("");
                     setArticuloElegido(null);
+                    // Las líneas eran del artículo que se acaba de soltar.
+                    reemplazarLineas([]);
                   }}
                   titulo={`Ubicaciones de ${nombreSucursal}`}
                   descripcion="Sólo los estantes que tienen algo guardado."
@@ -1351,7 +1501,8 @@ function InventarioDialog({
                   className="w-full"
                 />
                 <p className="text-[0.8rem] text-muted-foreground">
-                  Acota la lista de abajo a lo guardado en ese estante. No se guarda en el conteo.
+                  Acota la lista de abajo a lo guardado en ese estante, y lo pone primero en las
+                  ubicaciones del conteo.
                 </p>
               </div>
             )}
@@ -1381,7 +1532,10 @@ function InventarioDialog({
                         setCategoriaAsignada(null);
                         setCategoriaYaAsignada(false);
                         setIdCategoriaAAsignar("");
-                        setIdUbicacionAAsignar("");
+                        // Las líneas se arman con los estantes de ESTE
+                        // artículo en cuanto llegue la consulta.
+                        reemplazarLineas([]);
+                        setPrecargarPara(Number(valor));
                       }}
                       // NO SE CAMBIA AL EDITAR: mover el conteo a otro artículo
                       // lo aplicaría sobre una existencia que nadie contó. El
@@ -1492,105 +1646,174 @@ function InventarioDialog({
               </div>
             )}
 
-            {/* SIN UBICACIÓN EN ESTE DEPÓSITO.
-                Mismo patrón que marca y categoría, con dos diferencias que se
-                explican en `faltaUbicacion` y en `asignarUbicacion`: el dato
-                sale de una consulta —es una tabla de cruce, no una columna— y
-                asignar SUMA un estante en vez de reemplazar. */}
-            {faltaUbicacion && (
-              <div className="space-y-3 rounded-lg border border-warning/40 bg-warning/10 p-3">
-                <div className="flex items-start gap-2">
-                  <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
-                  <p className="text-sm text-foreground">
-                    Este artículo no tiene ubicación en {nombreSucursal}.{" "}
-                    <span className="text-muted-foreground">
-                      Acabás de ir a buscarlo: dejá anotado en qué estante estaba.
-                    </span>
+            <FormField
+              control={form.control}
+              name="fechaInventario"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Fecha y hora del conteo</FormLabel>
+                  <FormControl>
+                    {/* step="1" es lo que hace que el campo acepte SEGUNDOS:
+                        sin él el navegador redondea a minutos y descarta lo
+                        que venga después, incluso lo que ya estaba guardado. */}
+                    <Input
+                      type="datetime-local"
+                      step="1"
+                      {...field}
+                      disabled={soloLectura || esperandoDetalle}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    Cuándo se contó en el depósito, no cuándo se carga acá.
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            {/* DÓNDE SE CONTÓ: una línea por estante, cada una con lo que había.
+                La cantidad del conteo es la SUMA, y es lo que se aplica al
+                cerrar — la existencia sigue siendo una por artículo y sucursal.
+
+                Se muestra recién con el artículo elegido: las líneas se
+                precargan con SUS estantes. */}
+            {idArticuloElegido > 0 && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <Label>Dónde se contó</Label>
+                  {!soloLectura && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => lineas.append(LINEA_VACIA)}
+                      disabled={esperandoDetalle}
+                    >
+                      <Plus className="size-4" />
+                      Agregar ubicación
+                    </Button>
+                  )}
+                </div>
+
+                {faltaUbicacion && (
+                  <p className="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 p-2.5 text-xs text-foreground">
+                    <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" />
+                    Este artículo no tiene ubicación en {nombreSucursal}. La que cargues se le
+                    asigna al guardar.
                   </p>
-                </div>
+                )}
 
-                <div className="flex flex-wrap items-center gap-2">
-                  <SelectorModal
-                    opciones={ubicacionesOpciones}
-                    value={idUbicacionAAsignar}
-                    onChange={setIdUbicacionAAsignar}
-                    placeholder="Elegí la ubicación"
-                    titulo={`Ubicación en ${nombreSucursal}`}
-                    buscarPlaceholder="Buscar zona, estante o nivel…"
-                    vacioTexto="Esta sucursal todavía no tiene ubicaciones cargadas."
-                    cargando={cargandoUbicaciones}
-                    className="min-w-0 flex-1"
-                    alta={altaUbicacion}
-                  />
-                  <Button
-                    type="button"
-                    // type="button" NO es decorativo: mismo motivo que en los
-                    // otros dos "Asignar".
-                    onClick={() => asignarUbicacion.mutate(Number(idUbicacionAAsignar))}
-                    disabled={idUbicacionAAsignar === "" || asignarUbicacion.isPending}
-                  >
-                    {asignarUbicacion.isPending && <Loader2 className="size-4 animate-spin" />}
-                    Asignar
-                  </Button>
-                </div>
+                {lineas.fields.map((linea, i) => {
+                  const actual = lineasCargadas[i];
+                  const idUbicacion = actual?.idUbicacion ?? "";
+                  const nueva =
+                    !soloLectura &&
+                    !cargandoAsignaciones &&
+                    idUbicacion !== "" &&
+                    !asignadasAca.has(idUbicacion);
+                  // Un estante asignado que dio 0 NO se desasigna —puede ser
+                  // su lugar cuando se reponga—, pero se avisa.
+                  const enCero =
+                    !soloLectura &&
+                    asignadasAca.has(idUbicacion) &&
+                    actual?.cantidad.trim() !== "" &&
+                    Number(actual?.cantidad) === 0;
 
-                <p className="text-xs text-muted-foreground">
-                  Se guarda en el artículo, no en este conteo, y se aplica al tocar "Asignar". Un
-                  artículo puede estar en varios estantes: esto agrega uno, no reemplaza.
-                </p>
+                  return (
+                    <div key={linea.id} className="space-y-1">
+                      <div className="flex items-start gap-2">
+                        <FormField
+                          control={form.control}
+                          name={`ubicaciones.${i}.idUbicacion`}
+                          render={({ field }) => (
+                            <FormItem className="min-w-0 flex-1">
+                              <FormControl>
+                                <SelectorModal
+                                  opciones={ubicacionesOpciones}
+                                  value={field.value}
+                                  onChange={field.onChange}
+                                  placeholder="Elegí la ubicación"
+                                  titulo={`Ubicación en ${nombreSucursal}`}
+                                  buscarPlaceholder="Buscar zona, estante o nivel…"
+                                  vacioTexto="Esta sucursal todavía no tiene ubicaciones cargadas."
+                                  cargando={cargandoUbicaciones && !soloLectura}
+                                  disabled={soloLectura || esperandoDetalle}
+                                  className="w-full"
+                                  alta={altaUbicacion}
+                                />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        <FormField
+                          control={form.control}
+                          name={`ubicaciones.${i}.cantidad`}
+                          render={({ field }) => (
+                            <FormItem className="w-28 shrink-0">
+                              <FormControl>
+                                {/* inputMode decimal abre el teclado numérico en
+                                    móvil sin las flechas de un type="number". */}
+                                <Input
+                                  {...field}
+                                  inputMode="decimal"
+                                  placeholder="Sin contar"
+                                  autoComplete="off"
+                                  aria-label="Cantidad contada en esta ubicación"
+                                  className="tabular-nums"
+                                  disabled={soloLectura || esperandoDetalle}
+                                />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        {!soloLectura && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => lineas.remove(i)}
+                            // La última no se quita: un conteo sin ubicación
+                            // no se puede guardar, y quitarla dejaría el
+                            // formulario sin dónde cargar el número.
+                            disabled={lineas.fields.length === 1 || esperandoDetalle}
+                            title="Quitar esta ubicación del conteo"
+                          >
+                            <Trash2 className="size-4" />
+                          </Button>
+                        )}
+                      </div>
+                      {nueva && (
+                        <p className="text-[0.8rem] text-muted-foreground">
+                          No estaba asignada: queda asignada al artículo al guardar.
+                        </p>
+                      )}
+                      {enCero && (
+                        <p className="text-[0.8rem] text-warning">
+                          Quedó en 0. El artículo sigue asignado a este estante; si ya no va acá,
+                          quitalo desde Ubicaciones de artículos.
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {/* El error del array entero (ninguna línea). No es de un campo
+                    —no hay <FormItem> que lo contenga—, así que va como texto. */}
+                {form.formState.errors.ubicaciones?.message && (
+                  <p className="text-[0.8rem] font-medium text-destructive">
+                    {form.formState.errors.ubicaciones.message}
+                  </p>
+                )}
+                {!soloLectura && sinContar > 0 && (
+                  <p className="text-[0.8rem] text-muted-foreground">
+                    Vacío = ese estante todavía no se contó. Se puede guardar así, pero para cerrar
+                    el conteo hace falta el número de cada uno, aunque sea 0.
+                  </p>
+                )}
               </div>
             )}
-
-            <div className="grid gap-4 sm:grid-cols-2">
-              <FormField
-                control={form.control}
-                name="fechaInventario"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Fecha y hora del conteo</FormLabel>
-                    <FormControl>
-                      {/* step="1" es lo que hace que el campo acepte SEGUNDOS:
-                          sin él el navegador redondea a minutos y descarta lo
-                          que venga después, incluso lo que ya estaba guardado. */}
-                      <Input
-                        type="datetime-local"
-                        step="1"
-                        {...field}
-                        disabled={soloLectura || esperandoDetalle}
-                      />
-                    </FormControl>
-                    <FormDescription>
-                      Cuándo se contó en el depósito, no cuándo se carga acá.
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name="cantidadFisica"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Cantidad contada</FormLabel>
-                    <FormControl>
-                      {/* inputMode decimal abre el teclado numérico en móvil sin
-                          las flechas de un type="number". */}
-                      <Input
-                        {...field}
-                        inputMode="decimal"
-                        placeholder="Sin contar"
-                        autoComplete="off"
-                        className="tabular-nums"
-                        disabled={soloLectura || esperandoDetalle}
-                      />
-                    </FormControl>
-                    <FormDescription>Vacío = todavía no se contó.</FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </div>
 
             {/* La comparación va FUERA de los campos y no como descripción de
                 uno: no pertenece a ninguno, sale de los dos. Un hijo de ui/form
@@ -1605,9 +1828,11 @@ function InventarioDialog({
                   </p>
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">Contaste</p>
+                  <p className="text-xs text-muted-foreground">
+                    Contaste{lineasCargadas.length > 1 ? " (total)" : ""}
+                  </p>
                   <p className="mt-1 font-display text-lg font-bold tabular-nums text-foreground">
-                    {contado === null || Number.isNaN(contado) ? "—" : formatearMoneda(contado)}
+                    {contado === null ? "—" : formatearMoneda(contado)}
                   </p>
                 </div>
                 <div>

@@ -15,6 +15,28 @@
 --   7. ELIMINAR    DELETE /inventarios/eliminar/:id/:idEmpresa
 --
 --------------------------------------------------------------------------------
+-- EL CONTEO SE CARGA POR UBICACION, Y ES OBLIGATORIO
+--
+-- El alta y la edicion reciben `ubicaciones`: [{ idUbicacion, cantidad }], una
+-- linea por estante donde se encontro el articulo (INVENTARIOS_UBICACIONES, en
+-- db/inventarios-ubicaciones-ddl.sql). CANTIDAD_FISICA deja de venir del
+-- cliente: es la SUMA de las lineas, la escribe GUARDAR_UBICACIONES y CERRAR la
+-- vuelve a calcular antes de aplicar.
+--
+--   - Sigue siendo UN conteo por articulo y sucursal. Lo que se aplica al
+--     cerrar es el total: EXISTENCIAS no es por estante, y un conteo por estante
+--     ajustaria cada uno contra el total del sistema (ver el DDL).
+--   - Una linea sin cantidad es "ese estante no se conto todavia": el total
+--     queda NULL y el conteo no se cierra. El cero va explicito.
+--   - SI SE CONTO EN UN ESTANTE DONDE EL ARTICULO NO ESTABA ASIGNADO, SE
+--     ASIGNA al guardar (ARTICULOS_UBICACIONES): si estaba ahi, esta ahi. Al
+--     reves no: un estante que dio 0 conserva la asignacion —puede ser el lugar
+--     del articulo cuando se reponga— y la pantalla solo lo avisa.
+--   - Al menos una linea, en el alta, en la edicion y para cerrar. Los conteos
+--     anteriores no tienen lineas: se ven igual, pero para cerrar uno abierto
+--     hay que cargarle donde se conto.
+--
+--------------------------------------------------------------------------------
 -- ESTE PAQUETE NO ES EL DUENIO DE LAS REGLAS: LOS TRIGGERS LO SON
 --
 -- db/inventarios-triggers-ddl.sql pone dos triggers sobre INVENTARIOS y son
@@ -100,6 +122,8 @@
 -- REQUIERE, EN ESTE ORDEN:
 --   1. db/auth.sql                        (PKG_AUTH, para validar el token)
 --   2. db/inventarios-triggers-ddl.sql    (las reglas; este paquete las supone)
+--   3. db/inventarios-ubicaciones-ddl.sql (INVENTARIOS_UBICACIONES: sin ella
+--                                          este paquete compila INVALID)
 --
 -- Base de los endpoints: https://oracleapex.com/ords/ctell/inventarios/
 --
@@ -180,14 +204,15 @@ CREATE OR REPLACE PACKAGE PKG_INVENTARIOS AS
   -- Alta del conteo. Nace ABIERTO (lo impone el trigger) y firmado por el
   -- usuario del token.
   --
-  -- p_cantidad_fisica es OPCIONAL en el alta: deja abrir la planilla y cargar
-  -- el numero despues de ir al deposito. Lo que no se puede es CERRAR sin el.
+  -- p_ubicaciones es OBLIGATORIO, con al menos una linea. Las cantidades de
+  -- cada linea si son opcionales: se abre la planilla con los estantes y se
+  -- cuenta despues. Lo que no se puede es CERRAR con alguna en blanco.
   PROCEDURE INSERTAR (
     p_authorization    IN  VARCHAR2,
     p_id_empresa       IN  VARCHAR2,
     p_id_sucursal      IN  VARCHAR2,
     p_id_articulo      IN  VARCHAR2,
-    p_cantidad_fisica  IN  VARCHAR2,
+    p_ubicaciones      IN  CLOB,
     p_fecha_inventario IN  VARCHAR2,
     p_observaciones    IN  VARCHAR2,
     p_status_code      OUT NUMBER,
@@ -197,13 +222,15 @@ CREATE OR REPLACE PACKAGE PKG_INVENTARIOS AS
   -- Corrige un conteo ABIERTO. Empresa, sucursal y articulo NO se modifican
   -- (lo rechaza el trigger): contar otra cosa es cargar otro inventario.
   --
+  -- Las ubicaciones se REEMPLAZAN enteras: hay que mandarlas todas.
+  --
   -- A diferencia del resto del proyecto, un campo vacio NO conserva el valor:
   -- lo borra. Ver la nota del procedimiento en el body.
   PROCEDURE ACTUALIZAR (
     p_authorization    IN  VARCHAR2,
     p_id               IN  VARCHAR2,
     p_id_empresa       IN  VARCHAR2,
-    p_cantidad_fisica  IN  VARCHAR2,
+    p_ubicaciones      IN  CLOB,
     p_fecha_inventario IN  VARCHAR2,
     p_observaciones    IN  VARCHAR2,
     p_status_code      OUT NUMBER,
@@ -259,6 +286,11 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
   -- Cuanto de OBSERVACIONES entra en la fila del listado. Ver el encabezado:
   -- el texto completo se pide con OBTENER.
   C_LARGO_RESUMEN CONSTANT PLS_INTEGER := 150;
+
+  -- Techo de lineas de un conteo. Un articulo en mas de 50 estantes de un mismo
+  -- deposito no es un caso real, y sin limite un array enorme convierte un alta
+  -- en un proceso largo con el conteo bloqueado.
+  C_MAX_UBICACIONES CONSTANT PLS_INTEGER := 50;
 
   ------------------------------------------------------------------------------
   -- Privado: borra el modulo ORDS si existe, reintentando ante un interbloqueo.
@@ -458,6 +490,192 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
   END LEER_PARA_MODIFICAR;
 
   ------------------------------------------------------------------------------
+  -- Privado: reemplaza las ubicaciones de un conteo por las que vinieron.
+  --
+  --   [ { "idUbicacion": 12, "cantidad": 7 }, { "idUbicacion": 15, "cantidad": null } ]
+  --
+  -- Borra las lineas y las vuelve a insertar: el formulario manda la lista
+  -- entera, y comparar una por una para saber cual cambio no gana nada.
+  --
+  -- ASIGNA AL ARTICULO cada ubicacion donde se conto y no estaba asignado: si
+  -- se lo encontro ahi, esta ahi. Va en la misma transaccion, asi que si el
+  -- guardado falla la asignacion tambien se deshace. p_asignadas dice cuantas
+  -- se crearon, para que la pantalla lo cuente.
+  --
+  -- Las cantidades llegan como NUMEROS JSON y JSON_TABLE las convierte sin
+  -- pasar por NLS: un TO_NUMBER('12.5') depende del separador decimal de la
+  -- sesion y en una base configurada para Paraguay da ORA-01722.
+  --
+  -- NO hace COMMIT ni ROLLBACK: quien llama tiene que poder deshacer TAMBIEN la
+  -- cabecera. Los errores de dato vuelven en p_error; los de los triggers
+  -- (-20102, -20106) se dejan PROPAGAR, que el llamador ya los traduce con
+  -- ERROR_DE_NEGOCIO.
+  ------------------------------------------------------------------------------
+  PROCEDURE GUARDAR_UBICACIONES (
+    p_id_inventario IN  NUMBER,
+    p_id_empresa    IN  NUMBER,
+    p_id_sucursal   IN  NUMBER,
+    p_id_articulo   IN  NUMBER,
+    p_ubicaciones   IN  CLOB,
+    p_asignadas     OUT NUMBER,
+    p_error         OUT VARCHAR2
+  ) IS
+    l_lineas PLS_INTEGER := 0;
+    l_existe PLS_INTEGER;
+  BEGIN
+    p_error     := NULL;
+    p_asignadas := 0;
+
+    DELETE FROM INVENTARIOS_UBICACIONES WHERE ID_INVENTARIO = p_id_inventario;
+
+    IF p_ubicaciones IS NOT NULL AND DBMS_LOB.GETLENGTH(p_ubicaciones) > 0 THEN
+      FOR linea IN (
+        SELECT d.nro, d.idUbicacion, d.cantidad
+          FROM JSON_TABLE(
+                 p_ubicaciones, '$[*]' ERROR ON ERROR
+                 COLUMNS (
+                   -- La posicion REAL en el array, que es la que se ve en el
+                   -- formulario: los mensajes de error la nombran.
+                   nro         FOR ORDINALITY,
+                   idUbicacion NUMBER PATH '$.idUbicacion' ERROR ON ERROR,
+                   cantidad    NUMBER PATH '$.cantidad'    ERROR ON ERROR
+                 )
+               ) d
+      ) LOOP
+        l_lineas := l_lineas + 1;
+
+        IF l_lineas > C_MAX_UBICACIONES THEN
+          p_error := 'Un conteo no puede tener mas de ' || C_MAX_UBICACIONES || ' ubicaciones';
+          RETURN;
+        END IF;
+
+        IF linea.idUbicacion IS NULL THEN
+          p_error := 'A la linea ' || linea.nro || ' le falta la ubicacion';
+          RETURN;
+        END IF;
+
+        IF linea.cantidad < 0 THEN
+          p_error := 'La cantidad de la linea ' || linea.nro || ' no puede ser negativa';
+          RETURN;
+        END IF;
+
+        -- El trigger de la tabla lo rechazaria igual; se chequea antes para
+        -- decir CUAL linea esta mal en vez de un ORA-20106 sobre un id.
+        SELECT COUNT(*)
+          INTO l_existe
+          FROM UBICACIONES
+         WHERE ID_UBICACION = linea.idUbicacion
+           AND ID_EMPRESA   = p_id_empresa
+           AND ID_SUCURSAL  = p_id_sucursal;
+
+        IF l_existe = 0 THEN
+          p_error := 'La ubicacion de la linea ' || linea.nro || ' no es de esta sucursal';
+          RETURN;
+        END IF;
+
+        BEGIN
+          INSERT INTO INVENTARIOS_UBICACIONES (ID_INVENTARIO, ID_UBICACION, CANTIDAD)
+          VALUES (p_id_inventario, linea.idUbicacion, linea.cantidad);
+        EXCEPTION
+          WHEN DUP_VAL_ON_INDEX THEN
+            p_error := 'La ubicacion de la linea ' || linea.nro ||
+                       ' esta repetida: suma lo de ese estante en una sola linea';
+            RETURN;
+        END;
+
+        -- La asignacion. NOT EXISTS y no un MERGE: el MERGE tampoco se salva
+        -- del ORA-00001 si otra sesion asigna lo mismo a la vez, y ese caso se
+        -- resuelve solo — la asignacion ya existe, que era lo que se buscaba.
+        BEGIN
+          INSERT INTO ARTICULOS_UBICACIONES (ID_ARTICULO, ID_UBICACION, FECHA_ACTUALIZACION)
+          SELECT p_id_articulo, linea.idUbicacion, SYSTIMESTAMP
+            FROM DUAL
+           WHERE NOT EXISTS (SELECT 1 FROM ARTICULOS_UBICACIONES
+                              WHERE ID_ARTICULO  = p_id_articulo
+                                AND ID_UBICACION = linea.idUbicacion);
+          p_asignadas := p_asignadas + SQL%ROWCOUNT;
+        EXCEPTION
+          WHEN DUP_VAL_ON_INDEX THEN NULL;
+        END;
+      END LOOP;
+    END IF;
+
+    -- SIEMPRE AL MENOS UNA. Un conteo sin ubicacion es justamente lo que esta
+    -- carga vino a evitar: el numero sin el lugar donde se lo encontro.
+    IF l_lineas = 0 THEN
+      p_error := 'Carga al menos una ubicacion: en que estante se encontro el articulo';
+    END IF;
+  EXCEPTION
+    WHEN OTHERS THEN
+      -- Errores de JSON: el array vino mal formado, o un valor que no es
+      -- numero donde va un numero.
+      IF SQLCODE BETWEEN -40999 AND -40400 OR SQLCODE IN (-1722, -6502) THEN
+        p_error := 'Las ubicaciones no tienen un formato valido';
+      ELSE
+        RAISE;
+      END IF;
+  END GUARDAR_UBICACIONES;
+
+  ------------------------------------------------------------------------------
+  -- Privado: CANTIDAD_FISICA = la suma de las lineas.
+  --
+  -- NULL si alguna linea no tiene cantidad: un estante sin contar deja el
+  -- conteo entero sin contar, y asi no se puede cerrar. Sin el COUNT(CANTIDAD),
+  -- SUM ignoraria los NULL y aplicaria al stock la suma de lo que se conto hasta
+  -- ahora como si fuera todo.
+  --
+  -- Solo toca conteos CON lineas: los anteriores a INVENTARIOS_UBICACIONES
+  -- conservan la cantidad que se les cargo a mano.
+  ------------------------------------------------------------------------------
+  PROCEDURE RECALCULAR_CANTIDAD (p_id_inventario IN NUMBER) IS
+  BEGIN
+    UPDATE INVENTARIOS i
+       SET i.CANTIDAD_FISICA = (
+             SELECT CASE WHEN COUNT(iu.CANTIDAD) = COUNT(*) THEN SUM(iu.CANTIDAD) END
+               FROM INVENTARIOS_UBICACIONES iu
+              WHERE iu.ID_INVENTARIO = i.ID_INVENTARIO)
+     WHERE i.ID_INVENTARIO = p_id_inventario
+       AND EXISTS (SELECT 1 FROM INVENTARIOS_UBICACIONES iu
+                    WHERE iu.ID_INVENTARIO = p_id_inventario);
+  END RECALCULAR_CANTIDAD;
+
+  ------------------------------------------------------------------------------
+  -- Privado: las ubicaciones de un conteo como array JSON, en el orden en que
+  -- se recorre el deposito.
+  --
+  -- Se arma APARTE y se inyecta con FORMAT JSON: anidar el JSON_ARRAYAGG
+  -- dentro del JSON_OBJECT de la cabecera cae en el techo de 4000 bytes del
+  -- resultado intermedio. Y se llama ANTES del SELECT, no adentro: un helper
+  -- privado no se puede usar desde una sentencia SQL (PLS-00231).
+  ------------------------------------------------------------------------------
+  FUNCTION UBICACIONES_JSON (p_id_inventario IN NUMBER) RETURN CLOB IS
+    l_items CLOB;
+  BEGIN
+    SELECT JSON_ARRAYAGG(fila ORDER BY zona, estante, nivel RETURNING CLOB)
+      INTO l_items
+      FROM (
+        SELECT JSON_OBJECT(
+                 'idUbicacion' VALUE iu.ID_UBICACION,
+                 'zona'        VALUE u.ZONA,
+                 'estante'     VALUE u.ESTANTE,
+                 'nivel'       VALUE u.NIVEL,
+                 'descripcion' VALUE u.DESCRIPCION,
+                 -- null = ese estante todavia no se conto.
+                 'cantidad'    VALUE iu.CANTIDAD
+                 RETURNING CLOB
+               ) AS fila,
+               u.ZONA    AS zona,
+               u.ESTANTE AS estante,
+               u.NIVEL   AS nivel
+          FROM INVENTARIOS_UBICACIONES iu
+          JOIN UBICACIONES u ON u.ID_UBICACION = iu.ID_UBICACION
+         WHERE iu.ID_INVENTARIO = p_id_inventario
+      );
+
+    RETURN NVL(l_items, TO_CLOB('[]'));
+  END UBICACIONES_JSON;
+
+  ------------------------------------------------------------------------------
   -- LISTAR
   ------------------------------------------------------------------------------
   PROCEDURE LISTAR (
@@ -576,8 +794,14 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
                  -- conteo ofrece completar si esta en NULL.
                  'categoria'      VALUE cc.NOMBRE_CATEGORIA,
                  -- Lo contado. NULL mientras la planilla este abierta y nadie
-                 -- haya ido al deposito todavia.
+                 -- haya ido al deposito todavia, o mientras le quede un estante
+                 -- sin contar.
                  'cantidadFisica' VALUE i.CANTIDAD_FISICA,
+                 -- En cuantos estantes se conto. Las lineas en si vienen con
+                 -- /obtener: veinte conteos con todas sus ubicaciones pasan el
+                 -- techo del bind de ORDS. Cero es un conteo anterior a la
+                 -- carga por ubicacion.
+                 'cantidadUbicaciones' VALUE NVL(cu.LINEAS, 0),
                  -- Lo que decia el sistema AL CERRAR. NULL en los abiertos: no
                  -- hay ajuste que explicar hasta que se aplique.
                  'cantidadSistema' VALUE i.CANTIDAD_SISTEMA,
@@ -615,6 +839,11 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
           LEFT JOIN EXISTENCIAS e ON e.ID_EMPRESA  = i.ID_EMPRESA
                                  AND e.ID_SUCURSAL = i.ID_SUCURSAL
                                  AND e.ID_ARTICULO = i.ID_ARTICULO
+          -- Agregado aparte y no un COUNT correlacionado dentro del
+          -- JSON_OBJECT. Es una fila por conteo: no multiplica nada.
+          LEFT JOIN (SELECT ID_INVENTARIO, COUNT(*) AS LINEAS
+                       FROM INVENTARIOS_UBICACIONES
+                      GROUP BY ID_INVENTARIO) cu ON cu.ID_INVENTARIO = i.ID_INVENTARIO
          WHERE i.ID_EMPRESA = l_empresa
            AND (l_sucursal IS NULL OR i.ID_SUCURSAL = l_sucursal)
            AND (l_articulo IS NULL OR i.ID_ARTICULO = l_articulo)
@@ -676,9 +905,11 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
-    l_sesion  NUMBER;
-    l_id      NUMBER;
-    l_empresa NUMBER;
+    l_sesion      NUMBER;
+    l_id          NUMBER;
+    l_empresa     NUMBER;
+    l_ubicaciones CLOB;
+    l_lineas      NUMBER;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -695,6 +926,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
       p_resultado := '{"error":"id e idEmpresa son obligatorios"}';
       RETURN;
     END IF;
+
+    -- Antes del SELECT y en una variable: es un helper privado (PLS-00231).
+    -- No filtra por empresa, pero no se devuelve si el SELECT de abajo —que
+    -- si filtra— no encuentra el conteo.
+    l_ubicaciones := UBICACIONES_JSON(l_id);
+
+    SELECT COUNT(*) INTO l_lineas FROM INVENTARIOS_UBICACIONES WHERE ID_INVENTARIO = l_id;
 
     -- AISLAMIENTO POR EMPRESA en el WHERE, no en el cliente: el endpoint es
     -- publico para cualquiera con sesion, y sin la empresa se leeria el conteo
@@ -721,7 +959,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
                                                 'YYYY-MM-DD"T"HH24:MI:SS'),
              'idUsuario'      VALUE i.ID_USUARIO,
              'usuario'        VALUE u.NOMBRE_APELLIDO,
-             'observaciones'  VALUE i.OBSERVACIONES
+             'observaciones'  VALUE i.OBSERVACIONES,
+             'cantidadUbicaciones' VALUE l_lineas,
+             'ubicaciones'    VALUE l_ubicaciones FORMAT JSON
              RETURNING CLOB
            )
       INTO p_resultado
@@ -757,20 +997,21 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
     p_id_empresa       IN  VARCHAR2,
     p_id_sucursal      IN  VARCHAR2,
     p_id_articulo      IN  VARCHAR2,
-    p_cantidad_fisica  IN  VARCHAR2,
+    p_ubicaciones      IN  CLOB,
     p_fecha_inventario IN  VARCHAR2,
     p_observaciones    IN  VARCHAR2,
     p_status_code      OUT NUMBER,
     p_resultado        OUT CLOB
   ) IS
-    l_sesion   NUMBER;
-    l_empresa  NUMBER;
-    l_sucursal NUMBER;
-    l_articulo NUMBER;
-    l_cantidad NUMBER;
-    l_fecha    TIMESTAMP;
-    l_abiertos PLS_INTEGER;
-    l_id       NUMBER;
+    l_sesion    NUMBER;
+    l_empresa   NUMBER;
+    l_sucursal  NUMBER;
+    l_articulo  NUMBER;
+    l_fecha     TIMESTAMP;
+    l_abiertos  PLS_INTEGER;
+    l_id        NUMBER;
+    l_asignadas NUMBER;
+    l_error     VARCHAR2(4000);
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -786,29 +1027,6 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
     IF l_empresa IS NULL OR l_sucursal IS NULL OR l_articulo IS NULL THEN
       p_status_code := 400;
       p_resultado := '{"error":"idEmpresa, idSucursal e idArticulo son obligatorios"}';
-      RETURN;
-    END IF;
-
-    -- La cantidad es OPCIONAL en el alta (se abre la planilla y se cuenta
-    -- despues), pero si viene tiene que ser un numero valido y no negativo:
-    -- guardarla mal aca la convierte en un rechazo recien al cerrar, cuando ya
-    -- nadie se acuerda de que cargo.
-    --
-    -- El TO_NUMBER va con su propio manejador y no suelto entre las
-    -- asignaciones: "12,5" o "abc" darian ORA-01722, que sin esto sale como un
-    -- 500 generico en vez de decir cual campo esta mal.
-    BEGIN
-      l_cantidad := TO_NUMBER(NULLIF(TRIM(p_cantidad_fisica), ''));
-    EXCEPTION
-      WHEN OTHERS THEN
-        p_status_code := 400;
-        p_resultado := '{"error":"La cantidad contada tiene que ser un numero"}';
-        RETURN;
-    END;
-
-    IF l_cantidad IS NOT NULL AND l_cantidad < 0 THEN
-      p_status_code := 400;
-      p_resultado := '{"error":"La cantidad contada no puede ser negativa"}';
       RETURN;
     END IF;
 
@@ -848,18 +1066,44 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
     -- el trigger, que ademas rechaza cualquier estado que no sea ABIERTO.
     --
     -- ID_USUARIO sale de la sesion, no del body: es la firma del conteo.
+    --
+    -- CANTIDAD_FISICA nace NULL y la escribe RECALCULAR_CANTIDAD con la suma de
+    -- las lineas, que todavia no existen: necesitan el id de esta fila.
     INSERT INTO INVENTARIOS (
       ID_EMPRESA, ID_SUCURSAL, ID_ARTICULO, ID_USUARIO,
       CANTIDAD_FISICA, FECHA_INVENTARIO, OBSERVACIONES
     ) VALUES (
       l_empresa, l_sucursal, l_articulo, l_sesion,
-      l_cantidad, l_fecha, NULLIF(TRIM(p_observaciones), '')
+      NULL, l_fecha, NULLIF(TRIM(p_observaciones), '')
     )
     RETURNING ID_INVENTARIO INTO l_id;
 
+    GUARDAR_UBICACIONES(l_id, l_empresa, l_sucursal, l_articulo, p_ubicaciones,
+                        l_asignadas, l_error);
+
+    -- Un error en una linea deshace TAMBIEN la cabecera: un conteo sin donde se
+    -- conto no se guarda a medias.
+    IF l_error IS NOT NULL THEN
+      ROLLBACK;
+      p_status_code := 400;
+      SELECT JSON_OBJECT('error' VALUE l_error RETURNING CLOB) INTO p_resultado FROM DUAL;
+      RETURN;
+    END IF;
+
+    RECALCULAR_CANTIDAD(l_id);
+
     COMMIT;
     p_status_code := 201;
-    p_resultado := JSON_OBJECT('id' VALUE l_id, 'ok' VALUE 'true' FORMAT JSON);
+    SELECT JSON_OBJECT(
+             'id'                   VALUE l_id,
+             'ok'                   VALUE 'true' FORMAT JSON,
+             -- Cuantos estantes nuevos se le asignaron al articulo por haberlo
+             -- encontrado ahi. La pantalla lo cuenta.
+             'ubicacionesAsignadas' VALUE l_asignadas
+             RETURNING CLOB
+           )
+      INTO p_resultado
+      FROM DUAL;
   EXCEPTION
     WHEN OTHERS THEN
       ROLLBACK;
@@ -873,7 +1117,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
           -- La FK no encontro el padre. Es un dato invalido del cliente (400),
           -- no un fallo del servidor.
           p_status_code := 400;
-          p_resultado := '{"error":"La empresa, la sucursal o el articulo indicados no existen"}';
+          p_resultado := '{"error":"La empresa, la sucursal, el articulo o una de las ubicaciones indicadas no existen"}';
         ELSE
           p_status_code := 500;
           APEX_DEBUG.ERROR('PKG_INVENTARIOS.INSERTAR: [' || l_codigo || '] ' || l_mensaje || ' | ' ||
@@ -887,14 +1131,14 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
   -- ACTUALIZAR
   --
   -- OJO, ROMPE EL CRITERIO DEL RESTO DEL PROYECTO: aca un campo vacio NO
-  -- conserva el valor, lo BORRA. Vale para la cantidad y para las
-  -- observaciones.
+  -- conserva el valor, lo BORRA. Vale para las observaciones y para la cantidad
+  -- de cada ubicacion, y las ubicaciones se reemplazan ENTERAS.
   --
   -- El motivo: en las demas tablas el NVL cubre llamadas parciales sobre campos
-  -- que siempre tienen algo. Aca el campo central es un NUMERO QUE PUEDE QUEDAR
-  -- VACIO —una planilla abierta sin contar todavia— y con NVL no habria forma
-  -- de volver a vaciarlo: quien cargo 12 por error quedaria con 12 para
-  -- siempre, y cerrar aplicaria ese 12 al stock.
+  -- que siempre tienen algo. Aca el dato central es un NUMERO QUE PUEDE QUEDAR
+  -- VACIO —un estante todavia sin contar— y con NVL no habria forma de volver a
+  -- vaciarlo: quien cargo 12 por error quedaria con 12 para siempre, y cerrar
+  -- aplicaria ese 12 al stock.
   --
   -- Consecuencia para el cliente: el PUT manda SIEMPRE los tres campos, con lo
   -- que el formulario tenga. Es lo que hace la pantalla de /inventarios.
@@ -907,20 +1151,23 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
     p_authorization    IN  VARCHAR2,
     p_id               IN  VARCHAR2,
     p_id_empresa       IN  VARCHAR2,
-    p_cantidad_fisica  IN  VARCHAR2,
+    p_ubicaciones      IN  CLOB,
     p_fecha_inventario IN  VARCHAR2,
     p_observaciones    IN  VARCHAR2,
     p_status_code      OUT NUMBER,
     p_resultado        OUT CLOB
   ) IS
-    l_sesion   NUMBER;
-    l_id       NUMBER;
-    l_empresa  NUMBER;
-    l_cantidad NUMBER;
-    l_fecha    TIMESTAMP;
-    l_estado   VARCHAR2(20);
-    l_actual   NUMBER;
-    l_existe   BOOLEAN;
+    l_sesion    NUMBER;
+    l_id        NUMBER;
+    l_empresa   NUMBER;
+    l_sucursal  NUMBER;
+    l_articulo  NUMBER;
+    l_fecha     TIMESTAMP;
+    l_estado    VARCHAR2(20);
+    l_actual    NUMBER;
+    l_existe    BOOLEAN;
+    l_asignadas NUMBER;
+    l_error     VARCHAR2(4000);
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -935,21 +1182,6 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
     IF l_id IS NULL OR l_empresa IS NULL THEN
       p_status_code := 400;
       p_resultado := '{"error":"id e idEmpresa son obligatorios"}';
-      RETURN;
-    END IF;
-
-    BEGIN
-      l_cantidad := TO_NUMBER(NULLIF(TRIM(p_cantidad_fisica), ''));
-    EXCEPTION
-      WHEN OTHERS THEN
-        p_status_code := 400;
-        p_resultado := '{"error":"La cantidad contada tiene que ser un numero"}';
-        RETURN;
-    END;
-
-    IF l_cantidad IS NOT NULL AND l_cantidad < 0 THEN
-      p_status_code := 400;
-      p_resultado := '{"error":"La cantidad contada no puede ser negativa"}';
       RETURN;
     END IF;
 
@@ -983,16 +1215,42 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
       RETURN;
     END IF;
 
+    -- La fila ya esta bloqueada por LEER_PARA_MODIFICAR. Sucursal y articulo
+    -- hacen falta para validar las ubicaciones y para asignarlas.
+    SELECT ID_SUCURSAL, ID_ARTICULO
+      INTO l_sucursal, l_articulo
+      FROM INVENTARIOS
+     WHERE ID_INVENTARIO = l_id;
+
+    -- La cantidad no se escribe aca: la deja RECALCULAR_CANTIDAD con la suma
+    -- de las lineas.
     UPDATE INVENTARIOS
-       SET CANTIDAD_FISICA  = l_cantidad,
-           FECHA_INVENTARIO = NVL(l_fecha, FECHA_INVENTARIO),
+       SET FECHA_INVENTARIO = NVL(l_fecha, FECHA_INVENTARIO),
            OBSERVACIONES    = NULLIF(TRIM(p_observaciones), '')
      WHERE ID_INVENTARIO = l_id
        AND ID_EMPRESA    = l_empresa;
 
+    GUARDAR_UBICACIONES(l_id, l_empresa, l_sucursal, l_articulo, p_ubicaciones,
+                        l_asignadas, l_error);
+
+    IF l_error IS NOT NULL THEN
+      ROLLBACK;
+      p_status_code := 400;
+      SELECT JSON_OBJECT('error' VALUE l_error RETURNING CLOB) INTO p_resultado FROM DUAL;
+      RETURN;
+    END IF;
+
+    RECALCULAR_CANTIDAD(l_id);
+
     COMMIT;
     p_status_code := 200;
-    p_resultado := '{"ok":true}';
+    SELECT JSON_OBJECT(
+             'ok'                   VALUE 'true' FORMAT JSON,
+             'ubicacionesAsignadas' VALUE l_asignadas
+             RETURNING CLOB
+           )
+      INTO p_resultado
+      FROM DUAL;
   EXCEPTION
     WHEN OTHERS THEN
       ROLLBACK;
@@ -1033,6 +1291,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
     l_cantidad NUMBER;
     l_existe   BOOLEAN;
     l_sistema  NUMBER;
+    l_lineas   NUMBER;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -1066,10 +1325,29 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
       RETURN;
     END IF;
 
+    -- SIN UBICACIONES NO SE CIERRA. Es el caso de los conteos cargados antes de
+    -- la carga por ubicacion: tienen numero pero no donde se lo encontro.
+    SELECT COUNT(*) INTO l_lineas FROM INVENTARIOS_UBICACIONES WHERE ID_INVENTARIO = l_id;
+
+    IF l_lineas = 0 THEN
+      ROLLBACK;
+      p_status_code := 400;
+      p_resultado := '{"error":"Antes de cerrar, carga en que ubicaciones se conto el articulo"}';
+      RETURN;
+    END IF;
+
+    -- LA SUMA SE VUELVE A CALCULAR ACA, justo antes de aplicarla. El trigger
+    -- del cierre ajusta con CANTIDAD_FISICA, y si alguien toco una linea a mano
+    -- desde el ultimo guardado, lo que se aplica tiene que ser lo que dicen las
+    -- lineas, no lo que quedo escrito.
+    RECALCULAR_CANTIDAD(l_id);
+
+    SELECT CANTIDAD_FISICA INTO l_cantidad FROM INVENTARIOS WHERE ID_INVENTARIO = l_id;
+
     IF l_cantidad IS NULL THEN
       ROLLBACK;
       p_status_code := 400;
-      p_resultado := '{"error":"No se puede cerrar sin la cantidad contada: es el numero que va a quedar como existencia"}';
+      p_resultado := '{"error":"No se puede cerrar con ubicaciones sin contar: carga la cantidad de cada una, aunque sea 0"}';
       RETURN;
     END IF;
 
@@ -1249,6 +1527,12 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
       RETURN;
     END IF;
 
+    -- LAS LINEAS PRIMERO: la FK no tiene ON DELETE CASCADE a proposito (ver
+    -- db/inventarios-ubicaciones-ddl.sql), asi que con lineas el DELETE del
+    -- conteo fallaria. Las asignaciones al articulo que se crearon al cargarlo
+    -- quedan: se lo encontro en ese estante aunque el borrador se descarte.
+    DELETE FROM INVENTARIOS_UBICACIONES WHERE ID_INVENTARIO = l_id;
+
     DELETE FROM INVENTARIOS
      WHERE ID_INVENTARIO = l_id
        AND ID_EMPRESA    = l_empresa;
@@ -1285,7 +1569,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
   --
   -- EL BODY DE UN POST/PUT NO SE LEE CON :body. `:body` es el payload CRUDO
   -- (BLOB) y sirve para subir archivos; para un JSON, ORDS crea un bind por
-  -- cada clave de primer nivel —:idEmpresa, :cantidadFisica— que se vincula
+  -- cada clave de primer nivel —:idEmpresa, :ubicaciones— que se vincula
   -- solo, sin DEFINE_PARAMETER. Del lado del cliente hay que mandar TODAS las
   -- claves aunque vayan en "": una clave omitida deja el bind sin definir.
   --
@@ -1376,8 +1660,11 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
 
     ----------------------------------------------------------------------------
     -- POST /inventarios/crear
-    -- Body: { idEmpresa, idSucursal, idArticulo, cantidadFisica,
-    --         fechaInventario, observaciones }
+    -- Body: { idEmpresa, idSucursal, idArticulo, fechaInventario, observaciones,
+    --         ubicaciones: [{ idUbicacion, cantidad }] }
+    --
+    -- `ubicaciones` llega como array y ORDS lo bindea con su texto JSON, igual
+    -- que el `detalle` de una venta.
     ----------------------------------------------------------------------------
     ORDS.DEFINE_TEMPLATE(p_module_name => 'inventarios', p_pattern => 'crear');
 
@@ -1386,7 +1673,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
       p_pattern     => 'crear',
       p_method      => 'POST',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_INVENTARIOS.INSERTAR(:authorization, :idEmpresa, :idSucursal, :idArticulo, :cantidadFisica, :fechaInventario, :observaciones, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_INVENTARIOS.INSERTAR(:authorization, :idEmpresa, :idSucursal, :idArticulo, :ubicaciones, :fechaInventario, :observaciones, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
@@ -1406,10 +1693,11 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
 
     ----------------------------------------------------------------------------
     -- PUT /inventarios/actualizar/:id
-    -- Body: { idEmpresa, cantidadFisica, fechaInventario, observaciones }
+    -- Body: { idEmpresa, fechaInventario, observaciones, ubicaciones: [...] }
     --
-    -- LOS CUATRO SIEMPRE: aca un campo vacio BORRA, no conserva. Ver la nota
-    -- del procedimiento ACTUALIZAR.
+    -- LOS CUATRO SIEMPRE: aca un campo vacio BORRA, no conserva, y las
+    -- ubicaciones se reemplazan enteras. Ver la nota del procedimiento
+    -- ACTUALIZAR.
     ----------------------------------------------------------------------------
     ORDS.DEFINE_TEMPLATE(p_module_name => 'inventarios', p_pattern => 'actualizar/:id');
 
@@ -1418,7 +1706,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
       p_pattern     => 'actualizar/:id',
       p_method      => 'PUT',
       p_source_type => ORDS.source_type_plsql,
-      p_source      => 'BEGIN PKG_INVENTARIOS.ACTUALIZAR(:authorization, :id, :idEmpresa, :cantidadFisica, :fechaInventario, :observaciones, :status_code, :resultado); END;'
+      p_source      => 'BEGIN PKG_INVENTARIOS.ACTUALIZAR(:authorization, :id, :idEmpresa, :ubicaciones, :fechaInventario, :observaciones, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(

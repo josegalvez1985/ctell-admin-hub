@@ -104,7 +104,11 @@ export function ArticuloUbicacionesDialog({
 
   const asignar = useMutation({
     mutationFn: (idUbicacion: number) =>
-      api.articulosUbicaciones.asignar({ idArticulo: idArticulo!, idUbicacion }),
+      api.articulosUbicaciones.asignar({
+        idEmpresa: empresa!.id,
+        idArticulo: idArticulo!,
+        idUbicacion,
+      }),
     onSuccess: () => {
       toast.success("Ubicación asignada");
       setAAsignar("");

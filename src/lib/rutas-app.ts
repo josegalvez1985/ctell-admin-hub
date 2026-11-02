@@ -61,6 +61,7 @@ const ETIQUETAS: Record<string, string> = {
   "/articulos": "Artículos",
   "/unidades-medida": "Unidades de medida",
   "/articulos-ubicaciones": "Ubicaciones de artículos",
+  "/articulos-ubicaciones-reporte": "Reporte de ubicaciones",
 };
 
 export type RutaApp = { valor: string; label: string };

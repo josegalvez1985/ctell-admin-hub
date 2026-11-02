@@ -95,11 +95,11 @@ BEGIN
   -- Los valores de entrada. Los que ya están no se tocan: para cambiar uno,
   -- UPDATE IA_CONFIG SET VALOR = '...' WHERE CLAVE = '...'; COMMIT;
   --
-  -- LIMITE_DIARIO en 30 y no en los 60 de ethos: la clave es la misma y el
+  -- LIMITE_DIARIO en 50 y no en los 60 de ethos: la clave es la misma y el
   -- tope de gasto de la organización es de los proyectos juntos.
   FOR c IN (SELECT 'MODELO' AS clave, 'claude-haiku-5-5' AS valor FROM DUAL
             UNION ALL SELECT 'ESFUERZO', 'medium' FROM DUAL
-            UNION ALL SELECT 'LIMITE_DIARIO', '30' FROM DUAL
+            UNION ALL SELECT 'LIMITE_DIARIO', '50' FROM DUAL
             UNION ALL SELECT 'MAX_FILAS', '200' FROM DUAL) LOOP
     EXECUTE IMMEDIATE q'~
       MERGE INTO IA_CONFIG t

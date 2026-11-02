@@ -48,6 +48,7 @@ import {
   KeyRound,
   Landmark,
   LayoutGrid,
+  ListTree,
   Map,
   MapPin,
   NotebookPen,
@@ -334,6 +335,18 @@ const ICONOS_PAGINA: Record<string, LucideIcon> = {
   "reporte de conteos": ClipboardX,
   "inventarios reporte": ClipboardX,
   "diferencias de inventario": ClipboardX,
+  // El REPORTE de ubicaciones: los artículos agrupados por estante, y los que
+  // no tienen ninguno. ListTree es eso, una lista colgada de otra.
+  //
+  // NO comparte con "ubicaciones de articulos" (PackageCheck), que es el ABM
+  // del cruce: uno asigna, el otro consulta. Ni con Grid3x3, que son los
+  // estantes en sí. Ojo que "articulos por ubicacion" ya es del ABM —quedó de
+  // antes—, así que este reporte conviene cargarlo como "Reporte de
+  // ubicaciones" o cualquiera de las variantes de acá.
+  "reporte de ubicaciones": ListTree,
+  "reporte de articulos por ubicacion": ListTree,
+  "ubicaciones reporte": ListTree,
+  "articulos sin ubicacion": ListTree,
   ordenes: ClipboardList,
   "ordenes de compra": ClipboardList,
   // COMPRA Y VENTA NO COMPARTEN ÍCONO: son los dos comprobantes que más se

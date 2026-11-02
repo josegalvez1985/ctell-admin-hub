@@ -366,15 +366,43 @@ const MODULOS: Modulo[] = [
         entrada: "O",
         ruta: "/inventarios",
         resumen: "La carga del conteo físico de la sucursal activa.",
-        buscable: "conteo fisico contar deposito abierto cerrado anulado estante diferencia",
+        buscable:
+          "conteo fisico contar deposito abierto cerrado anulado estante ubicacion diferencia",
         ficha: (
           <>
             <H>Cómo se usa</H>
             <P>
               Se cuenta lo que hay en el depósito y se anota, artículo por artículo. El diálogo de
-              alta ofrece completar la ficha del artículo si le falta marca, categoría o ubicación,
-              y hay un filtro por estante para ir contando mientras se recorre el depósito.
+              alta ofrece completar la ficha del artículo si le falta marca o categoría, y hay un
+              filtro por estante para ir contando mientras se recorre el depósito.
             </P>
+            <H>Se cuenta por ubicación</H>
+            <P>
+              Al elegir el artículo aparecen sus estantes de esta sucursal, y en cada uno se anota
+              cuánto había. Lo contado es <strong>la suma</strong>. Se pueden agregar otros
+              estantes, o crear uno nuevo desde el mismo selector.
+            </P>
+            <Lista>
+              <li>
+                Hace falta <strong>al menos una ubicación</strong>.
+              </li>
+              <li>
+                Una cantidad en blanco es un estante <strong>sin contar</strong>, no un cero: se
+                puede guardar, pero no cerrar. Si estaba vacío, cargá 0.
+              </li>
+              <li>
+                Si lo contaste en un estante donde no estaba asignado,{" "}
+                <strong>queda asignado</strong> al guardar.
+              </li>
+              <li>
+                Si un estante asignado dio 0, la asignación <strong>no se borra</strong>: puede ser
+                su lugar cuando se reponga.
+              </li>
+            </Lista>
+            <Aviso titulo="No lleva el stock por estante">
+              La existencia sigue siendo una por artículo y sucursal: una venta no dice de qué
+              estante sale. Lo que queda guardado es dónde estaban las unidades el día del conteo.
+            </Aviso>
             <H>Los estados</H>
             <Table>
               <TableHeader>
@@ -448,6 +476,42 @@ const MODULOS: Modulo[] = [
                 <strong>Diferencia</strong>: con o sin
               </li>
             </Lista>
+            <P>Se exporta a Excel y PDF, con exactamente lo que se ve en pantalla.</P>
+          </>
+        ),
+      },
+      {
+        nombre: "Reporte de ubicaciones",
+        entrada: "R",
+        ruta: "/articulos-ubicaciones-reporte",
+        resumen: "Qué hay en cada estante, y qué no tiene ninguno. Sólo consulta.",
+        buscable:
+          "ubicacion estante zona nivel deposito sin ubicar donde esta reporte exportar excel pdf",
+        ficha: (
+          <>
+            <H>Cómo se usa</H>
+            <P>
+              Los artículos de cada ubicación de la <strong>sucursal activa</strong>, en el orden en
+              que se recorre el depósito (zona, estante, nivel), y al final los que no tienen
+              ninguna. Arriba se elige qué mostrar: <strong>Todos</strong>,{" "}
+              <strong>Con ubicación</strong> o <strong>Sin ubicación</strong>.
+            </P>
+            <Lista>
+              <li>
+                Un artículo que está en varios estantes sale <strong>una vez por cada uno</strong>.
+              </li>
+              <li>
+                Los números de arriba son de la sucursal entera, no de lo filtrado. Tocar{" "}
+                <strong>Sin ubicación</strong> muestra esos artículos.
+              </li>
+              <li>Zona, categoría y marca se filtran desde el encabezado de su columna.</li>
+            </Lista>
+            <Aviso titulo="Qué cuenta como «sin ubicación»">
+              Sólo los artículos <strong>activos</strong> que no son <strong>gasto</strong>. Un
+              flete o un honorario no van en un estante, y un artículo dado de baja no se va a
+              ubicar. Los que sí tienen ubicación salen siempre, aunque estén inactivos: algo dado
+              de baja que sigue ocupando un estante es justo lo que hay que ver.
+            </Aviso>
             <P>Se exporta a Excel y PDF, con exactamente lo que se ve en pantalla.</P>
           </>
         ),
@@ -620,6 +684,10 @@ const MODULOS: Modulo[] = [
         ficha: (
           <>
             <P>Alta, edición y baja de los profesores. Cada uno lleva su foto y su cédula.</P>
+            <P>
+              La foto se carga tocando el cuadro de la izquierda de cada profesor, desde la galería
+              o la cámara. Desde ahí mismo se cambia o se borra con <strong>Quitar foto</strong>.
+            </P>
             <Aviso titulo="La cédula es única en todo el sistema">
               Un profesor pertenece a una sola empresa, y eso es lo que define en qué empresa se ven
               sus marcaciones y sus ausencias.

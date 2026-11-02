@@ -8,6 +8,9 @@
 --   1. LISTAR   GET    /articulos-ubicaciones/listar   (?idEmpresa= &idArticulo= &idUbicacion=)
 --   2. ASIGNAR  POST   /articulos-ubicaciones/crear
 --   3. QUITAR   DELETE /articulos-ubicaciones/eliminar/:id/:idEmpresa
+--   4. REPORTE  GET    /articulos-ubicaciones/reporte  (?idEmpresa= &idSucursal=
+--                                                       &situacion=CON|SIN
+--                                                       &pagina= &tamanio=)
 --
 -- Se ejecuta una sola vez en la hoja de trabajo SQL de APEX, conectado con el
 -- esquema del workspace. REQUIERE db/auth.sql EJECUTADO ANTES: usa PKG_AUTH
@@ -133,6 +136,47 @@ CREATE OR REPLACE PACKAGE PKG_ARTICULOS_UBICACIONES AS
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
     p_id_empresa    IN  VARCHAR2,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
+  );
+
+  ----------------------------------------------------------------------------
+  -- REPORTE: los articulos por ubicacion de UNA sucursal, y los que no tienen
+  -- ninguna, en el mismo listado.
+  --
+  -- No es el LISTAR con otro nombre, por dos motivos:
+  --   - LISTAR recorre el CRUCE, asi que un articulo sin asignar no aparece
+  --     nunca: no hay fila de la que salir. Este recorre el CATALOGO con un
+  --     LEFT JOIN al cruce, y el articulo sin ubicacion sale con la ubicacion
+  --     en null.
+  --   - LISTAR no pagina, y el reporte trae el deposito entero: sin paginar
+  --     choca con el techo de 4000 bytes del bind de ORDS.
+  --
+  -- POR SUCURSAL, Y OBLIGATORIA. Las ubicaciones son de una sucursal, y "sin
+  -- ubicacion" sin sucursal no significa nada: un articulo ubicado en la casa
+  -- central esta SIN ubicar en el local. Por eso idSucursal es 400 si falta, y
+  -- tiene que ser de la empresa.
+  --
+  -- situacion: 'CON' (las asignaciones), 'SIN' (los articulos sin ninguna en
+  -- esta sucursal) o vacio (las dos). Otro valor es 400.
+  --
+  -- QUE CUENTA COMO "SIN UBICACION": un articulo ACTIVO y que NO es gasto. Un
+  -- flete o un honorario no van en un estante, y un articulo dado de baja no se
+  -- va a ubicar: listarlos llenaria el reporte de faltas que no son faltas. Los
+  -- que SI tienen ubicacion salen siempre, inactivos y gastos incluidos —un
+  -- inactivo que sigue ocupando un estante es justamente lo que hay que ver—.
+  --
+  -- Una fila por ASIGNACION: un articulo en tres estantes sale tres veces, que
+  -- es lo que se busca al recorrer el deposito. Los contadores del resumen
+  -- distinguen asignaciones de articulos para que eso no confunda.
+  ----------------------------------------------------------------------------
+  PROCEDURE REPORTE (
+    p_authorization IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
+    p_id_sucursal   IN  VARCHAR2,
+    p_situacion     IN  VARCHAR2,
+    p_pagina        IN  VARCHAR2,
+    p_tamanio       IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   );
@@ -497,6 +541,235 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS_UBICACIONES AS
   END QUITAR;
 
   ------------------------------------------------------------------------------
+  -- REPORTE
+  ------------------------------------------------------------------------------
+  PROCEDURE REPORTE (
+    p_authorization IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
+    p_id_sucursal   IN  VARCHAR2,
+    p_situacion     IN  VARCHAR2,
+    p_pagina        IN  VARCHAR2,
+    p_tamanio       IN  VARCHAR2,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
+  ) IS
+    -- 50 de techo, como /existencias: el JSON vuelve por un bind STRING de
+    -- ORDS, y una pagina mas grande lo pasa y muere con un 500 mudo.
+    C_TAMANIO_DEFECTO CONSTANT PLS_INTEGER := 20;
+    C_TAMANIO_MAXIMO  CONSTANT PLS_INTEGER := 50;
+
+    l_sesion        NUMBER;
+    l_empresa       NUMBER;
+    l_sucursal      NUMBER;
+    l_situacion     VARCHAR2(3);
+    l_pagina        PLS_INTEGER;
+    l_tamanio       PLS_INTEGER;
+    l_desplaza      PLS_INTEGER;
+    l_existe        PLS_INTEGER;
+    l_asignaciones  NUMBER;
+    l_ubicaciones   NUMBER;
+    l_ubicados      NUMBER;
+    l_sin_ubicacion NUMBER;
+    l_total         NUMBER;
+    l_items         CLOB;
+  BEGIN
+    l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
+    IF l_sesion IS NULL THEN
+      p_status_code := 401;
+      p_resultado := '{"error":"Sesion invalida o vencida"}';
+      RETURN;
+    END IF;
+
+    l_empresa   := TO_NUMBER(NULLIF(p_id_empresa, ''));
+    l_sucursal  := TO_NUMBER(NULLIF(p_id_sucursal, ''));
+    l_situacion := UPPER(NULLIF(TRIM(p_situacion), ''));
+
+    IF l_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
+      RETURN;
+    END IF;
+
+    IF l_sucursal IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idSucursal es obligatorio: las ubicaciones son de una sucursal"}';
+      RETURN;
+    END IF;
+
+    IF l_situacion IS NOT NULL AND l_situacion NOT IN ('CON', 'SIN') THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"situacion tiene que ser CON, SIN o vacia"}';
+      RETURN;
+    END IF;
+
+    -- Una sucursal de otra empresa no filtraria nada ajeno —las ubicaciones se
+    -- acotan tambien por empresa—, pero devolveria el catalogo entero como "sin
+    -- ubicacion", que es un reporte falso con cara de verdadero.
+    SELECT COUNT(*)
+      INTO l_existe
+      FROM SUCURSALES
+     WHERE ID_SUCURSAL = l_sucursal
+       AND ID_EMPRESA  = l_empresa;
+
+    IF l_existe = 0 THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"La sucursal no es de esta empresa"}';
+      RETURN;
+    END IF;
+
+    l_pagina   := GREATEST(NVL(TO_NUMBER(NULLIF(p_pagina, '')), 1), 1);
+    l_tamanio  := LEAST(GREATEST(NVL(TO_NUMBER(NULLIF(p_tamanio, '')), C_TAMANIO_DEFECTO), 1),
+                        C_TAMANIO_MAXIMO);
+    l_desplaza := (l_pagina - 1) * l_tamanio;
+
+    -- EL RESUMEN, sobre las dos mitades y sin mirar `situacion`: son los
+    -- numeros de la sucursal, no de lo filtrado. Con ellos la pantalla dice
+    -- "faltan ubicar 37" aunque este mirando solo los ubicados.
+    --
+    -- `total` sale de aca mismo y no de otro COUNT: es la suma de las mitades
+    -- que pide `situacion`, contadas sobre EXACTAMENTE la misma consulta base
+    -- que el listado de abajo. Dos COUNT con dos WHERE escritos a mano son la
+    -- forma de que el total diga una cosa y las filas otra.
+    SELECT COUNT(b.id_ubicacion),
+           COUNT(DISTINCT b.id_ubicacion),
+           COUNT(DISTINCT CASE WHEN b.id_ubicacion IS NOT NULL THEN b.id_articulo END),
+           COUNT(CASE WHEN b.id_ubicacion IS NULL THEN 1 END)
+      INTO l_asignaciones, l_ubicaciones, l_ubicados, l_sin_ubicacion
+      FROM (
+        -- LA CONSULTA BASE. Esta repetida abajo, identica: si se cambia una,
+        -- se cambia la otra.
+        SELECT a.ID_ARTICULO  AS id_articulo,
+               ub.ID_UBICACION AS id_ubicacion
+          FROM ARTICULOS a
+          -- El cruce y la ubicacion se juntan ANTES del LEFT JOIN, en una
+          -- vista: asi un articulo ubicado SOLO en otra sucursal no trae una
+          -- fila del cruce con la ubicacion en null, sino que queda como lo que
+          -- es aca — sin ubicar.
+          LEFT JOIN (SELECT au.ID_ARTICULO, u.ID_UBICACION
+                       FROM ARTICULOS_UBICACIONES au
+                       JOIN UBICACIONES u ON u.ID_UBICACION = au.ID_UBICACION
+                      WHERE u.ID_EMPRESA  = l_empresa
+                        AND u.ID_SUCURSAL = l_sucursal) ub
+                 ON ub.ID_ARTICULO = a.ID_ARTICULO
+         WHERE a.ID_EMPRESA = l_empresa
+           AND (ub.ID_UBICACION IS NOT NULL
+                OR (CASE UPPER(TRIM(a.ACTIVO)) WHEN 'I' THEN 'I' WHEN '0' THEN 'I' ELSE 'A' END = 'A'
+                    AND CASE UPPER(TRIM(a.ES_GASTO)) WHEN 'S' THEN 'S' ELSE 'N' END = 'N'))
+      ) b;
+
+    l_total := CASE l_situacion
+                 WHEN 'CON' THEN l_asignaciones
+                 WHEN 'SIN' THEN l_sin_ubicacion
+                 ELSE l_asignaciones + l_sin_ubicacion
+               END;
+
+    -- ORDEN: primero los ubicados, por el recorrido fisico del deposito (zona,
+    -- estante, nivel); despues los sin ubicacion, por nombre. El id del
+    -- articulo desempata: sin una clave unica al final, OFFSET/FETCH puede
+    -- repetir o saltear filas entre paginas.
+    --
+    -- El JSON_OBJECT va en la subconsulta y el JSON_ARRAYAGG agrega esa columna
+    -- ya tipada como CLOB: anidado, el intermedio se materializa como VARCHAR2
+    -- y revienta a los 4000 bytes.
+    SELECT JSON_ARRAYAGG(fila ORDER BY sin_ubicacion, zona, estante, nivel,
+                                       nombre_orden, id_articulo
+                         RETURNING CLOB)
+      INTO l_items
+      FROM (
+        SELECT JSON_OBJECT(
+                 'idArticulo'         VALUE a.ID_ARTICULO,
+                 'codigoArticulo'     VALUE a.CODIGO_ARTICULO,
+                 'nombreArticulo'     VALUE a.NOMBRE_ARTICULO,
+                 'idCategoria'        VALUE a.ID_CATEGORIA,
+                 'categoria'          VALUE c.NOMBRE_CATEGORIA,
+                 'idMarca'            VALUE a.ID_MARCA,
+                 'marca'              VALUE m.DESCRIPCION,
+                 -- Toda la ubicacion en null cuando no tiene: es la marca de
+                 -- "sin ubicacion" que lee la pantalla.
+                 'idUbicacion'        VALUE ub.ID_UBICACION,
+                 'zona'               VALUE ub.ZONA,
+                 'estante'            VALUE ub.ESTANTE,
+                 'nivel'              VALUE ub.NIVEL,
+                 'descripcionUbicacion' VALUE ub.DESCRIPCION,
+                 -- La existencia en ESTA sucursal. La fila puede no existir
+                 -- (nunca tuvo movimiento): eso es 0, no null.
+                 'cantidadStock'      VALUE NVL(e.CANTIDAD_DISPONIBLE, 0),
+                 'esGasto'            VALUE CASE UPPER(TRIM(a.ES_GASTO))
+                                              WHEN 'S' THEN 'S'
+                                              ELSE 'N'
+                                            END,
+                 'activo'             VALUE CASE UPPER(TRIM(a.ACTIVO))
+                                              WHEN 'I' THEN 'I'
+                                              WHEN '0' THEN 'I'
+                                              ELSE 'A'
+                                            END
+                 RETURNING CLOB
+               ) AS fila,
+               CASE WHEN ub.ID_UBICACION IS NULL THEN 1 ELSE 0 END AS sin_ubicacion,
+               ub.ZONA                  AS zona,
+               ub.ESTANTE               AS estante,
+               ub.NIVEL                 AS nivel,
+               UPPER(a.NOMBRE_ARTICULO) AS nombre_orden,
+               a.ID_ARTICULO            AS id_articulo
+          FROM ARTICULOS a
+          -- LA MISMA CONSULTA BASE del resumen de arriba, con mas columnas.
+          LEFT JOIN (SELECT au.ID_ARTICULO, u.ID_UBICACION, u.ZONA, u.ESTANTE, u.NIVEL,
+                            u.DESCRIPCION
+                       FROM ARTICULOS_UBICACIONES au
+                       JOIN UBICACIONES u ON u.ID_UBICACION = au.ID_UBICACION
+                      WHERE u.ID_EMPRESA  = l_empresa
+                        AND u.ID_SUCURSAL = l_sucursal) ub
+                 ON ub.ID_ARTICULO = a.ID_ARTICULO
+          -- LEFT en las tres: categoria y marca son FK nullables, y la
+          -- existencia puede no tener fila. Con un JOIN interno el articulo
+          -- desapareceria del reporte sin ningun error.
+          LEFT JOIN CATEGORIAS c ON c.ID_CATEGORIA = a.ID_CATEGORIA
+          LEFT JOIN MARCAS     m ON m.ID_MARCA     = a.ID_MARCA
+          LEFT JOIN EXISTENCIAS e ON e.ID_EMPRESA  = l_empresa
+                                 AND e.ID_SUCURSAL = l_sucursal
+                                 AND e.ID_ARTICULO = a.ID_ARTICULO
+         WHERE a.ID_EMPRESA = l_empresa
+           AND (ub.ID_UBICACION IS NOT NULL
+                OR (CASE UPPER(TRIM(a.ACTIVO)) WHEN 'I' THEN 'I' WHEN '0' THEN 'I' ELSE 'A' END = 'A'
+                    AND CASE UPPER(TRIM(a.ES_GASTO)) WHEN 'S' THEN 'S' ELSE 'N' END = 'N'))
+           -- La situacion se aplica SOLO aca: el resumen cuenta las dos mitades.
+           AND (l_situacion IS NULL
+                OR (l_situacion = 'CON' AND ub.ID_UBICACION IS NOT NULL)
+                OR (l_situacion = 'SIN' AND ub.ID_UBICACION IS NULL))
+         -- El ORDER BY de la subconsulta es el que decide QUE filas entran en
+         -- la pagina; el del JSON_ARRAYAGG solo el orden dentro de ella. Con
+         -- las expresiones y no los alias: `id_articulo` chocaria con la
+         -- columna ID_ARTICULO de la vista `ub` (ORA-00918).
+         ORDER BY CASE WHEN ub.ID_UBICACION IS NULL THEN 1 ELSE 0 END,
+                  ub.ZONA, ub.ESTANTE, ub.NIVEL, UPPER(a.NOMBRE_ARTICULO), a.ID_ARTICULO
+         OFFSET l_desplaza ROWS FETCH NEXT l_tamanio ROWS ONLY
+      );
+
+    p_status_code := 200;
+    -- SELECT ... INTO y no asignacion: RETURNING CLOB suelto es PLS-00684.
+    -- NVL: JSON_ARRAYAGG sin filas da NULL, no un array vacio.
+    SELECT JSON_OBJECT(
+             'items'               VALUE NVL(l_items, TO_CLOB('[]')) FORMAT JSON,
+             'total'               VALUE l_total,
+             'pagina'              VALUE l_pagina,
+             'tamanio'             VALUE l_tamanio,
+             'asignaciones'        VALUE l_asignaciones,
+             'ubicacionesOcupadas' VALUE l_ubicaciones,
+             'articulosUbicados'   VALUE l_ubicados,
+             'sinUbicacion'        VALUE l_sin_ubicacion
+             RETURNING CLOB
+           )
+      INTO p_resultado
+      FROM DUAL;
+  EXCEPTION
+    WHEN OTHERS THEN
+      p_status_code := 500;
+      APEX_DEBUG.ERROR('PKG_ARTICULOS_UBICACIONES.REPORTE: [' || SQLCODE || '] ' || SQLERRM ||
+                       ' | ' || DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
+      p_resultado := '{"error":"Error al generar el reporte de ubicaciones"}';
+  END REPORTE;
+
+  ------------------------------------------------------------------------------
   -- Publica el modulo ORDS /articulos-ubicaciones/.
   --
   -- Cada handler es una sola linea: invoca al procedimiento del paquete pasando
@@ -552,6 +825,35 @@ CREATE OR REPLACE PACKAGE BODY PKG_ARTICULOS_UBICACIONES AS
 
     ORDS.DEFINE_PARAMETER(
       p_module_name => 'articulos-ubicaciones', p_pattern => 'listar', p_method => 'GET',
+      p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
+      p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
+
+    ----------------------------------------------------------------------------
+    -- GET /articulos-ubicaciones/reporte?idEmpresa=&idSucursal=&situacion=
+    --                                   &pagina=&tamanio=
+    ----------------------------------------------------------------------------
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'articulos-ubicaciones', p_pattern => 'reporte');
+
+    ORDS.DEFINE_HANDLER(
+      p_module_name => 'articulos-ubicaciones',
+      p_pattern     => 'reporte',
+      p_method      => 'GET',
+      p_source_type => ORDS.source_type_plsql,
+      p_source      => 'BEGIN PKG_ARTICULOS_UBICACIONES.REPORTE(:authorization, :idEmpresa, :idSucursal, :situacion, :pagina, :tamanio, :status_code, :resultado); END;'
+    );
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'articulos-ubicaciones', p_pattern => 'reporte', p_method => 'GET',
+      p_name => 'authorization', p_bind_variable_name => 'authorization',
+      p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'articulos-ubicaciones', p_pattern => 'reporte', p_method => 'GET',
+      p_name => 'resultado', p_bind_variable_name => 'resultado',
+      p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'articulos-ubicaciones', p_pattern => 'reporte', p_method => 'GET',
       p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 

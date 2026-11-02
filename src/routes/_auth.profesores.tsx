@@ -480,12 +480,23 @@ function EstadoProfesor({ activo }: { activo: Profesor["activo"] }) {
 }
 
 function FotoProfesor({ profesor }: { profesor: Profesor }) {
+  const queryClient = useQueryClient();
+  const { empresa } = useEmpresa();
   const galeria = useRef<HTMLInputElement>(null);
   const camaraFrontal = useRef<HTMLInputElement>(null);
   const camaraTrasera = useRef<HTMLInputElement>(null);
   const [selectorAbierto, setSelectorAbierto] = useState(false);
+  const [confirmandoQuitar, setConfirmandoQuitar] = useState(false);
   const [version, setVersion] = useState(0);
   const [falloCarga, setFalloCarga] = useState(false);
+  /**
+   * Se acaba de quitar la foto desde acá.
+   *
+   * Hace falta además de invalidar el listado: `version > 0` —que marca una
+   * foto recién subida— seguiría diciendo que hay foto hasta que llegue el
+   * refetch, y el `<img>` pediría una URL que ya da 404.
+   */
+  const [quitada, setQuitada] = useState(false);
   const subir = useMutation({
     mutationFn: async (archivo: File) => {
       const optimizada = await optimizarImagen(archivo);
@@ -494,9 +505,24 @@ function FotoProfesor({ profesor }: { profesor: Profesor }) {
     onSuccess: () => {
       setVersion((actual) => actual + 1);
       setFalloCarga(false);
+      setQuitada(false);
       toast.success("Foto actualizada");
     },
     onError: (e) => toast.error(MENSAJE_ERROR(e, "No se pudo subir la foto")),
+  });
+  const quitar = useMutation({
+    mutationFn: () => api.profesores.quitarFoto(profesor.id, empresa!.id),
+    onSuccess: () => {
+      setQuitada(true);
+      setVersion(0);
+      setConfirmandoQuitar(false);
+      setSelectorAbierto(false);
+      // `tieneFoto` viene del listado: sin esto, otra pantalla o la próxima
+      // apertura volverían a pedir la foto borrada.
+      queryClient.invalidateQueries({ queryKey: ["profesores"] });
+      toast.success("Foto quitada");
+    },
+    onError: (e) => toast.error(MENSAJE_ERROR(e, "No se pudo quitar la foto")),
   });
 
   function alElegir(e: React.ChangeEvent<HTMLInputElement>) {
@@ -507,7 +533,7 @@ function FotoProfesor({ profesor }: { profesor: Profesor }) {
     subir.mutate(archivo);
   }
 
-  const mostrarImagen = (profesor.tieneFoto || version > 0) && !falloCarga;
+  const mostrarImagen = (profesor.tieneFoto || version > 0) && !falloCarga && !quitada;
   return (
     <>
       <input
@@ -544,10 +570,10 @@ function FotoProfesor({ profesor }: { profesor: Profesor }) {
         title={mostrarImagen ? "Cambiar foto" : "Subir foto"}
         aria-label={`${mostrarImagen ? "Cambiar" : "Subir"} foto de ${profesor.nombre} ${profesor.apellido}`}
         onClick={() => setSelectorAbierto(true)}
-        disabled={subir.isPending}
+        disabled={subir.isPending || quitar.isPending}
         className="flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-border bg-muted transition-colors hover:border-primary"
       >
-        {subir.isPending ? (
+        {subir.isPending || quitar.isPending ? (
           <Loader2 className="size-4 animate-spin text-muted-foreground" />
         ) : mostrarImagen ? (
           <img
@@ -579,9 +605,48 @@ function FotoProfesor({ profesor }: { profesor: Profesor }) {
               <Camera className="size-4" />
               Usar cámara trasera
             </Button>
+            {/* Sólo si hay algo que quitar. Separado de las tres de arriba
+                porque no es otra forma de conseguir la foto: es lo contrario. */}
+            {mostrarImagen && (
+              <Button
+                type="button"
+                variant="outline"
+                className="mt-2 text-destructive hover:text-destructive"
+                onClick={() => setConfirmandoQuitar(true)}
+              >
+                <Trash2 className="size-4" />
+                Quitar foto
+              </Button>
+            )}
           </div>
         </DialogContent>
       </Dialog>
+      <AlertDialog open={confirmandoQuitar} onOpenChange={setConfirmandoQuitar}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Quitar la foto?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {`La foto de ${profesor.nombre} ${profesor.apellido} se borra y no se puede recuperar. Para volver a tener una, hay que subirla de nuevo.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                // Sin preventDefault el diálogo se cierra antes de que termine
+                // la llamada, y un error quedaría sin nadie que lo muestre en
+                // contexto. Lo cierra el onSuccess.
+                e.preventDefault();
+                quitar.mutate();
+              }}
+              disabled={quitar.isPending || empresa === null}
+            >
+              {quitar.isPending && <Loader2 className="size-4 animate-spin" />}
+              Quitar foto
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

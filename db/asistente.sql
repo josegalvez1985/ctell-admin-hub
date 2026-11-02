@@ -58,7 +58,7 @@
 --   - Privadas: IA_*, TOKENS y USUARIOS (por el hash y la sal). Para los
 --     nombres de usuario la IA tiene V_IA_USUARIOS, de db/asistente-ddl.sql.
 --
---   - LIMITE_DIARIO de entrada en 30: la clave de la API es la misma de ethos y
+--   - LIMITE_DIARIO en 50 (arrancó en 30): la clave de la API es la misma de ethos y
 --     el tope de gasto de la organización (US$ 5/mes) es de los dos juntos.
 --
 -- ORDEN: auth.sql → asistente-ddl.sql (una vez) → este archivo. Sin el DDL, el
@@ -119,7 +119,7 @@
 --   WORKSPACE_ID   con FIJAR_WORKSPACE_ID, sólo si la clave no es de uno
 --   MODELO         claude-haiku-5-5
 --   ESFUERZO       medium (low | medium | high)
---   LIMITE_DIARIO  30 preguntas por usuario y por día (las que fallan no cuentan)
+--   LIMITE_DIARIO  50 preguntas por usuario y por día (las que fallan no cuentan)
 --   MAX_FILAS      200 filas por consulta
 --
 --   Lo que se gastó, por mes (Haiku 5.5: US$ 0,10 / 0,50 por millón de tokens
@@ -1068,7 +1068,7 @@ Cómo responder:
     IF l_esfuerzo NOT IN ('low', 'medium', 'high') THEN
       l_esfuerzo := 'medium';
     END IF;
-    l_limite    := CONFIG_NUM('LIMITE_DIARIO', 30);
+    l_limite    := CONFIG_NUM('LIMITE_DIARIO', 50);
     l_max_filas := CONFIG_NUM('MAX_FILAS', 200);
 
     l_hoy := TRUNC(AHORA);

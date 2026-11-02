@@ -520,6 +520,30 @@ que se pueden editar o borrar sin romper nada. Ese mismo listado devuelve
 `cantidadArticulos` por fila, que es lo que deja mostrar "A · Estante 3 — 12
 artículos" al elegir.
 
+#### El reporte: por ubicación, y lo que no tiene ninguna
+
+`GET /articulos-ubicaciones/reporte?idEmpresa=&idSucursal=&situacion=CON|SIN`
+alimenta `/articulos-ubicaciones-reporte`. **No es el `listar` con otro nombre:**
+aquél recorre el cruce, así que un artículo sin asignar no aparece nunca. Éste
+recorre el **catálogo** con un `LEFT JOIN` al cruce, y el que no tiene ubicación
+sale con la ubicación en `null`.
+
+- **`idSucursal` es obligatorio.** "Sin ubicación" es siempre en un depósito: un
+  artículo ubicado en la casa central está sin ubicar en el local. El cruce y la
+  ubicación se juntan en una vista **antes** del `LEFT JOIN`, para que un
+  artículo ubicado sólo en otra sucursal quede como lo que es acá.
+- **"Sin ubicación" es activo y no gasto.** Un flete no va en un estante, y un
+  artículo dado de baja no se va a ubicar. Los que **sí** tienen ubicación salen
+  siempre: un inactivo ocupando un estante es lo que hay que ver.
+- **El resumen no mira `situacion`.** `asignaciones`, `ubicacionesOcupadas`,
+  `articulosUbicados` y `sinUbicacion` son de la sucursal entera, y `total` es la
+  suma de las mitades que se pidieron, contadas sobre la misma consulta base que
+  el listado.
+- **Una fila por asignación**, paginado con 50 de techo. La pantalla trae todo,
+  como `/existencias`, para que el archivo sea lo que se ve. Su `queryKey` cuelga
+  de `["articulos-ubicaciones"]`, así que asignar o quitar desde el ABM lo
+  refresca sin que nadie se acuerde de él.
+
 ### Imágenes (BLOB)
 
 `EMPRESAS.LOGO`, `ARTICULOS.IMAGEN` y `DETALLE_MONEDAS.FOTO` son BLOB y **no
@@ -698,10 +722,11 @@ Las dos reglas las imponen los **triggers** de
 paquete, y ese es el punto: valen aunque alguien corrija la tabla a mano en la
 hoja SQL de APEX. El candado no puede vivir sólo en la API.
 
-| Trigger                          | Qué hace                                             |
-| -------------------------------- | ---------------------------------------------------- |
-| `TRG_INVENTARIOS_BIUD`           | El candado: fuera de `ABIERTO` no se toca nada       |
-| `TRG_INVENTARIOS_AU_EXISTENCIAS` | Al cerrar, escribe `EXISTENCIAS.CANTIDAD_DISPONIBLE` |
+| Trigger                            | Qué hace                                                          |
+| ---------------------------------- | ----------------------------------------------------------------- |
+| `TRG_INVENTARIOS_BIUD`             | El candado: fuera de `ABIERTO` no se toca nada                    |
+| `TRG_INVENTARIOS_AU_EXISTENCIAS`   | Al cerrar, escribe `EXISTENCIAS.CANTIDAD_DISPONIBLE`              |
+| `TRG_INVENTARIOS_UBICACIONES_BIUD` | El mismo candado sobre las líneas, y sólo estantes de su depósito |
 
 **`PKG_INVENTARIOS` no repite esas reglas: las chequea antes.**
 [db/inventarios.sql](db/inventarios.sql) publica `/inventarios/` y
@@ -713,6 +738,38 @@ mismo conteo—. Sin esa traducción, un `RAISE_APPLICATION_ERROR` sale como un
 **500 mudo** y la pantalla muestra "Error al guardar" tapando el mensaje que
 explicaba qué pasaba. La tabla de códigos vive en `ERROR_DE_NEGOCIO`: una regla
 nueva en el trigger tiene que sumar su código ahí.
+
+#### El conteo se carga por ubicación
+
+El alta y la edición reciben `ubicaciones: [{ idUbicacion, cantidad }]`: en qué
+estantes se encontró el artículo y cuánto había en cada uno
+(`INVENTARIOS_UBICACIONES`, creada por
+[db/inventarios-ubicaciones-ddl.sql](db/inventarios-ubicaciones-ddl.sql)).
+**Es obligatorio**: al menos una línea para guardar y para cerrar.
+
+- **Sigue siendo un conteo por artículo y sucursal**, y lo que se aplica al
+  cerrar es el **total**. `CANTIDAD_FISICA` es la suma de las líneas: la escribe
+  el paquete al guardar y la vuelve a calcular justo antes de cerrar. No hay un
+  conteo por estante porque el cierre ajusta por diferencia contra el total del
+  sistema: con 7 + 5 = 12 y el sistema en 12, dos cierres separados restarían 5
+  y 7 sin que faltara nada.
+- **No es stock por ubicación.** `EXISTENCIAS` no cambia: una venta no dice de
+  qué estante sale, así que un número por estante dejaría de ser cierto con la
+  primera venta. Las líneas son evidencia de dónde estaban las unidades **el
+  día del conteo**.
+- **Una línea sin cantidad es un estante sin contar**, no cero: el total queda
+  `NULL` y el conteo no se cierra. El cero va explícito.
+- **Contar en un estante asigna el artículo ahí** (`ARTICULOS_UBICACIONES`), en
+  la misma transacción: si se lo encontró ahí, está ahí. Al revés no: un estante
+  asignado que dio 0 **conserva** la asignación —puede ser su lugar cuando se
+  reponga— y la pantalla sólo lo avisa.
+- `TRG_INVENTARIOS_UBICACIONES_BIUD` congela las líneas de un conteo cerrado y
+  rechaza un estante de otra sucursal, con los **mismos códigos** (`-20102`,
+  `-20106`) que `ERROR_DE_NEGOCIO` ya traduce. La FK **no** tiene
+  `ON DELETE CASCADE`: ese trigger lee `INVENTARIOS`, y con cascada daría
+  `ORA-04091` (tabla mutante). `ELIMINAR` borra las líneas primero.
+- Los conteos anteriores no tienen líneas: se ven igual, y uno `ABIERTO` se marca
+  "Falta la ubicación" porque no se puede cerrar hasta cargársela.
 
 **Cerrar tiene endpoint propio, no es un campo del `PUT`.** Contar y aplicar son
 dos actos distintos: el primero se corrige cuantas veces haga falta, el segundo
@@ -909,6 +966,10 @@ archivo se ejecute después.
    no repite las reglas, las supone. Con los triggers ausentes compila igual,
    pero un conteo cerrado se puede volver a editar y cerrar no ajusta ninguna
    existencia.
+
+   Entre los dos va **`inventarios-ubicaciones-ddl.sql`**, que crea
+   `INVENTARIOS_UBICACIONES`: el paquete la consulta en SQL estático, y sin ella
+   compila `INVALID` y todo `/inventarios` da 500.
 
 4. **`iva.sql`, `personas.sql` y `condiciones-pago.sql` antes que
    `facturas-compras.sql`.** El listado de facturas hace JOIN contra las tres.

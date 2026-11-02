@@ -36,6 +36,9 @@ import { cn } from "@/lib/utils";
  * | Celular (`< lg`) | abajo a la derecha, **encima** del botón del menú | hoja casi a pantalla completa |
  * | Escritorio (`≥ lg`) | abajo a la derecha | panel fijo a la derecha, **sin tapar** la pantalla: `AppLayout` le hace lugar, y sigue abierto al navegar |
  *
+ * Ese es el lugar del botón **por defecto**: se arrastra a cualquier otro, y
+ * queda ahí en ese dispositivo (ver `BotonFlotante`).
+ *
  * Lo ven todos los que entran: no depende de los permisos de página (Jose,
  * 22/10/2026).
  */
@@ -48,31 +51,12 @@ export function Asistente({
   /** Con el menú del celular abierto el botón quedaría encima de la hoja. */
   ocultarBoton?: boolean;
 }) {
-  const { abierto, pendiente } = useAsistente();
+  const { abierto } = useAsistente();
   const escritorio = useEscritorio();
 
   return (
     <>
-      {!ocultarBoton && !(escritorio && abierto) && (
-        <button
-          type="button"
-          onClick={() => {
-            void cargarManual(); // que esté listo para la primera pregunta
-            abrirAsistente(true);
-          }}
-          aria-label="Abrir el asistente"
-          title="Asistente"
-          className="gradient-primary fixed bottom-24 right-6 z-30 grid size-14 place-items-center rounded-full text-primary-foreground shadow-lg transition-transform active:scale-95 lg:bottom-6"
-        >
-          <Sparkles className="size-6" />
-          {pendiente && (
-            <span className="absolute right-0.5 top-0.5 flex size-3.5">
-              <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary-foreground/70" />
-              <span className="relative inline-flex size-3.5 rounded-full border-2 border-primary-foreground bg-destructive" />
-            </span>
-          )}
-        </button>
-      )}
+      {!ocultarBoton && !(escritorio && abierto) && <BotonFlotante />}
 
       {escritorio ? (
         abierto && (
@@ -95,6 +79,168 @@ export function Asistente({
         </Drawer>
       )}
     </>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* El botón: se arrastra a cualquier lugar                                     */
+/* -------------------------------------------------------------------------- */
+
+/** `size-14`: el botón mide 56px. */
+const TAMANIO_BOTON = 56;
+/** Lo mínimo que queda entre el botón y el borde de la ventana. */
+const MARGEN_BOTON = 8;
+/**
+ * Lo que hay que mover el puntero para que cuente como arrastre y no como
+ * toque. Sin umbral, el temblor del dedo al tocar movería el botón un par de
+ * píxeles y se comería el click: el botón no abriría nunca en el celular.
+ */
+const UMBRAL_ARRASTRE = 5;
+const CLAVE_POSICION = "ctell-asistente-posicion";
+
+type Posicion = { x: number; y: number };
+
+/*
+ * La posición vive en localStorage y no en el store de `lib/asistente.ts`: cada
+ * pantalla monta su propio `AppLayout` —el botón se desmonta al navegar— y es
+ * una preferencia de este dispositivo, no de la conversación. Con try/catch
+ * porque en una ventana privada o con los datos del sitio bloqueados el acceso
+ * tira: ahí el botón vuelve a su lugar de siempre, que es lo esperable.
+ */
+function leerPosicion(): Posicion | null {
+  try {
+    const p: unknown = JSON.parse(localStorage.getItem(CLAVE_POSICION) ?? "null");
+    if (p && typeof (p as Posicion).x === "number" && typeof (p as Posicion).y === "number") {
+      return p as Posicion;
+    }
+  } catch {
+    // Sin storage o con basura guardada: lugar por defecto.
+  }
+  return null;
+}
+
+function guardarPosicion(p: Posicion) {
+  try {
+    localStorage.setItem(CLAVE_POSICION, JSON.stringify(p));
+  } catch {
+    // Se mueve igual; sólo no se recuerda.
+  }
+}
+
+/**
+ * La posición, metida dentro de la ventana. Se aplica al arrastrar, al leerla y
+ * al cambiar el tamaño de la ventana: un botón dejado en el borde derecho del
+ * monitor no puede quedar afuera al girar el celular o achicar el navegador,
+ * porque es la única forma de abrir el asistente.
+ */
+function encuadrar(p: Posicion): Posicion {
+  const maxX = Math.max(window.innerWidth - TAMANIO_BOTON - MARGEN_BOTON, MARGEN_BOTON);
+  const maxY = Math.max(window.innerHeight - TAMANIO_BOTON - MARGEN_BOTON, MARGEN_BOTON);
+  return {
+    x: Math.min(Math.max(p.x, MARGEN_BOTON), maxX),
+    y: Math.min(Math.max(p.y, MARGEN_BOTON), maxY),
+  };
+}
+
+/**
+ * El botón flotante. Se toca para abrir el chat y se arrastra —con el mouse o
+ * con el dedo— para llevarlo a cualquier lugar, si tapa algo de la pantalla.
+ *
+ * Mientras nadie lo movió, va donde siempre (abajo a la derecha, encima del
+ * botón del menú en el celular) y lo ubican las clases. Una vez arrastrado, la
+ * posición pasa a `left`/`top` en línea, que pisan esas clases.
+ */
+function BotonFlotante() {
+  const { pendiente } = useAsistente();
+  const [posicion, setPosicion] = useState<Posicion | null>(() => {
+    const p = leerPosicion();
+    return p ? encuadrar(p) : null;
+  });
+  const arrastre = useRef<{
+    dx: number;
+    dy: number;
+    x0: number;
+    y0: number;
+    movido: boolean;
+  } | null>(null);
+  // El click llega DESPUÉS del pointerup: esto le avisa que fue un arrastre y
+  // que no tiene que abrir el chat.
+  const fueArrastre = useRef(false);
+
+  useEffect(() => {
+    const alCambiarTamanio = () => setPosicion((p) => (p ? encuadrar(p) : p));
+    window.addEventListener("resize", alCambiarTamanio);
+    return () => window.removeEventListener("resize", alCambiarTamanio);
+  }, []);
+
+  return (
+    <button
+      type="button"
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        const r = e.currentTarget.getBoundingClientRect();
+        arrastre.current = {
+          dx: e.clientX - r.left,
+          dy: e.clientY - r.top,
+          x0: e.clientX,
+          y0: e.clientY,
+          movido: false,
+        };
+        // Captura: si el puntero sale del botón a mitad del arrastre (un
+        // movimiento rápido), los eventos siguen llegando acá.
+        e.currentTarget.setPointerCapture(e.pointerId);
+      }}
+      onPointerMove={(e) => {
+        const a = arrastre.current;
+        if (!a) return;
+        if (!a.movido && Math.hypot(e.clientX - a.x0, e.clientY - a.y0) < UMBRAL_ARRASTRE) {
+          return;
+        }
+        a.movido = true;
+        setPosicion(encuadrar({ x: e.clientX - a.dx, y: e.clientY - a.dy }));
+      }}
+      onPointerUp={(e) => {
+        const a = arrastre.current;
+        arrastre.current = null;
+        if (!a?.movido) return;
+        fueArrastre.current = true;
+        // Se guarda calculada del evento y no leída del estado, que en este
+        // punto todavía puede tener la del movimiento anterior.
+        const final = encuadrar({ x: e.clientX - a.dx, y: e.clientY - a.dy });
+        setPosicion(final);
+        guardarPosicion(final);
+      }}
+      onPointerCancel={() => {
+        arrastre.current = null;
+      }}
+      onClick={() => {
+        if (fueArrastre.current) {
+          fueArrastre.current = false;
+          return;
+        }
+        void cargarManual(); // que esté listo para la primera pregunta
+        abrirAsistente(true);
+      }}
+      aria-label="Abrir el asistente"
+      title="Asistente — arrastralo para moverlo"
+      style={
+        posicion ? { left: posicion.x, top: posicion.y, right: "auto", bottom: "auto" } : undefined
+      }
+      className={cn(
+        // touch-none: sin esto, en el celular arrastrar el botón scrollea la
+        // página en vez de moverlo.
+        "gradient-primary fixed z-30 grid size-14 cursor-grab touch-none select-none place-items-center rounded-full text-primary-foreground shadow-lg transition-transform active:scale-95 active:cursor-grabbing",
+        !posicion && "bottom-24 right-6 lg:bottom-6",
+      )}
+    >
+      <Sparkles className="size-6" />
+      {pendiente && (
+        <span className="absolute right-0.5 top-0.5 flex size-3.5">
+          <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary-foreground/70" />
+          <span className="relative inline-flex size-3.5 rounded-full border-2 border-primary-foreground bg-destructive" />
+        </span>
+      )}
+    </button>
   );
 }
 

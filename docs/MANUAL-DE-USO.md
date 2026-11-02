@@ -59,16 +59,16 @@ Si buscás cómo agregar una tabla o una pantalla nueva, eso está en
 
 **Módulos**
 
-| Módulo                                       | Definiciones                                                                                                         | Operaciones                                                               | Reportes                             |
-| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------ |
-| [Ventas](#módulo-ventas)                     | —                                                                                                                    | Punto de venta · Ventas · Cobros                                          | —                                    |
-| [Compras](#módulo-compras)                   | —                                                                                                                    | Facturas de compras · Pagos                                               | —                                    |
-| [Stock](#módulo-stock)                       | Artículos · Ubicaciones de artículos · Ubicaciones                                                                   | Inventarios                                                               | Existencias · Reporte de inventarios |
-| [Tesorería](#módulo-tesorería)               | Bancos · Cuentas bancarias · Canales de pago · Condiciones de pago · Monedas · Listas de descuentos                  | —                                                                         | —                                    |
-| [Recursos humanos](#módulo-recursos-humanos) | Profesores · Instituciones · Manuales                                                                                | Reportes de actividades · Justificaciones de ausencia · Ficha de traspaso | Asistencias                          |
-| [Base](#módulo-base)                         | Empresas · Sucursales · Personas · Categorías · Marcas · Unidades · IVA · Talonarios · Países · Códigos equivalentes | —                                                                         | —                                    |
-| [Administración](#módulo-administración)     | Usuarios · Módulos y Páginas · Permisos                                                                              | Notificaciones                                                            | —                                    |
-| [Configuración](#módulo-configuración)       | Configuración · Ayuda                                                                                                | —                                                                         | Dashboard                            |
+| Módulo                                       | Definiciones                                                                                                         | Operaciones                                                               | Reportes                                                      |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| [Ventas](#módulo-ventas)                     | —                                                                                                                    | Punto de venta · Ventas · Cobros                                          | —                                                             |
+| [Compras](#módulo-compras)                   | —                                                                                                                    | Facturas de compras · Pagos                                               | —                                                             |
+| [Stock](#módulo-stock)                       | Artículos · Ubicaciones de artículos · Ubicaciones                                                                   | Inventarios                                                               | Existencias · Reporte de inventarios · Reporte de ubicaciones |
+| [Tesorería](#módulo-tesorería)               | Bancos · Cuentas bancarias · Canales de pago · Condiciones de pago · Monedas · Listas de descuentos                  | —                                                                         | —                                                             |
+| [Recursos humanos](#módulo-recursos-humanos) | Profesores · Instituciones · Manuales                                                                                | Reportes de actividades · Justificaciones de ausencia · Ficha de traspaso | Asistencias                                                   |
+| [Base](#módulo-base)                         | Empresas · Sucursales · Personas · Categorías · Marcas · Unidades · IVA · Talonarios · Países · Códigos equivalentes | —                                                                         | —                                                             |
+| [Administración](#módulo-administración)     | Usuarios · Módulos y Páginas · Permisos                                                                              | Notificaciones                                                            | —                                                             |
+| [Configuración](#módulo-configuración)       | Configuración · Ayuda                                                                                                | —                                                                         | Dashboard                                                     |
 
 ---
 
@@ -115,6 +115,15 @@ empresa se cambia desde la barra; la sucursal importa sobre todo en stock.
 
 El sistema se puede instalar en el celular o la computadora y queda con su ícono,
 como cualquier app. Al entrar aparece solo el aviso que lo ofrece.
+
+### El asistente
+
+El botón redondo con destellos, abajo a la derecha, abre un chat que explica cómo
+se usa el sistema y responde preguntas sobre los datos de la empresa activa.
+
+**Si el botón te tapa algo, arrastralo** —con el mouse o con el dedo— a cualquier
+lugar de la pantalla. Queda donde lo dejaste, también al cambiar de pantalla, en
+ese celular o esa computadora. Tocarlo sin arrastrar lo abre como siempre.
 
 ---
 
@@ -279,8 +288,33 @@ _El trabajo de todos los días: lo que se registra a medida que pasa._
 
 **Cómo se usa.** Se cuenta lo que hay en el depósito y se anota, artículo por
 artículo. El diálogo de alta ofrece completar la ficha del artículo si le falta
-marca, categoría o ubicación, y hay un filtro por estante para contar mientras se
-recorre el depósito.
+marca o categoría, y hay un filtro por estante para contar mientras se recorre el
+depósito.
+
+**Se cuenta por ubicación.** Un artículo puede estar en varios estantes, y en
+cada uno se anota cuánto había. Al elegir el artículo aparecen sus ubicaciones
+de esta sucursal, cada una con la cantidad en blanco; se pueden agregar otras con
+**Agregar ubicación**, o crear un estante nuevo desde el mismo selector. Lo
+contado es **la suma** de todas, y es lo que se compara con el sistema.
+
+- **Hace falta al menos una ubicación.** Un número sin el lugar donde se lo
+  encontró no sirve para ir a buscarlo después.
+- **Una cantidad en blanco es un estante que todavía no se contó**, no un cero.
+  El conteo se puede guardar así, pero no cerrar. Si el estante estaba vacío,
+  cargá **0**.
+- **Si lo contaste en un estante donde no estaba asignado, queda asignado** ahí
+  al guardar.
+- **Si un estante asignado dio 0, la asignación no se borra**: puede ser su lugar
+  cuando se reponga. Si ya no va ahí, se quita desde **Ubicaciones de
+  artículos**.
+
+> **Esto no lleva el stock por estante.** La existencia sigue siendo una por
+> artículo y sucursal: una venta no dice de qué estante sale. Lo que queda
+> guardado es dónde estaban las unidades **el día del conteo**.
+>
+> Los conteos cargados antes de este cambio no tienen ubicaciones. Si alguno
+> sigue abierto, aparece marcado **"Falta la ubicación"**: hay que editarlo y
+> elegir el estante antes de poder cerrarlo.
 
 **Los estados:**
 
@@ -322,6 +356,29 @@ pantalla — trae el catálogo entero, no sólo la página visible.
 edita, no cierra.
 
 **Filtros:** fechas (desde/hasta, con atajos), estado y diferencia (con o sin).
+
+Se exporta a Excel y PDF, con exactamente lo que se ve en pantalla.
+
+### Reporte de ubicaciones
+
+`/articulos-ubicaciones-reporte` — qué hay en cada estante, y qué no tiene
+ninguno. Sólo consulta.
+
+**Cómo se usa.** Los artículos de cada ubicación de la **sucursal activa**, en el
+orden en que se recorre el depósito (zona, estante, nivel), y al final los que no
+tienen ninguna. Arriba se elige qué mostrar: **Todos**, **Con ubicación** o
+**Sin ubicación**.
+
+- Un artículo que está en varios estantes sale **una vez por cada uno**.
+- Los números de arriba (ubicaciones ocupadas, artículos ubicados, sin ubicación)
+  son de la sucursal entera, no de lo filtrado. Tocar **Sin ubicación** muestra
+  esos artículos.
+- Zona, categoría y marca se filtran desde el encabezado de su columna.
+
+> **Qué cuenta como "sin ubicación":** sólo los artículos **activos** que no son
+> **gasto**. Un flete o un honorario no van en un estante, y un artículo dado de
+> baja no se va a ubicar. Los que sí tienen ubicación salen siempre, aunque estén
+> inactivos.
 
 Se exporta a Excel y PDF, con exactamente lo que se ve en pantalla.
 
@@ -403,6 +460,11 @@ _Lo que se carga una vez y después se elige desde otras pantallas._
 `/profesores` — el padrón de profesores, con su foto.
 
 Alta, edición y baja de los profesores. Cada uno lleva su foto y su cédula.
+
+**La foto** se carga tocando el cuadro de la izquierda de cada profesor: se
+elige de la galería o se saca con la cámara. Desde ese mismo lugar se cambia, o
+se borra con **Quitar foto**. Una foto quitada no se recupera: hay que volver a
+subirla.
 
 > **La cédula es única en todo el sistema.** Un profesor pertenece a una sola
 > empresa, y eso es lo que define en qué empresa se ven sus marcaciones y sus
