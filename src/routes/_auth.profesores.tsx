@@ -43,6 +43,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
+import { miniatura, subidaDirectaDisponible, subirACloudinary } from "@/lib/cloudinary";
 import { optimizarImagen } from "@/lib/imagen";
 import { tituloPagina } from "@/lib/marca";
 import {
@@ -479,6 +480,15 @@ function EstadoProfesor({ activo }: { activo: Profesor["activo"] }) {
   );
 }
 
+/**
+ * Miniatura del profesor, que además es el botón para cambiarla.
+ *
+ * **La foto va a Cloudinary**, no a la base: se recorta cuadrada, se achica a
+ * 800 px y en Oracle queda sólo la URL. Reemplazarla o quitarla borra la
+ * anterior de Cloudinary, y lo hace el backend (`PKG_CLOUDINARY`), que es quien
+ * tiene la `api_secret`. Las fotos de antes del cambio siguen en la base y se
+ * piden a `urlFotoProfesor` hasta que se vuelvan a subir.
+ */
 function FotoProfesor({ profesor }: { profesor: Profesor }) {
   const queryClient = useQueryClient();
   const { empresa } = useEmpresa();
@@ -487,25 +497,35 @@ function FotoProfesor({ profesor }: { profesor: Profesor }) {
   const camaraTrasera = useRef<HTMLInputElement>(null);
   const [selectorAbierto, setSelectorAbierto] = useState(false);
   const [confirmandoQuitar, setConfirmandoQuitar] = useState(false);
-  const [version, setVersion] = useState(0);
   const [falloCarga, setFalloCarga] = useState(false);
   /**
-   * Se acaba de quitar la foto desde acá.
-   *
-   * Hace falta además de invalidar el listado: `version > 0` —que marca una
-   * foto recién subida— seguiría diciendo que hay foto hasta que llegue el
-   * refetch, y el `<img>` pediría una URL que ya da 404.
+   * Lo último que se hizo acá, para mostrarlo sin esperar al refetch del
+   * listado: `{ url }` tras subir, `{ url: null }` tras quitar. Cada subida
+   * tiene su propio public_id, así que no hay caché vieja que esquivar.
    */
-  const [quitada, setQuitada] = useState(false);
+  const [local, setLocal] = useState<{ url: string | null } | null>(null);
   const subir = useMutation({
     mutationFn: async (archivo: File) => {
-      const optimizada = await optimizarImagen(archivo);
-      return api.profesores.subirFoto(profesor.id, optimizada);
+      // Cuadrada y a 800 px: se ve de 40 px en la tabla y en grande nunca
+      // pasa de una ficha. Una foto de celular de 4 MB queda en 100-200 KB.
+      const optimizada = await optimizarImagen(archivo, {
+        maxLado: 800,
+        maxBytes: 300 * 1024,
+        cuadrada: true,
+      });
+      const { url } = await subirACloudinary(optimizada, {
+        carpeta: "profesores",
+        // El nombre identifica al profesor en el panel de Cloudinary; el del
+        // archivo (`IMG_0001`) no dice nada.
+        prefijo: `${profesor.nombre} ${profesor.apellido}`,
+      });
+      await api.profesores.guardarFoto(profesor.id, { idEmpresa: empresa!.id, fotoUrl: url });
+      return url;
     },
-    onSuccess: () => {
-      setVersion((actual) => actual + 1);
+    onSuccess: (url) => {
+      setLocal({ url });
       setFalloCarga(false);
-      setQuitada(false);
+      queryClient.invalidateQueries({ queryKey: ["profesores"] });
       toast.success("Foto actualizada");
     },
     onError: (e) => toast.error(MENSAJE_ERROR(e, "No se pudo subir la foto")),
@@ -513,8 +533,7 @@ function FotoProfesor({ profesor }: { profesor: Profesor }) {
   const quitar = useMutation({
     mutationFn: () => api.profesores.quitarFoto(profesor.id, empresa!.id),
     onSuccess: () => {
-      setQuitada(true);
-      setVersion(0);
+      setLocal({ url: null });
       setConfirmandoQuitar(false);
       setSelectorAbierto(false);
       // `tieneFoto` viene del listado: sin esto, otra pantalla o la próxima
@@ -533,7 +552,15 @@ function FotoProfesor({ profesor }: { profesor: Profesor }) {
     subir.mutate(archivo);
   }
 
-  const mostrarImagen = (profesor.tieneFoto || version > 0) && !falloCarga && !quitada;
+  // La de Cloudinary pedida al tamaño de la miniatura (2× los 40 px que se
+  // ven); si no hay, la vieja de la base.
+  const fotoUrl = local ? local.url : profesor.fotoUrl;
+  const src = fotoUrl
+    ? (miniatura(fotoUrl, "foto", 80) ?? fotoUrl)
+    : !local && profesor.tieneFoto
+      ? urlFotoProfesor(profesor.id)
+      : null;
+  const mostrarImagen = src !== null && !falloCarga;
   return (
     <>
       <input
@@ -577,7 +604,7 @@ function FotoProfesor({ profesor }: { profesor: Profesor }) {
           <Loader2 className="size-4 animate-spin text-muted-foreground" />
         ) : mostrarImagen ? (
           <img
-            src={`${urlFotoProfesor(profesor.id)}${version > 0 ? `?v=${version}` : ""}`}
+            src={src}
             alt=""
             className="size-full object-cover"
             onError={() => setFalloCarga(true)}
@@ -590,21 +617,39 @@ function FotoProfesor({ profesor }: { profesor: Profesor }) {
         <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle>{mostrarImagen ? "Cambiar foto" : "Agregar foto"}</DialogTitle>
-            <DialogDescription>Elegí de dónde querés obtener la foto.</DialogDescription>
+            <DialogDescription>
+              {subidaDirectaDisponible
+                ? "Elegí de dónde querés obtener la foto."
+                : "La subida de imágenes no está configurada."}
+            </DialogDescription>
           </DialogHeader>
           <div className="grid gap-2">
-            <Button type="button" variant="outline" onClick={() => galeria.current?.click()}>
-              <Images className="size-4" />
-              Elegir de la galería
-            </Button>
-            <Button type="button" variant="outline" onClick={() => camaraFrontal.current?.click()}>
-              <Camera className="size-4" />
-              Usar cámara frontal
-            </Button>
-            <Button type="button" variant="outline" onClick={() => camaraTrasera.current?.click()}>
-              <Camera className="size-4" />
-              Usar cámara trasera
-            </Button>
+            {/* Sin cuenta de Cloudinary no hay a dónde subir: los botones no se
+                ofrecen en vez de fallar siempre. */}
+            {subidaDirectaDisponible && (
+              <>
+                <Button type="button" variant="outline" onClick={() => galeria.current?.click()}>
+                  <Images className="size-4" />
+                  Elegir de la galería
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => camaraFrontal.current?.click()}
+                >
+                  <Camera className="size-4" />
+                  Usar cámara frontal
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => camaraTrasera.current?.click()}
+                >
+                  <Camera className="size-4" />
+                  Usar cámara trasera
+                </Button>
+              </>
+            )}
             {/* Sólo si hay algo que quitar. Separado de las tres de arriba
                 porque no es otra forma de conseguir la foto: es lo contrario. */}
             {mostrarImagen && (

@@ -26,11 +26,12 @@ import {
   ApiError,
   esActivo,
   GRADOS,
-  urlArchivoManual,
+  urlPdfManual,
   type Grado,
   type Institucion,
   type Manual,
 } from "@/lib/api";
+import { subidaDirectaDisponible, subirACloudinary } from "@/lib/cloudinary";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -98,8 +99,40 @@ const POR_PAGINA = 20;
 /** Lo que se espera entre teclas antes de mandar la búsqueda al servidor. */
 const ESPERA_BUSQUEDA_MS = 350;
 
-/** El techo que valida el backend. Se chequea acá para no subir 20 MB en vano. */
+/**
+ * Techo propio, para no subir un archivo enorme en vano. El que manda es el de
+ * Cloudinary (10 MB por archivo en el plan gratuito): si lo pasa, el error que
+ * devuelve Cloudinary se muestra tal cual.
+ */
 const MAX_BYTES = 20 * 1024 * 1024;
+
+/**
+ * Sube el PDF a Cloudinary y anota su URL en el manual.
+ *
+ * **El PDF no pasa por la base**: el esquema tiene 25 MB de cuota compartida, y
+ * tres manuales escaneados alcanzaban para que fallara cualquier alta del
+ * sistema. Reemplazar el archivo borra de Cloudinary el anterior, y lo hace el
+ * backend, que es quien tiene la `api_secret`.
+ *
+ * Si la subida anda y el guardado de la URL falla, el archivo queda huérfano en
+ * Cloudinary: es preferible a guardar una URL que todavía no existe.
+ */
+async function cargarPdf(
+  manual: { id: number; institucion: string; grado: Grado },
+  idEmpresa: number,
+  archivo: File,
+) {
+  if (!subidaDirectaDisponible) {
+    throw new Error("La subida de archivos no está configurada.");
+  }
+  const { url, bytes } = await subirACloudinary(archivo, {
+    carpeta: "manuales",
+    // Es el nombre con el que se baja el PDF desde el visor: "IMG_scan.pdf"
+    // no dice de qué colegio ni de qué grado es.
+    prefijo: `${manual.institucion} ${manual.grado}`,
+  });
+  await api.manuales.guardarArchivo(manual.id, { idEmpresa, archivoUrl: url, bytes });
+}
 
 /**
  * El peso del PDF, para mostrarlo al lado del nombre: un manual de 40 MB
@@ -562,10 +595,11 @@ function EstadoArchivo({ manual }: { manual: Manual }) {
  */
 function ArchivoManual({ manual }: { manual: Manual }) {
   const queryClient = useQueryClient();
+  const { empresa } = useEmpresa();
   const entrada = useRef<HTMLInputElement>(null);
 
   const subir = useMutation({
-    mutationFn: (archivo: File) => api.manuales.subirArchivo(manual.id, archivo),
+    mutationFn: (archivo: File) => cargarPdf(manual, empresa!.id, archivo),
     onSuccess: () => {
       // El listado trae `tieneArchivo`, `bytesArchivo` y `fechaCarga`: los tres
       // acaban de cambiar.
@@ -616,7 +650,7 @@ function ArchivoManual({ manual }: { manual: Manual }) {
           title="Ver el PDF"
           aria-label={`Ver el manual de ${manual.grado} de ${manual.institucion}`}
         >
-          <a href={urlArchivoManual(manual.id)} target="_blank" rel="noopener noreferrer">
+          <a href={urlPdfManual(manual)} target="_blank" rel="noopener noreferrer">
             <FileText className="size-4" />
           </a>
         </Button>
@@ -628,7 +662,7 @@ function ArchivoManual({ manual }: { manual: Manual }) {
         title={manual.tieneArchivo ? "Reemplazar el PDF" : "Subir el PDF"}
         aria-label={`${manual.tieneArchivo ? "Reemplazar" : "Subir"} el PDF del manual de ${manual.grado} de ${manual.institucion}`}
         onClick={() => entrada.current?.click()}
-        disabled={subir.isPending}
+        disabled={subir.isPending || !subidaDirectaDisponible || empresa === null}
       >
         {subir.isPending ? (
           <Loader2 className="size-4 animate-spin" />
@@ -716,7 +750,9 @@ function ManualFormDialog({
       // fue exitosa aunque el archivo no.
       if (archivo) {
         try {
-          await api.manuales.subirArchivo(creado.id, archivo);
+          const institucion =
+            instituciones.find((i) => i.id === Number(v.idInstitucion))?.nombreInstitucion ?? "";
+          await cargarPdf({ id: creado.id, institucion, grado: v.grado }, idEmpresa, archivo);
         } catch (e) {
           toast.warning(
             MENSAJE_ERROR(

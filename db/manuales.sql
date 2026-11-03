@@ -9,18 +9,20 @@
 --   2. INSERTAR      POST   /manuales/crear
 --   3. ACTUALIZAR    PUT    /manuales/actualizar/:id
 --   4. ELIMINAR      DELETE /manuales/eliminar/:id/:idEmpresa
---   5. (sin PL/SQL)  GET    /manuales/archivo/:id   (SIN TOKEN, media)
---   6. GUARDAR_ARCHIVO PUT  /manuales/archivo/:id   (con token)
+--   5. (sin PL/SQL)  GET    /manuales/archivo/:id   (SIN TOKEN, media; solo los viejos)
+--   6. GUARDAR_ARCHIVO PUT  /manuales/archivo-url/:id   (con token)
 --
 -- Se ejecuta una sola vez en la hoja de trabajo SQL de APEX, conectado con el
--- esquema del workspace. REQUIERE db/auth.sql EJECUTADO ANTES: usa PKG_AUTH
--- para validar el token.
+-- esquema del workspace. REQUIERE db/auth.sql Y db/cloudinary.sql EJECUTADOS
+-- ANTES: usa PKG_AUTH para validar el token y PKG_CLOUDINARY para borrar el
+-- PDF reemplazado.
 --
 -- Base de los endpoints: https://oracleapex.com/ords/ctell/manuales/
 --
--- Tabla (no la crea ni la altera, salvo la columna ARCHIVO_MIME del paso 0):
---   MANUALES  ID_MANUAL, ID_INSTITUCION, GRADO, ARCHIVO_PDF,
---             FECHA_CARGA, FECHA_ACTUALIZACION
+-- Tabla (no la crea ni la altera, salvo ARCHIVO_MIME, ARCHIVO_URL y
+-- ARCHIVO_BYTES del paso 0):
+--   MANUALES  ID_MANUAL, ID_INSTITUCION, GRADO, ARCHIVO_PDF, ARCHIVO_URL,
+--             ARCHIVO_BYTES, FECHA_CARGA, FECHA_ACTUALIZACION
 --
 --------------------------------------------------------------------------------
 -- LA TABLA NO TIENE ID_EMPRESA, Y ESO CAMBIA COMO SE AISLA
@@ -90,40 +92,51 @@
 -- UPPER convertiria '1ro.' en '1RO.' y ninguno de los dos matchearia.
 --
 --------------------------------------------------------------------------------
--- ARCHIVO_PDF (BLOB): POR ENDPOINTS PROPIOS, NO EN EL JSON
+-- EL PDF: EN CLOUDINARY, NO EN LA BASE
 --
--- Un binario no entra en un JSON_OBJECT, asi que va aparte, con el mismo
--- mecanismo que la foto en db/profesores.sql y el logo en db/empresas.sql:
+-- El navegador sube el PDF directo a Cloudinary (src/lib/cloudinary.ts) y aca
+-- se guarda solo la URL, en ARCHIVO_URL, con su peso en ARCHIVO_BYTES. Es el
+-- mismo cambio que la imagen de db/articulos.sql, y aca pesa mas que en ningun
+-- otro lado: un manual escaneado son varios MB, y el esquema tiene una cuota de
+-- 25 MB compartida que los BLOB ya llenaron una vez (ORA-01536 en todo INSERT
+-- de cualquier tabla). Tres manuales alcanzaban para trabar el sistema entero.
 --
---   GET /manuales/archivo/:id  devuelve el PDF crudo con su content-type.
---     Es PUBLICO, como los otros dos binarios del proyecto: asi el manual se
---     abre con un <a href> o un window.open directo, se puede imprimir desde el
---     visor del navegador y el link sirve para compartirlo. Ver la nota abajo.
+--   PUT /manuales/archivo-url/:id  Body { idEmpresa, archivoUrl, bytes }. Con
+--     token y aislado por empresa —ahora se puede: el body es un JSON—. Guarda
+--     la URL, VACIA EL BLOB VIEJO, mueve FECHA_CARGA y borra de Cloudinary el
+--     PDF anterior.
 --
---   PUT /manuales/archivo/:id  recibe el binario en el body. Este SI pide
---     token: escribir nunca es publico.
+--   GET /manuales/archivo/:id  SIGUE PUBLICADO, solo para los PDF cargados
+--     antes del cambio. Se retira cuando la consulta del pie diga que no queda
+--     ningun BLOB.
 --
--- OJO CON EL GET PUBLICO: cualquiera que adivine un id ve el manual sin
--- credenciales. Se acepta porque un manual escolar es material para distribuir
--- —el caso de uso es justamente que llegue a quien lo necesita— y porque
--- cerrarlo obligaria a bajarlo con fetch y armar un object URL, perdiendo el
--- link compartible. Si algun dia el contenido fuera reservado, la salida es una
--- URL firmada y este endpoint es el que habria que migrar.
+-- NO HAY PUT DEL BINARIO: se retiro a proposito. Mientras existiera, un cliente
+-- viejo (una PWA cacheada) podia volver a llenar la base sin que nadie lo
+-- notara. Template nuevo (archivo-url) y no un PUT JSON en archivo/:id: ahi ese
+-- cliente mandaria el binario a un handler que espera JSON.
 --
--- El listado devuelve `tieneArchivo` (true/false) en vez del binario, asi la
--- pantalla sabe si ofrecer "Ver" o mostrar que falta cargarlo, sin traerse los
--- PDF de todos los grados. Y ademas `bytesArchivo`, para mostrar el peso: un
--- manual escaneado de 40 MB explica solo por que tarda en abrir.
+-- LA URL SE VALIDA CONTRA https://: termina en un <a href>, y sin eso un
+-- "javascript:..." se guarda igual. El riesgo viejo —servir un HTML con script
+-- desde el origen de la API— desaparece: el archivo lo sirve Cloudinary, desde
+-- su dominio.
 --
--- CONTENT-TYPE: se guarda junto al BLOB en ARCHIVO_MIME. Es siempre
--- application/pdf —el PUT no acepta otra cosa— pero la columna existe igual por
--- el mismo criterio que FOTO_MIME e IMAGEN_MIME: el dia que se acepte un .docx
--- no hay que adivinar el formato al servirlo.
+-- ELIMINAR EL MANUAL O REEMPLAZAR EL PDF BORRA EL ARCHIVO EN CLOUDINARY, con
+-- PKG_CLOUDINARY.BORRAR despues del COMMIT (best effort: ver db/cloudinary.sql).
 --
--- TAMAÑO: el limite duro son 20 MB, validado aca. Es mucho mas alto que los
--- 2 MB de una foto a proposito: un manual escaneado a 200 filas de texto pesa
--- lo que pesa, y no hay ningun equivalente a src/lib/imagen.ts que lo pueda
--- recomprimir del lado del cliente sin destruirlo.
+-- El listado devuelve `archivoUrl` (o null) y `tieneArchivo`, que es true con
+-- CUALQUIERA de las dos: con URL la pantalla abre la URL; sin URL y con
+-- tieneArchivo, es un PDF viejo y lo pide a /manuales/archivo/:id. Y ademas
+-- `bytesArchivo`, para mostrar el peso: un manual escaneado de 40 MB explica
+-- solo por que tarda en abrir.
+--
+-- PUBLICO, igual que antes: cualquiera con la URL ve el manual. Se acepta
+-- porque un manual escolar es material para distribuir —el caso de uso es
+-- justamente que llegue a quien lo necesita— y el link compartible sigue
+-- andando.
+--
+-- TAMAÑO: el techo lo pone Cloudinary, no este paquete (en el plan gratuito,
+-- 10 MB por archivo). Un PDF no se puede recomprimir en el navegador sin
+-- destruirlo: un escaneo mas pesado hay que achicarlo antes de subirlo.
 --
 --------------------------------------------------------------------------------
 -- SIN COLUMNA ACTIVO: LA BAJA ES FISICA
@@ -202,6 +215,35 @@ BEGIN
 END;
 /
 
+-- ARCHIVO_URL y ARCHIVO_BYTES: la direccion del PDF en Cloudinary y su peso.
+-- Mismo criterio que la de arriba —columnas nuevas y opcionales sin las cuales
+-- el paquete no compila—. El peso se guarda porque ya no hay un BLOB al que
+-- preguntarle con GETLENGTH, y el listado lo muestra.
+DECLARE
+  l_existe PLS_INTEGER;
+BEGIN
+  SELECT COUNT(*)
+    INTO l_existe
+    FROM USER_TAB_COLUMNS
+   WHERE TABLE_NAME = 'MANUALES'
+     AND COLUMN_NAME = 'ARCHIVO_URL';
+
+  IF l_existe = 0 THEN
+    EXECUTE IMMEDIATE 'ALTER TABLE MANUALES ADD (ARCHIVO_URL VARCHAR2(500))';
+  END IF;
+
+  SELECT COUNT(*)
+    INTO l_existe
+    FROM USER_TAB_COLUMNS
+   WHERE TABLE_NAME = 'MANUALES'
+     AND COLUMN_NAME = 'ARCHIVO_BYTES';
+
+  IF l_existe = 0 THEN
+    EXECUTE IMMEDIATE 'ALTER TABLE MANUALES ADD (ARCHIVO_BYTES NUMBER)';
+  END IF;
+END;
+/
+
 --------------------------------------------------------------------------------
 -- 1. PKG_MANUALES
 --
@@ -241,7 +283,7 @@ CREATE OR REPLACE PACKAGE PKG_MANUALES AS
   );
 
   -- idEmpresa, idInstitucion y grado son obligatorios. El PDF NO se carga aca:
-  -- va por PUT /manuales/archivo/:id despues del alta, cuando ya hay un id al
+  -- va por PUT /manuales/archivo-url/:id despues del alta, cuando ya hay un id al
   -- que asociarlo.
   --
   -- idEmpresa no es una columna de MANUALES: sirve para comprobar que la
@@ -273,7 +315,7 @@ CREATE OR REPLACE PACKAGE PKG_MANUALES AS
   -- p_id_empresa es OBLIGATORIO: acota el borrado a la empresa de la sesion.
   --
   -- Es baja FISICA, y la unica que hay: la tabla no tiene columna ACTIVO.
-  -- Borra tambien el PDF, que vive en la misma fila.
+  -- Borra tambien el PDF de Cloudinary (o el BLOB viejo, que vive en la fila).
   PROCEDURE ELIMINAR (
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
@@ -285,13 +327,14 @@ CREATE OR REPLACE PACKAGE PKG_MANUALES AS
   -- NO hay procedimiento para SERVIR el PDF: el GET /manuales/archivo/:id se
   -- publica como source_type_media. Ver el comentario en PUBLICAR_ENDPOINTS.
   --
-  -- Guarda el PDF. CON token: escribir nunca es publico.
-  -- p_archivo llega como el cuerpo crudo del PUT; p_content_type, del header.
+  -- Guarda la URL del PDF, que el navegador ya subio a Cloudinary, y vacia el
+  -- BLOB viejo si lo habia. CON token y acotado a la empresa.
   PROCEDURE GUARDAR_ARCHIVO (
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
-    p_archivo       IN  BLOB,
-    p_content_type  IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
+    p_archivo_url   IN  VARCHAR2,
+    p_bytes         IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   );
@@ -305,10 +348,8 @@ END PKG_MANUALES;
 
 CREATE OR REPLACE PACKAGE BODY PKG_MANUALES AS
 
-  -- Techo del BLOB del manual. 20 MB, diez veces el de una foto: un manual
-  -- escaneado pesa lo que pesa y no hay nada que lo recomprima del lado del
-  -- cliente. Sigue siendo un limite util contra una subida directa al endpoint.
-  C_ARCHIVO_MAX_BYTES CONSTANT NUMBER := 20 * 1024 * 1024;
+  -- El largo de MANUALES.ARCHIVO_URL (ver el paso 0). Pasarlo daria ORA-12899.
+  C_MAX_URL CONSTANT PLS_INTEGER := 500;
 
   ------------------------------------------------------------------------------
   -- Privado: borra el modulo ORDS si existe, reintentando ante un interbloqueo.
@@ -521,11 +562,18 @@ CREATE OR REPLACE PACKAGE BODY PKG_MANUALES AS
                  'idInstitucion'     VALUE m.ID_INSTITUCION,
                  'institucion'       VALUE i.NOMBRE_INSTITUCION,
                  'grado'             VALUE TRIM(m.GRADO),
-                 -- El BLOB no entra en el JSON, pero la pantalla necesita saber
-                 -- si ofrecer "Ver" o avisar que falta cargarlo. GETLENGTH > 0
-                 -- y no IS NOT NULL: una fila puede tener un BLOB vacio, que no
-                 -- sirve como archivo y haria fallar la descarga.
+                 -- La de Cloudinary, sólo si es https: termina en un <a href>.
+                 'archivoUrl'        VALUE CASE
+                                             WHEN LOWER(SUBSTR(m.ARCHIVO_URL, 1, 8)) = 'https://'
+                                             THEN m.ARCHIVO_URL
+                                           END,
+                 -- True con cualquiera de las dos: sin URL y con tieneArchivo,
+                 -- es un PDF viejo que se pide a /manuales/archivo/:id.
+                 -- GETLENGTH > 0 y no IS NOT NULL: una fila puede tener un BLOB
+                 -- vacio, que no sirve como archivo y haria fallar la descarga.
                  'tieneArchivo'      VALUE CASE
+                                             WHEN LOWER(SUBSTR(m.ARCHIVO_URL, 1, 8)) = 'https://'
+                                             THEN 'true'
                                              WHEN m.ARCHIVO_PDF IS NOT NULL
                                               AND DBMS_LOB.GETLENGTH(m.ARCHIVO_PDF) > 0
                                              THEN 'true' ELSE 'false'
@@ -533,7 +581,11 @@ CREATE OR REPLACE PACKAGE BODY PKG_MANUALES AS
                  -- El peso, para mostrarlo al lado del nombre: un manual de
                  -- 40 MB explica solo por que tarda en abrir. 0 si no hay
                  -- archivo, para que el frontend no tenga que contemplar null.
-                 'bytesArchivo'      VALUE NVL(DBMS_LOB.GETLENGTH(m.ARCHIVO_PDF), 0),
+                 'bytesArchivo'      VALUE CASE
+                                             WHEN m.ARCHIVO_URL IS NOT NULL
+                                             THEN NVL(m.ARCHIVO_BYTES, 0)
+                                             ELSE NVL(DBMS_LOB.GETLENGTH(m.ARCHIVO_PDF), 0)
+                                           END,
                  'fechaCarga'        VALUE TO_CHAR(m.FECHA_CARGA, 'YYYY-MM-DD"T"HH24:MI:SS'),
                  'fechaActualizacion' VALUE TO_CHAR(m.FECHA_ACTUALIZACION, 'YYYY-MM-DD"T"HH24:MI:SS')
                  RETURNING CLOB
@@ -652,7 +704,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_MANUALES AS
     -- criterio del proyecto, para no depender de un default que puede cambiar
     -- en el DDL.
     --
-    -- El ARCHIVO_PDF no se carga aca: va por PUT /manuales/archivo/:id despues
+    -- El ARCHIVO_PDF no se carga aca: va por PUT /manuales/archivo-url/:id despues
     -- del alta, cuando ya hay un id al que asociarlo.
     INSERT INTO MANUALES (
       ID_INSTITUCION, GRADO, FECHA_CARGA, FECHA_ACTUALIZACION
@@ -858,9 +910,10 @@ CREATE OR REPLACE PACKAGE BODY PKG_MANUALES AS
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
-    l_sesion     NUMBER;
-    l_id         NUMBER;
-    l_id_empresa NUMBER;
+    l_sesion      NUMBER;
+    l_id          NUMBER;
+    l_id_empresa  NUMBER;
+    l_archivo_url MANUALES.ARCHIVO_URL%TYPE;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -883,8 +936,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_MANUALES AS
     -- tabla. Con solo el id, un DELETE con el id de un manual de otra empresa
     -- lo borraba.
     --
-    -- BAJA FISICA, y es la unica que hay: la tabla no tiene columna ACTIVO. Se
-    -- lleva el PDF, que vive en la misma fila.
+    -- BAJA FISICA, y es la unica que hay: la tabla no tiene columna ACTIVO.
+    -- RETURNING: el PDF se borra de Cloudinary recien despues del COMMIT, y
+    -- para entonces la fila ya no esta para preguntarle.
     DELETE FROM MANUALES m
      WHERE m.ID_MANUAL = l_id
        AND EXISTS (
@@ -892,7 +946,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_MANUALES AS
                FROM INSTITUCIONES i
               WHERE i.ID_INSTITUCION = m.ID_INSTITUCION
                 AND i.ID_EMPRESA     = l_id_empresa
-           );
+           )
+    RETURNING m.ARCHIVO_URL INTO l_archivo_url;
 
     -- 404 tambien cuando existe pero es de otra empresa: no se confirma que el
     -- id exista.
@@ -904,6 +959,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_MANUALES AS
     END IF;
 
     COMMIT;
+    PKG_CLOUDINARY.BORRAR(l_archivo_url);
+
     p_status_code := 200;
     p_resultado := '{"ok":true}';
   EXCEPTION
@@ -931,17 +988,15 @@ CREATE OR REPLACE PACKAGE BODY PKG_MANUALES AS
   END ELIMINAR;
 
   ------------------------------------------------------------------------------
-  -- Guarda el PDF de un manual. CON token: escribir nunca es publico.
+  -- Guarda la URL del PDF de un manual. CON token, acotado a la empresa via
+  -- INSTITUCIONES (la tabla no tiene ID_EMPRESA).
   --
-  -- El binario llega como el cuerpo crudo del PUT (ORDS lo mapea a un BLOB) y
-  -- el formato, del header Content-Type. Se acepta solo application/pdf: sin
-  -- ese control, cualquier archivo quedaria guardado y despues se serviria de
-  -- vuelta con su content-type a quien abra el link publico — incluido un HTML
-  -- con script, que el navegador ejecutaria en el origen de la API.
+  -- El archivo ya esta en Cloudinary: lo subio el navegador antes de llamar
+  -- aca. Este procedimiento solo anota donde quedo y cuanto pesa.
   --
-  -- El techo de 20 MB se valida ACA y no solo en el cliente: el endpoint esta
-  -- abierto a cualquiera con sesion, y un escaneo sin comprimir son decenas de
-  -- MB por fila.
+  -- VACIA EL BLOB VIEJO en el mismo UPDATE: cada manual que se vuelve a subir
+  -- libera su lugar en la base. Ojo: el espacio vuelve al segmento, NO a la
+  -- cuota — para eso hace falta el SHRINK del pie del archivo.
   --
   -- MUEVE FECHA_CARGA, que es lo que la distingue de FECHA_ACTUALIZACION: la
   -- fecha de carga es la del PDF, no la de la fila. Reemplazar el archivo es
@@ -950,15 +1005,18 @@ CREATE OR REPLACE PACKAGE BODY PKG_MANUALES AS
   PROCEDURE GUARDAR_ARCHIVO (
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
-    p_archivo       IN  BLOB,
-    p_content_type  IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
+    p_archivo_url   IN  VARCHAR2,
+    p_bytes         IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
-    l_sesion NUMBER;
-    l_id     NUMBER;
-    l_mime   VARCHAR2(100);
-    l_bytes  NUMBER;
+    l_sesion   NUMBER;
+    l_id       NUMBER;
+    l_empresa  NUMBER;
+    l_bytes    NUMBER;
+    l_url      VARCHAR2(4000);
+    l_anterior MANUALES.ARCHIVO_URL%TYPE;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -967,52 +1025,65 @@ CREATE OR REPLACE PACKAGE BODY PKG_MANUALES AS
       RETURN;
     END IF;
 
-    l_id := A_NUMERO(p_id);
+    l_id      := A_NUMERO(p_id);
+    l_empresa := A_NUMERO(p_id_empresa);
+    l_bytes   := A_NUMERO(p_bytes);
+    l_url     := NULLIF(TRIM(p_archivo_url), '');
 
-    IF p_archivo IS NULL OR DBMS_LOB.GETLENGTH(p_archivo) = 0 THEN
+    IF l_id IS NULL OR l_empresa IS NULL THEN
       p_status_code := 400;
-      p_resultado := '{"error":"No se recibio ningun archivo"}';
+      p_resultado := '{"error":"id e idEmpresa son obligatorios"}';
       RETURN;
     END IF;
 
-    l_bytes := DBMS_LOB.GETLENGTH(p_archivo);
-    IF l_bytes > C_ARCHIVO_MAX_BYTES THEN
-      p_status_code := 413;
-      p_resultado := '{"error":"El archivo supera el maximo de 20 MB"}';
-      RETURN;
-    END IF;
-
-    -- El header puede venir con parametros ("application/pdf; charset=..."),
-    -- asi que se corta en el punto y coma antes de guardarlo.
-    l_mime := LOWER(TRIM(REGEXP_SUBSTR(p_content_type, '^[^;]+')));
-
-    IF l_mime IS NULL OR l_mime != 'application/pdf' THEN
+    -- La URL termina en un <a href>. Sin esto, "javascript:..." se guarda
+    -- igual.
+    IF l_url IS NULL
+       OR LENGTH(l_url) > C_MAX_URL
+       OR LOWER(SUBSTR(l_url, 1, 8)) != 'https://' THEN
       p_status_code := 400;
-      p_resultado := '{"error":"El archivo debe ser un PDF"}';
+      p_resultado := '{"error":"La URL del PDF debe empezar con https:// y no pasar de 500 caracteres"}';
       RETURN;
     END IF;
 
-    -- Sin filtro por empresa, igual que el PUT de la foto en db/profesores.sql:
-    -- ORDS no pasa el idEmpresa en este PUT —el cuerpo es el binario, no un
-    -- JSON del que sacarlo— y meterlo en la URL obligaria a un template
-    -- distinto al del GET publico. El riesgo es acotado: hace falta una sesion
-    -- valida y adivinar el id de un manual ajeno para pisarle el archivo, sin
-    -- poder leer ningun otro dato.
+    -- La URL anterior, para borrar su archivo despues. FOR UPDATE: dos subidas
+    -- simultaneas leerian la misma anterior y la segunda dejaria huerfano el
+    -- PDF de la primera. El EXISTS es el aislamiento por empresa.
+    BEGIN
+      SELECT m.ARCHIVO_URL
+        INTO l_anterior
+        FROM MANUALES m
+       WHERE m.ID_MANUAL = l_id
+         AND EXISTS (
+               SELECT 1
+                 FROM INSTITUCIONES i
+                WHERE i.ID_INSTITUCION = m.ID_INSTITUCION
+                  AND i.ID_EMPRESA     = l_empresa
+             )
+         FOR UPDATE OF m.ARCHIVO_URL;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        p_status_code := 404;
+        p_resultado := '{"error":"El manual no existe"}';
+        RETURN;
+    END;
+
     UPDATE MANUALES
-       SET ARCHIVO_PDF         = p_archivo,
-           ARCHIVO_MIME        = l_mime,
+       SET ARCHIVO_URL         = l_url,
+           ARCHIVO_BYTES       = l_bytes,
+           ARCHIVO_PDF         = NULL,
+           ARCHIVO_MIME        = NULL,
            FECHA_CARGA         = SYSTIMESTAMP,
            FECHA_ACTUALIZACION = SYSTIMESTAMP
      WHERE ID_MANUAL = l_id;
 
-    IF SQL%ROWCOUNT = 0 THEN
-      ROLLBACK;
-      p_status_code := 404;
-      p_resultado := '{"error":"El manual no existe"}';
-      RETURN;
+    COMMIT;
+
+    -- Despues del COMMIT y nunca antes: ver el encabezado de db/cloudinary.sql.
+    IF l_anterior IS NOT NULL AND l_anterior != l_url THEN
+      PKG_CLOUDINARY.BORRAR(l_anterior);
     END IF;
 
-    COMMIT;
     p_status_code := 200;
     p_resultado := JSON_OBJECT('ok' VALUE 'true' FORMAT JSON, 'bytes' VALUE l_bytes);
   EXCEPTION
@@ -1194,7 +1265,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_MANUALES AS
     -- el WHERE filtra los BLOB vacios en vez de devolverlos — un manual dado de
     -- alta al que todavia no le subieron el PDF es exactamente ese caso.
     --
-    -- El mismo template lleva tambien el PUT que guarda el archivo, mas abajo.
+    -- SOLO SIRVE LOS PDF DE ANTES DE CLOUDINARY. Ya no tiene PUT: los nuevos
+    -- se guardan como URL (archivo-url/:id, mas abajo). Retirarlo cuando no
+    -- quede ningun BLOB (consulta al pie del archivo).
     ----------------------------------------------------------------------------
     ORDS.DEFINE_TEMPLATE(p_module_name => 'manuales', p_pattern => 'archivo/:id');
 
@@ -1211,40 +1284,35 @@ CREATE OR REPLACE PACKAGE BODY PKG_MANUALES AS
     );
 
     ----------------------------------------------------------------------------
-    -- PUT /manuales/archivo/:id — con token
-    -- Body: el PDF crudo. Content-Type: application/pdf.
+    -- PUT /manuales/archivo-url/:id — con token
+    -- Body: { idEmpresa, archivoUrl, bytes }. El PDF ya esta en Cloudinary.
     --
-    -- SOLO application/pdf. El GET es publico y devuelve el archivo con el
-    -- content-type guardado: aceptar text/html dejaria servir un documento con
-    -- script desde el origen de la API.
+    -- Template propio y no un PUT en archivo/:id: ahi un cliente viejo mandaria
+    -- el binario crudo a un handler que espera JSON. En una ruta nueva recibe
+    -- un 404 claro, y el PDF no termina en la base por la puerta de atras.
     ----------------------------------------------------------------------------
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'manuales', p_pattern => 'archivo-url/:id');
+
     ORDS.DEFINE_HANDLER(
-      p_module_name   => 'manuales',
-      p_pattern       => 'archivo/:id',
-      p_method        => 'PUT',
-      p_source_type   => ORDS.source_type_plsql,
-      p_mimes_allowed => 'application/pdf',
-      p_source        => 'BEGIN PKG_MANUALES.GUARDAR_ARCHIVO(:authorization, :id, :body, :content_type, :status_code, :resultado); END;'
+      p_module_name => 'manuales',
+      p_pattern     => 'archivo-url/:id',
+      p_method      => 'PUT',
+      p_source_type => ORDS.source_type_plsql,
+      p_source      => 'BEGIN PKG_MANUALES.GUARDAR_ARCHIVO(:authorization, :id, :idEmpresa, :archivoUrl, :bytes, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'manuales', p_pattern => 'archivo/:id', p_method => 'PUT',
+      p_module_name => 'manuales', p_pattern => 'archivo-url/:id', p_method => 'PUT',
       p_name => 'authorization', p_bind_variable_name => 'authorization',
       p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
 
-    -- El Content-Type de entrada: de ahi sale el formato que se guarda.
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'manuales', p_pattern => 'archivo/:id', p_method => 'PUT',
-      p_name => 'Content-Type', p_bind_variable_name => 'content_type',
-      p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
-
-    ORDS.DEFINE_PARAMETER(
-      p_module_name => 'manuales', p_pattern => 'archivo/:id', p_method => 'PUT',
+      p_module_name => 'manuales', p_pattern => 'archivo-url/:id', p_method => 'PUT',
       p_name => 'resultado', p_bind_variable_name => 'resultado',
       p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'manuales', p_pattern => 'archivo/:id', p_method => 'PUT',
+      p_module_name => 'manuales', p_pattern => 'archivo-url/:id', p_method => 'PUT',
       p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
@@ -1284,8 +1352,9 @@ SELECT NAME, STATUS, ORIGINS_ALLOWED
   FROM USER_ORDS_MODULES
  WHERE NAME = 'manuales';
 
--- Deben salir 6 filas: listar GET, crear POST, actualizar PUT, eliminar DELETE,
--- archivo GET y archivo PUT.
+-- Deben salir 6 filas: actualizar PUT, archivo GET, archivo-url PUT, crear
+-- POST, eliminar DELETE y listar GET. Si aparece un PUT en archivo/:id, el
+-- modulo viejo sigue publicado.
 SELECT t.URI_TEMPLATE, h.METHOD
   FROM USER_ORDS_TEMPLATES t
   JOIN USER_ORDS_HANDLERS  h ON h.TEMPLATE_ID = t.ID
@@ -1350,6 +1419,32 @@ SELECT m.ID_MANUAL, i.NOMBRE_INSTITUCION, m.GRADO,
        TO_CHAR(m.FECHA_CARGA, 'DD/MM/YYYY HH24:MI') AS DADO_DE_ALTA
   FROM MANUALES      m
   JOIN INSTITUCIONES i ON i.ID_INSTITUCION = m.ID_INSTITUCION
- WHERE m.ARCHIVO_PDF IS NULL
-    OR DBMS_LOB.GETLENGTH(m.ARCHIVO_PDF) = 0
+ WHERE m.ARCHIVO_URL IS NULL
+   AND (m.ARCHIVO_PDF IS NULL OR DBMS_LOB.GETLENGTH(m.ARCHIVO_PDF) = 0)
  ORDER BY m.FECHA_CARGA;
+
+--------------------------------------------------------------------------------
+-- MIGRACION DE LOS PDF VIEJOS
+--
+-- Cuantos siguen en la base y cuanto ocupan. Cada manual que se vuelve a subir
+-- desde /manuales pasa a Cloudinary. Cuando BLOB llegue a 0, el GET
+-- /manuales/archivo/:id se puede retirar.
+--------------------------------------------------------------------------------
+
+SELECT CASE
+         WHEN ARCHIVO_URL IS NOT NULL THEN 'CLOUDINARY'
+         WHEN ARCHIVO_PDF IS NOT NULL AND DBMS_LOB.GETLENGTH(ARCHIVO_PDF) > 0 THEN 'BLOB'
+         ELSE 'SIN PDF'
+       END AS DONDE,
+       COUNT(*) AS MANUALES,
+       ROUND(SUM(NVL(DBMS_LOB.GETLENGTH(ARCHIVO_PDF), 0)) / 1024 / 1024, 2) AS MB_EN_LA_BASE
+  FROM MANUALES
+ GROUP BY CASE
+            WHEN ARCHIVO_URL IS NOT NULL THEN 'CLOUDINARY'
+            WHEN ARCHIVO_PDF IS NOT NULL AND DBMS_LOB.GETLENGTH(ARCHIVO_PDF) > 0 THEN 'BLOB'
+            ELSE 'SIN PDF'
+          END;
+
+-- Vaciar el BLOB devuelve el espacio al segmento, no a la cuota del esquema.
+-- Para liberarlo de verdad, una vez migrados (fuera de horario):
+--   ALTER TABLE MANUALES MODIFY LOB (ARCHIVO_PDF) (SHRINK SPACE);

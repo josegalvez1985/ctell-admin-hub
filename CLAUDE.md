@@ -31,7 +31,7 @@ ctell-admin-hub/
 │   ├── dashboard.sql         PKG_DASHBOARD: los indicadores de la home
 │   ├── stock.sql             PKG_STOCK: el único que mueve EXISTENCIAS (interno, sin ORDS)
 │   ├── cloudinary-ddl.sql    CLOUDINARY_CONFIG: cuenta y api_secret (se corre una vez)
-│   ├── cloudinary.sql        PKG_CLOUDINARY: borra archivos de Cloudinary (interno, sin ORDS). Va antes que articulos y reportes-*
+│   ├── cloudinary.sql        PKG_CLOUDINARY: borra archivos de Cloudinary (interno, sin ORDS). Va antes que articulos, profesores, manuales y reportes-*
 │   ├── asistente-ddl.sql     IA_CONFIG, IA_CONSULTAS, V_IA_USUARIOS (se corre una vez)
 │   ├── asistente.sql         PKG_ASISTENTE: el chat con IA (llama a la API de Claude)
 │   └── [table].sql           Cada tabla nueva va aquí
@@ -188,17 +188,17 @@ Misma forma que ventas, en espejo. `/compras-pagos` es idéntico a `/ventas-cobr
 | `GET`    | `/manuales/listar`                  | `?idEmpresa=` **obligatorio**, `&idInstitucion=&grado=&busqueda=` |
 | `POST`   | `/manuales/crear`                   | Crea la fila **sin el PDF**                           |
 | `PUT`    | `/manuales/actualizar/:id`          | Institución y grado. No toca `FECHA_CARGA`            |
-| `DELETE` | `/manuales/eliminar/:id/:idEmpresa` | Baja física — se lleva el PDF                         |
-| `GET`    | `/manuales/archivo/:id`             | El PDF crudo. **Sin token** (`source_type_media`)     |
-| `PUT`    | `/manuales/archivo/:id`             | Sube o reemplaza el PDF. Con token, sólo `application/pdf`, 20 MB |
+| `DELETE` | `/manuales/eliminar/:id/:idEmpresa` | Baja física — borra el PDF de Cloudinary              |
+| `GET`    | `/manuales/archivo/:id`             | Sólo los PDF viejos, guardados como BLOB. **Sin token** |
+| `PUT`    | `/manuales/archivo-url/:id`         | Body `{ idEmpresa, archivoUrl, bytes }`: anota el PDF ya subido a Cloudinary |
 
 - **`MANUALES` no tiene `ID_EMPRESA`:** cuelga de `INSTITUCIONES`, que sí la tiene, y el aislamiento se hace **contra el padre** con un JOIN — es el caso de "tabla sin columna de empresa" de la guía. Por eso `idEmpresa` viaja en todas las llamadas sin ser una columna, y en el `listar` es **obligatorio**: sin él la consulta no se acota sola y devolvería los manuales de todas las empresas, un olvido que nadie nota hasta que una institución ve los de otra.
 - **La institución de destino también se valida.** Comprobar sólo que la fila editada sea de la empresa deja la puerta de atrás abierta: un PUT podría mover un manual propio a la institución de otra empresa.
 - **`GRADO` tiene doce valores y ningún `CHECK`** — sólo un `COMMENT` que los enumera, y un `COMMENT` no es una restricción. Los valida `GRADO_VALIDO` en el paquete, y **la misma lista está en `GRADOS` de `api.ts`**: si se agrega un grado, van los dos. Sin eso, `'1ro'` sin punto entra como un grado distinto que el `UNIQUE (ID_INSTITUCION, GRADO)` deja pasar, y la institución termina con dos manuales de primero.
 - **Se ordena por el grado real, no alfabéticamente**, en el SQL y en la pantalla: con un orden de texto `1ME.` cae entre `1ro.` y `2do.`, y la media queda intercalada con la escolar básica.
 - **`FECHA_CARGA` y `FECHA_ACTUALIZACION` no son lo mismo:** la primera la mueve el alta y cada PUT del archivo —responde "de cuándo es este manual"—; la segunda, cualquier cambio de la fila. Si el `ACTUALIZAR` moviera la de carga, corregir un grado mal tipeado haría figurar el manual como recién cargado.
-- **El alta no lleva el PDF**, porque un binario no entra en un `JSON_OBJECT`: se crea la fila y con el id que devuelve se sube el archivo, igual que la foto de un profesor. La pantalla encadena las dos llamadas para que sea una sola operación, y si la subida falla **el alta no se deshace**: la fila queda con su cartel de "Sin PDF", desde donde se reintenta.
-- **El `GET` del archivo es público**, como los otros dos binarios del proyecto: así el manual se abre con un `<a href>` en el visor del navegador, se imprime y el link se comparte. El `PUT` sí pide token, y acepta **sólo `application/pdf`** — el GET devuelve el archivo con el content-type guardado, así que aceptar `text/html` dejaría servir un documento con script desde el origen de la API.
+- **El alta no lleva el PDF**: se crea la fila y con el id que devuelve se sube el archivo a Cloudinary y se anota su URL. La pantalla encadena las llamadas para que sea una sola operación, y si la subida falla **el alta no se deshace**: la fila queda con su cartel de "Sin PDF", desde donde se reintenta.
+- **El PDF vive en Cloudinary, no en la base** (ver "Archivos: Cloudinary, salvo logos y denominaciones"). Sigue siendo público —el manual se abre con un `<a href>` en el visor del navegador, se imprime y el link se comparte—, ahora servido desde el dominio de Cloudinary. **El plan gratuito bloquea la entrega de PDF por defecto** y limita cada archivo a 10 MB: hay que habilitar _Allow delivery of PDF and ZIP files_ en Settings → Security, o el link abre un 401.
 
 #### Reportes de actividades — `/reportes-actividades`, `/reportes-multimedia`
 
@@ -221,7 +221,7 @@ Misma forma que ventas, en espejo. `/compras-pagos` es idéntico a `/ventas-cobr
 - **`/vinculos` existe porque no hay tabla de relación:** `PROFESORES` no tiene institución y no hay cruce entre ambas — el vínculo lo escribe la marcación. Devuelve los pares distintos del período, y con eso elegir un profesor deja el combo de institución **sólo con las suyas**, en vez de las veinte de la empresa (diecinueve de las cuales devuelven la pantalla vacía). El `DISTINCT` va sobre los dos números en la subconsulta de adentro: sobre la columna CLOB del `JSON_OBJECT` falla con `ORA-00932`.
 - **`/pendientes` no se deduce del listado:** saber qué días faltan exigiría traerse las marcaciones y los reportes enteros y restarlos en el navegador. El endpoint devuelve la resta (`NOT EXISTS`) con su `total`, que es el número de "faltan 7" del encabezado.
 - **La columna acepta 4000 caracteres y el endpoint 2000.** No es negocio, es el techo del bind de ORDS: una descripción de 4000 no se puede devolver, y guardarla sería cargar un reporte que después no abre nunca. Por lo mismo el listado la recorta a 200 — **el formulario de edición carga de `/obtener`**, o guardaría el resumen encima del texto entero, que es la trampa de `INVENTARIOS.OBSERVACIONES`.
-- **Las evidencias guardan la URL, no el binario.** Es la excepción a los otros tres archivos del proyecto (foto del profesor, logo, PDF del manual, todos BLOB): acá el navegador sube directo a Cloudinary con un preset _unsigned_ y en Oracle queda la dirección. Un video de 80 MB no pasa por ORDS y las miniaturas salen de transformar la URL. **Borrar la fila borra el archivo, y lo hace Oracle**: firmar el borrado necesita la `api_secret`, que no puede vivir en un frontend estático, así que vive en `CLOUDINARY_CONFIG` y la usa `PKG_CLOUDINARY.BORRAR` (`db/cloudinary.sql`), **después del `COMMIT`** y _best effort_: si Cloudinary falla, el archivo queda huérfano pero la baja no se traba. La app del profesor borra con su propio paquete y **no** borra el archivo.
+- **Las evidencias guardan la URL, no el binario**, como todos los archivos del proyecto salvo logos y denominaciones (ver "Archivos: Cloudinary, salvo logos y denominaciones"): el navegador sube directo a Cloudinary con un preset _unsigned_ y en Oracle queda la dirección. Un video de 80 MB no pasa por ORDS y las miniaturas salen de transformar la URL. **Borrar la fila borra el archivo, y lo hace Oracle**: firmar el borrado necesita la `api_secret`, que no puede vivir en un frontend estático, así que vive en `CLOUDINARY_CONFIG` y la usa `PKG_CLOUDINARY.BORRAR` (`db/cloudinary.sql`), **después del `COMMIT`** y _best effort_: si Cloudinary falla, el archivo queda huérfano pero la baja no se traba. La app del profesor borra con su propio paquete y **no** borra el archivo.
 - **La URL se valida contra `https://`.** Es dato de entrada y termina en un `<a href>` y un `<img src>`: sin esa comprobación, un POST con `javascript:…` deja guardado un enlace que ejecuta script al abrir la galería. No se valida que sea de Cloudinary: ataría el módulo a un proveedor en el peor lugar posible.
 - **El pie de foto se limita a 200 aunque la columna acepte 1000**, porque viaja entero en la galería. Recortarlo en el listado —el camino de inventarios— traería su trampa de edición; para un pie no vale la pena.
 - **Nada de helpers en `PUBLICAR_ENDPOINTS`.** Envolver `ORDS.DEFINE_PARAMETER` en un procedimiento propio hace que ORDS rechace el **primer** parámetro con `ORA-02290 (REST_PARAMS_SOURCE_TYPE_CK)` sobre un `'HEADER'/'IN'` idéntico al que publican los otros cuarenta módulos; lo único distinto es pasar el valor por variable en vez de literal. El `ORA-02290` aborta la publicación a la mitad y **deja el módulo sin ningún endpoint**. Las llamadas van escritas una por una, como en `db/manuales.sql`.
@@ -285,6 +285,22 @@ Un endpoint propio y no sumar en el frontend porque los listados están paginado
 - **Rompe dos convenciones a propósito:** lee el body crudo con **`:body_text`** (un CLOB, no el BLOB `:body`), porque `historial` es un array y `manual` pasa los 32K; y responde con **`HTP`** en vez de `:resultado`, porque una respuesta con una tabla pasa los 4000 bytes del parámetro.
 - **El manual es `MANUAL-DE-USO.md` desde "Primeros pasos" hasta el anexo**, importado con `?raw` en un chunk aparte. Documentar una pantalla ahí alcanza para que el asistente la conozca con el deploy.
 - **Gasto:** 50 preguntas por usuario y por día (`LIMITE_DIARIO`). La clave es la misma de ethos, y el tope de la organización es compartido. La consulta del costo por mes está en el encabezado de `asistente.sql`.
+
+### Archivos: Cloudinary, salvo logos y denominaciones
+
+El esquema tiene **25 MB de cuota compartida** y los BLOB ya la llenaron una vez (`ORA-01536` en todo `INSERT`, de cualquier tabla). Por eso los archivos van a Cloudinary y en Oracle queda la URL:
+
+| Qué | Dónde | Cómo se achica antes de subir |
+| --- | ----- | ----------------------------- |
+| Foto de artículo | Cloudinary (`articulos/`) | Cuadrada, 800 px, ≤ 300 KB |
+| Foto de profesor | Cloudinary (`profesores/`) | Cuadrada, 800 px, ≤ 300 KB |
+| Evidencia de reporte | Cloudinary | Fotos JPEG/PNG/WebP: 1600 px, ≤ 500 KB, sin recortar. Videos y PDF, como vienen |
+| PDF de manual | Cloudinary (`manuales/`) | No se puede: un PDF no se recomprime en el navegador |
+| Logo de empresa | **BLOB**, por ahora | — |
+| Foto de denominación | **BLOB**, por ahora | — |
+
+- **Mismo patrón en los tres paquetes** (`articulos`, `profesores`, `manuales`): columna `*_URL` agregada en el paso 0, un `PUT …-url/:id` con body JSON aislado por empresa, y **ningún PUT del binario** — se retiró para que un cliente viejo (una PWA cacheada) no vuelva a llenar la base sin que nadie lo note. Guardar vacía el BLOB viejo; reemplazar, quitar o eliminar borra el archivo de Cloudinary con `PKG_CLOUDINARY.BORRAR`, después del `COMMIT`.
+- **El `GET` viejo sigue publicado** sólo para lo cargado antes del cambio, y el listado devuelve `*Url` más `tiene*`: sin URL y con `tiene*`, el frontend pide el BLOB. Cada archivo tiene al pie la consulta de cuánto queda en la base; cuando dé 0, se retira el GET. **Vaciar un BLOB no devuelve cuota**: hace falta el `SHRINK SPACE` que está al pie de cada archivo.
 
 ### Los totales no se guardan: se calculan
 

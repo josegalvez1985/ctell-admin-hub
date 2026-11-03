@@ -337,6 +337,12 @@ export type Profesor = {
   idUsuario: number | null;
   usuario: string | null;
   activo: Estado;
+  /** La foto en Cloudinary, o `null`. */
+  fotoUrl: string | null;
+  /**
+   * `true` también con una foto vieja guardada en la base, de antes de
+   * Cloudinary: sin `fotoUrl` y con esto, se pide a `urlFotoProfesor(id)`.
+   */
   tieneFoto: boolean;
   direccion: string | null;
   telefono: string | null;
@@ -797,12 +803,14 @@ export type Manual = {
   /** Nombre de la institución, del JOIN. */
   institucion: string;
   grado: Grado;
+  /** El PDF en Cloudinary, o `null`. */
+  archivoUrl: string | null;
   /**
    * `false` mientras no se haya subido el PDF — el alta crea la fila y el
    * archivo va después, así que es un estado normal y transitorio.
    *
-   * Se calcula con `GETLENGTH > 0` y no con `IS NOT NULL`: un BLOB vacío no
-   * sirve como archivo y haría fallar la descarga.
+   * `true` también con un PDF viejo guardado en la base, de antes de
+   * Cloudinary: sin `archivoUrl` y con esto, se abre `urlArchivoManual(id)`.
    */
   tieneArchivo: boolean;
   /** Peso del PDF. `0` si todavía no se subió. */
@@ -2269,7 +2277,10 @@ export function urlFotoDetalleMoneda(id: number): string {
   return `${BASE_URL}/detalle-monedas/foto/${id}`;
 }
 
-/** URL pública de la foto de un profesor. */
+/**
+ * URL pública de la foto de un profesor **guardada en la base**, de antes de
+ * Cloudinary. Las nuevas vienen en `profesor.fotoUrl`.
+ */
 export function urlFotoProfesor(id: number): string {
   return `${BASE_URL}/profesores/foto/${id}`;
 }
@@ -2287,9 +2298,17 @@ export function urlFotoProfesor(id: number): string {
  * Devuelve **404 si el manual todavía no tiene el PDF cargado** (el alta crea
  * la fila y el archivo va después), así que conviene mirar `tieneArchivo` antes
  * de ofrecer el link en vez de mandar a alguien a una pestaña con un error.
+ *
+ * Sólo sirve los PDF **guardados en la base**, de antes de Cloudinary: los
+ * nuevos vienen en `manual.archivoUrl`. Para elegir entre los dos, `urlPdfManual`.
  */
 export function urlArchivoManual(id: number): string {
   return `${BASE_URL}/manuales/archivo/${id}`;
+}
+
+/** El PDF de un manual: el de Cloudinary si lo tiene, si no el viejo de la base. */
+export function urlPdfManual(manual: Pick<Manual, "id" | "archivoUrl">): string {
+  return manual.archivoUrl ?? urlArchivoManual(manual.id);
 }
 
 /**
@@ -3504,11 +3523,16 @@ export const api = {
         method: "DELETE",
       }),
 
-    subirFoto: (id: number, archivo: File) =>
-      request<{ ok: boolean }>(`/profesores/foto/${id}`, {
+    /**
+     * Guarda la URL de la foto, que el navegador ya subió con
+     * `subirACloudinary`. El archivo no pasa por acá. Si el profesor tenía una
+     * foto vieja en la base, el backend la vacía; si tenía otra en Cloudinary,
+     * la borra.
+     */
+    guardarFoto: (id: number, datos: { idEmpresa: number; fotoUrl: string }) =>
+      request<{ ok: boolean }>(`/profesores/foto-url/${id}`, {
         method: "PUT",
-        headers: { "Content-Type": archivo.type },
-        body: archivo,
+        body: JSON.stringify(datos),
       }),
 
     /**
@@ -3532,8 +3556,8 @@ export const api = {
    * todas las llamadas —incluido el `listar`, donde es obligatorio— aunque no
    * sea una columna del manual.
    *
-   * El PDF **no viaja en el JSON**: se sube con `subirArchivo()` y se lee por
-   * la URL pública de `urlArchivoManual()`, igual que la foto de un profesor.
+   * El PDF **no viaja en el JSON**: va a Cloudinary con `subirACloudinary()` y se
+   * anota con `guardarArchivo()`; se abre con `urlPdfManual()`.
    */
   manuales: {
     /**
@@ -3565,7 +3589,7 @@ export const api = {
 
     /**
      * Crea la fila **sin el PDF**: el archivo se sube después con
-     * `subirArchivo()`, cuando ya hay un id al que asociarlo. Es el mismo flujo
+     * `guardarArchivo()`, cuando ya hay un id al que asociarlo. Es el mismo flujo
      * que la foto de un profesor, y la pantalla lo encadena para que el usuario
      * vea una sola operación.
      *
@@ -3584,7 +3608,7 @@ export const api = {
      * Los campos ausentes no se modifican.
      *
      * **No toca `fechaCarga`**: corregir un grado mal tipeado no cambia la fecha
-     * del PDF. Esa la mueve `subirArchivo()`.
+     * del PDF. Esa la mueve `guardarArchivo()`.
      */
     actualizar: (
       id: number,
@@ -3608,25 +3632,18 @@ export const api = {
       }),
 
     /**
-     * Sube o **reemplaza** el PDF del manual. Reemplazar es la operación
-     * normal: como sólo hay un manual por grado, un manual nuevo se carga sobre
-     * la misma fila.
-     *
-     * Sólo `application/pdf`, y hasta 20 MB (413 si se pasa) — el techo es alto
-     * porque un manual escaneado pesa lo que pesa y no hay nada que lo
-     * recomprima del lado del cliente.
+     * Guarda la URL del PDF, que el navegador ya subió con `subirACloudinary`.
+     * El archivo no pasa por acá. Reemplazar es la operación normal: como sólo
+     * hay un manual por grado, el del año siguiente se carga sobre la misma
+     * fila, y el backend borra de Cloudinary el anterior.
      *
      * Mueve `fechaCarga`: la fecha de carga es la del archivo, no la de la
      * fila.
      */
-    subirArchivo: (id: number, archivo: File) =>
-      request<{ ok: boolean; bytes: number }>(`/manuales/archivo/${id}`, {
+    guardarArchivo: (id: number, datos: { idEmpresa: number; archivoUrl: string; bytes: number }) =>
+      request<{ ok: boolean; bytes: number }>(`/manuales/archivo-url/${id}`, {
         method: "PUT",
-        // El Content-Type del File, no uno fijo: es de donde el backend saca el
-        // formato que guarda. Un PDF elegido del disco siempre trae
-        // "application/pdf", que es lo único que el endpoint acepta.
-        headers: { "Content-Type": archivo.type },
-        body: archivo,
+        body: JSON.stringify(datos),
       }),
   },
 

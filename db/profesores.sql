@@ -9,20 +9,21 @@
 --   2. INSERTAR      POST   /profesores/crear
 --   3. ACTUALIZAR    PUT    /profesores/actualizar/:id
 --   4. ELIMINAR      DELETE /profesores/eliminar/:id/:idEmpresa
---   5. (sin PL/SQL)  GET    /profesores/foto/:id   (SIN TOKEN, media)
---   6. GUARDAR_FOTO  PUT    /profesores/foto/:id   (con token)
+--   5. (sin PL/SQL)  GET    /profesores/foto/:id   (SIN TOKEN, media; solo las viejas)
+--   6. GUARDAR_FOTO  PUT    /profesores/foto-url/:id   (con token)
 --   7. QUITAR_FOTO   DELETE /profesores/foto/:id/:idEmpresa  (con token)
 --
 -- Se ejecuta una sola vez en la hoja de trabajo SQL de APEX, conectado con el
--- esquema del workspace. REQUIERE db/auth.sql EJECUTADO ANTES: usa PKG_AUTH
--- para validar el token.
+-- esquema del workspace. REQUIERE db/auth.sql Y db/cloudinary.sql EJECUTADOS
+-- ANTES: usa PKG_AUTH para validar el token y PKG_CLOUDINARY para borrar la
+-- foto reemplazada.
 --
 -- Base de los endpoints: https://oracleapex.com/ords/ctell/profesores/
 --
--- Tabla (no la crea ni la altera, salvo la columna FOTO_MIME del paso 0):
+-- Tabla (no la crea ni la altera, salvo FOTO_MIME y FOTO_URL del paso 0):
 --   PROFESORES  ID_PROFESOR, ID_EMPRESA, NUMERO_CI, NOMBRE, APELLIDO,
 --               DIRECCION, TELEFONO, CORREO, FECHA_CREACION,
---               FECHA_ACTUALIZACION, ACTIVO, FOTO, ID_USUARIO
+--               FECHA_ACTUALIZACION, ACTIVO, FOTO, FOTO_URL, ID_USUARIO
 --
 -- EL PROFESOR ES POR EMPRESA. Cada empresa tiene su propio plantel: el
 -- idEmpresa sale de la empresa que se eligio al iniciar sesion, no de un
@@ -98,37 +99,45 @@
 -- centinela no habria forma de deshacer un vinculo cargado por error.
 --
 --------------------------------------------------------------------------------
--- FOTO (BLOB): POR ENDPOINTS PROPIOS, NO EN EL JSON
+-- FOTO: EN CLOUDINARY, NO EN LA BASE
 --
--- Un binario no entra en un JSON_OBJECT, asi que va aparte, con el mismo
--- mecanismo que la imagen en db/articulos.sql y el logo en db/empresas.sql:
+-- El navegador sube la foto directo a Cloudinary (src/lib/cloudinary.ts) y aca
+-- se guarda solo la URL, en FOTO_URL. Es el mismo cambio que se hizo con la
+-- imagen de db/articulos.sql y por el mismo motivo: el esquema tiene una cuota
+-- de 25 MB compartida, y los BLOB ya la llenaron una vez (ORA-01536 en todo
+-- INSERT de cualquier tabla). El unico binario que sigue en la base es el logo
+-- de cada empresa.
 --
---   GET /profesores/foto/:id  devuelve la foto cruda con su content-type.
---     Es PUBLICO: lo consume un <img>, y el navegador no manda el header
---     Authorization al descargar una imagen. Ver la nota de seguridad abajo.
+--   PUT /profesores/foto-url/:id  Body { idEmpresa, fotoUrl }. Con token y
+--     aislado por empresa —ahora se puede: el body es un JSON, no el binario—.
+--     Guarda la URL Y VACIA EL BLOB VIEJO, y borra de Cloudinary la anterior.
 --
---   PUT /profesores/foto/:id  recibe el binario en el body. Este SI pide
---     token: escribir nunca es publico.
+--   GET /profesores/foto/:id  SIGUE PUBLICADO, solo para las fotos cargadas
+--     antes del cambio. Se retira cuando la consulta del pie de este archivo
+--     diga que no queda ningun BLOB.
 --
--- OJO CON EL GET PUBLICO: la foto de una persona es un dato mas sensible que
--- una foto de producto. Cualquiera que adivine un id la ve sin credenciales.
--- Se acepta con el mismo criterio que el resto del proyecto —un <img> no puede
--- mandar el token— pero aca conviene recordarlo: si en algun momento hay que
--- cerrarlo, la salida es servir la foto con una URL firmada, y este es el
--- primer endpoint que habria que migrar.
+-- NO HAY PUT DEL BINARIO: se retiro a proposito. Mientras existiera, la base
+-- podia volver a llenarse con un cliente viejo (una PWA cacheada) subiendo
+-- fotos a Oracle sin que nadie lo notara. Template nuevo (foto-url) y no un
+-- PUT JSON en foto/:id: ahi ese cliente viejo mandaria el binario a un handler
+-- que espera JSON; en una ruta nueva recibe un 404 claro.
 --
--- El listado devuelve `tieneFoto` (true/false) en vez del binario, asi el
--- frontend sabe si pedir la foto o dibujar las iniciales, sin traerse los BLOB
--- de todo el plantel.
+-- LA URL SE VALIDA CONTRA https://: termina en un <img src>, y sin eso un
+-- "javascript:..." se guarda igual.
 --
--- CONTENT-TYPE: se guarda junto al BLOB en FOTO_MIME. Sin eso habria que
--- adivinar el formato al servirlo, y un PNG servido como image/jpeg no lo
--- renderiza ningun navegador. Ver el ALTER TABLE del paso 0.
+-- REEMPLAZAR LA FOTO, QUITARLA O BORRAR EL PROFESOR BORRA EL ARCHIVO EN
+-- CLOUDINARY, con PKG_CLOUDINARY.BORRAR despues del COMMIT (best effort: ver
+-- db/cloudinary.sql).
 --
--- TAMAÑO: el limite duro son 2 MB, validado aca. El frontend ademas redimensiona
--- y recomprime antes de subir (ver src/lib/imagen.ts), asi que en la practica
--- lo que llega ronda los 100-200 KB. La validacion del backend no confia en eso:
--- el endpoint esta abierto a cualquiera con sesion, no solo a la pantalla.
+-- El listado devuelve `fotoUrl` (o null) y `tieneFoto`, que es true con
+-- CUALQUIERA de las dos: con URL el frontend usa la URL; sin URL y con
+-- tieneFoto, es una foto vieja y la pide a /profesores/foto/:id.
+--
+-- OJO CON LO PUBLICO: la foto de una persona es un dato mas sensible que una
+-- foto de producto, y tanto la URL de Cloudinary como el GET viejo los ve
+-- cualquiera que tenga la direccion. El public_id lleva un sufijo al azar, asi
+-- que no se adivina recorriendo ids como el GET viejo. Si hay que cerrarlo del
+-- todo, la salida es el modo "authenticated" de Cloudinary con URLs firmadas.
 --
 --------------------------------------------------------------------------------
 -- ESTADO: ACTIVO es VARCHAR2(1) con 'A' (activo) / 'I' (inactivo). Ese mismo
@@ -181,6 +190,24 @@ BEGIN
 
   IF l_existe = 0 THEN
     EXECUTE IMMEDIATE 'ALTER TABLE PROFESORES ADD (FOTO_MIME VARCHAR2(100))';
+  END IF;
+END;
+/
+
+-- FOTO_URL: la direccion en Cloudinary. Mismo criterio que la de arriba —una
+-- columna nueva y opcional sin la cual el paquete no compila— y el mismo largo
+-- que ARTICULOS.IMAGEN_URL.
+DECLARE
+  l_existe PLS_INTEGER;
+BEGIN
+  SELECT COUNT(*)
+    INTO l_existe
+    FROM USER_TAB_COLUMNS
+   WHERE TABLE_NAME = 'PROFESORES'
+     AND COLUMN_NAME = 'FOTO_URL';
+
+  IF l_existe = 0 THEN
+    EXECUTE IMMEDIATE 'ALTER TABLE PROFESORES ADD (FOTO_URL VARCHAR2(500))';
   END IF;
 END;
 /
@@ -274,22 +301,21 @@ CREATE OR REPLACE PACKAGE PKG_PROFESORES AS
   -- NO hay procedimiento para SERVIR la foto: el GET /profesores/foto/:id se
   -- publica como source_type_media. Ver el comentario en PUBLICAR_ENDPOINTS.
   --
-  -- Guarda la foto. CON token: escribir nunca es publico.
-  -- p_foto llega como el cuerpo crudo del PUT; p_content_type, del header.
+  -- Guarda la URL de la foto, que el navegador ya subio a Cloudinary, y vacia
+  -- el BLOB viejo si lo habia. CON token y acotado a la empresa.
   PROCEDURE GUARDAR_FOTO (
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
-    p_foto          IN  BLOB,
-    p_content_type  IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
+    p_foto_url      IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   );
 
-  -- Quita la foto: el profesor vuelve a mostrarse con sus iniciales.
-  --
-  -- A DIFERENCIA DE GUARDAR_FOTO, SI filtra por empresa: aca no hay un binario
-  -- en el cuerpo que impida mandar el idEmpresa, asi que va en la ruta como en
-  -- ELIMINAR. Quitarle la foto a un profesor ajeno no se puede ni adivinando el id.
+  -- Quita la foto: el profesor vuelve a mostrarse con sus iniciales. Vacia la
+  -- URL y el BLOB viejo, y borra el archivo de Cloudinary. Con token y acotado
+  -- a la empresa: quitarle la foto a un profesor ajeno no se puede ni
+  -- adivinando el id.
   PROCEDURE QUITAR_FOTO (
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
@@ -307,10 +333,8 @@ END PKG_PROFESORES;
 
 CREATE OR REPLACE PACKAGE BODY PKG_PROFESORES AS
 
-  -- Techo del BLOB de la foto. 2 MB es holgado para lo que manda la pantalla
-  -- —que redimensiona a 800px y recomprime a JPEG, dejando 100-200 KB— y sigue
-  -- siendo un limite util contra una subida directa al endpoint.
-  C_FOTO_MAX_BYTES CONSTANT NUMBER := 2 * 1024 * 1024;
+  -- El largo de PROFESORES.FOTO_URL (ver el paso 0). Pasarlo daria ORA-12899.
+  C_MAX_URL CONSTANT PLS_INTEGER := 500;
 
   ------------------------------------------------------------------------------
   -- Privado: borra el modulo ORDS si existe, reintentando ante un interbloqueo.
@@ -555,11 +579,19 @@ CREATE OR REPLACE PACKAGE BODY PKG_PROFESORES AS
                  -- columna pueden tenerla en NULL, y sin esto el frontend las
                  -- veria como un estado desconocido.
                  'activo'      VALUE NVL(UPPER(TRIM(p.ACTIVO)), 'A'),
-                 -- El BLOB no entra en el JSON, pero el frontend necesita saber
-                 -- si pedir /profesores/foto/:id o dibujar las iniciales.
+                 -- La de Cloudinary, sólo si es https: lo que termina en un
+                 -- <img src> no puede ser un "javascript:".
+                 'fotoUrl'     VALUE CASE
+                                       WHEN LOWER(SUBSTR(p.FOTO_URL, 1, 8)) = 'https://'
+                                       THEN p.FOTO_URL
+                                     END,
+                 -- True con cualquiera de las dos: sin URL y con tieneFoto, es
+                 -- una foto vieja que se pide a /profesores/foto/:id.
                  -- GETLENGTH > 0 y no solo IS NOT NULL: una carga fallida deja
                  -- un BLOB vacio, que no sirve como foto.
                  'tieneFoto'   VALUE CASE
+                                       WHEN LOWER(SUBSTR(p.FOTO_URL, 1, 8)) = 'https://'
+                                       THEN 'true'
                                        WHEN p.FOTO IS NOT NULL
                                         AND DBMS_LOB.GETLENGTH(p.FOTO) > 0
                                        THEN 'true' ELSE 'false'
@@ -681,7 +713,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_PROFESORES AS
     -- 'A' explicito aunque el DEFAULT ya sea 'A': es el criterio del proyecto,
     -- para no depender de un default que puede cambiar en el DDL.
     --
-    -- La FOTO no se carga aca: va por PUT /profesores/foto/:id despues del
+    -- La FOTO no se carga aca: va por PUT /profesores/foto-url/:id despues del
     -- alta, cuando ya hay un id al que asociarla.
     INSERT INTO PROFESORES (
       ID_EMPRESA, NUMERO_CI, NOMBRE, APELLIDO,
@@ -893,6 +925,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_PROFESORES AS
     l_sesion     NUMBER;
     l_id         NUMBER;
     l_id_empresa NUMBER;
+    l_foto_url   PROFESORES.FOTO_URL%TYPE;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -918,9 +951,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_PROFESORES AS
     -- activo='I'— es el camino normal y este DELETE queda para el caso de una
     -- carga equivocada. Se mantiene porque una fila cargada por error no tiene
     -- por que quedar como registro inactivo para siempre.
+    --
+    -- RETURNING: la foto se borra de Cloudinary recien despues del COMMIT, y
+    -- para entonces la fila ya no esta para preguntarle.
     DELETE FROM PROFESORES
      WHERE ID_PROFESOR = l_id
-       AND ID_EMPRESA  = l_id_empresa;
+       AND ID_EMPRESA  = l_id_empresa
+    RETURNING FOTO_URL INTO l_foto_url;
 
     -- 404 tambien cuando existe pero es de otra empresa: no se confirma que el
     -- id exista.
@@ -932,6 +969,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_PROFESORES AS
     END IF;
 
     COMMIT;
+    PKG_CLOUDINARY.BORRAR(l_foto_url);
+
     p_status_code := 200;
     p_resultado := '{"ok":true}';
   EXCEPTION
@@ -959,29 +998,29 @@ CREATE OR REPLACE PACKAGE BODY PKG_PROFESORES AS
   END ELIMINAR;
 
   ------------------------------------------------------------------------------
-  -- Guarda la foto de un profesor. CON token: escribir nunca es publico.
+  -- Guarda la URL de la foto de un profesor. CON token, acotado a la empresa.
   --
-  -- El binario llega como el cuerpo crudo del PUT (ORDS lo mapea a un BLOB) y
-  -- el formato, del header Content-Type. Se acepta solo image/*: sin ese
-  -- control, cualquier archivo quedaria guardado y despues se serviria de
-  -- vuelta con su content-type a quien abra el listado.
+  -- El archivo ya esta en Cloudinary: lo subio el navegador antes de llamar
+  -- aca. Este procedimiento solo anota donde quedo.
   --
-  -- El techo de 2 MB se valida ACA y no solo en el cliente: la pantalla
-  -- redimensiona antes de subir, pero el endpoint esta abierto a cualquiera con
-  -- sesion y una foto de camara sin procesar son varios MB por fila.
+  -- VACIA EL BLOB VIEJO en el mismo UPDATE: cada foto que se vuelve a subir
+  -- libera su lugar en la base, y migrar es simplemente recargarlas. Ojo: el
+  -- espacio vuelve al segmento, NO a la cuota — para eso hace falta el SHRINK
+  -- del pie del archivo.
   ------------------------------------------------------------------------------
   PROCEDURE GUARDAR_FOTO (
     p_authorization IN  VARCHAR2,
     p_id            IN  VARCHAR2,
-    p_foto          IN  BLOB,
-    p_content_type  IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
+    p_foto_url      IN  VARCHAR2,
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
-    l_sesion NUMBER;
-    l_id     NUMBER;
-    l_mime   VARCHAR2(100);
-    l_bytes  NUMBER;
+    l_sesion   NUMBER;
+    l_id       NUMBER;
+    l_empresa  NUMBER;
+    l_url      VARCHAR2(4000);
+    l_anterior PROFESORES.FOTO_URL%TYPE;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -990,51 +1029,58 @@ CREATE OR REPLACE PACKAGE BODY PKG_PROFESORES AS
       RETURN;
     END IF;
 
-    l_id := A_NUMERO(p_id);
+    l_id      := A_NUMERO(p_id);
+    l_empresa := A_NUMERO(p_id_empresa);
+    l_url     := NULLIF(TRIM(p_foto_url), '');
 
-    IF p_foto IS NULL OR DBMS_LOB.GETLENGTH(p_foto) = 0 THEN
+    IF l_id IS NULL OR l_empresa IS NULL THEN
       p_status_code := 400;
-      p_resultado := '{"error":"No se recibio ninguna foto"}';
+      p_resultado := '{"error":"id e idEmpresa son obligatorios"}';
       RETURN;
     END IF;
 
-    l_bytes := DBMS_LOB.GETLENGTH(p_foto);
-    IF l_bytes > C_FOTO_MAX_BYTES THEN
-      p_status_code := 413;
-      p_resultado := '{"error":"La foto supera el maximo de 2 MB"}';
-      RETURN;
-    END IF;
-
-    -- El header puede venir con parametros ("image/jpeg; charset=..."), asi que
-    -- se corta en el punto y coma antes de guardarlo.
-    l_mime := LOWER(TRIM(REGEXP_SUBSTR(p_content_type, '^[^;]+')));
-
-    IF l_mime IS NULL OR l_mime NOT LIKE 'image/%' THEN
+    -- La URL termina en un <img src>. Sin esto, "javascript:..." se guarda
+    -- igual.
+    IF l_url IS NULL
+       OR LENGTH(l_url) > C_MAX_URL
+       OR LOWER(SUBSTR(l_url, 1, 8)) != 'https://' THEN
       p_status_code := 400;
-      p_resultado := '{"error":"El archivo debe ser una imagen"}';
+      p_resultado := '{"error":"La URL de la foto debe empezar con https:// y no pasar de 500 caracteres"}';
       RETURN;
     END IF;
 
-    -- Sin filtro por empresa, a diferencia del resto del paquete: ORDS no pasa
-    -- el idEmpresa en este PUT —el cuerpo es el binario, no un JSON del que
-    -- sacarlo— y meterlo en la URL obligaria a un template distinto al del GET
-    -- publico, que es el que arma el <img>. El riesgo es acotado: hace falta
-    -- una sesion valida y adivinar el id de un profesor ajeno para pisarle la
-    -- foto, sin poder leer ningun otro dato.
+    -- La URL anterior, para borrar su archivo despues. FOR UPDATE: dos subidas
+    -- simultaneas leerian la misma anterior y la segunda dejaria huerfana la
+    -- foto de la primera.
+    BEGIN
+      SELECT FOTO_URL
+        INTO l_anterior
+        FROM PROFESORES
+       WHERE ID_PROFESOR = l_id
+         AND ID_EMPRESA  = l_empresa
+         FOR UPDATE;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        p_status_code := 404;
+        p_resultado := '{"error":"El profesor no existe"}';
+        RETURN;
+    END;
+
     UPDATE PROFESORES
-       SET FOTO                = p_foto,
-           FOTO_MIME           = l_mime,
+       SET FOTO_URL            = l_url,
+           FOTO                = NULL,
+           FOTO_MIME           = NULL,
            FECHA_ACTUALIZACION = SYSTIMESTAMP
-     WHERE ID_PROFESOR = l_id;
-
-    IF SQL%ROWCOUNT = 0 THEN
-      ROLLBACK;
-      p_status_code := 404;
-      p_resultado := '{"error":"El profesor no existe"}';
-      RETURN;
-    END IF;
+     WHERE ID_PROFESOR = l_id
+       AND ID_EMPRESA  = l_empresa;
 
     COMMIT;
+
+    -- Despues del COMMIT y nunca antes: ver el encabezado de db/cloudinary.sql.
+    IF l_anterior IS NOT NULL AND l_anterior != l_url THEN
+      PKG_CLOUDINARY.BORRAR(l_anterior);
+    END IF;
+
     p_status_code := 200;
     p_resultado := '{"ok":true}';
   EXCEPTION
@@ -1049,17 +1095,12 @@ CREATE OR REPLACE PACKAGE BODY PKG_PROFESORES AS
   ------------------------------------------------------------------------------
   -- Quita la foto de un profesor. Con token y acotado a la empresa.
   --
-  -- FOTO y FOTO_MIME van a NULL juntas: un MIME sin foto no significa nada, y
-  -- el GET publico ya responde 404 cuando FOTO es NULL, que es lo que hace que
-  -- la pantalla vuelva a las iniciales.
+  -- Limpia las tres columnas: sirve tambien para quitar una foto vieja en BLOB,
+  -- que no tiene archivo en Cloudinary (BORRAR recibe NULL y no hace nada).
   --
   -- Sin foto que quitar no es un error: el resultado pedido —que no tenga foto—
   -- ya se cumple. Se responde 200 igual; el 404 queda para el profesor que no
   -- existe o es de otra empresa.
-  --
-  -- OJO CON LA CUOTA: poner el BLOB en NULL libera el espacio para que lo
-  -- reuse la misma columna (la proxima foto que se suba), no para el resto del
-  -- esquema. Devolverselo a la cuota necesita un SHRINK SPACE sobre el LOB.
   ------------------------------------------------------------------------------
   PROCEDURE QUITAR_FOTO (
     p_authorization IN  VARCHAR2,
@@ -1068,9 +1109,10 @@ CREATE OR REPLACE PACKAGE BODY PKG_PROFESORES AS
     p_status_code   OUT NUMBER,
     p_resultado     OUT CLOB
   ) IS
-    l_sesion  NUMBER;
-    l_id      NUMBER;
-    l_empresa NUMBER;
+    l_sesion   NUMBER;
+    l_id       NUMBER;
+    l_empresa  NUMBER;
+    l_anterior PROFESORES.FOTO_URL%TYPE;
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -1088,21 +1130,31 @@ CREATE OR REPLACE PACKAGE BODY PKG_PROFESORES AS
       RETURN;
     END IF;
 
+    BEGIN
+      SELECT FOTO_URL
+        INTO l_anterior
+        FROM PROFESORES
+       WHERE ID_PROFESOR = l_id
+         AND ID_EMPRESA  = l_empresa
+         FOR UPDATE;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        p_status_code := 404;
+        p_resultado := '{"error":"El profesor no existe"}';
+        RETURN;
+    END;
+
     UPDATE PROFESORES
-       SET FOTO                = NULL,
+       SET FOTO_URL            = NULL,
+           FOTO                = NULL,
            FOTO_MIME           = NULL,
            FECHA_ACTUALIZACION = SYSTIMESTAMP
      WHERE ID_PROFESOR = l_id
        AND ID_EMPRESA  = l_empresa;
 
-    IF SQL%ROWCOUNT = 0 THEN
-      ROLLBACK;
-      p_status_code := 404;
-      p_resultado := '{"error":"El profesor no existe"}';
-      RETURN;
-    END IF;
-
     COMMIT;
+    PKG_CLOUDINARY.BORRAR(l_anterior);
+
     p_status_code := 200;
     p_resultado := '{"ok":true}';
   EXCEPTION
@@ -1115,7 +1167,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_PROFESORES AS
   END QUITAR_FOTO;
 
   ------------------------------------------------------------------------------
-  -- Publica el modulo ORDS /profesores/ con sus 7 endpoints.
+  -- Publica el modulo ORDS /profesores/ con sus 7 endpoints. Ninguno recibe
+  -- un binario: la foto va a Cloudinary y aca llega solo su URL.
   --
   -- Cada handler PL/SQL es una sola linea: invoca al procedimiento del paquete
   -- pasando los binds de ORDS como argumentos. Nada de PL/SQL embebido. La
@@ -1286,7 +1339,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_PROFESORES AS
     -- ORDS responde 404 sin que haya que manejar un status code a mano. Por eso
     -- el WHERE filtra los BLOB vacios en vez de devolverlos.
     --
-    -- El mismo template lleva tambien el PUT que guarda la foto, mas abajo.
+    -- SOLO SIRVE LAS FOTOS DE ANTES DE CLOUDINARY. Ya no tiene PUT: las nuevas
+    -- se guardan como URL (foto-url/:id, mas abajo). Retirarlo cuando no quede
+    -- ningun BLOB (consulta al pie del archivo).
     ----------------------------------------------------------------------------
     ORDS.DEFINE_TEMPLATE(p_module_name => 'profesores', p_pattern => 'foto/:id');
 
@@ -1303,40 +1358,35 @@ CREATE OR REPLACE PACKAGE BODY PKG_PROFESORES AS
     );
 
     ----------------------------------------------------------------------------
-    -- PUT /profesores/foto/:id — con token
-    -- Body: la foto cruda. Content-Type: image/jpeg, image/png, etc.
+    -- PUT /profesores/foto-url/:id — con token
+    -- Body: { idEmpresa, fotoUrl }. La foto ya esta en Cloudinary.
     --
-    -- SIN image/svg+xml, a diferencia de db/articulos.sql: un SVG es un
-    -- documento que puede llevar script, y aca la foto sale de una camara o de
-    -- la galeria. Ningun caso legitimo manda un SVG como foto de una persona.
+    -- Template propio y no un PUT en foto/:id: ahi un cliente viejo mandaria
+    -- el binario crudo a un handler que espera JSON. En una ruta nueva recibe
+    -- un 404 claro, y la foto no termina en la base por la puerta de atras.
     ----------------------------------------------------------------------------
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'profesores', p_pattern => 'foto-url/:id');
+
     ORDS.DEFINE_HANDLER(
-      p_module_name   => 'profesores',
-      p_pattern       => 'foto/:id',
-      p_method        => 'PUT',
-      p_source_type   => ORDS.source_type_plsql,
-      p_mimes_allowed => 'image/png,image/jpeg,image/webp',
-      p_source        => 'BEGIN PKG_PROFESORES.GUARDAR_FOTO(:authorization, :id, :body, :content_type, :status_code, :resultado); END;'
+      p_module_name => 'profesores',
+      p_pattern     => 'foto-url/:id',
+      p_method      => 'PUT',
+      p_source_type => ORDS.source_type_plsql,
+      p_source      => 'BEGIN PKG_PROFESORES.GUARDAR_FOTO(:authorization, :id, :idEmpresa, :fotoUrl, :status_code, :resultado); END;'
     );
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'profesores', p_pattern => 'foto/:id', p_method => 'PUT',
+      p_module_name => 'profesores', p_pattern => 'foto-url/:id', p_method => 'PUT',
       p_name => 'authorization', p_bind_variable_name => 'authorization',
       p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
 
-    -- El Content-Type de entrada: de ahi sale el formato que se guarda.
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'profesores', p_pattern => 'foto/:id', p_method => 'PUT',
-      p_name => 'Content-Type', p_bind_variable_name => 'content_type',
-      p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
-
-    ORDS.DEFINE_PARAMETER(
-      p_module_name => 'profesores', p_pattern => 'foto/:id', p_method => 'PUT',
+      p_module_name => 'profesores', p_pattern => 'foto-url/:id', p_method => 'PUT',
       p_name => 'resultado', p_bind_variable_name => 'resultado',
       p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
 
     ORDS.DEFINE_PARAMETER(
-      p_module_name => 'profesores', p_pattern => 'foto/:id', p_method => 'PUT',
+      p_module_name => 'profesores', p_pattern => 'foto-url/:id', p_method => 'PUT',
       p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
@@ -1409,14 +1459,41 @@ SELECT NAME, STATUS, ORIGINS_ALLOWED
   FROM USER_ORDS_MODULES
  WHERE NAME = 'profesores';
 
--- Deben salir 6 filas: listar GET, crear POST, actualizar PUT, eliminar DELETE,
--- foto GET y foto PUT.
+-- Deben salir 7 filas: actualizar PUT, crear POST, eliminar DELETE, foto GET,
+-- foto-url PUT, foto/:id/:idEmpresa DELETE y listar GET. Si aparece un PUT en
+-- foto/:id, el modulo viejo sigue publicado.
 SELECT t.URI_TEMPLATE, h.METHOD
   FROM USER_ORDS_TEMPLATES t
   JOIN USER_ORDS_HANDLERS  h ON h.TEMPLATE_ID = t.ID
   JOIN USER_ORDS_MODULES   m ON m.ID = t.MODULE_ID
  WHERE m.NAME = 'profesores'
  ORDER BY t.URI_TEMPLATE, h.METHOD;
+
+--------------------------------------------------------------------------------
+-- 4. Migracion de las fotos viejas
+--
+-- Cuantas siguen en la base y cuantas ya estan en Cloudinary. Cada foto que se
+-- vuelve a subir desde /profesores pasa de una columna a la otra. Cuando la
+-- primera cuenta llegue a 0, el GET /profesores/foto/:id se puede retirar.
+--------------------------------------------------------------------------------
+
+SELECT CASE
+         WHEN FOTO_URL IS NOT NULL THEN 'CLOUDINARY'
+         WHEN FOTO IS NOT NULL AND DBMS_LOB.GETLENGTH(FOTO) > 0 THEN 'BLOB'
+         ELSE 'SIN FOTO'
+       END AS DONDE,
+       COUNT(*) AS PROFESORES,
+       ROUND(SUM(NVL(DBMS_LOB.GETLENGTH(FOTO), 0)) / 1024 / 1024, 2) AS MB_EN_LA_BASE
+  FROM PROFESORES
+ GROUP BY CASE
+            WHEN FOTO_URL IS NOT NULL THEN 'CLOUDINARY'
+            WHEN FOTO IS NOT NULL AND DBMS_LOB.GETLENGTH(FOTO) > 0 THEN 'BLOB'
+            ELSE 'SIN FOTO'
+          END;
+
+-- Vaciar el BLOB devuelve el espacio al segmento, no a la cuota del esquema.
+-- Para liberarlo de verdad, una vez migradas (fuera de horario):
+--   ALTER TABLE PROFESORES MODIFY LOB (FOTO) (SHRINK SPACE);
 
 -- LEFT JOIN contra USUARIOS, igual que el listado: con un INNER, los profesores
 -- sin cuenta vinculada no apareceran y la verificacion mentiria.

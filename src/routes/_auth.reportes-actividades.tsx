@@ -41,6 +41,7 @@ import {
   urlDescarga,
   type TipoArchivo,
 } from "@/lib/cloudinary";
+import { optimizarImagen } from "@/lib/imagen";
 import { tituloPagina } from "@/lib/marca";
 import { cn } from "@/lib/utils";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -94,6 +95,27 @@ const mensajeError = (error: unknown, respaldo: string) =>
  * `new Date("2026-09-02")` lo interpreta como UTC y en Paraguay (UTC-3) muestra
  * el 1: la hora agregada lo ancla al día correcto.
  */
+/**
+ * Achica una foto antes de subirla.
+ *
+ * 1600 px de lado mayor alcanzan para verla a pantalla completa e imprimirla en
+ * una hoja, y una foto de celular de 4-8 MB queda en unos 300-500 KB. No se
+ * recorta: una foto de clase no es la de un producto, y lo que sobra del
+ * cuadro puede ser justamente lo que había que mostrar.
+ *
+ * Sólo JPEG, PNG y WebP: un GIF perdería la animación, y HEIC el navegador no
+ * siempre lo sabe decodificar. Videos y PDF suben como vienen. Si la foto no
+ * se puede procesar, sube la original — mejor una evidencia pesada que ninguna.
+ */
+async function prepararEvidencia(archivo: File): Promise<File> {
+  if (!/^image\/(jpeg|png|webp)$/.test(archivo.type)) return archivo;
+  try {
+    return await optimizarImagen(archivo, { maxLado: 1600, maxBytes: 500 * 1024 });
+  } catch {
+    return archivo;
+  }
+}
+
 const fechaLocal = (iso: string) => new Date(`${iso}T00:00:00`);
 
 const formatoDia = new Intl.DateTimeFormat("es-PY", {
@@ -1069,7 +1091,7 @@ function Galeria({
     let subidos = 0;
     for (const archivo of seleccionados) {
       try {
-        const resultado = await subirACloudinary(archivo);
+        const resultado = await subirACloudinary(await prepararEvidencia(archivo));
         await api.reportesMultimedia.crear({
           idReporte,
           idEmpresa,
