@@ -4,7 +4,8 @@
  * El token de sesión se guarda en sessionStorage: se borra al cerrar la pestaña
  * y no viaja a otros orígenes. No es la opción más robusta —una cookie httpOnly
  * lo sería—, pero ORDS no puede fijar cookies para este dominio, así que el
- * token tiene que quedar en el cliente.
+ * token tiene que quedar en el cliente. Las pestañas se lo pasan entre ellas:
+ * ver `recuperarSesion`.
  */
 
 /**
@@ -2044,7 +2045,7 @@ export type ListaUsuarioPaginas = {
  * Es un `Set` y no un solo callback porque el hook se monta una vez por
  * layout: si un día hay dos, los dos tienen que enterarse.
  */
-type OyenteSesion = () => void;
+type OyenteSesion = (motivo: MotivoCierre) => void;
 const oyentesSesion = new Set<OyenteSesion>();
 
 /** Suscribe un callback al cierre de sesión. Devuelve cómo desuscribirse. */
@@ -2053,8 +2054,8 @@ export function alCerrarseSesion(oyente: OyenteSesion): () => void {
   return () => oyentesSesion.delete(oyente);
 }
 
-function notificarSesionCerrada() {
-  for (const oyente of oyentesSesion) oyente();
+function notificarSesionCerrada(motivo: MotivoCierre) {
+  for (const oyente of oyentesSesion) oyente(motivo);
 }
 
 /** Error con el status HTTP, para distinguir 401 de un fallo real. */
@@ -2115,6 +2116,98 @@ export function setUsuarioSesion(usuario: UsuarioSesion | null) {
     sessionStorage.removeItem(USUARIO_KEY);
   }
 }
+
+/**
+ * La sesión compartida entre pestañas.
+ *
+ * sessionStorage es POR PESTAÑA: una nueva —clic del medio, "abrir en pestaña
+ * nueva", escribir la URL— arranca vacía, y el guard de `_auth` la mandaba al
+ * login con la sesión abierta en la de al lado. Ahora la pestaña nueva pregunta
+ * por un BroadcastChannel y cualquiera que tenga sesión le pasa el token.
+ *
+ * **No se pasó el token a localStorage, a propósito.** Ahí sobreviviría a
+ * cerrar el navegador, y en una PC compartida el siguiente entraría con la
+ * sesión del anterior durante 8 horas. Así la sesión sigue muriendo cuando se
+ * cierra la última pestaña.
+ *
+ * El cierre también viaja: un logout, un cambio de contraseña o un 401 en una
+ * pestaña saca a las demás. Sin eso, la otra seguiría con un token revocado y
+ * sin la empresa, que vive en localStorage y ya se borró. El mensaje lleva el
+ * token que se cierra, para no sacar a una pestaña que entró con otra cuenta.
+ */
+export type MotivoCierre = "vencida" | "cerrada";
+
+type MensajeSesion =
+  | { tipo: "pedir" }
+  | { tipo: "entregar"; token: string; usuario: UsuarioSesion | null }
+  | { tipo: "cerrar"; token: string; motivo: MotivoCierre };
+
+const canalSesion =
+  typeof window !== "undefined" && "BroadcastChannel" in window
+    ? new BroadcastChannel("ctell-sesion")
+    : null;
+
+canalSesion?.addEventListener("message", (event: MessageEvent<MensajeSesion>) => {
+  const mensaje = event.data;
+  const token = getToken();
+
+  if (mensaje.tipo === "pedir" && token) {
+    canalSesion?.postMessage({
+      tipo: "entregar",
+      token,
+      usuario: getUsuarioSesion(),
+    } satisfies MensajeSesion);
+  } else if (mensaje.tipo === "cerrar" && token === mensaje.token) {
+    setToken(null);
+    setUsuarioSesion(null);
+    notificarSesionCerrada(mensaje.motivo);
+  }
+});
+
+/** Avisa a las otras pestañas que este token dejó de valer. */
+function avisarCierre(token: string | null, motivo: MotivoCierre) {
+  if (token) canalSesion?.postMessage({ tipo: "cerrar", token, motivo } satisfies MensajeSesion);
+}
+
+/**
+ * El token de esta pestaña o, si no tiene, el de otra abierta.
+ *
+ * Lo usa el guard de `_auth`. La espera sólo se paga sin sesión propia: con
+ * otra pestaña abierta la respuesta llega en milisegundos, y sin ninguna se
+ * termina yendo al login igual que antes, apenas un momento después.
+ */
+export function recuperarSesion(espera = 300): Promise<string | null> {
+  const propio = getToken();
+  if (propio || !canalSesion) return Promise.resolve(propio);
+  // Al abrir una pestaña arrancan varias peticiones a la vez: que compartan
+  // una sola pregunta en vez de mandar una cada una.
+  if (recuperando) return recuperando;
+  const canal = canalSesion;
+
+  recuperando = new Promise<string | null>((resolve) => {
+    const terminar = (entrega: Extract<MensajeSesion, { tipo: "entregar" }> | null) => {
+      window.clearTimeout(plazo);
+      canal.removeEventListener("message", alRecibir);
+      if (entrega && !getToken()) {
+        setToken(entrega.token);
+        setUsuarioSesion(entrega.usuario);
+      }
+      resolve(getToken());
+    };
+    const alRecibir = (event: MessageEvent<MensajeSesion>) => {
+      if (event.data.tipo === "entregar") terminar(event.data);
+    };
+    const plazo = window.setTimeout(() => terminar(null), espera);
+
+    canal.addEventListener("message", alRecibir);
+    canal.postMessage({ tipo: "pedir" } satisfies MensajeSesion);
+  }).finally(() => {
+    recuperando = null;
+  });
+  return recuperando;
+}
+
+let recuperando: Promise<string | null> | null = null;
 
 /**
  * Empresa mínima que devuelve el endpoint público del login.
@@ -2398,10 +2491,11 @@ async function request<T>(
     finalHeaders["Content-Type"] = "application/json";
   }
 
-  if (auth) {
-    const token = getToken();
-    if (token) finalHeaders["Authorization"] = `Bearer ${token}`;
-  }
+  // Se espera el token de otra pestaña, si ésta todavía no tiene: los
+  // providers de empresa y sucursal viven en __root, fuera del guard de
+  // `_auth`, y en una pestaña nueva piden antes de que el token llegue.
+  const tokenEnviado = auth ? await recuperarSesion() : null;
+  if (tokenEnviado) finalHeaders["Authorization"] = `Bearer ${tokenEnviado}`;
 
   const res = await fetch(`${BASE_URL}${path}`, { ...rest, headers: finalHeaders });
 
@@ -2422,9 +2516,17 @@ async function request<T>(
     // hay ninguna sesión que perder, y tratarlo igual rompía el acceso — el
     // aviso de sesión vencida se disparaba con cada intento fallido y expulsaba
     // de la pantalla a quien estaba tratando de entrar.
-    if (res.status === 401 && auth) {
+    //
+    // Y sólo si la petición llevaba EL token vigente. Una que salió sin token
+    // no prueba que haya una sesión caída, y una con un token viejo —salió
+    // antes de un nuevo login— tampoco: tratarlas igual borraba el token
+    // bueno, y la empresa y la sucursal de localStorage, que son de TODAS las
+    // pestañas. Era lo que desconectaba a las dos al abrir una nueva.
+    if (res.status === 401 && auth && tokenEnviado !== null && tokenEnviado === getToken()) {
       // Se limpia el token local, o el usuario queda en un limbo enviando
-      // credenciales que ya no sirven.
+      // credenciales que ya no sirven. Las otras pestañas usan el mismo token,
+      // así que también se las avisa.
+      avisarCierre(getToken(), "vencida");
       setToken(null);
       setUsuarioSesion(null);
       // La empresa se elige al iniciar sesión: si la sesión se cayó, la
@@ -2435,7 +2537,7 @@ async function request<T>(
       // …y hay que sacarlo de la pantalla protegida donde quedó. Limpiar el
       // token no alcanza: sin esto seguiría viendo el panel, con un toast de
       // error y sin entender que lo que pasó fue que se le venció la sesión.
-      notificarSesionCerrada();
+      notificarSesionCerrada("vencida");
     }
     // El mensaje del backend es siempre el mejor: explica el caso concreto
     // ("El usuario ya existe"). Solo cuando no llega —porque la respuesta no
@@ -2486,11 +2588,14 @@ export const api = {
    * el token igual vence a las 8 h.
    */
   async logout(): Promise<void> {
+    const token = getToken();
     try {
       await request("/auth/logout", { method: "POST" });
     } catch {
       // Sin re-lanzar: el usuario pidió salir y va a salir.
     } finally {
+      // Salir es salir de todas las pestañas: el token ya está revocado.
+      avisarCierre(token, "cerrada");
       // El usuario se limpia junto al token, o el siguiente que entre vería
       // el nombre del anterior.
       setToken(null);
@@ -2541,6 +2646,7 @@ export const api = {
     // El token que se usó para llamar acá ya está revocado en el servidor:
     // conservarlo daría 401 en la siguiente petición, que es peor que salir
     // limpio. Mismo criterio que logout.
+    avisarCierre(getToken(), "cerrada");
     setToken(null);
     setUsuarioSesion(null);
     setEmpresaSeleccionada(null);

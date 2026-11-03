@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { toast } from "sonner";
@@ -21,13 +22,21 @@ import { alCerrarseSesion } from "@/lib/api";
  */
 export function useCerrarSesionAlVencer() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   useEffect(() => {
-    return alCerrarseSesion(() => {
+    return alCerrarseSesion((motivo) => {
       // Sin el aviso, volver al login de golpe parece un cierre de sesión
       // espontáneo. Decir por qué evita que se lea como una falla del sistema.
-      toast.info("Tu sesión expiró. Iniciá sesión de nuevo.");
+      toast.info(
+        motivo === "vencida"
+          ? "Tu sesión expiró. Iniciá sesión de nuevo."
+          : "Se cerró la sesión desde otra pestaña.",
+      );
+      // Lo mismo que hace el logout de AppLayout: la caché tiene datos de
+      // quien se fue, y el siguiente que entre los vería por un instante.
+      queryClient.clear();
       navigate({ to: "/" });
     });
-  }, [navigate]);
+  }, [navigate, queryClient]);
 }

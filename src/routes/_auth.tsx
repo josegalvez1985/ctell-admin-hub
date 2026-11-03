@@ -2,7 +2,7 @@ import { createFileRoute, Outlet, redirect } from "@tanstack/react-router";
 
 import { InstalarPwaDialog } from "@/components/ctell/InstalarPwaDialog";
 import { useCerrarSesionAlVencer } from "@/hooks/use-cerrar-sesion-al-vencer";
-import { getToken } from "@/lib/api";
+import { recuperarSesion } from "@/lib/api";
 
 /**
  * Layout de las páginas que exigen sesión.
@@ -18,14 +18,16 @@ import { getToken } from "@/lib/api";
  * porque no existía ninguna.
  */
 export const Route = createFileRoute("/_auth")({
-  beforeLoad: () => {
+  beforeLoad: async () => {
     // En el servidor no hay sessionStorage y getToken() devuelve null siempre.
     // Sin esta guarda, el SSR redirigiría al login a todo el mundo, incluso con
     // la sesión abierta. La verificación real corre en el cliente, que es donde
     // el token existe.
     if (typeof window === "undefined") return;
 
-    if (getToken() === null) {
+    // Una pestaña nueva no tiene token propio: se lo pide a las otras antes
+    // de decidir que no hay sesión.
+    if ((await recuperarSesion()) === null) {
       throw redirect({ to: "/" });
     }
   },

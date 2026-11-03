@@ -540,6 +540,8 @@ El cliente HTTP maneja:
 - Token en `Authorization: Bearer <token>`.
 - Gestión de errores y parseo de respuestas.
 
+**El token vive en `sessionStorage` y las pestañas se lo pasan por un `BroadcastChannel`** (`recuperarSesion`, que llama el `beforeLoad` de `_auth`): una pestaña nueva arranca sin token y se lo pide a las abiertas. No se movió a `localStorage` a propósito —sobreviviría a cerrar el navegador, y en una PC compartida el siguiente entraría con la sesión del anterior—: la sesión muere con la última pestaña. Logout, cambio de contraseña y 401 se avisan por el mismo canal y sacan a las demás. **Un 401 sólo cierra la sesión si la petición llevaba el token vigente**: los providers de empresa y sucursal viven en `__root`, fuera del guard, y en una pestaña nueva piden antes de que llegue el token; tratar ese 401 como sesión vencida borraba la empresa de `localStorage` y desconectaba a todas las pestañas.
+
 `BASE_URL` elige entre las dos según `import.meta.env.DEV` — ver `src/lib/api.ts`.
 
 Detalle importante: **Content-Type se envía solo cuando es POST/PUT** y hay body. En GET no se envía (previene headers innecesarios).
