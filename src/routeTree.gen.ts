@@ -32,6 +32,7 @@ import { Route as AuthFacturasComprasRouteImport } from './routes/_auth.facturas
 import { Route as AuthHomeRouteImport } from './routes/_auth.home'
 import { Route as AuthInstitucionesRouteImport } from './routes/_auth.instituciones'
 import { Route as AuthInventariosRouteImport } from './routes/_auth.inventarios'
+import { Route as AuthInventariosCierreRouteImport } from './routes/_auth.inventarios-cierre'
 import { Route as AuthInventariosReporteRouteImport } from './routes/_auth.inventarios-reporte'
 import { Route as AuthIvaRouteImport } from './routes/_auth.iva'
 import { Route as AuthJustificacionesAusenciaRouteImport } from './routes/_auth.justificaciones-ausencia'
@@ -169,6 +170,11 @@ const AuthInventariosRoute = AuthInventariosRouteImport.update({
   path: '/inventarios',
   getParentRoute: () => AuthRoute,
 } as any)
+const AuthInventariosCierreRoute = AuthInventariosCierreRouteImport.update({
+  id: '/inventarios-cierre',
+  path: '/inventarios-cierre',
+  getParentRoute: () => AuthRoute,
+} as any)
 const AuthInventariosReporteRoute = AuthInventariosReporteRouteImport.update({
   id: '/inventarios-reporte',
   path: '/inventarios-reporte',
@@ -294,6 +300,7 @@ export interface FileRoutesByFullPath {
   '/home': typeof AuthHomeRoute
   '/instituciones': typeof AuthInstitucionesRoute
   '/inventarios': typeof AuthInventariosRoute
+  '/inventarios-cierre': typeof AuthInventariosCierreRoute
   '/inventarios-reporte': typeof AuthInventariosReporteRoute
   '/iva': typeof AuthIvaRoute
   '/justificaciones-ausencia': typeof AuthJustificacionesAusenciaRoute
@@ -338,6 +345,7 @@ export interface FileRoutesByTo {
   '/home': typeof AuthHomeRoute
   '/instituciones': typeof AuthInstitucionesRoute
   '/inventarios': typeof AuthInventariosRoute
+  '/inventarios-cierre': typeof AuthInventariosCierreRoute
   '/inventarios-reporte': typeof AuthInventariosReporteRoute
   '/iva': typeof AuthIvaRoute
   '/justificaciones-ausencia': typeof AuthJustificacionesAusenciaRoute
@@ -384,6 +392,7 @@ export interface FileRoutesById {
   '/_auth/home': typeof AuthHomeRoute
   '/_auth/instituciones': typeof AuthInstitucionesRoute
   '/_auth/inventarios': typeof AuthInventariosRoute
+  '/_auth/inventarios-cierre': typeof AuthInventariosCierreRoute
   '/_auth/inventarios-reporte': typeof AuthInventariosReporteRoute
   '/_auth/iva': typeof AuthIvaRoute
   '/_auth/justificaciones-ausencia': typeof AuthJustificacionesAusenciaRoute
@@ -430,6 +439,7 @@ export interface FileRouteTypes {
     | '/home'
     | '/instituciones'
     | '/inventarios'
+    | '/inventarios-cierre'
     | '/inventarios-reporte'
     | '/iva'
     | '/justificaciones-ausencia'
@@ -474,6 +484,7 @@ export interface FileRouteTypes {
     | '/home'
     | '/instituciones'
     | '/inventarios'
+    | '/inventarios-cierre'
     | '/inventarios-reporte'
     | '/iva'
     | '/justificaciones-ausencia'
@@ -519,6 +530,7 @@ export interface FileRouteTypes {
     | '/_auth/home'
     | '/_auth/instituciones'
     | '/_auth/inventarios'
+    | '/_auth/inventarios-cierre'
     | '/_auth/inventarios-reporte'
     | '/_auth/iva'
     | '/_auth/justificaciones-ausencia'
@@ -709,6 +721,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthInventariosRouteImport
       parentRoute: typeof AuthRoute
     }
+    '/_auth/inventarios-cierre': {
+      id: '/_auth/inventarios-cierre'
+      path: '/inventarios-cierre'
+      fullPath: '/inventarios-cierre'
+      preLoaderRoute: typeof AuthInventariosCierreRouteImport
+      parentRoute: typeof AuthRoute
+    }
     '/_auth/inventarios-reporte': {
       id: '/_auth/inventarios-reporte'
       path: '/inventarios-reporte'
@@ -874,6 +893,7 @@ interface AuthRouteChildren {
   AuthHomeRoute: typeof AuthHomeRoute
   AuthInstitucionesRoute: typeof AuthInstitucionesRoute
   AuthInventariosRoute: typeof AuthInventariosRoute
+  AuthInventariosCierreRoute: typeof AuthInventariosCierreRoute
   AuthInventariosReporteRoute: typeof AuthInventariosReporteRoute
   AuthIvaRoute: typeof AuthIvaRoute
   AuthJustificacionesAusenciaRoute: typeof AuthJustificacionesAusenciaRoute
@@ -918,6 +938,7 @@ const AuthRouteChildren: AuthRouteChildren = {
   AuthHomeRoute: AuthHomeRoute,
   AuthInstitucionesRoute: AuthInstitucionesRoute,
   AuthInventariosRoute: AuthInventariosRoute,
+  AuthInventariosCierreRoute: AuthInventariosCierreRoute,
   AuthInventariosReporteRoute: AuthInventariosReporteRoute,
   AuthIvaRoute: AuthIvaRoute,
   AuthJustificacionesAusenciaRoute: AuthJustificacionesAusenciaRoute,

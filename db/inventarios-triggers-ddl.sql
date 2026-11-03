@@ -3,7 +3,8 @@
 --
 -- Dos triggers sobre INVENTARIOS, y nada mas:
 --
---   1. TRG_INVENTARIOS_BIUD            Congela el conteo al cerrarlo.
+--   1. TRG_INVENTARIOS_BIUD            Sella lo que decia el sistema al contar,
+--                                      y congela el conteo al cerrarlo.
 --   2. TRG_INVENTARIOS_AU_EXISTENCIAS  Al cerrar, escribe EXISTENCIAS.
 --
 -- Es el UNICO archivo de db/ que administra DDL. El resto define paquetes y
@@ -49,10 +50,37 @@
 -- cierre son del mismo momento —el caso normal— el resultado es identico al de
 -- antes, porque la diferencia se aplica sobre el mismo numero que se conto.
 --
--- CANTIDAD_SISTEMA se sella EN EL CIERRE, con lo que EXISTENCIAS decia justo
--- antes del ajuste. No es lo que el formulario haya cargado al abrir el conteo.
--- Ahora cumple DOS funciones: deja el rastro de cuanto se corrigio, y es el
--- numero contra el que se calcula la diferencia a aplicar.
+-- CANTIDAD_SISTEMA SE SELLA AL CONTAR, NO AL CERRAR. Cumple DOS funciones: deja
+-- el rastro de cuanto se corrigio, y es el numero contra el que se calcula la
+-- diferencia a aplicar. Por eso tiene que ser lo que el sistema decia cuando se
+-- MIRO el estante, no cuando alguien apreto "cerrar" tres dias despues.
+--
+-- ESTO TAMBIEN CAMBIO. Antes se sellaba en el cierre, y eso hacia que el
+-- ajuste por diferencia no protegiera nada: se cuenta el lunes y hay 100, el
+-- martes se venden 30 (el sistema dice 70), el miercoles se cierra. Sellado en
+-- el cierre, el sistema "decia" 70 y el ajuste era 100 - 70 = +30: la tabla
+-- volvia a 100 y las 30 vendidas reaparecian — exactamente lo que el ajuste
+-- por diferencia vino a evitar. Sellado al contar, decia 100, el ajuste es
+-- 100 - 100 = 0 y queda en 70, que es lo correcto.
+--
+-- "AL CONTAR" ES CUANDO CAMBIA LA CANTIDAD CONTADA, no cada guardado:
+--
+--   - CANTIDAD_FISICA pasa de NULL a un numero (se termino de contar), o de un
+--     numero a otro (se reconto)  -> se sella con EXISTENCIAS de ese momento.
+--   - CANTIDAD_FISICA vuelve a NULL (quedo un estante sin contar) -> NULL:
+--     todavia no hay conteo, y un sello viejo seria de otro numero.
+--   - Cualquier otro cambio —las observaciones, la fecha— no lo toca. Corregir
+--     un comentario el miercoles no convierte en "del miercoles" un conteo que
+--     se hizo el lunes.
+--
+-- LO QUE ESTO NO RESUELVE: el momento de guardar sustituye al de contar. Si se
+-- anota en papel a la manana y se carga a la tarde, las ventas de esas horas
+-- quedan dentro del ajuste. Hacerlo exacto exige el libro de movimientos (para
+-- saber que decia el sistema a la hora de FECHA_INVENTARIO), que no existe.
+-- Por eso conviene cargar el conteo desde el celular, parado en el estante.
+--
+-- Los conteos ABIERTOS de antes de este cambio tienen CANTIDAD_SISTEMA en
+-- NULL: se sellan en el cierre, como antes. Es el unico caso.
 --
 --------------------------------------------------------------------------------
 -- ES UNO DE LOS DOS ESCRITORES DE EXISTENCIAS
@@ -137,7 +165,7 @@ END;
 --
 -- BEFORE porque es el unico momento en que se puede escribir :NEW. Todo lo que
 -- este trigger decide se sella aca: el estado normalizado, las fechas y el
--- CANTIDAD_SISTEMA del cierre. La escritura sobre OTRA tabla va en el AFTER.
+-- CANTIDAD_SISTEMA del conteo. La escritura sobre OTRA tabla va en el AFTER.
 --------------------------------------------------------------------------------
 
 CREATE OR REPLACE TRIGGER TRG_INVENTARIOS_BIUD
@@ -146,6 +174,25 @@ CREATE OR REPLACE TRIGGER TRG_INVENTARIOS_BIUD
 DECLARE
   l_empresa_sucursal SUCURSALES.ID_EMPRESA%TYPE;
   l_empresa_articulo ARTICULOS.ID_EMPRESA%TYPE;
+
+  -- Lo que EXISTENCIAS dice AHORA del articulo del conteo. Sin fila, 0: el
+  -- articulo nunca tuvo movimiento en ese deposito. Se lee de :NEW porque en un
+  -- INSERT no hay :OLD, y en un UPDATE los ids no cambian (lo impide el paso 2).
+  FUNCTION EXISTENCIA_AHORA RETURN NUMBER IS
+    l_cantidad NUMBER;
+  BEGIN
+    SELECT NVL(CANTIDAD_DISPONIBLE, 0)
+      INTO l_cantidad
+      FROM EXISTENCIAS
+     WHERE ID_EMPRESA  = :NEW.ID_EMPRESA
+       AND ID_SUCURSAL = :NEW.ID_SUCURSAL
+       AND ID_ARTICULO = :NEW.ID_ARTICULO;
+
+    RETURN l_cantidad;
+  EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+      RETURN 0;
+  END EXISTENCIA_AHORA;
 BEGIN
 
   ------------------------------------------------------------------------------
@@ -217,6 +264,13 @@ BEGIN
       WHEN NO_DATA_FOUND THEN NULL;
     END;
 
+    -- El sello del conteo. PKG_INVENTARIOS inserta con la cantidad en NULL (la
+    -- suma llega despues, con las lineas), pero un INSERT a mano puede traerla:
+    -- en ese caso se sella aca, y lo que haya mandado el INSERT en esta columna
+    -- no se respeta — es un dato del sistema, no del que carga.
+    :NEW.CANTIDAD_SISTEMA := CASE WHEN :NEW.CANTIDAD_FISICA IS NOT NULL
+                                  THEN EXISTENCIA_AHORA END;
+
     :NEW.FECHA_INVENTARIO    := NVL(:NEW.FECHA_INVENTARIO, SYSTIMESTAMP);
     :NEW.FECHA_CREACION      := SYSTIMESTAMP;
     :NEW.FECHA_ACTUALIZACION := SYSTIMESTAMP;
@@ -282,23 +336,34 @@ BEGIN
         '): es lo que se conto en el estante.');
     END IF;
 
-    -- Se sella lo que EXISTENCIAS dice AHORA, un instante antes de que el AFTER
-    -- la ajuste. Es el unico rastro de cuanto corrigio este conteo, Y ADEMAS es
-    -- contra este numero que el AFTER calcula la diferencia a aplicar: si esto
-    -- se sellara mal, el ajuste seria el equivocado.
-    BEGIN
-      SELECT NVL(CANTIDAD_DISPONIBLE, 0)
-        INTO :NEW.CANTIDAD_SISTEMA
-        FROM EXISTENCIAS
-       WHERE ID_EMPRESA  = :NEW.ID_EMPRESA
-         AND ID_SUCURSAL = :NEW.ID_SUCURSAL
-         AND ID_ARTICULO = :NEW.ID_ARTICULO;
-    EXCEPTION
-      -- Sin fila de existencia, el sistema decia 0: el articulo nunca tuvo
-      -- movimiento en ese deposito.
-      WHEN NO_DATA_FOUND THEN
-        :NEW.CANTIDAD_SISTEMA := 0;
-    END;
+    -- EL SELLO DEL CONTEO SE CONSERVA: es contra ese numero que el AFTER
+    -- calcula la diferencia, y es lo que el sistema decia cuando se conto (ver
+    -- el encabezado). Se sella ACA solo en dos casos:
+    --
+    --   - Esta en NULL: un conteo abierto antes de que el sello pasara a
+    --     hacerse al contar. Se comporta como antes.
+    --   - El mismo UPDATE que cierra cambia la cantidad (una correccion a mano
+    --     en la hoja SQL): el sello viejo es de otro numero.
+    IF :NEW.CANTIDAD_SISTEMA IS NULL
+       OR :OLD.CANTIDAD_FISICA IS NULL
+       OR :NEW.CANTIDAD_FISICA != :OLD.CANTIDAD_FISICA THEN
+      :NEW.CANTIDAD_SISTEMA := EXISTENCIA_AHORA;
+    END IF;
+
+  -- 4b. Sigue ABIERTO: se sella cuando cambia lo contado, y SOLO entonces. Ver
+  --     el encabezado: cambiar las observaciones no mueve el sello.
+  ELSIF :NEW.ESTADO = 'ABIERTO' THEN
+    IF :NEW.CANTIDAD_FISICA IS NULL THEN
+      -- Quedo un estante sin contar: todavia no hay conteo que sellar.
+      :NEW.CANTIDAD_SISTEMA := NULL;
+    ELSIF :OLD.CANTIDAD_FISICA IS NULL
+          OR :NEW.CANTIDAD_FISICA != :OLD.CANTIDAD_FISICA THEN
+      :NEW.CANTIDAD_SISTEMA := EXISTENCIA_AHORA;
+    ELSE
+      -- La cantidad no cambio: el sello queda como estaba aunque el UPDATE
+      -- haya mandado otro valor en esta columna.
+      :NEW.CANTIDAD_SISTEMA := :OLD.CANTIDAD_SISTEMA;
+    END IF;
   END IF;
 
   -- 5. Sellos de tiempo. FECHA_CREACION se restaura por si el UPDATE la mando:
@@ -343,14 +408,15 @@ END;
 -- las ventas del martes son reales.
 --
 -- LA DIFERENCIA ES CONTRA CANTIDAD_SISTEMA, que el otro trigger sello con lo que
--- EXISTENCIAS decia EN EL MOMENTO DEL CIERRE. Restar contra la existencia actual
--- daria cero siempre —seria comparar el numero consigo mismo— y contra la del
--- momento del conteo exigiria una columna que no existe.
+-- EXISTENCIAS decia CUANDO SE CONTO (cuando cambio CANTIDAD_FISICA por ultima
+-- vez), no en el cierre. Sellarla en el cierre era restar contra la existencia
+-- de ese instante: el ejemplo de arriba daba 100 - 70 = +30, y el ajuste por
+-- diferencia terminaba haciendo lo mismo que fijar la cantidad.
 --
 -- SI CANTIDAD_SISTEMA VINIERA NULL el ajuste seria la cantidad fisica entera:
 -- para un articulo sin fila de existencia eso es correcto (arranca de cero), y
--- el otro trigger garantiza que nunca es NULL en un cierre porque la sella con
--- NVL(..., 0). El NVL de aca es defensivo, no decorativo.
+-- el otro trigger garantiza que nunca es NULL en un cierre porque, si falta, la
+-- sella ahi mismo. El NVL de aca es defensivo, no decorativo.
 --------------------------------------------------------------------------------
 
 CREATE OR REPLACE TRIGGER TRG_INVENTARIOS_AU_EXISTENCIAS
@@ -359,7 +425,7 @@ CREATE OR REPLACE TRIGGER TRG_INVENTARIOS_AU_EXISTENCIAS
   WHEN (NEW.ESTADO = 'CERRADO' AND NVL(OLD.ESTADO, 'ABIERTO') = 'ABIERTO')
 DECLARE
   -- Lo que el conteo corrige: cuanto habia de mas o de menos en el estante
-  -- respecto de lo que el sistema creia en el instante del cierre.
+  -- respecto de lo que el sistema creia cuando se conto.
   l_ajuste NUMBER := NVL(:NEW.CANTIDAD_FISICA, 0) - NVL(:NEW.CANTIDAD_SISTEMA, 0);
 BEGIN
 
@@ -439,8 +505,9 @@ SELECT ESTADO, COUNT(*) AS CANTIDAD
  ORDER BY ESTADO;
 
 -- Conteos cerrados contra la existencia que dejaron. DIFERENCIA es lo que
--- corrigio cada uno. La existencia de un cerrado deberia coincidir con su
--- CANTIDAD_FISICA, salvo que un conteo posterior la haya vuelto a mover.
+-- corrigio cada uno. La existencia actual NO tiene por que coincidir con la
+-- CANTIDAD_FISICA: el ajuste respeta lo que se vendio y compro entre el conteo
+-- y el cierre, y despues siguio moviendose.
 SELECT i.ID_INVENTARIO,
        i.ID_SUCURSAL,
        i.ID_ARTICULO,

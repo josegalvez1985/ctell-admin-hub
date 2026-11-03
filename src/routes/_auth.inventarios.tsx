@@ -115,19 +115,23 @@ const ESTADOS: { valor: EstadoInventario; etiqueta: string }[] = [
 /**
  * Contra qué número se compara lo contado.
  *
- * **Son dos números distintos según el estado**, y confundirlos hace que la
- * columna Diferencia mienta:
+ * Contra `cantidadSistema`, **abierto o cerrado**: es lo que el sistema decía
+ * cuando se contó —el trigger lo sella cada vez que cambia lo contado— y es
+ * contra eso que el cierre ajusta. Usar la existencia actual en un abierto
+ * metería en la diferencia lo que se vendió desde que se contó.
  *
- * - Mientras está `ABIERTO`, contra `existenciaActual` — lo que el sistema dice
- *   ahora, que es lo que se está por corregir.
- * - Ya `CERRADO`, contra `cantidadSistema` — lo que el sistema decía cuando se
- *   aplicó el ajuste, sellado por el trigger. Usar la existencia actual daría
- *   cero siempre, porque el propio cierre las igualó.
+ * La excepción es un abierto **sin sello** (de antes de este cambio, o con un
+ * estante sin contar): va contra `existenciaActual`, que es lo que se va a
+ * sellar al cerrar.
+ *
+ * **Copiada en `_auth.inventarios-reporte.tsx` y `_auth.inventarios-cierre.tsx`,
+ * y en el `UNION ALL` de `PKG_DASHBOARD`. Si cambia acá, cambia en todos.**
  */
 function sistemaDe(inventario: Inventario): number {
-  return inventario.estado === "ABIERTO"
-    ? inventario.existenciaActual
-    : (inventario.cantidadSistema ?? 0);
+  return (
+    inventario.cantidadSistema ??
+    (inventario.estado === "ABIERTO" ? inventario.existenciaActual : 0)
+  );
 }
 
 /** `null` cuando todavía no se contó: no es cero, es que no hay dato. */
@@ -309,13 +313,9 @@ function InventariosPage() {
   const total = data?.pages[0]?.total ?? 0;
 
   /**
-   * NOTA PARA QUIEN IMPLEMENTE EL CIERRE, en la pantalla que corresponda:
-   * aplicar un conteo escribe `EXISTENCIAS`, así que hay que invalidar TODO lo
-   * que muestra stock —`["existencias"]`, `["articulos"]` y `["dashboard"]`—, no
-   * sólo `["inventarios"]`. Si no, los tres siguen mostrando el número viejo.
-   *
-   * Acá no hace falta: ninguna acción de esta pantalla mueve stock. Anular no
-   * toca la existencia y eliminar sólo borra un borrador.
+   * Acá no se llama a `invalidarStock`: ninguna acción de esta pantalla mueve
+   * stock. Anular no toca la existencia y eliminar sólo borra un borrador. El
+   * cierre, que sí la mueve, vive en `/inventarios-cierre` y la invalida ahí.
    */
 
   const anular = useMutation({
@@ -362,7 +362,7 @@ function InventariosPage() {
                 pantalla que lo explique. */}
             <p className="mt-1 text-sm text-muted-foreground">
               {sucursal
-                ? `Lo que hay realmente en ${sucursal.nombreSucursal}. Al cerrar un conteo, su cantidad pasa a ser la existencia.`
+                ? `Lo que hay realmente en ${sucursal.nombreSucursal}. Los conteos se aplican a la existencia desde Cierre de inventarios.`
                 : "Lo que hay realmente en la sucursal activa."}
             </p>
           </div>
@@ -588,8 +588,8 @@ function InventariosPage() {
                           conteo al stock y no se deshace: no va como un ícono
                           más de una fila de listado, al lado de editar y borrar,
                           donde se toca de paso. Anular sí, porque no mueve nada.
-                          El endpoint existe (`POST /inventarios/cerrar/:id`) y lo
-                          va a usar la pantalla que se haga para eso. */}
+                          Se cierra en /inventarios-cierre, una página aparte
+                          que además se puede habilitar sólo a quien corresponda. */}
                       <div className="flex justify-end gap-1">
                         {inv.estado === "ABIERTO" ? (
                           <>

@@ -139,24 +139,23 @@ const DIFERENCIAS = [
 /**
  * Contra qué número se compara lo contado.
  *
- * **ESTA FUNCIÓN ESTÁ DUPLICADA a propósito** en `_auth.inventarios.tsx`, y su
- * criterio vive también en el `UNION ALL` de `PKG_DASHBOARD`. Son dos números
- * distintos según el estado, y confundirlos hace que la columna Diferencia
- * mienta:
+ * **ESTA FUNCIÓN ESTÁ DUPLICADA a propósito** en `_auth.inventarios.tsx` y
+ * `_auth.inventarios-cierre.tsx`, y su criterio vive también en el `UNION ALL`
+ * de `PKG_DASHBOARD`.
  *
- * - Mientras está `ABIERTO`, contra `existenciaActual` — lo que el sistema dice
- *   ahora, que es lo que se está por corregir. `cantidadSistema` es `NULL` hasta
- *   el cierre, y restar 0 mostraría lo contado como si fuera todo diferencia.
- * - Ya `CERRADO`, contra `cantidadSistema` — lo que el sistema decía cuando se
- *   aplicó el ajuste, sellado por el trigger. Usar la existencia actual daría
- *   cero siempre, porque el propio cierre las igualó.
+ * Contra `cantidadSistema`, abierto o cerrado: lo que el sistema decía cuando
+ * se contó, que el trigger sella y contra lo que el cierre ajusta. Un abierto
+ * **sin sello** (viejo, o con un estante sin contar) va contra
+ * `existenciaActual`, que es lo que se sellará al cerrar: restar 0 mostraría lo
+ * contado como si fuera todo diferencia.
  *
- * **Si cambia acá, cambia en los otros dos lugares.**
+ * **Si cambia acá, cambia en los otros lugares.**
  */
 function sistemaDe(inventario: Inventario): number {
-  return inventario.estado === "ABIERTO"
-    ? inventario.existenciaActual
-    : (inventario.cantidadSistema ?? 0);
+  return (
+    inventario.cantidadSistema ??
+    (inventario.estado === "ABIERTO" ? inventario.existenciaActual : 0)
+  );
 }
 
 /** `null` cuando todavía no se contó: no es cero, es que no hay dato. */

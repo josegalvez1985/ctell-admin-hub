@@ -94,6 +94,15 @@ const SINONIMOS = [
     "inventarios reporte",
     "diferencias de inventario",
   ],
+  // El CIERRE, su propio grupo: aplica el conteo al stock y no se deshace, que
+  // no es lo mismo que cargarlo ni que consultarlo.
+  [
+    "cierre de inventarios",
+    "cierre de inventario",
+    "cerrar inventarios",
+    "inventarios cierre",
+    "cierre de conteos",
+  ],
   [
     "reporte de ubicaciones",
     "reporte de articulos por ubicacion",

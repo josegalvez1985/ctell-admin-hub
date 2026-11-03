@@ -63,7 +63,7 @@ Si buscás cómo agregar una tabla o una pantalla nueva, eso está en
 | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------- |
 | [Ventas](#módulo-ventas)                     | —                                                                                                                    | Punto de venta · Ventas · Cobros                                          | —                                                             |
 | [Compras](#módulo-compras)                   | —                                                                                                                    | Facturas de compras · Pagos                                               | —                                                             |
-| [Stock](#módulo-stock)                       | Artículos · Ubicaciones de artículos · Ubicaciones                                                                   | Inventarios                                                               | Existencias · Reporte de inventarios · Reporte de ubicaciones |
+| [Stock](#módulo-stock)                       | Artículos · Ubicaciones de artículos · Ubicaciones                                                                   | Inventarios · Cierre de inventarios                                       | Existencias · Reporte de inventarios · Reporte de ubicaciones |
 | [Tesorería](#módulo-tesorería)               | Bancos · Cuentas bancarias · Canales de pago · Condiciones de pago · Monedas · Listas de descuentos                  | —                                                                         | —                                                             |
 | [Recursos humanos](#módulo-recursos-humanos) | Profesores · Instituciones · Manuales                                                                                | Reportes de actividades · Justificaciones de ausencia · Ficha de traspaso | Asistencias                                                   |
 | [Base](#módulo-base)                         | Empresas · Sucursales · Personas · Categorías · Marcas · Unidades · IVA · Talonarios · Países · Códigos equivalentes | —                                                                         | —                                                             |
@@ -231,14 +231,10 @@ la factura, se registra el pago y queda el historial.
 
 Qué hay en cada depósito, y el conteo físico que lo corrige.
 
-> ### ⚠️ El stock está en transición
->
-> Hoy **ninguna venta ni compra mueve el stock**: vender no descuenta, comprar no
-> ingresa, y borrar una venta no repone nada. El único que escribe las
-> existencias es el **cierre de un conteo físico**.
->
-> Es un estado intermedio, conocido y en curso de resolución. Mientras tanto, la
-> cantidad confiable es la del último conteo.
+> **Cómo se mueve la existencia.** Hay **una sola cantidad por artículo y
+> sucursal**. Vender la descuenta, comprar la suma, y borrar una venta o una
+> compra lo revierte. El **cierre de un conteo físico** la corrige contra lo que
+> se encontró en los estantes.
 
 ## Definiciones
 
@@ -335,15 +331,57 @@ contado es **la suma** de todas, y es lo que se compara con el sistema.
 
 > **Desde esta pantalla no se cierra un conteo, y es a propósito.** Contar y
 > aplicar son dos actos distintos: el conteo se corrige las veces que haga falta,
-> pero **aplicarlo cambia el stock y no se deshace**. Una acción así no va como
-> un ícono más en la fila, al lado de editar y borrar, donde se toca de paso.
-> Anular sí está, porque no toca el stock.
+> pero **aplicarlo cambia el stock y no se deshace**. Se cierra desde
+> [Cierre de inventarios](#cierre-de-inventarios). Anular sí está acá, porque no
+> toca el stock.
 
 **Eliminar y anular no son lo mismo:**
 
 - **Eliminar** es para el borrador que se cargó por error.
 - **Anular** es para el conteo que se hizo de verdad y se decide no aplicar. Deja
   la constancia de que alguien fue al depósito.
+
+> **Cargá el conteo parado frente al estante**, desde el celular. Al guardar las
+> cantidades, el sistema anota cuánto decía la existencia en ese momento, y el
+> cierre ajusta contra ese número. Si se anota en papel y se carga horas
+> después, lo que se vendió en el medio queda mezclado en la diferencia.
+
+### Cierre de inventarios
+
+`/inventarios-cierre` — aplica los conteos abiertos de la sucursal activa a su
+existencia.
+
+**Cómo se usa.** La pantalla muestra los conteos abiertos. Se tildan los que se
+quieren aplicar (o todos los visibles, con el tilde del encabezado) y se toca
+**Cerrar**. Antes de aplicar, una confirmación repite cuántos son y cuántas
+unidades entran y salen. **No se puede deshacer**: para corregir un conteo
+cerrado hay que cargar otro.
+
+**Las columnas:**
+
+| Columna               | Qué es                                                                |
+| --------------------- | --------------------------------------------------------------------- |
+| **Contado**           | La suma de lo contado en todas las ubicaciones                        |
+| **Sistema al contar** | Lo que decía la existencia cuando se guardó el conteo                 |
+| **Diferencia**        | Contado menos sistema: lo que el cierre va a sumar o restar           |
+| **Queda en**          | La existencia de ahora más la diferencia: lo que va a decir al cerrar |
+
+> **"Queda en" no siempre es igual a lo contado, y está bien.** Si desde que se
+> contó se vendieron 3 unidades, el cierre las respeta: se aplica la diferencia
+> que encontró el conteo, no se pisa la existencia con el número contado. La
+> fila lo avisa debajo ("−3 desde el conteo").
+
+**Filtros:** Listos (los que se pueden cerrar), Listos con diferencia,
+Incompletos y Todos, más el buscador.
+
+- **Un conteo incompleto no se puede tildar.** Es uno sin ubicación cargada o con
+  algún estante en blanco. Se completa en [Inventarios](#inventarios) y vuelve
+  a aparecer como listo.
+- **Si alguno no se pudo cerrar** —por ejemplo, porque otra persona lo anuló
+  mientras tanto—, los demás se cierran igual y un aviso dice cuántos quedaron
+  sin cerrar. Esos siguen en la lista.
+- **Es una página aparte para poder darle acceso sólo a quien corresponda**
+  desde Permisos: quien cuenta no tiene por qué ser quien aplica.
 
 ## Reportes
 

@@ -343,15 +343,12 @@ const MODULOS: Modulo[] = [
         buscable: "existencia cantidad deposito consultar exportar excel pdf",
         ficha: (
           <>
-            <Atencion titulo="El stock está en transición">
-              Hoy <strong>ninguna venta ni compra mueve el stock</strong>: vender no descuenta,
-              comprar no ingresa, y borrar una venta no repone nada. El único que escribe las
-              existencias es el <strong>cierre de un conteo físico</strong>.
-              <br />
-              <br />
-              Es un estado intermedio, conocido y en curso de resolución. Mientras tanto, la
-              cantidad confiable es la del último conteo.
-            </Atencion>
+            <Aviso titulo="Cómo se mueve la existencia">
+              Hay <strong>una sola cantidad por artículo y sucursal</strong>. Vender la descuenta,
+              comprar la suma, y borrar una venta o una compra lo revierte. El{" "}
+              <strong>cierre de un conteo físico</strong> la corrige contra lo que se encontró en
+              los estantes.
+            </Aviso>
             <H>Cómo se usa</H>
             <P>
               Es una <strong>consulta</strong>: no se da de alta ni se edita nada. Se exporta a
@@ -434,9 +431,9 @@ const MODULOS: Modulo[] = [
             </Table>
             <Aviso titulo="Desde esta pantalla no se cierra un conteo, y es a propósito">
               Contar y aplicar son dos actos distintos: el conteo se corrige las veces que haga
-              falta, pero <strong>aplicarlo cambia el stock y no se deshace</strong>. Una acción así
-              no va como un ícono más en la fila, al lado de editar y borrar, donde se toca de paso.
-              Anular sí está, porque no toca el stock.
+              falta, pero <strong>aplicarlo cambia el stock y no se deshace</strong>. Se cierra
+              desde <strong>Cierre de inventarios</strong>. Anular sí está acá, porque no toca el
+              stock.
             </Aviso>
             <H>Eliminar y anular no son lo mismo</H>
             <Lista>
@@ -446,6 +443,65 @@ const MODULOS: Modulo[] = [
               <li>
                 <strong>Anular</strong> es para el conteo que se hizo de verdad y se decide no
                 aplicar. Deja la constancia de que alguien fue al depósito.
+              </li>
+            </Lista>
+            <Aviso titulo="Cargá el conteo parado frente al estante">
+              Al guardar las cantidades, el sistema anota cuánto decía la existencia en ese momento,
+              y el cierre ajusta contra ese número. Si se anota en papel y se carga horas después,
+              lo que se vendió en el medio queda mezclado en la diferencia.
+            </Aviso>
+          </>
+        ),
+      },
+      {
+        nombre: "Cierre de inventarios",
+        entrada: "O",
+        ruta: "/inventarios-cierre",
+        resumen: "Aplica los conteos abiertos de la sucursal activa a su existencia.",
+        buscable: "cerrar cierre aplicar conteo ajustar existencia diferencia queda sello",
+        ficha: (
+          <>
+            <H>Cómo se usa</H>
+            <P>
+              Se tildan los conteos que se quieren aplicar —o todos los visibles, con el tilde del
+              encabezado— y se toca <strong>Cerrar</strong>. Antes de aplicar, una confirmación
+              repite cuántos son y cuántas unidades entran y salen.{" "}
+              <strong>No se puede deshacer</strong>: para corregir un conteo cerrado hay que cargar
+              otro.
+            </P>
+            <H>Las columnas</H>
+            <Lista>
+              <li>
+                <strong>Contado</strong>: la suma de lo contado en todas las ubicaciones.
+              </li>
+              <li>
+                <strong>Sistema al contar</strong>: lo que decía la existencia cuando se guardó el
+                conteo.
+              </li>
+              <li>
+                <strong>Diferencia</strong>: lo que el cierre va a sumar o restar.
+              </li>
+              <li>
+                <strong>Queda en</strong>: la existencia de ahora más la diferencia.
+              </li>
+            </Lista>
+            <Aviso titulo={'"Queda en" no siempre es igual a lo contado, y está bien'}>
+              Si desde que se contó se vendieron 3 unidades, el cierre las respeta: aplica la
+              diferencia que encontró el conteo, no pisa la existencia con el número contado. La
+              fila lo avisa debajo.
+            </Aviso>
+            <Lista>
+              <li>
+                <strong>Un conteo incompleto no se puede tildar</strong>: le falta la ubicación o
+                tiene un estante en blanco. Se completa en Inventarios.
+              </li>
+              <li>
+                <strong>Si alguno no se pudo cerrar</strong>, los demás se cierran igual y un aviso
+                dice cuántos quedaron. Esos siguen en la lista.
+              </li>
+              <li>
+                Es una página aparte para poder darle acceso{" "}
+                <strong>sólo a quien corresponda</strong> desde Permisos.
               </li>
             </Lista>
           </>

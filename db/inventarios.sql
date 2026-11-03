@@ -13,6 +13,7 @@
 --   5. CERRAR      POST   /inventarios/cerrar/:id
 --   6. ANULAR      POST   /inventarios/anular/:id
 --   7. ELIMINAR    DELETE /inventarios/eliminar/:id/:idEmpresa
+--   8. CERRAR_VARIOS POST /inventarios/cerrar-varios     (hasta 50 por llamada)
 --
 --------------------------------------------------------------------------------
 -- EL CONTEO SE CARGA POR UBICACION, Y ES OBLIGATORIO
@@ -61,8 +62,21 @@
 --   POST   /crear        ──> ABIERTO
 --   PUT    /actualizar   ──> sigue ABIERTO   (cantidad, fecha, observaciones)
 --   POST   /cerrar       ──> CERRADO         escribe EXISTENCIAS
+--   POST   /cerrar-varios──> CERRADO         lo mismo, de a muchos
 --   POST   /anular       ──> ANULADO         descarta, no toca nada
 --   DELETE /eliminar     ──> solo si ABIERTO
+--
+-- CERRAR-VARIOS NO ES OTRA REGLA: los dos endpoints llaman al mismo privado,
+-- CERRAR_UNO, que es el que decide. Existe porque un recuento de deposito son
+-- doscientos articulos, y doscientas llamadas desde el navegador tardan un
+-- minuto y se cortan a la mitad si se cae la conexion.
+--
+-- CADA CONTEO SE CIERRA EN SU PROPIA TRANSACCION, con su COMMIT. Uno que falla
+-- (lo anularon mientras tanto, le quedo un estante sin contar) no arrastra a
+-- los demas: son conteos de articulos distintos y aplicar uno no depende de
+-- otro. Y el commit por conteo suelta enseguida el bloqueo sobre la fila de
+-- EXISTENCIAS, que es la misma que la caja necesita para vender: una sola
+-- transaccion de cincuenta cierres la tendria esperando hasta el final.
 --
 -- CERRAR NO ES UN /actualizar CON EL ESTADO ADENTRO, y por eso tiene endpoint
 -- propio. Contar y aplicar son dos actos distintos: el primero se corrige
@@ -87,19 +101,25 @@
 --------------------------------------------------------------------------------
 -- CANTIDAD_SISTEMA NO LA ESCRIBE ESTE PAQUETE
 --
--- La sella el trigger EN EL CIERRE, con lo que EXISTENCIAS decia un instante
--- antes de pisarla. Mientras el conteo esta ABIERTO la columna es NULL, y eso
--- es correcto: todavia no hay ajuste que explicar.
+-- La sella el trigger CUANDO SE CUENTA: cada vez que CANTIDAD_FISICA cambia
+-- —que es cuando RECALCULAR_CANTIDAD escribe una suma distinta— toma lo que
+-- EXISTENCIAS dice en ese momento. NULL mientras quede un estante sin contar.
+-- Ver db/inventarios-triggers-ddl.sql: sellarla en el cierre, como antes,
+-- hacia que un cierre tardio borrara las ventas del medio.
 --
--- Para que la pantalla pueda mostrar "el sistema dice 12" mientras se cuenta,
--- el listado y el obtener devuelven ADEMAS `existenciaActual`, leida en vivo de
+-- El listado y el obtener devuelven ADEMAS `existenciaActual`, leida en vivo de
 -- EXISTENCIAS. Son dos numeros distintos a proposito:
 --
---   existenciaActual  lo que hay AHORA          (cambia solo, es una consulta)
---   cantidadSistema   lo que habia AL CERRAR    (congelado, es evidencia)
+--   existenciaActual  lo que hay AHORA             (cambia solo, es una consulta)
+--   cantidadSistema   lo que habia CUANDO SE CONTO (sellado, es contra lo que
+--                                                   se calcula el ajuste)
 --
--- La diferencia de un conteo cerrado se calcula contra cantidadSistema. Contra
--- existenciaActual daria cero siempre, porque el cierre acaba de igualarlas.
+-- La diferencia de un conteo —abierto o cerrado— es contra cantidadSistema.
+-- Mientras esta abierto, la resta existenciaActual - cantidadSistema es lo que
+-- se vendio y compro desde que se conto, y la existencia que va a quedar es
+-- existenciaActual + diferencia. Un conteo abierto sin sello (de antes de este
+-- cambio) se compara contra existenciaActual, que es contra lo que se va a
+-- sellar en el cierre.
 --
 --------------------------------------------------------------------------------
 -- OBSERVACIONES NO VIENE ENTERA EN EL LISTADO, Y POR ESO EXISTE /obtener
@@ -248,6 +268,20 @@ CREATE OR REPLACE PACKAGE PKG_INVENTARIOS AS
     p_resultado     OUT CLOB
   );
 
+  -- Cierra varios conteos, cada uno en su propia transaccion: el que falla no
+  -- frena a los demas. p_ids es un array JSON de ids, hasta 50.
+  --
+  -- Devuelve 200 aunque alguno no se haya podido cerrar: cuantos se cerraron,
+  -- los ids rechazados y el motivo del primero. No el motivo de cada uno — con
+  -- cincuenta mensajes la respuesta pasa el techo de 4000 bytes del bind.
+  PROCEDURE CERRAR_VARIOS (
+    p_authorization IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
+    p_ids           IN  CLOB,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
+  );
+
   -- Descarta el conteo. No toca EXISTENCIAS y no deja de ser evidencia de que
   -- alguien fue a contar: por eso se anula en vez de borrarse.
   PROCEDURE ANULAR (
@@ -269,7 +303,7 @@ CREATE OR REPLACE PACKAGE PKG_INVENTARIOS AS
     p_resultado     OUT CLOB
   );
 
-  -- Borra y republica el modulo ORDS /inventarios/ con sus 7 endpoints.
+  -- Borra y republica el modulo ORDS /inventarios/ con sus 8 endpoints.
   PROCEDURE PUBLICAR_ENDPOINTS;
 
 END PKG_INVENTARIOS;
@@ -291,6 +325,11 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
   -- deposito no es un caso real, y sin limite un array enorme convierte un alta
   -- en un proceso largo con el conteo bloqueado.
   C_MAX_UBICACIONES CONSTANT PLS_INTEGER := 50;
+
+  -- Techo de conteos por llamada a CERRAR_VARIOS. Lo que lo fija es la
+  -- respuesta: los ids rechazados viajan en el bind de 4000 bytes, y con 50 no
+  -- hay forma de pasarlo. La pantalla manda de a tandas.
+  C_MAX_CIERRE CONSTANT PLS_INTEGER := 50;
 
   ------------------------------------------------------------------------------
   -- Privado: borra el modulo ORDS si existe, reintentando ante un interbloqueo.
@@ -802,12 +841,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
                  -- techo del bind de ORDS. Cero es un conteo anterior a la
                  -- carga por ubicacion.
                  'cantidadUbicaciones' VALUE NVL(cu.LINEAS, 0),
-                 -- Lo que decia el sistema AL CERRAR. NULL en los abiertos: no
-                 -- hay ajuste que explicar hasta que se aplique.
+                 -- Lo que decia el sistema CUANDO SE CONTO, sellado por el
+                 -- trigger. NULL mientras quede un estante sin contar. Es contra
+                 -- esto que se calcula el ajuste, abierto o cerrado.
                  'cantidadSistema' VALUE i.CANTIDAD_SISTEMA,
-                 -- Lo que dice EXISTENCIAS AHORA, leido en vivo. Es contra esto
-                 -- que se compara mientras se cuenta, y contra cantidadSistema
-                 -- despues de cerrar. Ver el encabezado del archivo.
+                 -- Lo que dice EXISTENCIAS AHORA, leido en vivo. En un abierto,
+                 -- la resta contra cantidadSistema es lo que se movio desde que
+                 -- se conto. Ver el encabezado del archivo.
                  'existenciaActual' VALUE NVL(e.CANTIDAD_DISPONIBLE, 0),
                  'estado'         VALUE NVL(UPPER(TRIM(i.ESTADO)), 'ABIERTO'),
                  'fechaInventario' VALUE TO_CHAR(i.FECHA_INVENTARIO,
@@ -1270,12 +1310,91 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
   END ACTUALIZAR;
 
   ------------------------------------------------------------------------------
-  -- CERRAR
+  -- Privado: cierra UN conteo. Lo llaman CERRAR y CERRAR_VARIOS, y es el unico
+  -- lugar donde estan las reglas del cierre desde la API.
   --
   -- El UPDATE toca UNA sola columna. Todo lo demas —validar que haya cantidad,
-  -- sellar CANTIDAD_SISTEMA con lo que EXISTENCIAS decia, y escribir la
-  -- existencia nueva— lo hacen los triggers. Repetirlo aca daria dos versiones
-  -- de la misma regla que se desincronizan a la primera correccion.
+  -- conservar el CANTIDAD_SISTEMA sellado al contar, y escribir la existencia
+  -- nueva— lo hacen los triggers. Repetirlo aca daria dos versiones de la misma
+  -- regla que se desincronizan a la primera correccion.
+  --
+  -- NO hace COMMIT ni ROLLBACK: cada llamador decide. Los errores de negocio
+  -- que se detectan antes vuelven en p_error con su p_status_code; los de los
+  -- triggers se dejan PROPAGAR, que el llamador los traduce con
+  -- ERROR_DE_NEGOCIO.
+  ------------------------------------------------------------------------------
+  PROCEDURE CERRAR_UNO (
+    p_id          IN  NUMBER,
+    p_empresa     IN  NUMBER,
+    p_status_code OUT NUMBER,
+    p_error       OUT VARCHAR2,
+    p_sistema     OUT NUMBER,
+    p_fisica      OUT NUMBER
+  ) IS
+    l_estado   VARCHAR2(20);
+    l_cantidad NUMBER;
+    l_existe   BOOLEAN;
+    l_lineas   NUMBER;
+  BEGIN
+    p_error := NULL;
+
+    LEER_PARA_MODIFICAR(p_id, p_empresa, l_estado, l_cantidad, l_existe);
+
+    IF NOT l_existe THEN
+      p_status_code := 404;
+      p_error := 'El inventario no existe';
+      RETURN;
+    END IF;
+
+    IF l_estado != 'ABIERTO' THEN
+      p_status_code := 409;
+      p_error := 'El conteo ya esta ' || l_estado || ' y no se puede volver a cerrar';
+      RETURN;
+    END IF;
+
+    -- SIN UBICACIONES NO SE CIERRA. Es el caso de los conteos cargados antes de
+    -- la carga por ubicacion: tienen numero pero no donde se lo encontro.
+    SELECT COUNT(*) INTO l_lineas FROM INVENTARIOS_UBICACIONES WHERE ID_INVENTARIO = p_id;
+
+    IF l_lineas = 0 THEN
+      p_status_code := 400;
+      p_error := 'Antes de cerrar, carga en que ubicaciones se conto el articulo';
+      RETURN;
+    END IF;
+
+    -- LA SUMA SE VUELVE A CALCULAR ACA, justo antes de aplicarla. El trigger
+    -- del cierre ajusta con CANTIDAD_FISICA, y si alguien toco una linea a mano
+    -- desde el ultimo guardado, lo que se aplica tiene que ser lo que dicen las
+    -- lineas, no lo que quedo escrito. Si la suma no cambio, el trigger
+    -- conserva el sello del conteo; si cambio, lo vuelve a tomar.
+    RECALCULAR_CANTIDAD(p_id);
+
+    SELECT CANTIDAD_FISICA INTO p_fisica FROM INVENTARIOS WHERE ID_INVENTARIO = p_id;
+
+    IF p_fisica IS NULL THEN
+      p_status_code := 400;
+      p_error := 'No se puede cerrar con ubicaciones sin contar: carga la cantidad de cada una, aunque sea 0';
+      RETURN;
+    END IF;
+
+    UPDATE INVENTARIOS
+       SET ESTADO = 'CERRADO'
+     WHERE ID_INVENTARIO = p_id
+       AND ID_EMPRESA    = p_empresa;
+
+    -- El sello, releido DESPUES del UPDATE: es contra este numero que el
+    -- trigger calculo el ajuste, y sirve para que la pantalla confirme cuanto se
+    -- corrigio sin volver a pedir el listado entero.
+    SELECT CANTIDAD_SISTEMA
+      INTO p_sistema
+      FROM INVENTARIOS
+     WHERE ID_INVENTARIO = p_id;
+
+    p_status_code := 200;
+  END CERRAR_UNO;
+
+  ------------------------------------------------------------------------------
+  -- CERRAR
   ------------------------------------------------------------------------------
   PROCEDURE CERRAR (
     p_authorization IN  VARCHAR2,
@@ -1287,11 +1406,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
     l_sesion   NUMBER;
     l_id       NUMBER;
     l_empresa  NUMBER;
-    l_estado   VARCHAR2(20);
     l_cantidad NUMBER;
-    l_existe   BOOLEAN;
     l_sistema  NUMBER;
-    l_lineas   NUMBER;
+    l_error    VARCHAR2(4000);
   BEGIN
     l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
     IF l_sesion IS NULL THEN
@@ -1309,60 +1426,14 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
       RETURN;
     END IF;
 
-    LEER_PARA_MODIFICAR(l_id, l_empresa, l_estado, l_cantidad, l_existe);
+    CERRAR_UNO(l_id, l_empresa, p_status_code, l_error, l_sistema, l_cantidad);
 
-    IF NOT l_existe THEN
+    IF l_error IS NOT NULL THEN
+      -- Suelta el bloqueo que tomo LEER_PARA_MODIFICAR.
       ROLLBACK;
-      p_status_code := 404;
-      p_resultado := '{"error":"El inventario no existe"}';
+      SELECT JSON_OBJECT('error' VALUE l_error RETURNING CLOB) INTO p_resultado FROM DUAL;
       RETURN;
     END IF;
-
-    IF l_estado != 'ABIERTO' THEN
-      ROLLBACK;
-      p_status_code := 409;
-      p_resultado := '{"error":"El conteo ya esta ' || l_estado || ' y no se puede volver a cerrar"}';
-      RETURN;
-    END IF;
-
-    -- SIN UBICACIONES NO SE CIERRA. Es el caso de los conteos cargados antes de
-    -- la carga por ubicacion: tienen numero pero no donde se lo encontro.
-    SELECT COUNT(*) INTO l_lineas FROM INVENTARIOS_UBICACIONES WHERE ID_INVENTARIO = l_id;
-
-    IF l_lineas = 0 THEN
-      ROLLBACK;
-      p_status_code := 400;
-      p_resultado := '{"error":"Antes de cerrar, carga en que ubicaciones se conto el articulo"}';
-      RETURN;
-    END IF;
-
-    -- LA SUMA SE VUELVE A CALCULAR ACA, justo antes de aplicarla. El trigger
-    -- del cierre ajusta con CANTIDAD_FISICA, y si alguien toco una linea a mano
-    -- desde el ultimo guardado, lo que se aplica tiene que ser lo que dicen las
-    -- lineas, no lo que quedo escrito.
-    RECALCULAR_CANTIDAD(l_id);
-
-    SELECT CANTIDAD_FISICA INTO l_cantidad FROM INVENTARIOS WHERE ID_INVENTARIO = l_id;
-
-    IF l_cantidad IS NULL THEN
-      ROLLBACK;
-      p_status_code := 400;
-      p_resultado := '{"error":"No se puede cerrar con ubicaciones sin contar: carga la cantidad de cada una, aunque sea 0"}';
-      RETURN;
-    END IF;
-
-    UPDATE INVENTARIOS
-       SET ESTADO = 'CERRADO'
-     WHERE ID_INVENTARIO = l_id
-       AND ID_EMPRESA    = l_empresa;
-
-    -- Lo que el trigger sello, releido DESPUES del UPDATE. Es lo que decia el
-    -- sistema antes del ajuste, y sirve para que la pantalla confirme cuanto se
-    -- corrigio sin volver a pedir el listado entero.
-    SELECT CANTIDAD_SISTEMA
-      INTO l_sistema
-      FROM INVENTARIOS
-     WHERE ID_INVENTARIO = l_id;
 
     COMMIT;
     p_status_code := 200;
@@ -1392,6 +1463,148 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
         END IF;
       END;
   END CERRAR;
+
+  ------------------------------------------------------------------------------
+  -- CERRAR_VARIOS
+  --
+  -- Un COMMIT POR CONTEO, a proposito: ver el encabezado. Lo que se cerro queda
+  -- cerrado aunque el siguiente falle, y la respuesta dice cuales no.
+  --
+  -- p_ids llega como el texto JSON del array —ORDS bindea asi un valor que no
+  -- es escalar, igual que las `ubicaciones` del alta— y se lee con JSON_TABLE.
+  -- Los ids repetidos se descartan: cerrar dos veces el mismo conteo daria un
+  -- 409 falso sobre algo que si se cerro.
+  ------------------------------------------------------------------------------
+  PROCEDURE CERRAR_VARIOS (
+    p_authorization IN  VARCHAR2,
+    p_id_empresa    IN  VARCHAR2,
+    p_ids           IN  CLOB,
+    p_status_code   OUT NUMBER,
+    p_resultado     OUT CLOB
+  ) IS
+    TYPE t_ids IS TABLE OF NUMBER;
+
+    l_sesion       NUMBER;
+    l_empresa      NUMBER;
+    l_ids          t_ids;
+    l_status       NUMBER;
+    l_error        VARCHAR2(4000);
+    l_sistema      NUMBER;
+    l_fisica       NUMBER;
+    l_cerrados     PLS_INTEGER := 0;
+    -- Lista separada por comas de los ids que no se cerraron. Con 50 ids como
+    -- techo no llega ni a 600 caracteres.
+    l_rechazados   VARCHAR2(4000);
+    l_primer_error VARCHAR2(4000);
+    -- Suma neta de lo que se ajusto, en unidades: lo que la pantalla confirma.
+    l_neto         NUMBER := 0;
+  BEGIN
+    l_sesion := PKG_AUTH.VALIDAR_TOKEN(PKG_AUTH.TOKEN_DE_HEADER(p_authorization));
+    IF l_sesion IS NULL THEN
+      p_status_code := 401;
+      p_resultado := '{"error":"Sesion invalida o vencida"}';
+      RETURN;
+    END IF;
+
+    l_empresa := TO_NUMBER(NULLIF(p_id_empresa, ''));
+
+    IF l_empresa IS NULL THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"idEmpresa es obligatorio"}';
+      RETURN;
+    END IF;
+
+    BEGIN
+      SELECT DISTINCT d.id
+        BULK COLLECT INTO l_ids
+        FROM JSON_TABLE(
+               p_ids, '$[*]' ERROR ON ERROR
+               COLUMNS (id NUMBER PATH '$' ERROR ON ERROR)
+             ) d
+       WHERE d.id IS NOT NULL;
+    EXCEPTION
+      WHEN OTHERS THEN
+        IF SQLCODE BETWEEN -40999 AND -40400 OR SQLCODE IN (-1722, -6502) THEN
+          p_status_code := 400;
+          p_resultado := '{"error":"ids tiene que ser un array de numeros"}';
+          RETURN;
+        END IF;
+        RAISE;
+    END;
+
+    IF l_ids.COUNT = 0 THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"Elegi al menos un conteo para cerrar"}';
+      RETURN;
+    END IF;
+
+    IF l_ids.COUNT > C_MAX_CIERRE THEN
+      p_status_code := 400;
+      p_resultado := '{"error":"Se pueden cerrar hasta ' || C_MAX_CIERRE || ' conteos por llamada"}';
+      RETURN;
+    END IF;
+
+    FOR i IN 1 .. l_ids.COUNT LOOP
+      -- SE LIMPIA EN CADA VUELTA: si CERRAR_UNO lanza, sus parametros OUT no se
+      -- copian, y l_error conservaria el mensaje del conteo anterior.
+      l_error := NULL;
+
+      BEGIN
+        CERRAR_UNO(l_ids(i), l_empresa, l_status, l_error, l_sistema, l_fisica);
+
+        IF l_error IS NULL THEN
+          COMMIT;
+          l_cerrados := l_cerrados + 1;
+          l_neto     := l_neto + (l_fisica - NVL(l_sistema, 0));
+        ELSE
+          ROLLBACK;
+        END IF;
+      EXCEPTION
+        WHEN OTHERS THEN
+          ROLLBACK;
+          DECLARE
+            l_codigo  PLS_INTEGER    := SQLCODE;
+            l_mensaje VARCHAR2(4000) := SQLERRM;
+            l_http    NUMBER;
+            l_json    CLOB;
+          BEGIN
+            IF ERROR_DE_NEGOCIO(l_codigo, l_mensaje, l_http, l_json) THEN
+              SELECT JSON_VALUE(l_json, '$.error') INTO l_error FROM DUAL;
+            ELSE
+              APEX_DEBUG.ERROR('PKG_INVENTARIOS.CERRAR_VARIOS: id ' || l_ids(i) || ' [' ||
+                               l_codigo || '] ' || l_mensaje || ' | ' ||
+                               DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
+              l_error := 'Error inesperado al cerrar el conteo ' || l_ids(i);
+            END IF;
+          END;
+      END;
+
+      IF l_error IS NOT NULL THEN
+        l_rechazados   := l_rechazados || CASE WHEN l_rechazados IS NOT NULL THEN ',' END ||
+                          TO_CHAR(l_ids(i));
+        l_primer_error := NVL(l_primer_error, l_error);
+      END IF;
+    END LOOP;
+
+    p_status_code := 200;
+    SELECT JSON_OBJECT(
+             'cerrados'     VALUE l_cerrados,
+             -- '[' || NULL || ']' da '[]': sin rechazados sale un array vacio.
+             'rechazados'   VALUE '[' || l_rechazados || ']' FORMAT JSON,
+             'primerError'  VALUE l_primer_error,
+             'netoUnidades' VALUE l_neto
+             RETURNING CLOB
+           )
+      INTO p_resultado
+      FROM DUAL;
+  EXCEPTION
+    WHEN OTHERS THEN
+      ROLLBACK;
+      p_status_code := 500;
+      APEX_DEBUG.ERROR('PKG_INVENTARIOS.CERRAR_VARIOS: [' || SQLCODE || '] ' || SQLERRM || ' | ' ||
+                       DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
+      p_resultado := '{"error":"Error al cerrar los inventarios"}';
+  END CERRAR_VARIOS;
 
   ------------------------------------------------------------------------------
   -- ANULAR
@@ -1562,7 +1775,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
   END ELIMINAR;
 
   ------------------------------------------------------------------------------
-  -- Publica el modulo ORDS /inventarios/ con sus 7 endpoints.
+  -- Publica el modulo ORDS /inventarios/ con sus 8 endpoints.
   --
   -- Cada handler es una sola linea: invoca al procedimiento del paquete pasando
   -- los binds de ORDS como argumentos. Nada de PL/SQL embebido.
@@ -1757,6 +1970,39 @@ CREATE OR REPLACE PACKAGE BODY PKG_INVENTARIOS AS
       p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
 
     ----------------------------------------------------------------------------
+    -- POST /inventarios/cerrar-varios
+    -- Body: { idEmpresa, ids: [12, 15, 18] }   (hasta 50)
+    --
+    -- `ids` llega como array y ORDS lo bindea con su texto JSON, igual que las
+    -- `ubicaciones` del alta. No choca con 'cerrar/:id': son patrones
+    -- distintos, y "cerrar-varios" no tiene la barra que ese espera.
+    ----------------------------------------------------------------------------
+    ORDS.DEFINE_TEMPLATE(p_module_name => 'inventarios', p_pattern => 'cerrar-varios');
+
+    ORDS.DEFINE_HANDLER(
+      p_module_name => 'inventarios',
+      p_pattern     => 'cerrar-varios',
+      p_method      => 'POST',
+      p_source_type => ORDS.source_type_plsql,
+      p_source      => 'BEGIN PKG_INVENTARIOS.CERRAR_VARIOS(:authorization, :idEmpresa, :ids, :status_code, :resultado); END;'
+    );
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'inventarios', p_pattern => 'cerrar-varios', p_method => 'POST',
+      p_name => 'authorization', p_bind_variable_name => 'authorization',
+      p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN');
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'inventarios', p_pattern => 'cerrar-varios', p_method => 'POST',
+      p_name => 'resultado', p_bind_variable_name => 'resultado',
+      p_source_type => 'RESPONSE', p_param_type => 'STRING', p_access_method => 'OUT');
+
+    ORDS.DEFINE_PARAMETER(
+      p_module_name => 'inventarios', p_pattern => 'cerrar-varios', p_method => 'POST',
+      p_name => 'X-APEX-STATUS-CODE', p_bind_variable_name => 'status_code',
+      p_source_type => 'HEADER', p_param_type => 'INT', p_access_method => 'OUT');
+
+    ----------------------------------------------------------------------------
     -- POST /inventarios/anular/:id
     -- Body: { idEmpresa }
     ----------------------------------------------------------------------------
@@ -1852,7 +2098,7 @@ SELECT NAME, STATUS, ORIGINS_ALLOWED
   FROM USER_ORDS_MODULES
  WHERE NAME = 'inventarios';
 
--- Los 7 endpoints.
+-- Los 8 endpoints.
 SELECT t.URI_TEMPLATE, h.METHOD
   FROM USER_ORDS_TEMPLATES t
   JOIN USER_ORDS_HANDLERS  h ON h.TEMPLATE_ID = t.ID
@@ -1874,15 +2120,21 @@ SELECT TRIGGER_NAME, TRIGGER_TYPE, STATUS
 
 -- Los conteos abiertos: la planilla pendiente de aplicar.
 --
--- SISTEMA_HOY sale de EXISTENCIAS en vivo, no de CANTIDAD_SISTEMA: esa columna
--- esta en NULL hasta el cierre, que es cuando se sella.
+-- SISTEMA_AL_CONTAR es el sello del trigger y es contra lo que se va a ajustar;
+-- SISTEMA_HOY, EXISTENCIAS en vivo. Si difieren, hubo ventas o compras desde
+-- que se conto, y QUEDA_EN es lo que va a decir la existencia despues del
+-- cierre. Sin sello (conteo viejo o incompleto) se compara contra hoy.
 SELECT i.ID_INVENTARIO,
        s.NOMBRE_SUCURSAL,
        a.CODIGO_ARTICULO,
        a.NOMBRE_ARTICULO,
+       i.CANTIDAD_SISTEMA                                AS SISTEMA_AL_CONTAR,
        NVL(e.CANTIDAD_DISPONIBLE, 0)                     AS SISTEMA_HOY,
        i.CANTIDAD_FISICA,
-       i.CANTIDAD_FISICA - NVL(e.CANTIDAD_DISPONIBLE, 0) AS DIFERENCIA,
+       i.CANTIDAD_FISICA
+         - NVL(i.CANTIDAD_SISTEMA, NVL(e.CANTIDAD_DISPONIBLE, 0)) AS DIFERENCIA,
+       NVL(e.CANTIDAD_DISPONIBLE, 0) + i.CANTIDAD_FISICA
+         - NVL(i.CANTIDAD_SISTEMA, NVL(e.CANTIDAD_DISPONIBLE, 0)) AS QUEDA_EN,
        u.NOMBRE_APELLIDO                                 AS CARGADO_POR,
        TO_CHAR(i.FECHA_INVENTARIO, 'YYYY-MM-DD HH24:MI') AS FECHA
   FROM INVENTARIOS i
@@ -1896,8 +2148,8 @@ SELECT i.ID_INVENTARIO,
  ORDER BY i.FECHA_INVENTARIO DESC;
 
 -- Lo que corrigio cada cierre. DIFERENCIA es contra CANTIDAD_SISTEMA —lo que el
--- sistema decia al momento del ajuste—, no contra la existencia de hoy: esa ya
--- la piso el propio cierre y daria cero siempre.
+-- sistema decia cuando se conto—, no contra la existencia de hoy, que ya movio
+-- el propio cierre y todo lo que vino despues.
 SELECT i.ID_INVENTARIO,
        s.NOMBRE_SUCURSAL,
        a.NOMBRE_ARTICULO,

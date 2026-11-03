@@ -199,24 +199,25 @@ CREATE OR REPLACE PACKAGE BODY PKG_DASHBOARD AS
                    -- La DIFERENCIA, no lo contado: un conteo que coincide con el
                    -- sistema no es noticia; lo que importa es el faltante.
                    --
-                   -- CONTRA QUE SE RESTA DEPENDE DEL ESTADO, y no son
-                   -- intercambiables:
+                   -- CONTRA CANTIDAD_SISTEMA, el sello que el trigger toma
+                   -- CUANDO SE CUENTA: es contra ese numero que el cierre
+                   -- ajusta, abierto o cerrado.
                    --
-                   --   ABIERTO  contra EXISTENCIAS, en vivo. CANTIDAD_SISTEMA
-                   --            todavia es NULL —la sella el trigger recien al
-                   --            cerrar— asi que un NVL(...,0) restaria cero y el
-                   --            panel mostraria lo CONTADO como si fuera la
-                   --            diferencia: un conteo de 40 sobre un articulo
-                   --            que ya tiene 40 salia "+40" en vez de 0.
-                   --   CERRADO  contra CANTIDAD_SISTEMA, congelado. Contra
-                   --            EXISTENCIAS daria cero siempre, porque el propio
-                   --            cierre acaba de igualarlas.
+                   -- La unica excepcion es un ABIERTO SIN SELLO (un conteo de
+                   -- antes de que el sello pasara a tomarse al contar, o uno con
+                   -- un estante sin contar): ahi va contra EXISTENCIAS en vivo,
+                   -- que es lo que se va a sellar al cerrar. Un NVL(...,0)
+                   -- restaria cero y mostraria lo CONTADO como si fuera la
+                   -- diferencia: un conteo de 40 sobre un articulo que ya tiene
+                   -- 40 saldria "+40" en vez de 0.
                    --
-                   -- Mismo criterio que la pantalla de conteos (sistemaDe() en
-                   -- src/routes/_auth.inventarios.tsx). Si cambia uno, cambia el
-                   -- otro o los dos numeros dejan de coincidir.
+                   -- Mismo criterio que sistemaDe() en _auth.inventarios.tsx,
+                   -- _auth.inventarios-reporte.tsx y _auth.inventarios-cierre.tsx.
+                   -- Si cambia uno, cambian todos o los numeros dejan de
+                   -- coincidir.
                    'monto'      VALUE NVL(i.CANTIDAD_FISICA, 0) -
-                                  CASE WHEN NVL(UPPER(TRIM(i.ESTADO)), 'ABIERTO') = 'ABIERTO'
+                                  CASE WHEN i.CANTIDAD_SISTEMA IS NULL
+                                        AND NVL(UPPER(TRIM(i.ESTADO)), 'ABIERTO') = 'ABIERTO'
                                        THEN NVL((SELECT e.CANTIDAD_DISPONIBLE
                                                    FROM EXISTENCIAS e
                                                   WHERE e.ID_EMPRESA  = i.ID_EMPRESA

@@ -1598,8 +1598,9 @@ export type EstadoInventario = "ABIERTO" | "CERRADO" | "ANULADO" | "PROCESADO";
  * Un conteo físico: cuánto hay REALMENTE de un artículo en una sucursal.
  *
  * Es la única corrección de `EXISTENCIAS` que existe hoy. Al cerrarse,
- * `CANTIDAD_DISPONIBLE` pasa a valer `cantidadFisica` — lo escribe un trigger,
- * no el paquete.
+ * `CANTIDAD_DISPONIBLE` se ajusta **por la diferencia** `cantidadFisica -
+ * cantidadSistema` — lo escribe un trigger, no el paquete. No se fija en lo
+ * contado: lo vendido y comprado entre el conteo y el cierre se respeta.
  *
  * **Sin lotes.** Un conteo es por artículo y depósito, no por partida: en el
  * estante las unidades son idénticas y nadie sabe de qué compra vino cada una,
@@ -1643,18 +1644,22 @@ export type Inventario = {
    */
   cantidadUbicaciones: number;
   /**
-   * Lo que el sistema decía **al cerrar**, sellado por el trigger. `null` en
-   * los abiertos: todavía no hay ajuste que explicar.
+   * Lo que el sistema decía **cuando se contó**: el trigger lo sella cada vez
+   * que cambia `cantidadFisica`. `null` mientras quede un estante sin contar, y
+   * en los abiertos de antes de este cambio (se sellan al cerrar).
    *
-   * Es contra esto que se mide la diferencia de un conteo cerrado. Contra
-   * `existenciaActual` daría cero siempre, porque el cierre las igualó.
+   * Es contra esto que se calcula el ajuste, abierto o cerrado. Sellarlo al
+   * cerrar —como antes— hacía que un cierre tardío borrara lo vendido en el
+   * medio.
    */
   cantidadSistema: number | null;
   /**
    * Lo que `EXISTENCIAS` dice **ahora**, leído en vivo. Nunca `null`: el
    * backend ya aplica `NVL(..., 0)`.
    *
-   * Es el número contra el que se compara **mientras se cuenta**.
+   * En un abierto, `existenciaActual - cantidadSistema` es lo que se vendió y
+   * compró desde que se contó, y `existenciaActual + diferencia` es lo que va a
+   * quedar al cerrar.
    */
   existenciaActual: number;
   estado: EstadoInventario;
@@ -1725,6 +1730,22 @@ export type CierreInventario = {
   cantidadFisica: number;
   /** `cantidadFisica - cantidadSistema`. Negativa es faltante. */
   diferencia: number;
+};
+
+/**
+ * Lo que devuelve cerrar varios conteos.
+ *
+ * **No trae el motivo de cada rechazo**, sólo el del primero: con cincuenta
+ * mensajes la respuesta pasa el techo de 4000 bytes del bind de ORDS. Los
+ * rechazados siguen abiertos, así que al refrescar el listado se ve por qué.
+ */
+export type CierreVariosInventarios = {
+  cerrados: number;
+  /** Ids que no se pudieron cerrar. Siguen `ABIERTO`. */
+  rechazados: number[];
+  primerError: string | null;
+  /** Suma neta de lo ajustado en los que sí se cerraron, en unidades. */
+  netoUnidades: number;
 };
 
 /**
@@ -3082,20 +3103,35 @@ export const api = {
       }),
 
     /**
-     * Aplica el conteo: `EXISTENCIAS.CANTIDAD_DISPONIBLE` pasa a valer
-     * `cantidadFisica`, y la fila queda congelada.
+     * Aplica el conteo: `EXISTENCIAS.CANTIDAD_DISPONIBLE` se ajusta por la
+     * diferencia contra lo que el sistema decía al contar, y la fila queda
+     * congelada.
      *
      * **No se deshace.** Da 400 si el conteo no tiene ubicaciones o le queda
      * alguna sin contar, y 409 si ya estaba cerrado o anulado. La suma se
      * vuelve a calcular en el backend justo antes de aplicarla.
      *
-     * Invalidá también `["existencias"]` y `["articulos"]` al volver: los
-     * números que muestran acaban de cambiar.
+     * Al volver, `invalidarStock(queryClient)` (`lib/stock.ts`): los números de
+     * existencia acaban de cambiar.
      */
     cerrar: (id: number, idEmpresa: number) =>
       request<CierreInventario>(`/inventarios/cerrar/${id}`, {
         method: "POST",
         body: JSON.stringify({ idEmpresa }),
+      }),
+
+    /**
+     * Cierra varios conteos, **hasta 50 por llamada**: más da 400. Mismas reglas
+     * que `cerrar`, porque el backend llama al mismo procedimiento.
+     *
+     * Cada conteo se cierra en su propia transacción: uno que falla no frena a
+     * los demás, y la respuesta dice cuáles quedaron sin cerrar. Por eso
+     * responde 200 aunque haya rechazados — mirá `rechazados`.
+     */
+    cerrarVarios: (ids: number[], idEmpresa: number) =>
+      request<CierreVariosInventarios>("/inventarios/cerrar-varios", {
+        method: "POST",
+        body: JSON.stringify({ idEmpresa, ids }),
       }),
 
     /** Descarta el conteo sin tocar el stock. Sólo desde `ABIERTO`. */

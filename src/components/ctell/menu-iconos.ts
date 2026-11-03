@@ -63,6 +63,7 @@ import {
   Settings,
   ShoppingCart,
   Sliders,
+  Stamp,
   Store,
   Tag,
   Tags,
@@ -335,6 +336,15 @@ const ICONOS_PAGINA: Record<string, LucideIcon> = {
   "reporte de conteos": ClipboardX,
   "inventarios reporte": ClipboardX,
   "diferencias de inventario": ClipboardX,
+  // EL CIERRE TAMPOCO COMPARTE con la carga ni con el reporte, aunque los tres
+  // miren la misma tabla: es el acto de APLICAR el conteo al stock, el único de
+  // los tres que no se deshace. Stamp es eso, el sello que lo vuelve definitivo
+  // — y es el mismo ícono del botón "Cerrar" de la pantalla.
+  "cierre de inventarios": Stamp,
+  "cierre de inventario": Stamp,
+  "cerrar inventarios": Stamp,
+  "inventarios cierre": Stamp,
+  "cierre de conteos": Stamp,
   // El REPORTE de ubicaciones: los artículos agrupados por estante, y los que
   // no tienen ninguno. ListTree es eso, una lista colgada de otra.
   //
