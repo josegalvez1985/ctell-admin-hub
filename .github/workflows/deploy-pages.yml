@@ -40,17 +40,20 @@ jobs:
       # /reportes-actividades quedan con "La subida no está configurada" y
       # nadie se entera hasta probar desde el celular. Mejor un deploy en rojo
       # que diga qué falta.
+      #
+      # Si vienen de Secrets, GitHub las muestra como *** en el log: eso ya
+      # significa que llegaron. Lo que importa es que no digan "(vacía)".
       - name: Verificar variables de Cloudinary
         run: |
           echo "VITE_CLOUDINARY_CLOUD_NAME=${VITE_CLOUDINARY_CLOUD_NAME:-(vacía)}"
           echo "VITE_CLOUDINARY_UPLOAD_PRESET=${VITE_CLOUDINARY_UPLOAD_PRESET:-(vacía)}"
           if [ -z "$VITE_CLOUDINARY_CLOUD_NAME" ] || [ -z "$VITE_CLOUDINARY_UPLOAD_PRESET" ]; then
-            echo "::error::Faltan variables de Cloudinary. Cargarlas en Settings → Secrets and variables → Actions → Variables → Repository variables (no Secrets, no Environment)."
+            echo "::error::Faltan variables de Cloudinary. Cargarlas en Settings → Secrets and variables → Actions, como Repository variables o Repository secrets (no en un Environment)."
             exit 1
           fi
         env:
-          VITE_CLOUDINARY_CLOUD_NAME: ${{ vars.VITE_CLOUDINARY_CLOUD_NAME }}
-          VITE_CLOUDINARY_UPLOAD_PRESET: ${{ vars.VITE_CLOUDINARY_UPLOAD_PRESET }}
+          VITE_CLOUDINARY_CLOUD_NAME: ${{ vars.VITE_CLOUDINARY_CLOUD_NAME || secrets.VITE_CLOUDINARY_CLOUD_NAME }}
+          VITE_CLOUDINARY_UPLOAD_PRESET: ${{ vars.VITE_CLOUDINARY_UPLOAD_PRESET || secrets.VITE_CLOUDINARY_UPLOAD_PRESET }}
 
       # El sitio se sirve en la raíz de www.ctell.online, así que el build no
       # lleva prefijo: `base` es "/" fijo en vite.config.ts.
@@ -58,14 +61,15 @@ jobs:
       # Las variables de Cloudinary se hornean en el bundle, y está bien: el
       # cloud name y un upload preset "unsigned" son públicos por diseño —el
       # navegador de cualquier visitante los ve igual—. Lo que NUNCA va acá es
-      # la api_secret. Se cargan en Settings → Secrets and variables → Actions →
-      # Variables; si faltan, el paso anterior corta el deploy.
+      # la api_secret. Se leen de Variables o, si no están ahí, de Secrets del
+      # repositorio (Settings → Secrets and variables → Actions); si faltan en
+      # los dos, el paso anterior corta el deploy.
       - name: Build (SPA estático)
         run: npm run build
         env:
-          VITE_CLOUDINARY_CLOUD_NAME: ${{ vars.VITE_CLOUDINARY_CLOUD_NAME }}
-          VITE_CLOUDINARY_UPLOAD_PRESET: ${{ vars.VITE_CLOUDINARY_UPLOAD_PRESET }}
-          VITE_CLOUDINARY_CARPETA: ${{ vars.VITE_CLOUDINARY_CARPETA }}
+          VITE_CLOUDINARY_CLOUD_NAME: ${{ vars.VITE_CLOUDINARY_CLOUD_NAME || secrets.VITE_CLOUDINARY_CLOUD_NAME }}
+          VITE_CLOUDINARY_UPLOAD_PRESET: ${{ vars.VITE_CLOUDINARY_UPLOAD_PRESET || secrets.VITE_CLOUDINARY_UPLOAD_PRESET }}
+          VITE_CLOUDINARY_CARPETA: ${{ vars.VITE_CLOUDINARY_CARPETA || secrets.VITE_CLOUDINARY_CARPETA }}
 
       # Renombra el shell a index.html/404.html y agrega .nojekyll. Ver
       # scripts/preparar-shell.mjs para el detalle de qué genera y por qué.
