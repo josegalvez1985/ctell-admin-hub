@@ -52,6 +52,8 @@ import { Route as AuthSucursalesRouteImport } from './routes/_auth.sucursales'
 import { Route as AuthTalonariosRouteImport } from './routes/_auth.talonarios'
 import { Route as AuthUbicacionesRouteImport } from './routes/_auth.ubicaciones'
 import { Route as AuthUnidadesMedidaRouteImport } from './routes/_auth.unidades-medida'
+import { Route as AuthVehiculoPartesRouteImport } from './routes/_auth.vehiculo-partes'
+import { Route as AuthVehiculosRouteImport } from './routes/_auth.vehiculos'
 import { Route as AuthVentasRouteImport } from './routes/_auth.ventas'
 
 const IndexRoute = IndexRouteImport.update({
@@ -271,6 +273,16 @@ const AuthUnidadesMedidaRoute = AuthUnidadesMedidaRouteImport.update({
   path: '/unidades-medida',
   getParentRoute: () => AuthRoute,
 } as any)
+const AuthVehiculoPartesRoute = AuthVehiculoPartesRouteImport.update({
+  id: '/vehiculo-partes',
+  path: '/vehiculo-partes',
+  getParentRoute: () => AuthRoute,
+} as any)
+const AuthVehiculosRoute = AuthVehiculosRouteImport.update({
+  id: '/vehiculos',
+  path: '/vehiculos',
+  getParentRoute: () => AuthRoute,
+} as any)
 const AuthVentasRoute = AuthVentasRouteImport.update({
   id: '/ventas',
   path: '/ventas',
@@ -320,6 +332,8 @@ export interface FileRoutesByFullPath {
   '/talonarios': typeof AuthTalonariosRoute
   '/ubicaciones': typeof AuthUbicacionesRoute
   '/unidades-medida': typeof AuthUnidadesMedidaRoute
+  '/vehiculo-partes': typeof AuthVehiculoPartesRoute
+  '/vehiculos': typeof AuthVehiculosRoute
   '/ventas': typeof AuthVentasRoute
 }
 export interface FileRoutesByTo {
@@ -365,6 +379,8 @@ export interface FileRoutesByTo {
   '/talonarios': typeof AuthTalonariosRoute
   '/ubicaciones': typeof AuthUbicacionesRoute
   '/unidades-medida': typeof AuthUnidadesMedidaRoute
+  '/vehiculo-partes': typeof AuthVehiculoPartesRoute
+  '/vehiculos': typeof AuthVehiculosRoute
   '/ventas': typeof AuthVentasRoute
 }
 export interface FileRoutesById {
@@ -412,6 +428,8 @@ export interface FileRoutesById {
   '/_auth/talonarios': typeof AuthTalonariosRoute
   '/_auth/ubicaciones': typeof AuthUbicacionesRoute
   '/_auth/unidades-medida': typeof AuthUnidadesMedidaRoute
+  '/_auth/vehiculo-partes': typeof AuthVehiculoPartesRoute
+  '/_auth/vehiculos': typeof AuthVehiculosRoute
   '/_auth/ventas': typeof AuthVentasRoute
 }
 export interface FileRouteTypes {
@@ -459,6 +477,8 @@ export interface FileRouteTypes {
     | '/talonarios'
     | '/ubicaciones'
     | '/unidades-medida'
+    | '/vehiculo-partes'
+    | '/vehiculos'
     | '/ventas'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -504,6 +524,8 @@ export interface FileRouteTypes {
     | '/talonarios'
     | '/ubicaciones'
     | '/unidades-medida'
+    | '/vehiculo-partes'
+    | '/vehiculos'
     | '/ventas'
   id:
     | '__root__'
@@ -550,6 +572,8 @@ export interface FileRouteTypes {
     | '/_auth/talonarios'
     | '/_auth/ubicaciones'
     | '/_auth/unidades-medida'
+    | '/_auth/vehiculo-partes'
+    | '/_auth/vehiculos'
     | '/_auth/ventas'
   fileRoutesById: FileRoutesById
 }
@@ -861,6 +885,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthUnidadesMedidaRouteImport
       parentRoute: typeof AuthRoute
     }
+    '/_auth/vehiculo-partes': {
+      id: '/_auth/vehiculo-partes'
+      path: '/vehiculo-partes'
+      fullPath: '/vehiculo-partes'
+      preLoaderRoute: typeof AuthVehiculoPartesRouteImport
+      parentRoute: typeof AuthRoute
+    }
+    '/_auth/vehiculos': {
+      id: '/_auth/vehiculos'
+      path: '/vehiculos'
+      fullPath: '/vehiculos'
+      preLoaderRoute: typeof AuthVehiculosRouteImport
+      parentRoute: typeof AuthRoute
+    }
     '/_auth/ventas': {
       id: '/_auth/ventas'
       path: '/ventas'
@@ -913,6 +951,8 @@ interface AuthRouteChildren {
   AuthTalonariosRoute: typeof AuthTalonariosRoute
   AuthUbicacionesRoute: typeof AuthUbicacionesRoute
   AuthUnidadesMedidaRoute: typeof AuthUnidadesMedidaRoute
+  AuthVehiculoPartesRoute: typeof AuthVehiculoPartesRoute
+  AuthVehiculosRoute: typeof AuthVehiculosRoute
   AuthVentasRoute: typeof AuthVentasRoute
 }
 
@@ -958,6 +998,8 @@ const AuthRouteChildren: AuthRouteChildren = {
   AuthTalonariosRoute: AuthTalonariosRoute,
   AuthUbicacionesRoute: AuthUbicacionesRoute,
   AuthUnidadesMedidaRoute: AuthUnidadesMedidaRoute,
+  AuthVehiculoPartesRoute: AuthVehiculoPartesRoute,
+  AuthVehiculosRoute: AuthVehiculosRoute,
   AuthVentasRoute: AuthVentasRoute,
 }
 

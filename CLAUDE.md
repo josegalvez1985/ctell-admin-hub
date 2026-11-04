@@ -34,6 +34,8 @@ ctell-admin-hub/
 │   ├── cloudinary.sql        PKG_CLOUDINARY: borra archivos de Cloudinary (interno, sin ORDS). Va antes que articulos, profesores, manuales y reportes-*
 │   ├── asistente-ddl.sql     IA_CONFIG, IA_CONSULTAS, V_IA_USUARIOS (se corre una vez)
 │   ├── asistente.sql         PKG_ASISTENTE: el chat con IA (llama a la API de Claude)
+│   ├── vehiculo-partes.sql   PKG_VEHICULO_PARTES: repuestos de cada vehículo. Va ANTES que vehiculos.sql
+│   ├── vehiculos.sql         PKG_VEHICULOS: la cabecera; el alta lleva sus repuestos
 │   └── [table].sql           Cada tabla nueva va aquí
 ├── src/
 │   ├── routes/               Rutas por archivo (TanStack Router)
@@ -266,6 +268,28 @@ Qué tiene que hacer el suplente de un profesor ausente: por dónde entra, con q
 - **El listado no manda los cuatro textos largos**, sólo un flag por cada uno más `cantidadGrados`. Veinte filas con los cuatro llenos son 80.000 caracteres, muy por encima del techo de 4000 bytes del bind de ORDS. La trampa de `INVENTARIOS.OBSERVACIONES` acá está **impedida por estructura**: los textos ni siquiera viajan, así que no hay resumen que guardar por error.
 - **Una ficha sin grados se guarda igual.** Se puede cargar el acceso ahora y los horarios después, así que rechazarla sería impedir el uso real. Pero sin grados no le sirve al suplente: la pantalla lo avisa con `cantidadGrados` y hay una consulta de auditoría al pie del archivo.
 
+#### Vehículos y sus repuestos — `/vehiculos`, `/vehiculo-partes`
+
+El catálogo de repuestos por vehículo: `VEHICULOS` es la cabecera y `VEHICULO_PARTES` el detalle (código + descripción).
+
+| Método   | Ruta                                       | Qué hace                                                                    |
+| -------- | ------------------------------------------ | --------------------------------------------------------------------------- |
+| `GET`    | `/vehiculos/listar`                        | Paginado, con `cantidadPartes`. `?codigo=` (exacto): **los vehículos que llevan ese repuesto**. `?busqueda=`: nombre y códigos con `LIKE` |
+| `POST`   | `/vehiculos/crear`                         | Body `{ idEmpresa, nombre, partes: [...] }`, en una transacción. 409 si el nombre se repite; 400 si una línea está mal o repetida |
+| `PUT`    | `/vehiculos/actualizar/:id`                | **Sólo el nombre**                                                          |
+| `DELETE` | `/vehiculos/eliminar/:id/:idEmpresa`       | Se lleva los repuestos, devuelve `partesEliminadas`                         |
+| `GET`    | `/vehiculo-partes/listar`                  | Paginado. `?idVehiculo=`: **lo que lleva ese vehículo**; `?codigo=`: en qué vehículos está. Cada fila trae con cuántos `articulos` coincide |
+| `POST`   | `/vehiculo-partes/crear`                   | Una línea. **409** si el código ya está en ese vehículo                     |
+| `PUT`    | `/vehiculo-partes/actualizar/:id`          | Código y descripción; el vehículo no se cambia. Descripción vacía BORRA     |
+| `DELETE` | `/vehiculo-partes/eliminar/:id/:idEmpresa` | Baja física                                                                 |
+
+- **Orden:** `vehiculo-partes.sql` → `vehiculos.sql`. El alta del vehículo llama a `PKG_VEHICULO_PARTES.GUARDAR_LINEAS` (público, interno, sin ORDS ni token), que valida con el mismo `ERROR_DE_LINEA` que el alta de a una; al revés, `PKG_VEHICULOS` compila `INVALID` con `PLS-00201`. Después, reejecutar `asistente.sql` (lleva la regla de empresa de los repuestos).
+- **Cabecera y detalle, pero no como una factura.** El alta sí lleva el detalle en el mismo request (3.3 de la guía), pero **`ACTUALIZAR` no reemplaza el detalle entero ni hay `OBTENER` con el detalle anidado**: un vehículo puede tener cientos de repuestos, y reenviarlos todos para corregir uno —o devolverlos en un JSON— pasa el techo de 4000 bytes del bind. El detalle se edita de a una línea y se lista paginado.
+- **Los dos sentidos de la relación son filtros, y el de código es EXACTO.** Vehículo → repuestos es `?idVehiculo=`; repuesto → vehículos es `?codigo=`, normalizado igual que al guardar. Va aparte de `busqueda` (`LIKE`): "W-71" no contesta "¿a qué vehículos va el W-712?". En `/vehiculos/listar` es un `EXISTS`, para que un vehículo con el código dos veces salga una.
+- **La empresa de un repuesto es la de su vehículo.** `VEHICULO_PARTES.ID_EMPRESA` existe y no se lee: listado, `COUNT` y el `EXISTS` del `DELETE` filtran por `v.ID_EMPRESA` con un JOIN. La columna se escribe con la del vehículo ya validado.
+- **El código se guarda normalizado** (`UPPER(TRIM)`), como en `CODIGOS_EQUIVALENTES`: es lo que hace exacto el cruce contra los artículos —por código equivalente **o** por `CODIGO_ARTICULO`— y lo que detecta el repetido. `idArticulo`/`articulo` sólo vienen cuando la coincidencia es **única**: con dos o más, elegir es del vendedor. El cruce corre sobre la página ya recortada, no antes de paginar.
+- **Un código por vehículo y un nombre por empresa, garantizados por el paquete** y no por la base: el DDL no trae los `UNIQUE`. El de códigos corre con la fila del vehículo bloqueada (`FOR UPDATE`), así que dos cargas simultáneas no lo pasan; el de nombres es un `COUNT` con la carrera conocida. Los `ALTER`/`CREATE UNIQUE INDEX` están al pie de cada archivo y el `DUP_VAL_ON_INDEX` ya se traduce al mismo 409.
+
 #### Dashboard — `/dashboard/resumen?idEmpresa=&idSucursal=`
 
 Los indicadores de la home en una consulta: montos del mes con su mes anterior, valor de stock, artículos bajo mínimo, últimos movimientos, stock crítico y cuotas de compra por vencer.
@@ -482,6 +506,10 @@ Las columnas `ACTIVO` son `VARCHAR2(1)` con valores `'A'` o `'I'`. **Este códig
   > **No sale de `/articulos-ubicaciones/listar`:** aquél recorre el cruce y nunca ve un artículo sin asignar. `PKG_ARTICULOS_UBICACIONES.REPORTE` recorre el catálogo con `LEFT JOIN` a una vista (cruce + ubicación de la sucursal), así que ubicado en otra sucursal = sin ubicar acá. **"Sin ubicación" es activo y no gasto**; lo ubicado sale siempre, inactivos incluidos. El resumen de arriba no mira `situacion`: son los números de la sucursal entera. La `queryKey` cuelga de `["articulos-ubicaciones"]` para que asignar o quitar lo refresque.
   >
   > En el menú, cargarla como **"Reporte de ubicaciones"**: "Artículos por ubicación" ya resuelve al ícono del ABM del cruce en `menu-iconos.ts`.
+- **`_auth.vehiculos.tsx`:** "/vehiculos" → ABM de vehículos. El alta carga las líneas en el mismo formulario (`useState` con `clave`, como facturas; las vacías se descartan y el repetido se avisa comparando en mayúsculas) y al crear se abren sus repuestos. La edición cambia **sólo el nombre**. Dos filtros: el buscador (nombre y códigos a medias) y **"Lleva el repuesto"** (código exacto → los vehículos que lo llevan). La llave de cada fila abre los repuestos en un diálogo, y desde ahí el auto de un repuesto cierra el diálogo y filtra la lista por ese código.
+- **`_auth.vehiculo-partes.tsx`:** "/vehiculo-partes" → Los repuestos de todos los vehículos, con **los dos sentidos como filtros**: vehículo → sus repuestos (`SelectorVehiculo`, que busca en el servidor porque el listado pagina) y código → los vehículos que lo llevan. Desde la fila se salta de uno al otro (auto / llave), y cada salto limpia el otro filtro.
+
+  > **La página y el diálogo de `/vehiculos` son el mismo componente** (`PartesListado` en `components/ctell/VehiculoPartes.tsx`): mismo endpoint, mismos avisos, sin dos copias que terminen filtrando distinto. Los saltos son callbacks opcionales (`onVerVehiculos`, `onVerRepuestos`): quien monta el listado decide qué hacer, y sin callback no hay botón. Todo filtro va al servidor y no hay orden por columna, como en justificaciones. Cambiar un repuesto invalida `["vehiculo-partes"]`, `["vehiculos"]` y `["vehiculos-selector"]` — `cantidadPartes` vive en los dos últimos.
 - **`_auth.sucursales.tsx`:** "/sucursales" → Sucursales **de la empresa activa**. El recorte lo hace el backend (`?idEmpresa=`), con la misma queryKey que `sucursal-provider` para compartir caché. No hay selector de empresa: el alta va a la activa.
 - **`_auth.configuracion.tsx`:** "/configuracion" → Preferencias (tema, acento).
 

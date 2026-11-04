@@ -1475,6 +1475,35 @@ cinco o diez líneas.
 Y el detalle sólo se reemplaza **si vino**: un PUT que cambia únicamente la
 observación deja las líneas como estaban.
 
+#### …salvo que el detalle no tenga techo
+
+Todo lo de esta sección supone un detalle **chico**: cinco o diez líneas. Cuando
+el detalle puede tener cientos —los repuestos de un vehículo—, dos piezas del
+patrón dejan de servir, y por el mismo techo de 4000 bytes de siempre:
+
+- **Reemplazar el detalle entero en el `ACTUALIZAR`** obligaría al cliente a
+  traerse las cuatrocientas líneas antes de corregir una descripción. Después
+  del alta, el detalle se edita **de a una línea**, con su propio ABM.
+- **El `OBTENER` con el detalle inyectado** no sale nunca: el JSON pasa el bind
+  de ORDS. El detalle se lista **paginado**, filtrado por la cabecera.
+
+Lo que **sí** se conserva es el alta en una transacción: la cabecera llega con
+sus líneas y entran juntas. El modelo es
+[db/vehiculos.sql](../db/vehiculos.sql) + [db/vehiculo-partes.sql](../db/vehiculo-partes.sql).
+La regla de qué es una línea válida vive en una función privada
+(`ERROR_DE_LINEA`) que usan el alta de a una y `GUARDAR_LINEAS`, el
+procedimiento público e interno que llama el alta de la cabecera — no dos
+versiones de la misma validación.
+
+**Un detalle que vale por sí mismo se consulta en los dos sentidos.** Una línea
+de factura no se busca sola; un repuesto sí: "¿qué lleva este vehículo?" y "¿a
+qué vehículos va este código?" son las dos preguntas. Por eso el listado del
+detalle filtra por el padre (`?idVehiculo=`) **y** por su propio dato
+(`?codigo=`), y el de la cabecera también acepta `?codigo=`, con un `EXISTS`
+para no repetir el vehículo que lleva el código dos veces. El filtro por código
+es **exacto** contra el valor normalizado, y va aparte de la `busqueda` con
+`LIKE`: "W-71" no es la respuesta a "¿a qué vehículos va el W-712?".
+
 ### `ELIMINAR`: detalle primero
 
 El DDL no declara `ON DELETE CASCADE`, así que el orden lo pone el paquete. Al

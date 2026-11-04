@@ -629,6 +629,113 @@ const MODULOS: Modulo[] = [
           </>
         ),
       },
+      {
+        nombre: "Vehículos",
+        entrada: "D",
+        ruta: "/vehiculos",
+        resumen: "Cada vehículo con los repuestos que lleva.",
+        buscable: "auto modelo camioneta catalogo repuestos a que vehiculo va lleva el repuesto",
+        ficha: (
+          <>
+            <H>Cómo se usa</H>
+            <P>
+              <strong>Nuevo vehículo</strong> pide el nombre y, si se quiere, sus repuestos:{" "}
+              <strong>Agregar línea</strong> suma una fila con el código y la descripción. Las
+              líneas sin código no se cargan. También se puede crear sólo el nombre y cargar los
+              repuestos después.
+            </P>
+            <P>
+              El botón de la llave de cada fila abre sus repuestos, con el artículo del catálogo con
+              el que coincide cada código.
+            </P>
+            <H>Los dos filtros</H>
+            <Lista>
+              <li>
+                <strong>El buscador</strong> mira el nombre y los códigos a medias:{" "}
+                <code>W-71</code> trae los vehículos con el W-712, el W-713…
+              </li>
+              <li>
+                <strong>«Lleva el repuesto»</strong> deja sólo los vehículos que llevan ese código
+                exacto: contesta «este repuesto, ¿a qué vehículos va?».
+              </li>
+            </Lista>
+            <P>
+              Desde los repuestos de un vehículo, el <strong>auto</strong> de cada fila hace el
+              camino inverso: cierra la ventana y deja la lista filtrada por ese código.
+            </P>
+            <Aviso titulo="Editar cambia sólo el nombre">
+              Los repuestos se agregan, se corrigen y se borran de a uno desde el botón de
+              repuestos.
+            </Aviso>
+            <Aviso titulo="No hay dos vehículos con el mismo nombre">
+              Sin importar mayúsculas: los repuestos quedarían repartidos entre los dos. Si ya
+              existe, se le agregan los repuestos a ése.
+            </Aviso>
+            <Aviso titulo="Un código repetido frena el alta">
+              El aviso dice en qué líneas está, y no se crea el vehículo a medias.
+            </Aviso>
+            <Aviso titulo="“Sin repuestos” no es un error">
+              Es un vehículo creado sólo con el nombre. Se marca porque suele ser una carga que
+              quedó a medias.
+            </Aviso>
+            <P>Eliminar un vehículo se lleva sus repuestos. Los artículos no se tocan.</P>
+          </>
+        ),
+      },
+      {
+        nombre: "Repuestos por vehículo",
+        entrada: "D",
+        ruta: "/vehiculo-partes",
+        resumen: "Qué repuestos lleva cada vehículo, y a qué vehículos va cada repuesto.",
+        buscable: "repuesto parte pieza codigo equivalente a que auto va que lleva catalogo",
+        ficha: (
+          <>
+            <H>Cómo se usa</H>
+            <P>Arriba hay dos filtros, uno por cada sentido:</P>
+            <Lista>
+              <li>
+                <strong>Vehículo → sus repuestos</strong>: se elige un vehículo y se ven los
+                repuestos que lleva.
+              </li>
+              <li>
+                <strong>Repuesto → los vehículos que lo llevan</strong>: se escribe el código exacto
+                y se ven todos los vehículos que lo tienen.
+              </li>
+            </Lista>
+            <P>
+              Y se salta de uno al otro desde la fila: el <strong>auto</strong> muestra los
+              vehículos que llevan ese código, y la <strong>llave</strong> todo lo que lleva ese
+              vehículo. Cada salto limpia el otro filtro. Desde acá también se agregan, se corrigen
+              y se borran repuestos, de a uno.
+            </P>
+            <H>La columna «En el catálogo»</H>
+            <P>
+              Cruza el código contra los códigos equivalentes y el código del fabricante de los
+              artículos:
+            </P>
+            <Lista>
+              <li>el nombre del artículo, si coincide con uno;</li>
+              <li>
+                «N artículos», si coincide con varios: el mismo código puede estar en dos artículos
+                a propósito, y elegir cuál es del vendedor;
+              </li>
+              <li>«Sin artículo», si no coincide con ninguno.</li>
+            </Lista>
+            <Aviso titulo="“Sin artículo” no siempre es que no lo vendemos">
+              Puede que el artículo exista pero no tenga cargado ese código: se agrega en sus
+              códigos equivalentes, desde la ficha del artículo, y el repuesto pasa a encontrarlo.
+            </Aviso>
+            <Aviso titulo="El código se guarda en mayúsculas">
+              <code>w-712</code> y <code>W-712</code> son el mismo repuesto: así se cruza contra los
+              artículos y así lo encuentra el filtro. Un código que ya está en ese vehículo se
+              rechaza.
+            </Aviso>
+            <Aviso titulo="Un repuesto no se cambia de vehículo">
+              Si quedó en el equivocado, se borra y se carga en el correcto.
+            </Aviso>
+          </>
+        ),
+      },
     ],
   },
 

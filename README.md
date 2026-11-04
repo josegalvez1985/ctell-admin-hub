@@ -144,6 +144,10 @@ db/                      Backend: un archivo SQL por tabla
 │                        observaciones). Sin /crear ni /eliminar, y el filtro por
 │                        empresa va contra PROFESORES: su ID_EMPRESA está fija
 │                        en 1
+├── vehiculo-partes.sql  Repuestos de cada vehículo (código + descripción), y en
+│                        qué vehículos va un código. Va ANTES que vehiculos.sql
+├── vehiculos.sql        La cabecera: el alta lleva sus repuestos en una
+│                        transacción; la edición, sólo el nombre
 └── dashboard.sql        PKG_DASHBOARD: los indicadores de la home, en 1 consulta
 
 (La lista no está completa: el módulo educativo —instituciones.sql,
@@ -657,6 +661,26 @@ Los totales **no se guardan**: se suman del detalle en cada consulta. Es el mism
 criterio que el vencimiento de una factura (`FECHA_FACTURA + DIAS_PAGO`) y que la
 diferencia de un inventario. Si se puede derivar, se deriva.
 
+#### Cuando el detalle no tiene techo: `VEHICULOS` + `VEHICULO_PARTES`
+
+Un vehículo puede llevar cientos de repuestos, y con ese volumen dos piezas del
+patrón de facturas dejan de servir —por el techo de 4000 bytes del bind de ORDS—:
+**`ACTUALIZAR` no reemplaza el detalle** (cambia sólo el nombre; las líneas se
+editan de a una en `/vehiculo-partes`) y **no hay `OBTENER` con el detalle
+anidado** (se lista paginado con `?idVehiculo=`). Lo que sí se conserva es el
+alta en una transacción: la cabecera llega con sus líneas.
+
+La relación se consulta en los dos sentidos: **vehículo → repuestos** con
+`/vehiculo-partes/listar?idVehiculo=`, y **repuesto → vehículos** con `?codigo=`
+(exacto, contra el código normalizado) en ese mismo listado o en
+`/vehiculos/listar`, que devuelve cada vehículo una vez aunque lleve el código
+dos. Cada repuesto trae con cuántos artículos coincide su código —por código
+equivalente o por el del fabricante—, que es lo que contesta "de lo que lleva
+este auto, qué tenemos".
+
+`VEHICULO_PARTES.ID_EMPRESA` existe y no se lee: la empresa de un repuesto es la
+de su vehículo, como la de una marcación es la de su profesor.
+
 > El stock de un artículo **era** el otro ejemplo de esta regla (`SUM` sobre sus
 > lotes) y deja de serlo: pasa a ser una columna real con su libro de
 > movimientos al lado. Es la excepción que confirma el criterio — se derivaba
@@ -949,7 +973,7 @@ valor está vacío. Una clave omitida deja el bind sin definir en vez de en NULL
 
 ### Orden de ejecución
 
-Hay **seis dependencias reales**; el resto del orden es indistinto.
+Hay **siete dependencias reales**; el resto del orden es indistinto.
 
 Todas siguen la misma regla: **un paquete que consulta una tabla necesita que esa
 tabla exista al compilarse**, o queda `INVALID`. No alcanza con que el otro
@@ -1010,6 +1034,11 @@ archivo se ejecute después.
    y `PKG_CLOUDINARY.PROBAR`. Sin credenciales nada falla: los archivos quedan
    en Cloudinary como antes. Y reejecutar `asistente.sql`, que suma
    `CLOUDINARY_CONFIG` a sus tablas privadas.
+7. **`vehiculo-partes.sql` antes que `vehiculos.sql`**: el alta del vehículo
+   guarda sus líneas con `PKG_VEHICULO_PARTES.GUARDAR_LINEAS`, y sin él
+   `PKG_VEHICULOS` compila `INVALID` con `PLS-00201`. Después, reejecutar
+   `asistente.sql`: sus instrucciones llevan la regla de empresa de los
+   repuestos (la del vehículo, no la columna propia).
 
 ```
 1.  db/auth.sql                  13. db/monedas.sql

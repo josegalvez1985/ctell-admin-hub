@@ -63,7 +63,7 @@ Si buscás cómo agregar una tabla o una pantalla nueva, eso está en
 | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------- |
 | [Ventas](#módulo-ventas)                     | —                                                                                                                    | Punto de venta · Ventas · Cobros                                          | —                                                             |
 | [Compras](#módulo-compras)                   | —                                                                                                                    | Facturas de compras · Pagos                                               | —                                                             |
-| [Stock](#módulo-stock)                       | Artículos · Ubicaciones de artículos · Ubicaciones                                                                   | Inventarios · Cierre de inventarios                                       | Existencias · Reporte de inventarios · Reporte de ubicaciones |
+| [Stock](#módulo-stock)                       | Artículos · Ubicaciones de artículos · Ubicaciones · Vehículos · Repuestos por vehículo                              | Inventarios · Cierre de inventarios                                       | Existencias · Reporte de inventarios · Reporte de ubicaciones |
 | [Tesorería](#módulo-tesorería)               | Bancos · Cuentas bancarias · Canales de pago · Condiciones de pago · Monedas · Listas de descuentos                  | —                                                                         | —                                                             |
 | [Recursos humanos](#módulo-recursos-humanos) | Profesores · Instituciones · Manuales                                                                                | Reportes de actividades · Justificaciones de ausencia · Ficha de traspaso | Asistencias                                                   |
 | [Base](#módulo-base)                         | Empresas · Sucursales · Personas · Categorías · Marcas · Unidades · IVA · Talonarios · Países · Códigos equivalentes | —                                                                         | —                                                             |
@@ -280,6 +280,85 @@ pantalla propia.
 
 Alta y baja de los estantes o lugares del depósito. Son los que después se
 asignan a los artículos y los que ofrece el filtro por estante al contar.
+
+### Vehículos
+
+`/vehiculos` — cada vehículo con los repuestos que lleva.
+
+**Cómo se usa.** **Nuevo vehículo** pide el nombre y, si se quiere, sus
+repuestos: **Agregar línea** suma una fila con el código y la descripción. Las
+líneas sin código no se cargan. También se puede crear sólo el nombre y cargar
+los repuestos después.
+
+El botón de la llave de cada fila abre sus repuestos, y al lado de cada código
+dice **con qué artículo del catálogo coincide**: es la forma de saber qué de lo
+que lleva ese vehículo tenemos.
+
+**Los dos filtros.**
+
+- **El buscador** mira el nombre y también los códigos de sus repuestos, a medias:
+  escribir `W-71` trae los vehículos con el W-712, el W-713…
+- **"Lleva el repuesto"** deja sólo los vehículos que llevan **ese código
+  exacto**. Es lo que contesta "este repuesto, ¿a qué vehículos va?".
+
+Desde los repuestos de un vehículo, el **auto** de cada fila hace el camino
+inverso: cierra la ventana y deja la lista filtrada por ese código, con todos los
+vehículos que lo llevan.
+
+> **Editar un vehículo cambia sólo el nombre.** Los repuestos se agregan, se
+> corrigen y se borran de a uno desde el botón de repuestos.
+
+> **No puede haber dos vehículos con el mismo nombre** en la empresa, sin
+> importar mayúsculas: los repuestos quedarían repartidos entre los dos y no se
+> sabría en cuál buscar. Si ya existe, se le agregan los repuestos a ése.
+
+> **Un código repetido en el alta frena el alta entera**, y el aviso dice en qué
+> líneas está. No se crea el vehículo a medias.
+
+> **"Sin repuestos" no es un error**: es un vehículo creado sólo con el nombre.
+> Se marca porque suele ser una carga que quedó a medias.
+
+Eliminar un vehículo se lleva sus repuestos. Los artículos del catálogo no se
+tocan.
+
+### Repuestos por vehículo
+
+`/vehiculo-partes` — los repuestos de todos los vehículos juntos, con los dos
+sentidos de la relación como filtros.
+
+**Cómo se usa.** Arriba hay dos filtros:
+
+- **Vehículo → sus repuestos**: se elige un vehículo y se ven los repuestos que
+  lleva.
+- **Repuesto → los vehículos que lo llevan**: se escribe el código exacto y se
+  ven todos los vehículos que lo tienen, uno por fila.
+
+Y se salta de uno al otro desde la fila: el **auto** muestra los vehículos que
+llevan ese código, y la **llave** muestra todo lo que lleva ese vehículo. Cada
+salto limpia el otro filtro. Sin ningún filtro, el buscador mira código,
+descripción y vehículo a la vez.
+
+Desde acá también se agregan, se corrigen y se borran repuestos, de a uno.
+
+**La columna "En el catálogo".** Cruza el código contra los **códigos
+equivalentes** y el **código del fabricante** de los artículos:
+
+- el nombre del artículo, si coincide con uno;
+- "N artículos", si coincide con varios — el mismo código puede estar en dos
+  artículos a propósito, y elegir cuál es del vendedor;
+- **Sin artículo**, si no coincide con ninguno.
+
+> **"Sin artículo" no siempre es que no lo vendemos.** Puede ser que el artículo
+> exista pero no tenga cargado ese código: se agrega en sus códigos
+> equivalentes (desde la ficha del artículo) y el repuesto pasa a encontrarlo.
+
+> **El código se guarda en mayúsculas.** `w-712` y `W-712` son el mismo
+> repuesto: así se cruza contra los artículos, y así encuentra el filtro por
+> código lo que se escribió en minúscula. Un código que ya está en ese vehículo
+> se rechaza.
+
+> **Un repuesto no se cambia de vehículo.** Si quedó en el equivocado, se borra
+> y se carga en el correcto.
 
 ---
 

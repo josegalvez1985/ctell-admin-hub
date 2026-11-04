@@ -21,6 +21,7 @@ import {
   Building,
   Building2,
   CalendarCheck,
+  Car,
   CalendarClock,
   CalendarOff,
   CircleDot,
@@ -75,6 +76,7 @@ import {
   Wallet,
   Warehouse,
   Workflow,
+  Wrench,
   type LucideIcon,
 } from "lucide-react";
 
@@ -211,6 +213,19 @@ const ICONOS_PAGINA: Record<string, LucideIcon> = {
   usuarios: UserCog,
   articulos: Package,
   productos: Package,
+  // El vehículo es la cabecera del catálogo de repuestos; su detalle lleva la
+  // llave, que es el ícono del botón "Repuestos" de la fila. NO comparten:
+  // uno es la lista de autos, el otro la de piezas, y en el mismo menú sólo
+  // los distinguiría el texto.
+  //
+  // Truck ya es de POR_NOMBRE (módulos), así que el auto va con Car.
+  vehiculos: Car,
+  vehiculo: Car,
+  "repuestos por vehiculo": Wrench,
+  "repuestos de vehiculos": Wrench,
+  "partes de vehiculos": Wrench,
+  "vehiculo partes": Wrench,
+  repuestos: Wrench,
   // La lupa sobre la caja: es la CONSULTA de cuánto hay, no el ABM del
   // artículo (Package) ni la asignación a una ubicación (PackageCheck). Los
   // tres son de la misma familia a propósito — hablan del mismo objeto— y se

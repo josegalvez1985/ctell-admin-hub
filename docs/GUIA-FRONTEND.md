@@ -2113,6 +2113,34 @@ Lo mismo al revés: editar una tasa de IVA o una condición de pago cambia el
 desglose y el vencimiento de las facturas, así que **esas pantallas invalidan las
 facturas** aunque no las toquen.
 
+### Cuando el detalle no tiene techo: alta con líneas, edición de a una
+
+[_auth.vehiculos.tsx](../src/routes/_auth.vehiculos.tsx) es el caso opuesto a
+facturas: un vehículo puede llevar cientos de repuestos (ver
+[la guía de backend](GUIA-IMPLEMENTACION.md#salvo-que-el-detalle-no-tenga-techo)).
+El **alta** sigue el patrón de esta sección —líneas en `useState` con su
+`clave`, las vacías se descartan, el repetido se avisa antes de mandar
+comparando **en mayúsculas**, como lo guarda el backend—; la **edición** cambia
+sólo la cabecera, y el detalle se gestiona en su propio listado.
+
+Ese listado es **un solo componente para la página del detalle y el diálogo de
+la cabecera** ([`PartesListado`](../src/components/ctell/VehiculoPartes.tsx)):
+la página `/vehiculo-partes` lo monta con filtros, el diálogo de `/vehiculos`
+con el vehículo fijo. Copiarlo en los dos lados terminaría con dos pantallas
+que filtran o avisan distinto sobre los mismos datos.
+
+**Los dos sentidos de la relación se recorren desde la fila**, con callbacks
+opcionales: `onVerVehiculos(codigo)` (el auto: ¿a qué vehículos va este código?)
+y `onVerRepuestos(vehiculo)` (la llave: ¿qué lleva este vehículo?). El
+componente no decide adónde ir —quien lo monta cambia su filtro, o cierra el
+diálogo y filtra la pantalla de atrás— y sin el callback el botón no aparece.
+Cada salto **limpia el otro filtro**: con los dos puestos, "los vehículos que
+llevan el W-712" se reduciría al vehículo que ya estaba elegido.
+
+Al guardar o borrar una línea se invalidan **tres** claves:
+`["vehiculo-partes"]`, `["vehiculos"]` y `["vehiculos-selector"]`, porque
+`cantidadPartes` se muestra en las dos últimas.
+
 ---
 
 ## 7. El menú dinámico por dentro

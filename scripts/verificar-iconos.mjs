@@ -46,6 +46,14 @@ const SINONIMOS = [
     "ausencias",
   ],
   ["marcas", "marca"],
+  ["vehiculos", "vehiculo"],
+  [
+    "repuestos por vehiculo",
+    "repuestos de vehiculos",
+    "partes de vehiculos",
+    "vehiculo partes",
+    "repuestos",
+  ],
   ["manuales", "manual"],
   // La pantalla del manual de uso, que en el menú puede llamarse de las dos
   // formas. No se junta con "manuales": ésos son los PDF por institución y

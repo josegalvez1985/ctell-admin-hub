@@ -177,6 +177,63 @@ export type ListaCodigosEquivalentes = {
   total: number;
 };
 
+/**
+ * Un vehículo del catálogo de repuestos: la cabecera de `VehiculoParte`.
+ *
+ * El listado **no trae los repuestos**, sólo cuántos son: un vehículo puede
+ * llevar cientos, y con el detalle anidado la respuesta pasaría el techo
+ * de 4000 bytes del bind de ORDS. Se piden aparte, paginados, con
+ * `api.vehiculoPartes.listar({ idVehiculo })`.
+ */
+export type Vehiculo = {
+  id: number;
+  idEmpresa: number;
+  /** Como se escribió: el backend no lo pasa a mayúsculas. */
+  nombre: string;
+  cantidadPartes: number;
+};
+
+export type ListaVehiculos = {
+  items: Vehiculo[];
+  total: number;
+  pagina: number;
+  tamanio: number;
+};
+
+/**
+ * Un repuesto de un vehículo, con el código con el que se lo pide.
+ *
+ * **El código se guarda normalizado** (mayúsculas, sin espacios de sobra), con
+ * el mismo criterio que `CodigoEquivalente`: es lo que permite cruzarlo contra
+ * los artículos con una igualdad exacta.
+ */
+export type VehiculoParte = {
+  id: number;
+  idVehiculo: number;
+  /** Nombre del vehículo, del JOIN: buscando un código en todos, dice de cuál es. */
+  vehiculo: string;
+  codigoEquivalente: string;
+  descripcion: string | null;
+  /**
+   * Cuántos artículos de la empresa tienen este código, como equivalencia o
+   * como código del fabricante. 0 es "no lo tenemos en el catálogo".
+   */
+  articulos: number;
+  /** Sólo cuando `articulos === 1`: con dos o más, elegir es del vendedor. */
+  idArticulo: number | null;
+  articulo: string | null;
+};
+
+export type ListaVehiculoPartes = {
+  items: VehiculoParte[];
+  total: number;
+  pagina: number;
+  tamanio: number;
+};
+
+/** Una línea del alta de un vehículo, tal como viaja en `partes`. */
+export type ParteNueva = { codigoEquivalente: string; descripcion: string };
+
 export type CanalPago = {
   id: number;
   nombreCanal: string;
@@ -3281,6 +3338,136 @@ export const api = {
     /** Baja física: nada cuelga de un código, no hay qué revertir. */
     eliminar: (id: number, idEmpresa: number) =>
       request<{ ok: boolean }>(`/codigos-equivalentes/eliminar/${id}/${idEmpresa}`, {
+        method: "DELETE",
+      }),
+  },
+
+  /**
+   * Vehículos: la cabecera del catálogo de repuestos por vehículo.
+   *
+   * Los repuestos se gestionan en `vehiculoPartes`. Acá el alta los acepta
+   * —el vehículo y sus líneas entran en una transacción— pero la edición
+   * cambia **sólo el nombre**: con cientos de líneas, reemplazar el detalle
+   * entero como en facturas obligaría a traérselo completo antes de guardar.
+   */
+  vehiculos: {
+    /**
+     * `codigo` deja **sólo los vehículos que llevan ese repuesto**, con
+     * coincidencia exacta (el backend lo normaliza igual que al guardarlo): es
+     * el sentido repuesto → vehículos. El otro, vehículo → repuestos, es
+     * `vehiculoPartes.listar({ idVehiculo })`.
+     *
+     * `busqueda` es texto parcial sobre el nombre **y los códigos**.
+     *
+     * Paginado en el servidor, 20 por página y **50 como techo**: el JSON viaja
+     * por un bind de ORDS con límite de 4000 bytes.
+     */
+    listar: (params: {
+      idEmpresa: number;
+      codigo?: string | undefined;
+      busqueda?: string | undefined;
+      pagina?: number | undefined;
+      tamanio?: number | undefined;
+    }) => {
+      const q = new URLSearchParams({ idEmpresa: String(params.idEmpresa) });
+      if (params.codigo?.trim()) q.set("codigo", params.codigo.trim());
+      if (params.busqueda?.trim()) q.set("busqueda", params.busqueda.trim());
+      if (params.pagina) q.set("pagina", String(params.pagina));
+      if (params.tamanio) q.set("tamanio", String(params.tamanio));
+      return request<ListaVehiculos>(`/vehiculos/listar?${q}`);
+    },
+
+    /**
+     * `partes` va **siempre**, aunque sea `[]`: una clave omitida deja el bind
+     * de ORDS sin definir. Un nombre repetido en la empresa da 409; una línea
+     * inválida o un código repetido, 400 nombrando la línea — y no se crea nada.
+     * Devuelve cuántas `partes` entraron.
+     */
+    crear: (datos: { idEmpresa: number; nombre: string; partes: ParteNueva[] }) =>
+      request<{ id: number; ok: boolean; partes: number }>("/vehiculos/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Sólo el nombre. `idEmpresa` acota a cuál fila se aplica. */
+    actualizar: (id: number, datos: { idEmpresa: number; nombre: string }) =>
+      request<{ ok: boolean }>(`/vehiculos/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    /** Baja física: se lleva sus repuestos, y dice cuántos. */
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean; partesEliminadas: number }>(`/vehiculos/eliminar/${id}/${idEmpresa}`, {
+        method: "DELETE",
+      }),
+  },
+
+  /**
+   * Repuestos de cada vehículo (`VEHICULO_PARTES`).
+   *
+   * La empresa de un repuesto es **la de su vehículo**: el backend filtra con un
+   * JOIN y no le cree a la columna copiada de la fila.
+   */
+  vehiculoPartes: {
+    /**
+     * Los dos sentidos de la relación, combinables:
+     *
+     * - `idVehiculo` → los repuestos que lleva ese vehículo.
+     * - `codigo` → los vehículos que llevan ese repuesto (exacto; cada fila trae
+     *   el nombre del vehículo).
+     * - `busqueda` → texto parcial sobre código, descripción y vehículo.
+     *
+     * Cada fila trae con cuántos artículos coincide. Paginado, 20 por página y
+     * **50 como techo** (bind de ORDS de 4000 bytes).
+     */
+    listar: (params: {
+      idEmpresa: number;
+      idVehiculo?: number | undefined;
+      codigo?: string | undefined;
+      busqueda?: string | undefined;
+      pagina?: number | undefined;
+      tamanio?: number | undefined;
+    }) => {
+      const q = new URLSearchParams({ idEmpresa: String(params.idEmpresa) });
+      if (params.idVehiculo) q.set("idVehiculo", String(params.idVehiculo));
+      if (params.codigo?.trim()) q.set("codigo", params.codigo.trim());
+      if (params.busqueda?.trim()) q.set("busqueda", params.busqueda.trim());
+      if (params.pagina) q.set("pagina", String(params.pagina));
+      if (params.tamanio) q.set("tamanio", String(params.tamanio));
+      return request<ListaVehiculoPartes>(`/vehiculo-partes/listar?${q}`);
+    },
+
+    /**
+     * Una línea. El código repetido en ese vehículo da **409**: quien lo tipeó
+     * lo tiene que saber. `descripcion` va siempre como clave, aunque sea `""`.
+     */
+    crear: (datos: {
+      idEmpresa: number;
+      idVehiculo: number;
+      codigoEquivalente: string;
+      descripcion: string;
+    }) =>
+      request<{ id: number; ok: boolean }>("/vehiculo-partes/crear", {
+        method: "POST",
+        body: JSON.stringify(datos),
+      }),
+
+    /**
+     * El vehículo **no se cambia**: moverla es borrarla y crearla. Una
+     * descripción vacía BORRA la que había.
+     */
+    actualizar: (
+      id: number,
+      datos: { idEmpresa: number; codigoEquivalente: string; descripcion: string },
+    ) =>
+      request<{ ok: boolean }>(`/vehiculo-partes/actualizar/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(datos),
+      }),
+
+    eliminar: (id: number, idEmpresa: number) =>
+      request<{ ok: boolean }>(`/vehiculo-partes/eliminar/${id}/${idEmpresa}`, {
         method: "DELETE",
       }),
   },
