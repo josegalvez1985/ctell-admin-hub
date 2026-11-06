@@ -407,11 +407,12 @@ CREATE OR REPLACE PACKAGE BODY PKG_ASISTENTE AS
   ------------------------------------------------------------------------------
 
   -- Tablas que la IA no puede leer ni ver: la configuración (la clave) y el
-  -- registro del asistente, las sesiones y las credenciales. Ver el encabezado
-  -- de db/asistente-ddl.sql.
+  -- registro del asistente, las sesiones, las credenciales y el control del
+  -- backup (la casilla de destino). Ver el encabezado de db/asistente-ddl.sql.
   FUNCTION ES_PRIVADA (p_nombre IN VARCHAR2) RETURN BOOLEAN IS
   BEGIN
     RETURN p_nombre LIKE 'IA\_%' ESCAPE '\'
+        OR p_nombre LIKE 'CTELL\_BACKUP\_%' ESCAPE '\'
         OR p_nombre IN ('TOKENS', 'USUARIOS', 'CLOUDINARY_CONFIG');
   END ES_PRIVADA;
 

@@ -36,6 +36,8 @@ ctell-admin-hub/
 │   ├── asistente.sql         PKG_ASISTENTE: el chat con IA (llama a la API de Claude)
 │   ├── vehiculo-partes.sql   PKG_VEHICULO_PARTES: repuestos de cada vehículo. Va ANTES que vehiculos.sql
 │   ├── vehiculos.sql         PKG_VEHICULOS: la cabecera; el alta lleva sus repuestos
+│   ├── backup-ddl.sql        CTELL_BACKUP_*: control del backup (se corre una vez)
+│   ├── backup.sql            PKG_BACKUP_CTELL: copia del esquema por correo cada madrugada (interno, sin ORDS)
 │   └── [table].sql           Cada tabla nueva va aquí
 ├── src/
 │   ├── routes/               Rutas por archivo (TanStack Router)
@@ -327,6 +329,18 @@ El esquema tiene **25 MB de cuota compartida** y los BLOB ya la llenaron una vez
 
 - **Mismo patrón en los tres paquetes** (`articulos`, `profesores`, `manuales`): columna `*_URL` agregada en el paso 0, un `PUT …-url/:id` con body JSON aislado por empresa, y **ningún PUT del binario** — se retiró para que un cliente viejo (una PWA cacheada) no vuelva a llenar la base sin que nadie lo note. Guardar vacía el BLOB viejo; reemplazar, quitar o eliminar borra el archivo de Cloudinary con `PKG_CLOUDINARY.BORRAR`, después del `COMMIT`.
 - **El `GET` viejo sigue publicado** sólo para lo cargado antes del cambio, y el listado devuelve `*Url` más `tiene*`: sin URL y con `tiene*`, el frontend pide el BLOB. Cada archivo tiene al pie la consulta de cuánto queda en la base; cuando dé 0, se retira el GET. **Vaciar un BLOB no devuelve cuota**: hace falta el `SHRINK SPACE` que está al pie de cada archivo.
+
+### Backup: `PKG_BACKUP_CTELL`
+
+Todas las madrugadas (`JOB_BACKUP_CTELL`, 03:00 de Paraguay) genera el esquema en scripts SQL comprimidos y los manda por correo: estructura, módulos ORDS, datos y archivos, numerados en el orden de restauración. Cada corrida termina con un correo de **resumen**: si no llegó, no terminó; si dice `CON ERRORES`, la copia no está completa. **La puesta en marcha, cómo comprobar la copia y cómo restaurar están en [GUIA_BACKUP.md](GUIA_BACKUP.md)**, y resumidos en el encabezado de `db/backup.sql`. Una copia sin restaurar no está probada.
+
+- **Orden:** `auth.sql` → `backup-ddl.sql` (una vez) → `backup.sql` → `asistente.sql`. Es interno, como `PKG_STOCK`. La casilla se carga con `fijar_destino`: no va en el repo.
+- **Corre en tramos** porque `CPU_PER_CALL` corta un job entero (`ORA-02393`), y lo que falta queda en `CTELL_BACKUP_TAREA`. Por eso **no es una foto única**: una venta cargada durante la copia puede quedar sin su detalle.
+- **Una tabla nueva con secretos va en dos listas:** `c_sin_datos` de `db/backup.sql` y `ES_PRIVADA` de `db/asistente.sql`. El filtro de columnas no la salva si el secreto vive en una columna genérica: en `IA_CONFIG` y `CLOUDINARY_CONFIG` se llama `VALOR`.
+- **`CONTRASENA_HASH` y `SALT` no viajan**, pero son `NOT NULL`: el `INSERT` lleva un valor que no coincide con ningún hash. Tras restaurar nadie entra hasta pedir su clave por `/auth/recuperar`, así que la base nueva necesita `APEX_MAIL` funcionando.
+- **Los BLOB sí viajan**, como bloques en hexadecimal: logos y denominaciones sólo existen en la base (ver la sección anterior). Hace falta una clave primaria numérica. **Lo que está en Cloudinary no se copia**: queda la URL, no el archivo.
+- **No se exporta aplicación APEX ni workspace:** no hay ninguna aplicación, y el export del workspace lleva hashes. ORDS sí, pero que falle es un aviso: lo publicado se reconstruye corriendo `db/`.
+- **Los datos van sin saltos de línea dentro de los literales** (`literal()`): SQL*Plus lee por línea y no mira las comillas, así que una descripción con una línea terminada en `;` cortaría el `INSERT` al restaurar.
 
 ### Los totales no se guardan: se calculan
 
